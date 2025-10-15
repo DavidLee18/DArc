@@ -1,1 +1,2 @@
+*.hs filter=lfs diff=lfs merge=lfs -text
 /Cmdline.hs filter=lfs diff=lfs merge=lfs -text

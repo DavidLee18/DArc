@@ -1,16 +1,3 @@
-import System.Environment
-import System.Exit
-import System.IO
-import CompressionLib
-
-main = do
-  hSetBinaryMode stdin  True
-  hSetBinaryMode stdout True
-  let write_stdout buf size  =  hPutBuf stdout buf size  >>  return size
-  args <- getArgs
-  (result,time) <- case args of
-    ["d"]    -> decompressWithHeader        (hGetBuf stdin) write_stdout
-    [method] ->   compressWithHeader method (hGetBuf stdin) write_stdout
-    _        -> putStrLn ("Usage: Compressor method <infile >outfile\n"++
-                          "       Compressor d      <infile >outfile")  >> return (1,0)
-  exitWith (if result==0  then ExitSuccess  else ExitFailure result)
+version https://git-lfs.github.com/spec/v1
+oid sha256:3baa0d4439fbe382053648d5552cd960d2047914c4c70ca9f4d4eb12b78d6779
+size 653
