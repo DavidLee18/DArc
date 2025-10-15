@@ -1,6 +1,6 @@
 {-# OPTIONS_GHC -cpp #-}
 ----------------------------------------------------------------------------------------------------
----- Операции с именами файлов, манипуляции с файлами на диске, ввод/вывод.                     ----
+---- РћРїРµСЂР°С†РёРё СЃ РёРјРµРЅР°РјРё С„Р°Р№Р»РѕРІ, РјР°РЅРёРїСѓР»СЏС†РёРё СЃ С„Р°Р№Р»Р°РјРё РЅР° РґРёСЃРєРµ, РІРІРѕРґ/РІС‹РІРѕРґ.                     ----
 ----------------------------------------------------------------------------------------------------
 -----------------------------------------------------------------------------
 -- |
@@ -47,14 +47,14 @@ import System.Win32
 import System.Posix.Files hiding (fileExist)
 #endif
 
--- |Размер одного буфера, используемый в различных операциях
+-- |Р Р°Р·РјРµСЂ РѕРґРЅРѕРіРѕ Р±СѓС„РµСЂР°, РёСЃРїРѕР»СЊР·СѓРµРјС‹Р№ РІ СЂР°Р·Р»РёС‡РЅС‹С… РѕРїРµСЂР°С†РёСЏС…
 aBUFFER_SIZE = 64*kb
 
--- |Количество байт, которые должны читаться/записываться за один раз в быстрых методах и при распаковке асимметричных алгоритмов
+-- |РљРѕР»РёС‡РµСЃС‚РІРѕ Р±Р°Р№С‚, РєРѕС‚РѕСЂС‹Рµ РґРѕР»Р¶РЅС‹ С‡РёС‚Р°С‚СЊСЃСЏ/Р·Р°РїРёСЃС‹РІР°С‚СЊСЃСЏ Р·Р° РѕРґРёРЅ СЂР°Р· РІ Р±С‹СЃС‚СЂС‹С… РјРµС‚РѕРґР°С… Рё РїСЂРё СЂР°СЃРїР°РєРѕРІРєРµ Р°СЃРёРјРјРµС‚СЂРёС‡РЅС‹С… Р°Р»РіРѕСЂРёС‚РјРѕРІ
 aLARGE_BUFFER_SIZE = 256*kb
 
--- |Количество байт, которые должны читаться/записываться за один раз в очень быстрых методах (storing, tornado и тому подобное)
--- Этот объём минимизирует потери на disk seek operations - при условии, что одновременно не происходит в/в в другом потоке ;)
+-- |РљРѕР»РёС‡РµСЃС‚РІРѕ Р±Р°Р№С‚, РєРѕС‚РѕСЂС‹Рµ РґРѕР»Р¶РЅС‹ С‡РёС‚Р°С‚СЊСЃСЏ/Р·Р°РїРёСЃС‹РІР°С‚СЊСЃСЏ Р·Р° РѕРґРёРЅ СЂР°Р· РІ РѕС‡РµРЅСЊ Р±С‹СЃС‚СЂС‹С… РјРµС‚РѕРґР°С… (storing, tornado Рё С‚РѕРјСѓ РїРѕРґРѕР±РЅРѕРµ)
+-- Р­С‚РѕС‚ РѕР±СЉС‘Рј РјРёРЅРёРјРёР·РёСЂСѓРµС‚ РїРѕС‚РµСЂРё РЅР° disk seek operations - РїСЂРё СѓСЃР»РѕРІРёРё, С‡С‚Рѕ РѕРґРЅРѕРІСЂРµРјРµРЅРЅРѕ РЅРµ РїСЂРѕРёСЃС…РѕРґРёС‚ РІ/РІ РІ РґСЂСѓРіРѕРј РїРѕС‚РѕРєРµ ;)
 aHUGE_BUFFER_SIZE = 8*mb
 
 
@@ -62,14 +62,14 @@ aHUGE_BUFFER_SIZE = 8*mb
 ---- Filename manipulations ------------------------------------------------------------------------
 ----------------------------------------------------------------------------------------------------
 
--- |True, если file находится в каталоге `dir`, одном из его подкаталогов, или совпадает с ним
+-- |True, РµСЃР»Рё file РЅР°С…РѕРґРёС‚СЃСЏ РІ РєР°С‚Р°Р»РѕРіРµ `dir`, РѕРґРЅРѕРј РёР· РµРіРѕ РїРѕРґРєР°С‚Р°Р»РѕРіРѕРІ, РёР»Рё СЃРѕРІРїР°РґР°РµС‚ СЃ РЅРёРј
 dir `isParentDirOf` file =
   case (startFrom dir file) of
     Just ""    -> True
     Just (x:_) -> isPathSeparator x
     Nothing    -> False
 
--- |Имя файла за минусом каталога dir
+-- |РРјСЏ С„Р°Р№Р»Р° Р·Р° РјРёРЅСѓСЃРѕРј РєР°С‚Р°Р»РѕРіР° dir
 file `dropParentDir` dir =
   case (startFrom dir file) of
     Just ""    -> ""
@@ -78,10 +78,10 @@ file `dropParentDir` dir =
 
 
 #if defined(FREEARC_WIN)
--- |Для case-insensitive файловых систем
+-- |Р”Р»СЏ case-insensitive С„Р°Р№Р»РѕРІС‹С… СЃРёСЃС‚РµРј
 filenameLower = strLower
 #else
--- |Для case-sensitive файловых систем
+-- |Р”Р»СЏ case-sensitive С„Р°Р№Р»РѕРІС‹С… СЃРёСЃС‚РµРј
 filenameLower = id
 #endif
 
@@ -103,7 +103,7 @@ splitFilenameSuffix str  =  (name, drop 1 ext)
 -- "foo/bar/xyzzy.ext" -> ("foo/bar", "xyzzy.ext")
 splitDirFilename :: String -> (String,String)
 splitDirFilename str  =  case splitFileName str of
-                           x@([d,':',s], name) -> x   -- оставляем ("c:\", name)
+                           x@([d,':',s], name) -> x   -- РѕСЃС‚Р°РІР»СЏРµРј ("c:\", name)
                            (dir, name)         -> (dropTrailingPathSeparator dir, name)
 
 -- "foo/bar/xyzzy.ext" -> ("foo/bar", "xyzzy", "ext")
@@ -121,10 +121,10 @@ updateBaseName f pth  =  dir </> f name <.> ext
 
 
 ----------------------------------------------------------------------------------------------------
----- Поиск конфиг-файлов программы и SFX модулей ---------------------------------------------------
+---- РџРѕРёСЃРє РєРѕРЅС„РёРі-С„Р°Р№Р»РѕРІ РїСЂРѕРіСЂР°РјРјС‹ Рё SFX РјРѕРґСѓР»РµР№ ---------------------------------------------------
 ----------------------------------------------------------------------------------------------------
 
--- |Найти конфиг-файл с заданным именем или возвратить ""
+-- |РќР°Р№С‚Рё РєРѕРЅС„РёРі-С„Р°Р№Р» СЃ Р·Р°РґР°РЅРЅС‹Рј РёРјРµРЅРµРј РёР»Рё РІРѕР·РІСЂР°С‚РёС‚СЊ ""
 findFile = findName fileExist
 findDir  = findName dirExist
 findName exist possibleFilePlaces cfgfilename = do
@@ -133,7 +133,7 @@ findName exist possibleFilePlaces cfgfilename = do
     x:xs -> return x
     []   -> return ""
 
--- |Найти конфиг-файл с заданным именем или возвратить имя для создания нового файла
+-- |РќР°Р№С‚Рё РєРѕРЅС„РёРі-С„Р°Р№Р» СЃ Р·Р°РґР°РЅРЅС‹Рј РёРјРµРЅРµРј РёР»Рё РІРѕР·РІСЂР°С‚РёС‚СЊ РёРјСЏ РґР»СЏ СЃРѕР·РґР°РЅРёСЏ РЅРѕРІРѕРіРѕ С„Р°Р№Р»Р°
 findOrCreateFile possibleFilePlaces cfgfilename = do
   variants <- possibleFilePlaces cfgfilename
   found    <- Utils.filterM fileExist variants
@@ -143,14 +143,14 @@ findOrCreateFile possibleFilePlaces cfgfilename = do
 
 
 #if defined(FREEARC_WIN)
--- Под Windows все дополнительные файлы по умолчанию лежат в одном каталоге с программой
+-- РџРѕРґ Windows РІСЃРµ РґРѕРїРѕР»РЅРёС‚РµР»СЊРЅС‹Рµ С„Р°Р№Р»С‹ РїРѕ СѓРјРѕР»С‡Р°РЅРёСЋ Р»РµР¶Р°С‚ РІ РѕРґРЅРѕРј РєР°С‚Р°Р»РѕРіРµ СЃ РїСЂРѕРіСЂР°РјРјРѕР№
 libraryFilePlaces = configFilePlaces
 configFilePlaces filename  =  do -- dir1 <- getAppUserDataDirectory "FreeArc"
                                  exe  <- getExeName
                                  return [-- dir1              </> filename,
                                          takeDirectory exe </> filename]
 
--- |Имя исполняемого файла программы
+-- |РРјСЏ РёСЃРїРѕР»РЅСЏРµРјРѕРіРѕ С„Р°Р№Р»Р° РїСЂРѕРіСЂР°РјРјС‹
 getExeName = do
   allocaBytes (long_path_size*4) $ \pOutPath -> do
     c_GetExeName pOutPath (fromIntegral long_path_size*2) >>= peekCWString
@@ -159,22 +159,22 @@ foreign import ccall unsafe "Environment.h GetExeName"
   c_GetExeName :: CWFilePath -> CInt -> IO CWFilePath
 
 #else
--- |Места для поиска конфиг-файлов
+-- |РњРµСЃС‚Р° РґР»СЏ РїРѕРёСЃРєР° РєРѕРЅС„РёРі-С„Р°Р№Р»РѕРІ
 configFilePlaces  filename  =  do dir1 <- getAppUserDataDirectory "FreeArc"
                                   return [dir1   </> filename
                                          ,"/etc/FreeArc" </> filename]
 
--- |Места для поиска sfx-модулей
+-- |РњРµСЃС‚Р° РґР»СЏ РїРѕРёСЃРєР° sfx-РјРѕРґСѓР»РµР№
 libraryFilePlaces filename  =  return ["/usr/lib/FreeArc"       </> filename
                                       ,"/usr/local/lib/FreeArc" </> filename]
 #endif
 
 
 ----------------------------------------------------------------------------------------------------
----- Запуск внешних программ и работа с Windows registry -------------------------------------------
+---- Р—Р°РїСѓСЃРє РІРЅРµС€РЅРёС… РїСЂРѕРіСЂР°РјРј Рё СЂР°Р±РѕС‚Р° СЃ Windows registry -------------------------------------------
 ----------------------------------------------------------------------------------------------------
 
--- |Запустить команду через shell и возвратить её stdout
+-- |Р—Р°РїСѓСЃС‚РёС‚СЊ РєРѕРјР°РЅРґСѓ С‡РµСЂРµР· shell Рё РІРѕР·РІСЂР°С‚РёС‚СЊ РµС‘ stdout
 runProgram cmd = do
     (_, stdout, stderr, ph) <- runInteractiveCommand cmd
     forkIO (hGetContents stderr >>= evaluate.length >> return ())
@@ -194,23 +194,23 @@ foreign import ccall safe "Environment.h RunFile"
 
 
 #if defined(FREEARC_WIN)
--- |Создать HKEY и прочитать из Registry значение типа REG_SZ
+-- |РЎРѕР·РґР°С‚СЊ HKEY Рё РїСЂРѕС‡РёС‚Р°С‚СЊ РёР· Registry Р·РЅР°С‡РµРЅРёРµ С‚РёРїР° REG_SZ
 registryGetStr root branch key =
   bracket (regCreateKey root branch) regCloseKey
     (\hk -> registryGetStringValue hk key)
 
--- |Создать HKEY и записать в Registry значение типа REG_SZ
+-- |РЎРѕР·РґР°С‚СЊ HKEY Рё Р·Р°РїРёСЃР°С‚СЊ РІ Registry Р·РЅР°С‡РµРЅРёРµ С‚РёРїР° REG_SZ
 registrySetStr root branch key val =
   bracket (regCreateKey root branch) regCloseKey
     (\hk -> registrySetStringValue hk key val)
 
--- |Прочитать из Registry значение типа REG_SZ
+-- |РџСЂРѕС‡РёС‚Р°С‚СЊ РёР· Registry Р·РЅР°С‡РµРЅРёРµ С‚РёРїР° REG_SZ
 registryGetStringValue :: HKEY -> String -> IO (Maybe String)
 registryGetStringValue hk key = do
   (regQueryValue hk (Just key) >>== Just)
     `catch` (\e -> return Nothing)
 
--- |Записать в Registry значение типа REG_SZ
+-- |Р—Р°РїРёСЃР°С‚СЊ РІ Registry Р·РЅР°С‡РµРЅРёРµ С‚РёРїР° REG_SZ
 registrySetStringValue :: HKEY -> String -> String -> IO ()
 registrySetStringValue hk key val =
   withTString val $ \v ->
@@ -229,11 +229,11 @@ foreign import stdcall unsafe "pthread.h pthread_self"
 
 
 ----------------------------------------------------------------------------------------------------
----- Операции с неоткрытыми файлами и каталогами ---------------------------------------------------
+---- РћРїРµСЂР°С†РёРё СЃ РЅРµРѕС‚РєСЂС‹С‚С‹РјРё С„Р°Р№Р»Р°РјРё Рё РєР°С‚Р°Р»РѕРіР°РјРё ---------------------------------------------------
 ----------------------------------------------------------------------------------------------------
 
 #if defined(FREEARC_WIN)
--- |Список дисков в системе с их типами
+-- |РЎРїРёСЃРѕРє РґРёСЃРєРѕРІ РІ СЃРёСЃС‚РµРјРµ СЃ РёС… С‚РёРїР°РјРё
 getDrives = getLogicalDrives >>== unfoldr (\n -> Just (n `mod` 2, n `div` 2))
                              >>== zipWith (\c n -> n>0 &&& [c:":"]) ['A'..'Z']
                              >>== concat
@@ -255,7 +255,7 @@ createDirectoryHierarchy dir = do
       createDirectoryHierarchy (takeDirectory dir)
       dirCreate dir
 
--- |Создать недостающие каталоги на пути к файлу
+-- |РЎРѕР·РґР°С‚СЊ РЅРµРґРѕСЃС‚Р°СЋС‰РёРµ РєР°С‚Р°Р»РѕРіРё РЅР° РїСѓС‚Рё Рє С„Р°Р№Р»Сѓ
 buildPathTo filename  =  createDirectoryHierarchy (takeDirectory filename)
 
 -- |Return current directory
@@ -296,7 +296,7 @@ foreign import ccall unsafe "realpath"
                               -> IO CString
 #endif
 
--- |Максимальная длина имени файла
+-- |РњР°РєСЃРёРјР°Р»СЊРЅР°СЏ РґР»РёРЅР° РёРјРµРЅРё С„Р°Р№Р»Р°
 long_path_size  =  i c_long_path_size :: Int
 foreign import ccall unsafe "Environment.h long_path_size"
   c_long_path_size :: CInt
@@ -313,7 +313,7 @@ clearArchiveBit _ = return ()
 #endif
 
 
--- |Минимальное datetime, которое только может быть у файла. Соответствует 1 января 1970 г.
+-- |РњРёРЅРёРјР°Р»СЊРЅРѕРµ datetime, РєРѕС‚РѕСЂРѕРµ С‚РѕР»СЊРєРѕ РјРѕР¶РµС‚ Р±С‹С‚СЊ Сѓ С„Р°Р№Р»Р°. РЎРѕРѕС‚РІРµС‚СЃС‚РІСѓРµС‚ 1 СЏРЅРІР°СЂСЏ 1970 Рі.
 aMINIMAL_POSSIBLE_DATETIME = 0 :: CTime
 
 -- |Get file's date/time
@@ -325,17 +325,17 @@ setFileDateTime filename datetime  =  withCFilePath filename (`c_SetFileDateTime
 foreign import ccall unsafe "Environment.h SetFileDateTime"
    c_SetFileDateTime :: CFilePath -> CTime -> IO ()
 
--- |Пребразование CTime в ClockTime. Используется информация о внутреннем представлении ClockTime в GHC!!!
+-- |РџСЂРµР±СЂР°Р·РѕРІР°РЅРёРµ CTime РІ ClockTime. РСЃРїРѕР»СЊР·СѓРµС‚СЃСЏ РёРЅС„РѕСЂРјР°С†РёСЏ Рѕ РІРЅСѓС‚СЂРµРЅРЅРµРј РїСЂРµРґСЃС‚Р°РІР»РµРЅРёРё ClockTime РІ GHC!!!
 convert_CTime_to_ClockTime ctime = TOD (realToInteger ctime) 0
   where realToInteger = round . realToFrac :: Real a => a -> Integer
 
--- |Пребразование ClockTime в CTime
+-- |РџСЂРµР±СЂР°Р·РѕРІР°РЅРёРµ ClockTime РІ CTime
 convert_ClockTime_to_CTime (TOD secs _) = i secs
 
--- |Текстовое представление времени
+-- |РўРµРєСЃС‚РѕРІРѕРµ РїСЂРµРґСЃС‚Р°РІР»РµРЅРёРµ РІСЂРµРјРµРЅРё
 showtime format t = formatCalendarTime defaultTimeLocale format (unsafePerformIO (toCalendarTime t))
 
--- |Отформатировать CTime в строку с форматом "%Y-%m-%d %H:%M:%S"
+-- |РћС‚С„РѕСЂРјР°С‚РёСЂРѕРІР°С‚СЊ CTime РІ СЃС‚СЂРѕРєСѓ СЃ С„РѕСЂРјР°С‚РѕРј "%Y-%m-%d %H:%M:%S"
 formatDateTime t  =  unsafePerformIO $ do
                        allocaBytes 100 $ \buf -> do
                        c_FormatDateTime buf 100 t
@@ -352,7 +352,7 @@ removeFileModes a b  =  a `intersectFileModes` (complement b)
 
 
 ----------------------------------------------------------------------------------------------------
----- Операции с открытыми файлами ------------------------------------------------------------------
+---- РћРїРµСЂР°С†РёРё СЃ РѕС‚РєСЂС‹С‚С‹РјРё С„Р°Р№Р»Р°РјРё ------------------------------------------------------------------
 ----------------------------------------------------------------------------------------------------
 
 --withMVar  mvar action     =  bracket (takeMVar mvar) (putMVar mvar) action
@@ -361,7 +361,7 @@ liftMVar2  action mvar x   =  withMVar mvar (\a -> action a x)
 liftMVar3  action mvar x y =  withMVar mvar (\a -> action a x y)
 returnMVar action          =  action >>= newMVar
 
--- |Архивный файл, заворачивается в MVar для реализации параллельного доступа из разных тредов ко входным архивам
+-- |РђСЂС…РёРІРЅС‹Р№ С„Р°Р№Р», Р·Р°РІРѕСЂР°С‡РёРІР°РµС‚СЃСЏ РІ MVar РґР»СЏ СЂРµР°Р»РёР·Р°С†РёРё РїР°СЂР°Р»Р»РµР»СЊРЅРѕРіРѕ РґРѕСЃС‚СѓРїР° РёР· СЂР°Р·РЅС‹С… С‚СЂРµРґРѕРІ РєРѕ РІС…РѕРґРЅС‹Рј Р°СЂС…РёРІР°Рј
 data Archive = Archive { archiveName :: FilePath
                        , archiveFile :: MVar File
                        }
@@ -377,7 +377,7 @@ archiveWrite         = liftMVar2 fileWrite    . archiveFile
 archiveWriteBuf      = liftMVar3 fileWriteBuf . archiveFile
 archiveClose         = liftMVar1 fileClose    . archiveFile
 
--- |Скопировать данные из одного архива в другой и затем восстановить позицию в исходном архиве
+-- |РЎРєРѕРїРёСЂРѕРІР°С‚СЊ РґР°РЅРЅС‹Рµ РёР· РѕРґРЅРѕРіРѕ Р°СЂС…РёРІР° РІ РґСЂСѓРіРѕР№ Рё Р·Р°С‚РµРј РІРѕСЃСЃС‚Р°РЅРѕРІРёС‚СЊ РїРѕР·РёС†РёСЋ РІ РёСЃС…РѕРґРЅРѕРј Р°СЂС…РёРІРµ
 archiveCopyData srcarc pos size dstarc = do
   withMVar (archiveFile srcarc) $ \srcfile ->
     withMVar (archiveFile dstarc) $ \dstfile -> do
@@ -386,9 +386,9 @@ archiveCopyData srcarc pos size dstarc = do
       fileCopyBytes srcfile size dstfile
       fileSeek      srcfile restorePos
 
--- |При работе с одним физическим диском (наиболее частый вариант)
--- нет смысла выполнять несколько I/O операций параллельно,
--- поэтому мы их все проводим через "угольное ушко" одной-единственной MVar
+-- |РџСЂРё СЂР°Р±РѕС‚Рµ СЃ РѕРґРЅРёРј С„РёР·РёС‡РµСЃРєРёРј РґРёСЃРєРѕРј (РЅР°РёР±РѕР»РµРµ С‡Р°СЃС‚С‹Р№ РІР°СЂРёР°РЅС‚)
+-- РЅРµС‚ СЃРјС‹СЃР»Р° РІС‹РїРѕР»РЅСЏС‚СЊ РЅРµСЃРєРѕР»СЊРєРѕ I/O РѕРїРµСЂР°С†РёР№ РїР°СЂР°Р»Р»РµР»СЊРЅРѕ,
+-- РїРѕСЌС‚РѕРјСѓ РјС‹ РёС… РІСЃРµ РїСЂРѕРІРѕРґРёРј С‡РµСЂРµР· "СѓРіРѕР»СЊРЅРѕРµ СѓС€РєРѕ" РѕРґРЅРѕР№-РµРґРёРЅСЃС‚РІРµРЅРЅРѕР№ MVar
 oneIOAtTime = unsafePerformIO$ newMVar "oneIOAtTime value"
 fileReadBuf  file buf size = withMVar oneIOAtTime $ \_ -> fileReadBufSimple  file buf size
 fileWriteBuf file buf size = withMVar oneIOAtTime $ \_ -> fileWriteBufSimple file buf size
@@ -412,13 +412,13 @@ fileWriteBufSimple = choose  fWriteBufSimple (\_ _ _ -> err "url_write")
 fileFlush          = choose  fFlush          (\_     -> err "url_flush")
 fileClose          = choose  fClose          url_close
 
--- |Проверяет существование файла/URL
+-- |РџСЂРѕРІРµСЂСЏРµС‚ СЃСѓС‰РµСЃС‚РІРѕРІР°РЅРёРµ С„Р°Р№Р»Р°/URL
 fileExist name | isURL name = do url <- withCString name url_open
                                  url_close url
                                  return (url/=nullPtr)
                | otherwise  = fExist name
 
--- |Проверяет, является ли имя url
+-- |РџСЂРѕРІРµСЂСЏРµС‚, СЏРІР»СЏРµС‚СЃСЏ Р»Рё РёРјСЏ url
 isURL name = "://" `isInfixOf` name
 
 {-# NOINLINE choose0 #-}
@@ -447,7 +447,7 @@ foreign import ccall safe "URL.h"  url_close  :: URL -> IO ()
 
 
 ----------------------------------------------------------------------------------------------------
----- Под Windows мне пришлось реализовать библиотеку в/в самому для поддержки файлов >4Gb и Unicode имён файлов
+---- РџРѕРґ Windows РјРЅРµ РїСЂРёС€Р»РѕСЃСЊ СЂРµР°Р»РёР·РѕРІР°С‚СЊ Р±РёР±Р»РёРѕС‚РµРєСѓ РІ/РІ СЃР°РјРѕРјСѓ РґР»СЏ РїРѕРґРґРµСЂР¶РєРё С„Р°Р№Р»РѕРІ >4Gb Рё Unicode РёРјС‘РЅ С„Р°Р№Р»РѕРІ
 ----------------------------------------------------------------------------------------------------
 #if defined(FREEARC_WIN)
 
@@ -534,19 +534,19 @@ fileWrite     file str  = withCStringLen str $ \(buf,size) -> fileWriteBuf file 
 fileGetBinary name      = bracket (fileOpen   name) fileClose (\file -> fileGetSize file >>= fileRead file.i)
 filePutBinary name str  = bracket (fileCreate name) fileClose (`fileWrite` str)
 
--- |Скопировать заданное количество байт из одного открытого файла в другой
+-- |РЎРєРѕРїРёСЂРѕРІР°С‚СЊ Р·Р°РґР°РЅРЅРѕРµ РєРѕР»РёС‡РµСЃС‚РІРѕ Р±Р°Р№С‚ РёР· РѕРґРЅРѕРіРѕ РѕС‚РєСЂС‹С‚РѕРіРѕ С„Р°Р№Р»Р° РІ РґСЂСѓРіРѕР№
 fileCopyBytes srcfile size dstfile = do
-  allocaBytes aHUGE_BUFFER_SIZE $ \buf -> do        -- используем `alloca`, чтобы автоматически освободить выделенный буфер при выходе
-    doChunks size aHUGE_BUFFER_SIZE $ \bytes -> do  -- Скопировать size байт кусками по aHUGE_BUFFER_SIZE
-      bytes <- fileReadBuf srcfile buf bytes        -- Проверим, что прочитано ровно столько байт, сколько затребовано
+  allocaBytes aHUGE_BUFFER_SIZE $ \buf -> do        -- РёСЃРїРѕР»СЊР·СѓРµРј `alloca`, С‡С‚РѕР±С‹ Р°РІС‚РѕРјР°С‚РёС‡РµСЃРєРё РѕСЃРІРѕР±РѕРґРёС‚СЊ РІС‹РґРµР»РµРЅРЅС‹Р№ Р±СѓС„РµСЂ РїСЂРё РІС‹С…РѕРґРµ
+    doChunks size aHUGE_BUFFER_SIZE $ \bytes -> do  -- РЎРєРѕРїРёСЂРѕРІР°С‚СЊ size Р±Р°Р№С‚ РєСѓСЃРєР°РјРё РїРѕ aHUGE_BUFFER_SIZE
+      bytes <- fileReadBuf srcfile buf bytes        -- РџСЂРѕРІРµСЂРёРј, С‡С‚Рѕ РїСЂРѕС‡РёС‚Р°РЅРѕ СЂРѕРІРЅРѕ СЃС‚РѕР»СЊРєРѕ Р±Р°Р№С‚, СЃРєРѕР»СЊРєРѕ Р·Р°С‚СЂРµР±РѕРІР°РЅРѕ
       fileWriteBuf dstfile buf bytes
 
--- |True, если существует файл или каталог с заданным именем
+-- |True, РµСЃР»Рё СЃСѓС‰РµСЃС‚РІСѓРµС‚ С„Р°Р№Р» РёР»Рё РєР°С‚Р°Р»РѕРі СЃ Р·Р°РґР°РЅРЅС‹Рј РёРјРµРЅРµРј
 fileOrDirExist f  =  mapM ($f) [fileExist, dirExist] >>== or
 
 
 ---------------------------------------------------------------------------------------------------
----- Глобальные настройки перекодировки для использования в глубоко вложенных функциях ------------
+---- Р“Р»РѕР±Р°Р»СЊРЅС‹Рµ РЅР°СЃС‚СЂРѕР№РєРё РїРµСЂРµРєРѕРґРёСЂРѕРІРєРё РґР»СЏ РёСЃРїРѕР»СЊР·РѕРІР°РЅРёСЏ РІ РіР»СѓР±РѕРєРѕ РІР»РѕР¶РµРЅРЅС‹С… С„СѓРЅРєС†РёСЏС… ------------
 ---------------------------------------------------------------------------------------------------
 
 -- |Translate filename from filesystem to internal encoding

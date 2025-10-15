@@ -1,6 +1,6 @@
 ----------------------------------------------------------------------------------------------------
----- Процесс формирования структуры архива и чтения упаковываемых данных.                       ----
----- Вызывается из ArcCreate.hs                                                                 ----
+---- Process that builds the archive structure and reads the data to be packed.                    ----
+---- Called from ArcCreate.hs                                                                    ----
 ----------------------------------------------------------------------------------------------------
 module ArcvProcessRead where
 
@@ -27,216 +27,220 @@ import ArhiveFileList
 import ArcvProcessExtract
 
 
--- |Инструкции, посылаемые процессом чтения входных данных процессу упаковки
+-- |Instructions sent by the input-reading process to the packing process
 data Instruction
-  =   DebugLog  String                        --   Вывод отладочного сообщения с отметкой времени
-  |   DebugLog0 String                        --                               без отметки
+  =   DebugLog  String                        --   Output a debug message with a timestamp
+  |   DebugLog0 String                        --   Output a debug message without timestamp
   |   CompressData BlockType Compressor Compressor Bool
-                                              --   Начало блока архива
-  |     FileStart FileInfo                    --     Начало очередного файла
-  |       DataChunk (Ptr CChar) Int           --       Очередная порция упаковываемых данных
-  |     CorrectTotals FileCount FileSize      --     Корректировка Total Files/Bytes для UI
-  |     FakeFiles [FileToCompress]            --     Корректировка списка уже упакованных файлов для UI
-  |   CopySolidBlock [CompressedFile]         --   Копирование солид-блока целиком из существующего архива
-  |   DataEnd                                 --   Конец блока архива
-  |   Directory [FileWithCRC]                 --   Запрос на получение служебных данных о последнем созданном блоке архива
-  | TheEnd                                    -- Создание архива завершено
+                                              --   Start of an archive block
+  |   FileStart FileInfo                      --   Start of the next file
+  |   DataChunk (Ptr CChar) Int               --   Next chunk of data to be packed
+  |   CorrectTotals FileCount FileSize        --   Adjust Total Files/Bytes shown in the UI
+  |   FakeFiles [FileToCompress]              --   Adjust the list of already-packed files for the UI
+  |   CopySolidBlock [CompressedFile]         --   Copy an entire solid block from an existing archive
+  |   DataEnd                                 --   End of the archive block
+  |   Directory [FileWithCRC]                 --   Request for administrative data about the last created archive block
+  |   TheEnd                                  --   Archive creation complete
 
--- |Предикаты для использования в циклах: выполнять до конца блока архива, выполнять до конца архива
+-- |Predicates used in loops: run until end of archive block, run until end of archive
 notDataEnd DataEnd = False
 notDataEnd _       = True
 notTheEnd  TheEnd  = False
 notTheEnd  _       = True
 
 
--- |Процесс, создающий структуру архива - он разбивает файлы
---   по отдельным томам архива, каталогам файлов внутри архива и солид-блокам.
--- Этот же процесс собирает входные данные для упаковки - читает файлы с диска и
---   распаковывает данные из входных архивов.
-create_archive_structure_AND_read_files_PROCESS command archive oldarc files processDir arcComment writeRecoveryBlocks results backdoor pipe = do
+-- |Process that builds the archive structure - it splits files
+--   into separate archive volumes, directory blocks inside the archive and solid blocks.
+-- This same process also gathers input data for packing - it reads files from disk and
+--   decompresses data from input archives.
+createArchiveAtructureAndReadFilesProcess command archive oldarc files processDir arcComment writeRecoveryBlocks results backdoor pipe = do
   initPos <- archiveGetPos archive
-  -- При возникновении ошибки установим флаг для прерывания работы c_compress()
+  -- On error, set a flag to interrupt c_compress() operation
   handleCtrlBreak "operationTerminated =: True" (operationTerminated =: True) $ do
-  -- Создадим процесс для распаковки файлов из входных архивов и гарантируем его корректное завершение
+  -- Create a process for decompressing files from input archives and ensure it terminates correctly
   bracket (runAsyncP$ decompress_PROCESS command doNothing)
           ( \decompress_pipe -> do sendP decompress_pipe Nothing; joinP decompress_pipe)
           $ \decompress_pipe -> do
-  -- Создадим кеш для упреждающего чтения архивируемых файлов
+  -- Create a cache for lookahead reading of files to be archived
   withPool $ \pool -> do
   bufOps <- makeFileCache (opt_cache command) pool pipe
-  -- Параметры для writeControlBlock
+  -- Parameters for writeControlBlock
   let params = (command,bufOps,pipe,backdoor)
 
-  -- Запишем блок заголовка (HEADER_BLOCK) в начало архива
+  -- Write the header block (HEADER_BLOCK) at the start of the archive
   header_block  <-  writeControlBlock HEADER_BLOCK aNO_COMPRESSION params $ do
                       archiveWriteHeaderBlock bufOps
 
-  -- Заархивируем данные, разбивая файлы по dir-блокам
-  directory_blocks <- foreach (splitToDirBlocks command files)
+
                               (createDirBlock archive processDir decompress_pipe params)
 
-  -- Запишем финальный блок (FOOTER_BLOCK), содержащий каталог служебных блоков архива и комментарий архива
+  -- Write the final block (FOOTER_BLOCK) containing the index of control blocks and the archive comment
   let write_footer_block blocks arcRecovery = do
           footerPos <- archiveGetPos archive
-          writeControlBlock FOOTER_BLOCK (dir_compressor command) params $ do
-            let lock_archive = opt_lock_archive command   -- Закрыть создаваемый архив от изменений?
+          writeControlBlock FOOTER_BLOCK (dirCompressor command) params $ do
+            let lock_archive = opt_lock_archive command   -- Should the created archive be locked from modifications?
             archiveWriteFooterBlock blocks lock_archive arcComment arcRecovery footerPos bufOps
           return ()
   write_footer_block (header_block:directory_blocks) ""
 
-  -- Напечатаем статистику выполнения команды и сохраним её для возврата в вызывающую процедуру
+  -- Print command execution statistics and save them for returning to the caller
   uiDoneArchive  >>=  writeIORef results
 
-  -- Если запись RECOVERY информации включена - запишем RECOVERY блоки и повторим FOOTER блок
+  -- If writing RECOVERY information is enabled - write RECOVERY blocks and repeat the FOOTER block
   (recovery_blocks,recovery) <- writeRecoveryBlocks archive oldarc initPos command params bufOps
   unless (null recovery_blocks) $ do
     write_footer_block (header_block:directory_blocks++recovery_blocks) recovery
 
-  -- Уведомим процесс записи в архив, что создание архива завершено
+  -- Notify the archive writer process that archive creation is complete
   sendP pipe TheEnd
 
 
--- |Записать в архив переданные файлы и dir-блок с их описанием
+-- |Р—Р°РїРёСЃР°С‚СЊ РІ Р°СЂС…РёРІ РїРµСЂРµРґР°РЅРЅС‹Рµ С„Р°Р№Р»С‹ Рё dir-Р±Р»РѕРє СЃ РёС… РѕРїРёСЃР°РЅРёРµРј
 createDirBlock archive processDir decompress_pipe params@(command,bufOps,pipe,backdoor) files = do
-  -- Разбить файлы по солид-блокам и обработать каждый подсписок отдельно. Для отладки - mapM (print.map (fpFullname.fiDiskName.cfFileInfo)) (splitToSolidBlocks files)
+  -- Split files into solid blocks and process each sublist separately. For debugging: mapM (print . map (fpFullname . fiDiskName . cfFileInfo)) (splitToSolidBlocks files)
   solidBlocks <- foreach (splitToSolidBlocks command files)
                          (createSolidBlock command processDir bufOps pipe decompress_pipe)
-  -- Получить от процесса write_to_archive информацию о созданных солид-блоках и содержащихся в них файлах.
-  -- Выполнение этой команды форсирует завершение упаковки всех ранее посланных данных и запись упакованных данных в архив...
+  -- Get from the write_to_archive process information about created solid blocks and the files they contain.
+  -- Executing this forces completion of packing of all previously sent data and writing the packed data to the archive...
   blocks_info  <-  replicateM (length solidBlocks) (getP backdoor)
-  -- ... после чего можно быть уверенным, что текущая позиция в архиве - это позиция, где начнётся блок каталога
+  -- ... after which we can be sure that the current position in the archive is where the directory block will start
   dirPos <- archiveGetPos archive
-  -- Записать блок каталога и возвратить информацию о нём для формирования каталога каталогов
-  writeControlBlock DIR_BLOCK (dir_compressor command) params $ do
+  -- Р—Р°РїРёСЃР°С‚СЊ Р±Р»РѕРє РєР°С‚Р°Р»РѕРіР° Рё РІРѕР·РІСЂР°С‚РёС‚СЊ РёРЅС„РѕСЂРјР°С†РёСЋ Рѕ РЅС‘Рј РґР»СЏ С„РѕСЂРјРёСЂРѕРІР°РЅРёСЏ РєР°С‚Р°Р»РѕРіР° РєР°С‚Р°Р»РѕРіРѕРІ
+  writeControlBlock DIR_BLOCK (dirCompressor command) params $ do
     archiveWriteDir blocks_info dirPos bufOps
 
 
--- |Создать солид-блок, содержащий данные из переданных файлов
+-- |Create a solid block containing data from the provided files
 createSolidBlock command processDir bufOps pipe decompress_pipe (orig_compressor,files) = do
-  let -- Выберем алгоритм сжатия для этого солид-блока
-      -- и уменьшим словари его алгоритмов, ежели они больше объёма данных в блоке
-      -- (+1%+512 потому что фильтры типа delta могут увеличить объём данных):
+  let -- Choose the compression algorithm for this solid block
+      -- and shrink dictionaries of its algorithms if they are larger than the data size of the block
+      -- (+1% + 512 because delta-type filters may increase data size):
       compressor | copy_solid_block = cfCompressor (head files)
                  | otherwise        = orig_compressor.$limitDictionary (clipToMaxMemSize$ roundMemUp$ totalBytes+(totalBytes `div` 100)+512)
-      -- Общий объём файлов в солид-блоке
+      -- Total size of files in the solid block
       totalBytes = sum$ map (fiSize.cfFileInfo) files
-      -- True, если это целый солид-блок из входного архива, который можно скопировать без изменений
-      copy_solid_block = not(opt_recompress command)  &&  isWholeSolidBlock files
-  -- Ограничить компрессор объёмом свободной памяти и значением -lc
+      -- True if this is a whole solid block from an input archive that can be copied without changes
+      copy_solid_block = not (opt_recompress command)  &&  isWholeSolidBlock files
+  -- РћРіСЂР°РЅРёС‡РёС‚СЊ РєРѕРјРїСЂРµСЃСЃРѕСЂ РѕР±СЉС‘РјРѕРј СЃРІРѕР±РѕРґРЅРѕР№ РїР°РјСЏС‚Рё Рё Р·РЅР°С‡РµРЅРёРµРј -lc
   real_compressor <- limit_compressor command compressor
   opt_testMalloc command &&& testMalloc
 
-  -- Сжать солид-блок данных и отослать в следующий процесс список помещённых в него файлов
+  -- Compress the solid block and send the list of files placed into it to the next process
   unless (null files) $ do
-  printDebugInfo command pipe files totalBytes copy_solid_block compressor real_compressor
-  writeBlock pipe DATA_BLOCK compressor real_compressor copy_solid_block $ do
-    dir <- -- Если солид-блок передаётся из архива в архив целиком, то обойти излишнюю процедуру перепаковки
-           if copy_solid_block then do
-             sendP pipe (CopySolidBlock files)
-             return$ map fileWithCRC files
-           -- Если используется --nodata, то обойти чтение входных файлов
-           else if isReallyFakeCompressor compressor then do
-             sendP pipe (FakeFiles files)
-             return$ map fileWithCRC files
-           -- Обычное чтение файлов для всех прочих (более типичных) случаев
-           else do
-             mapMaybeM (read_file command pipe bufOps decompress_pipe) files
-    processDir dir   -- дать процедуре, переданной сверху, пощупать список сархивированных файлов (используется для реализации опций -tl, -ac, -d[f])
-    return dir
+    printDebugInfo command pipe files totalBytes copy_solid_block compressor real_compressor
+    writeBlock pipe DATA_BLOCK compressor real_compressor copy_solid_block $ do
+      dir <- -- If the solid block is being transferred whole from archive to archive, skip unnecessary recompression
+             if copy_solid_block then do
+               sendP pipe (CopySolidBlock files)
+               return$ map fileWithCRC files
+             -- If --nodata is used, skip reading input files
+             else if isReallyFakeCompressor compressor then do
+               sendP pipe (FakeFiles files)
+               return$ map fileWithCRC files
+             -- Normal file reading for all other (more typical) cases
+             else do
+               mapMaybeM (readFile command pipe bufOps decompress_pipe) files
+      processDir dir   -- let the procedure passed from above inspect the list of archived files (used to implement options -tl, -ac, -d[f])
+      return dir
 
 
--- |Напечатать отладочную информацию
+-- |Print debug information
 printDebugInfo command pipe files totalBytes copy_solid_block compressor real_compressor = do
   --print (clipToMaxInt totalBytes, compressor)
   --print$ map (diskName.cfFileInfo) files   -- debugging tool :)
   when (opt_debug command) $ do
-    sendP pipe$ DebugLog$  "Compressing "++show_files3(length files)++" of "++show_bytes3 totalBytes
+    sendP pipe$ DebugLog$  "Compressing "++show_files3 (length files)++" of "++show_bytes3 totalBytes
     sendP pipe$ DebugLog0$ if copy_solid_block then "  Copying "++join_compressor compressor  else "  Using "++join_compressor real_compressor
-    unless (copy_solid_block) $ do
+  unless copy_solid_block $ do
       sendP pipe$ DebugLog0$ "  Memory for compression "++showMem (getCompressionMem   real_compressor)
                                     ++", decompression "++showMem (getDecompressionMem real_compressor)
 
 
 ---------------------------------------------------------------------------------------------------
----- Процедура чтения данных упаковываемого файла -------------------------------------------------
+---- Procedure to read data of the file being packed -------------------------------------------------
 ---------------------------------------------------------------------------------------------------
 
-{-# NOINLINE read_file #-}
--- Если это каталог, то пропускаем чтение данных
-read_file command pipe _ _ file  | fi<-cfFileInfo file, fiIsDir fi = do
+{-# NOINLINE readFile #-}
+-- If this is a directory, skip reading data
+readFile command pipe _ _ file  | fi<-cfFileInfo file, fiIsDir fi = do
   sendP pipe (FileStart fi)
   return$ Just$ fileWithCRC file
 
--- Если это файл на диске, то прочитаем его по частям, отправляя прочитанные блоки на упаковку
-read_file _ pipe (receiveBuf, sendBuf) _ (DiskFile old_fi) = do
-  -- Операция информирования следующего процесса об изменении размера/количества файлов, которое он должен отослать в UI
+-- If this is a file on disk, read it in parts and send read chunks for packing
+readFile _ pipe (receiveBuf, sendBuf) _ (DiskFile old_fi) = do
+  -- Operation to inform the next process about change in file count/size that it should send to the UI
   let correctTotals files bytes  =  when (files/=0 || bytes/=0) (sendP pipe (CorrectTotals files bytes)) >> return Nothing
-  -- Проверяем возможность открыть файл - он может быть залочен или его за это время могли элементарно стереть :)
-  tryOpen (diskName old_fi)  >>=  maybe (correctTotals (-1) (-fiSize old_fi))  (\file -> do
-  ensureCtrlBreak "fileClose:read_file" (fileClose file) $ do  -- Гарантируем закрытие файла
-  -- Перечитаем информацию о файле на случай, если он успел измениться
-  rereadFileInfo old_fi file >>=  maybe (correctTotals (-1) (-fiSize old_fi))  (\fi -> do
-  correctTotals 0 (fiSize fi - fiSize old_fi) -- Откорректируем показания UI, если размер файла успел измениться
-  sendP pipe (FileStart fi)                   -- Проинформируем пользователя о начале упаковки файла
-  let readFile crc bytes = do    -- Прочитаем в цикле файл, отправляя прочитанные блоки на упаковку:
-        (buf, size) <- receiveBuf                -- Получим свободный буфер из очереди буферов
-        len         <- fileReadBuf file buf size -- Прочитаем в него очередную порцию данных из файла
-        newcrc      <- updateCRC buf len crc     -- Обновим CRC содержимым буфера
-        sendBuf        buf size len              -- Отошлём данные процессу упаковки
-        if len>0
-          then readFile newcrc $! bytes+i len    -- Обновим счётчик прочитанных байт
-          else return (finishCRC newcrc, bytes)  -- Выйдем из цикла, если файл окончился
-  (crc,bytesRead) <- readFile aINIT_CRC 0     -- Прочитаем файл, получив его CRC и размер
-  correctTotals 0 (bytesRead - fiSize fi)     -- Откорректируем показания UI, если размер файла отличается от возвращённого getFileInfo
-  return$ Just$ FileWithCRC crc FILE_ON_DISK fi{fiSize=bytesRead} ))
+  -- Check possibility to open the file - it may be locked or the file might have been deleted in the meantime :)
+  mfile <- tryOpen (diskName old_fi)
+  case mfile of
+    Nothing -> correctTotals (-1) (-fiSize old_fi)
+    Just file -> ensureCtrlBreak "fileClose:readFile" (fileClose file) $ do  -- Ensure file is closed
+      -- Re-read file information in case it changed
+      mfi <- rereadFileInfo old_fi file
+      case mfi of
+        Nothing -> correctTotals (-1) (-fiSize old_fi)
+        Just fi -> do
+          correctTotals 0 (fiSize fi - fiSize old_fi) -- Adjust UI totals if the file size has changed
+          sendP pipe (FileStart fi)                   -- Inform the user about the start of packing the file
+          let readFile crc bytes = do                 -- Read the file in a loop, sending read chunks for packing:
+                (buf, size) <- receiveBuf                 -- Get a free buffer from the buffer queue
+                len         <- fileReadBuf file buf size  -- Read the next portion of data from file into it
+                newcrc      <- updateCRC buf len crc      -- Update CRC with buffer contents
+                sendBuf        buf size len               -- Send the data to the packing process
+                if len>0
+                  then readFile newcrc $! bytes+i len    -- Update the count of read bytes
+                  else return (finishCRC newcrc, bytes)  -- Exit the loop if the file ended
+          (crc,bytesRead) <- readFile aINIT_CRC 0     -- Read the file, obtaining its CRC and size
+          correctTotals 0 (bytesRead - fiSize fi)     -- Adjust UI totals if the actual read size differs from getFileInfo
+          return$ Just$ FileWithCRC crc FILE_ON_DISK fi{fiSize=bytesRead}
 
--- Если это файл из уже существующего архива, то распакуем его, отправляя распакованные блоки на упаковку
-read_file _ pipe (receiveBuf, sendBuf) decompress_pipe compressed_file = do
-  crc  <-  ref aINIT_CRC                       -- Инициализируем значение CRC
-  -- Операция "записи" распакованных данных путём копирования их в собственные буфера
-  -- и отсылки этих буферов на последующую обработку
-  let writer inbuf 0 = send_backP decompress_pipe ()  -- сообщим распаковщику, что теперь буфер свободен
+-- If this is a file from an existing archive, decompress it and send decompressed chunks for packing
+readFile _ pipe (receiveBuf, sendBuf) decompress_pipe compressed_file = do
+  crc  <-  ref aINIT_CRC                       -- Initialize CRC value
+  -- The operation of "writing" decompressed data by copying them into our own buffers
+  -- and sending these buffers for further processing
+  let writer inbuf 0 = send_backP decompress_pipe ()  -- СЃРѕРѕР±С‰РёРј СЂР°СЃРїР°РєРѕРІС‰РёРєСѓ, С‡С‚Рѕ С‚РµРїРµСЂСЊ Р±СѓС„РµСЂ СЃРІРѕР±РѕРґРµРЅ
       writer inbuf insize = do
-        (buf, size) <- receiveBuf              -- получим свободный буфер из очереди буферов
-        let len  = min insize size             -- определим сколько данных мы можем обработать
-        crc    .<- updateCRC inbuf len         -- обновим CRC содержимым буфера
-        copyBytes  buf inbuf len               -- скопируем данные в полученный буфер
-        sendBuf    buf size len                -- пошлём их следующему процессу в транспортёре
-        writer     (inbuf+:len) (insize-len)   -- обработаем оставшиеся данные, если есть
+        (buf, size) <- receiveBuf              -- get a free buffer from the buffer queue
+        let len  = min insize size             -- determine how many bytes we can process
+        crc    .<- updateCRC inbuf len         -- update CRC with buffer contents
+        copyBytes  buf inbuf len               -- copy data into the acquired buffer
+        sendBuf    buf size len                -- send them to the next process in the pipeline
+        writer     (inbuf+:len) (insize-len)   -- process remaining data, if any
   let fi  =  cfFileInfo compressed_file
-  sendP pipe (FileStart fi)                    -- Проинформируем пользователя о начале перепаковки файла
-  decompress_file decompress_pipe compressed_file writer   -- Распаковать файл в отдельном треде
-  crc'  <-  val crc >>== finishCRC            -- Вычислим окончательное значение CRC
-  if cfCRC compressed_file == crc'            -- Если CRC в порядке
-    then return$ Just$ fileWithCRC compressed_file  -- то возвратим информацию о файле
-    else registerError$ BAD_CRC$ diskName fi        -- иначе вывалимся с ошибкой
+  sendP pipe (FileStart fi)                    -- Inform the user about beginning re-packing of the file
+  decompress_file decompress_pipe compressed_file writer   -- Decompress the file in a separate thread
+  crc'  <-  val crc >>== finishCRC            -- Compute the final CRC value
+  if cfCRC compressed_file == crc'            -- If CRC matches
+    then return$ Just$ fileWithCRC compressed_file  -- then return file info
+    else registerError$ BAD_CRC$ diskName fi        -- otherwise register an error
 
 
 ---------------------------------------------------------------------------------------------------
----- Вспомогательные определения ------------------------------------------------------------------
+---- Auxiliary definitions ------------------------------------------------------------------
 ---------------------------------------------------------------------------------------------------
-
--- |Создать кеш для упреждающего чтения и возвратить процедуры receiveBuf и sendBuf
--- для получения свободного буфера из кеша и освобождения использованного буфера, соответственно
+-- |Create a cache for lookahead reading and return procedures receiveBuf and sendBuf
+-- to get a free buffer from the cache and to release used buffers respectively
 makeFileCache cache_size pool pipe = do
-  -- Размер буферов, на которые будет разбит весь кеш
+  -- Size of buffers the whole cache will be split into
   let bufsize | cache_size>=aLARGE_BUFFER_SIZE*16  =  aLARGE_BUFFER_SIZE
               | otherwise                          =  aBUFFER_SIZE
-  -- Выделить память под кеш и натравить memoryAllocator на выделенный блок памяти
+  -- Allocate memory for the cache and start memoryAllocator on the allocated block
   heap                     <-  pooledMallocBytes pool cache_size
   (getBlock, shrinkBlock)  <-  memoryAllocator   heap cache_size bufsize 256 (receive_backP pipe)
-  let -- Операция получения свободного буфера
+  let -- РћРїРµСЂР°С†РёСЏ РїРѕР»СѓС‡РµРЅРёСЏ СЃРІРѕР±РѕРґРЅРѕРіРѕ Р±СѓС„РµСЂР°
       receiveBuf            =  do buf <- getBlock
                                   failOnTerminated
                                   return (buf, bufsize)
-      -- Операция отправления заполненного буфера следующему процессу
+      -- Operation to obtain a free buffer
+      -- Operation to send a filled buffer to the next process
       sendBuf buf size len  =  do shrinkBlock buf len
                                   failOnTerminated
                                   when (len>0)$  do sendP pipe (DataChunk buf len)
   return (receiveBuf, sendBuf)
 
 {-# NOINLINE writeBlock #-}
--- |Записать в архив блок данных/служебный/дескриптор блока
+-- |Р—Р°РїРёСЃР°С‚СЊ РІ Р°СЂС…РёРІ Р±Р»РѕРє РґР°РЅРЅС‹С…/СЃР»СѓР¶РµР±РЅС‹Р№/РґРµСЃРєСЂРёРїС‚РѕСЂ Р±Р»РѕРєР°
 writeBlock pipe blockType compressor real_compressor just_copy action = do
   sendP pipe (CompressData blockType compressor real_compressor just_copy)
   directory <- action
@@ -244,16 +248,18 @@ writeBlock pipe blockType compressor real_compressor just_copy action = do
   sendP pipe (Directory directory)
 
 {-# NOINLINE writeControlBlock #-}
--- Записать в архив служебный блок вместе с его дескриптором и возвратить информацию об этом блоке
+-- Р—Р°РїРёСЃР°С‚СЊ РІ Р°СЂС…РёРІ СЃР»СѓР¶РµР±РЅС‹Р№ Р±Р»РѕРє РІРјРµСЃС‚Рµ СЃ РµРіРѕ РґРµСЃРєСЂРёРїС‚РѕСЂРѕРј Рё РІРѕР·РІСЂР°С‚РёС‚СЊ РёРЅС„РѕСЂРјР°С†РёСЋ РѕР± СЌС‚РѕРј Р±Р»РѕРєРµ
 writeControlBlock blockType compressor (command,bufOps,pipe,backdoor) action = do
-  if (opt_nodir command)   -- Опция "--nodir" отключает запись в архив всех служебных блоков - остаются только сами сжатые данные
+    if opt_nodir command   -- РћРїС†РёСЏ "--nodir" РѕС‚РєР»СЋС‡Р°РµС‚ Р·Р°РїРёСЃСЊ РІ Р°СЂС…РёРІ РІСЃРµС… СЃР»СѓР¶РµР±РЅС‹С… Р±Р»РѕРєРѕРІ - РѕСЃС‚Р°СЋС‚СЃСЏ С‚РѕР»СЊРєРѕ СЃР°РјРё СЃР¶Р°С‚С‹Рµ РґР°РЅРЅС‹Рµ
     then return (error "Attempt to use value returned by writeControlBlock when \"--nodir\"")
     else do
-  writeBlock pipe blockType compressor compressor False $ do  -- запишем в архив блок каталога
-    action; return []
-  (thisBlock, [])  <-  getP backdoor                      -- получим его дескриптор
-  writeBlock pipe DESCR_BLOCK aNO_COMPRESSION aNO_COMPRESSION False $ do  -- запишем этот дескриптор в архив
-    archiveWriteBlockDescriptor thisBlock bufOps; return []
-  (_, [])  <-  getP backdoor                              -- оприходуем ненужный дескриптор дескриптора
-  return thisBlock                                        -- возвратим дескриптор блока каталога
+      writeBlock pipe blockType compressor compressor False $ do  -- Р·Р°РїРёС€РµРј РІ Р°СЂС…РёРІ Р±Р»РѕРє РєР°С‚Р°Р»РѕРіР°
+        action
+        return []
+      (thisBlock, [])  <-  getP backdoor                      -- РїРѕР»СѓС‡РёРј РµРіРѕ РґРµСЃРєСЂРёРїС‚РѕСЂ
+      writeBlock pipe DESCR_BLOCK aNO_COMPRESSION aNO_COMPRESSION False $ do  -- Р·Р°РїРёС€РµРј СЌС‚РѕС‚ РґРµСЃРєСЂРёРїС‚РѕСЂ РІ Р°СЂС…РёРІ
+        archiveWriteBlockDescriptor thisBlock bufOps
+        return []
+      (_, [])  <-  getP backdoor                              -- РѕРїСЂРёС…РѕРґСѓРµРј РЅРµРЅСѓР¶РЅС‹Р№ РґРµСЃРєСЂРёРїС‚РѕСЂ РґРµСЃРєСЂРёРїС‚РѕСЂР°
+    return thisBlock                                        -- РІРѕР·РІСЂР°С‚РёРј РґРµСЃРєСЂРёРїС‚РѕСЂ Р±Р»РѕРєР° РєР°С‚Р°Р»РѕРіР°
 

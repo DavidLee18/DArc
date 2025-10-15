@@ -43,13 +43,13 @@ import FileManDialogs
 import FileManDialogAdd
 
 ----------------------------------------------------------------------------------------------------
----- Главное меню программы и тулбар под ним -------------------------------------------------------
+---- Р“Р»Р°РІРЅРѕРµ РјРµРЅСЋ РїСЂРѕРіСЂР°РјРјС‹ Рё С‚СѓР»Р±Р°СЂ РїРѕРґ РЅРёРј -------------------------------------------------------
 ----------------------------------------------------------------------------------------------------
 --      File: New Archive, Open Archive, New SFX, Change Drive, Select All, Select Group, Deselect Group, Invert Selection
---      Commands (или Actions): Add, Extract, Test, ArcInfo, View, Delete, Rename
---      Tools: Wizard (если таковой будет), Protect, Comment, Convert to EXE, Encrypt, Add Recovery record, Repair
+--      Commands (РёР»Рё Actions): Add, Extract, Test, ArcInfo, View, Delete, Rename
+--      Tools: Wizard (РµСЃР»Рё С‚Р°РєРѕРІРѕР№ Р±СѓРґРµС‚), Protect, Comment, Convert to EXE, Encrypt, Add Recovery record, Repair
 --      Options: Configuration, Save settings, Load settings, View log, Clear log
---      Help: собственно сам Help, Goto Homepage (и/или Check for update), About
+--      Help: СЃРѕР±СЃС‚РІРµРЅРЅРѕ СЃР°Рј Help, Goto Homepage (Рё/РёР»Рё Check for update), About
 
 uiDef =
   "<ui>"++
@@ -126,17 +126,17 @@ uiDef =
 
 
 ----------------------------------------------------------------------------------------------------
----- Визуальная часть файл-менеджера ---------------------------------------------------------------
+---- Р’РёР·СѓР°Р»СЊРЅР°СЏ С‡Р°СЃС‚СЊ С„Р°Р№Р»-РјРµРЅРµРґР¶РµСЂР° ---------------------------------------------------------------
 ----------------------------------------------------------------------------------------------------
 
 myGUI run args = do
   fileManagerMode =: True
   startGUI $ do
-  io$ parseCmdline ["l", "a"]   -- инициализация: display, логфайл
-  -- Список ассоциаций клавиша->действие
+  io$ parseCmdline ["l", "a"]   -- РёРЅРёС†РёР°Р»РёР·Р°С†РёСЏ: display, Р»РѕРіС„Р°Р№Р»
+  -- РЎРїРёСЃРѕРє Р°СЃСЃРѕС†РёР°С†РёР№ РєР»Р°РІРёС€Р°->РґРµР№СЃС‚РІРёРµ
   onKeyActions <- newList
   let onKey = curry (onKeyActions <<=)
-  -- Создадим окно индикатора прогресса и загрузим настройки/локализацию
+  -- РЎРѕР·РґР°РґРёРј РѕРєРЅРѕ РёРЅРґРёРєР°С‚РѕСЂР° РїСЂРѕРіСЂРµСЃСЃР° Рё Р·Р°РіСЂСѓР·РёРј РЅР°СЃС‚СЂРѕР№РєРё/Р»РѕРєР°Р»РёР·Р°С†РёСЋ
   (windowProgress, clearStats) <- runIndicators
   -- Main menu
   standardGroup <- actionGroupNew "standard"
@@ -214,11 +214,11 @@ myGUI run args = do
   boxPackStart lowBox messageCombo PackGrow    2
   --boxPackStart lowBox statusbar    PackNatural 0
 
-  -- Создадим переменную для хранения текущего состояния файл-менеджера
+  -- РЎРѕР·РґР°РґРёРј РїРµСЂРµРјРµРЅРЅСѓСЋ РґР»СЏ С…СЂР°РЅРµРЅРёСЏ С‚РµРєСѓС‰РµРіРѕ СЃРѕСЃС‚РѕСЏРЅРёСЏ С„Р°Р№Р»-РјРµРЅРµРґР¶РµСЂР°
   fm' <- newFM window listView listModel listSelection statusLabel messageCombo
   fmStackMsg fm' "              "
 
-  -- Отрихтуем тулбар
+  -- РћС‚СЂРёС…С‚СѓРµРј С‚СѓР»Р±Р°СЂ
   let toolbar = castToToolbar toolBar
   toolbarCaptions <- fmGetHistoryBool fm' "ToolbarCaptions" True
   toolbar `set` [toolbarStyle := if toolbarCaptions then ToolbarBoth else ToolbarIcons]
@@ -228,19 +228,19 @@ myGUI run args = do
     Just button <- toolbarGetNthItem toolbar i
     toolItemSetHomogeneous button False
 
-  -- Полоска навигации
+  -- РџРѕР»РѕСЃРєР° РЅР°РІРёРіР°С†РёРё
   naviBar  <- hBoxNew False 0
   upButton <- button "0006   Up  "
   curdir   <- fmEntryWithHistory fm' "dir/arcname" (const$ return True) (fmCanonicalizePath fm')
   saveDirButton <- button "0007   Save  "
   boxPackStart naviBar (widget upButton)       PackNatural 0
 #if defined(FREEARC_WIN)
-  -- Меню выбора диска
+  -- РњРµРЅСЋ РІС‹Р±РѕСЂР° РґРёСЃРєР°
   driveButton <- button "C:"
   driveMenu   <- makePopupMenu (chdir fm'.(++"\\").head.words) =<< getDrives
   driveButton `onClick` (widgetShowAll driveMenu >> menuPopup driveMenu Nothing)
   boxPackStart naviBar (widget driveButton)    PackNatural 0
-  -- Менять надпись на кнопке выбора диска при переходе на другой диск
+  -- РњРµРЅСЏС‚СЊ РЅР°РґРїРёСЃСЊ РЅР° РєРЅРѕРїРєРµ РІС‹Р±РѕСЂР° РґРёСЃРєР° РїСЂРё РїРµСЂРµС…РѕРґРµ РЅР° РґСЂСѓРіРѕР№ РґРёСЃРє
   fm' `fmOnChdir` do
     fm <- val fm'
     let drive = takeDrive (fm_current fm)
@@ -249,7 +249,7 @@ myGUI run args = do
   boxPackStart naviBar (widget curdir)         PackGrow    0
   boxPackStart naviBar (widget saveDirButton)  PackNatural 0
 
-  -- Целиком окно файл-менеджера
+  -- Р¦РµР»РёРєРѕРј РѕРєРЅРѕ С„Р°Р№Р»-РјРµРЅРµРґР¶РµСЂР°
   vBox <- vBoxNew False 0
   set vBox [boxHomogeneous := False]
   boxPackStart vBox menuBar   PackNatural 0
@@ -261,13 +261,13 @@ myGUI run args = do
   containerAdd window vBox
 
 
-  -- Список действий, выполняемых при закрытии окна файл-менеджера
+  -- РЎРїРёСЃРѕРє РґРµР№СЃС‚РІРёР№, РІС‹РїРѕР»РЅСЏРµРјС‹С… РїСЂРё Р·Р°РєСЂС‹С‚РёРё РѕРєРЅР° С„Р°Р№Р»-РјРµРЅРµРґР¶РµСЂР°
   onExit <- newList
   window `onDestroy` do
     sequence_ =<< listVal onExit
     mainQuit
 
-  -- Список ассоциаций клавиша->действие
+  -- РЎРїРёСЃРѕРє Р°СЃСЃРѕС†РёР°С†РёР№ РєР»Р°РІРёС€Р°->РґРµР№СЃС‚РІРёРµ
   listView `onKeyPress` \event -> do
     x <- lookup (eventKey event) `fmap` listVal onKeyActions
     case x of
@@ -276,7 +276,7 @@ myGUI run args = do
 
 
 ----------------------------------------------------------------------------------------------------
----- Сохранение/восстановление размера и положения главного окна и колонок в нём -------------------
+---- РЎРѕС…СЂР°РЅРµРЅРёРµ/РІРѕСЃСЃС‚Р°РЅРѕРІР»РµРЅРёРµ СЂР°Р·РјРµСЂР° Рё РїРѕР»РѕР¶РµРЅРёСЏ РіР»Р°РІРЅРѕРіРѕ РѕРєРЅР° Рё РєРѕР»РѕРЅРѕРє РІ РЅС‘Рј -------------------
 ----------------------------------------------------------------------------------------------------
 
   window `windowSetPosition` WinPosCenter
@@ -286,15 +286,15 @@ myGUI run args = do
   --window `windowSetPosition` WinPosNone
   --windowSetDefaultSize window 200 100
 
-  -- При старте восстановим сохранённый размер окна
+  -- РџСЂРё СЃС‚Р°СЂС‚Рµ РІРѕСЃСЃС‚Р°РЅРѕРІРёРј СЃРѕС…СЂР°РЅС‘РЅРЅС‹Р№ СЂР°Р·РјРµСЂ РѕРєРЅР°
   restoreSizePos fm' window "MainWindow" "-10000 -10000 720 500"
 
-  -- Сохраним размер и положение главного окна после его перемещения
+  -- РЎРѕС…СЂР°РЅРёРј СЂР°Р·РјРµСЂ Рё РїРѕР»РѕР¶РµРЅРёРµ РіР»Р°РІРЅРѕРіРѕ РѕРєРЅР° РїРѕСЃР»Рµ РµРіРѕ РїРµСЂРµРјРµС‰РµРЅРёСЏ
   window `onConfigure` \e -> do
     saveSizePos fm' window "MainWindow"
     return False
 
-  -- Запомним, было ли окно максимизировано
+  -- Р—Р°РїРѕРјРЅРёРј, Р±С‹Р»Рѕ Р»Рё РѕРєРЅРѕ РјР°РєСЃРёРјРёР·РёСЂРѕРІР°РЅРѕ
   window `onWindowState` \e -> do
     let isMax x = case x of
                     WindowStateMaximized -> True
@@ -303,7 +303,7 @@ myGUI run args = do
     return False
 
 
-  -- При закрытии программы сохраним порядок и ширину колонок
+  -- РџСЂРё Р·Р°РєСЂС‹С‚РёРё РїСЂРѕРіСЂР°РјРјС‹ СЃРѕС…СЂР°РЅРёРј РїРѕСЂСЏРґРѕРє Рё С€РёСЂРёРЅСѓ РєРѕР»РѕРЅРѕРє
   onExit <<= do
     colnames  <-  New.treeViewGetColumns listView  >>=  mapM New.treeViewColumnGetTitle
     fmReplaceHistory fm' "ColumnOrder" (unwords$ catMaybes colnames)
@@ -311,7 +311,7 @@ myGUI run args = do
       w <- New.treeViewColumnGetWidth col1
       fmReplaceHistory fm' (name++"ColumnWidth") (show w)
 
-  -- При старте восстановим сохранённые порядок и ширину колонок
+  -- РџСЂРё СЃС‚Р°СЂС‚Рµ РІРѕСЃСЃС‚Р°РЅРѕРІРёРј СЃРѕС…СЂР°РЅС‘РЅРЅС‹Рµ РїРѕСЂСЏРґРѕРє Рё С€РёСЂРёРЅСѓ РєРѕР»РѕРЅРѕРє
   order <- (reverse.words) `fmap` fmGetHistory1 fm' "ColumnOrder" ""
   for order $ \colname -> do
     whenJust (lookup colname columns) $
@@ -322,113 +322,113 @@ myGUI run args = do
 
 
 ----------------------------------------------------------------------------------------------------
----- Навигационная часть файл-менеджера ------------------------------------------------------------
+---- РќР°РІРёРіР°С†РёРѕРЅРЅР°СЏ С‡Р°СЃС‚СЊ С„Р°Р№Р»-РјРµРЅРµРґР¶РµСЂР° ------------------------------------------------------------
 ----------------------------------------------------------------------------------------------------
 
 --  for [upButton,saveDirButton] (`buttonSetFocusOnClick` False)
 
-  -- Выводить errors/warnings внизу окна FreeArc
+  -- Р’С‹РІРѕРґРёС‚СЊ errors/warnings РІРЅРёР·Сѓ РѕРєРЅР° FreeArc
   showErrors' <- ref True
   errorHandlers   ++= [whenM (val showErrors') . postGUIAsync . fmStackMsg fm']
   warningHandlers ++= [whenM (val showErrors') . postGUIAsync . fmStackMsg fm']
 
-  -- Отключает вывод сообщений об ошибках на время выполнения action
+  -- РћС‚РєР»СЋС‡Р°РµС‚ РІС‹РІРѕРґ СЃРѕРѕР±С‰РµРЅРёР№ РѕР± РѕС€РёР±РєР°С… РЅР° РІСЂРµРјСЏ РІС‹РїРѕР»РЅРµРЅРёСЏ action
   let hideErrors action  =  bracket (showErrors' <=> False)  (showErrors' =: )  (\_ -> action)
 
-  -- Перехват и обработка ошибок
+  -- РџРµСЂРµС…РІР°С‚ Рё РѕР±СЂР°Р±РѕС‚РєР° РѕС€РёР±РѕРє
   errorMsg <- ref ""
   errorHandlers ++= [(errorMsg =:)]
   let withErrorHandler onError = handle$ \e->do operationTerminated =: False
                                                 fmErrorMsg fm' =<< val errorMsg
                                                 sequence_ onError
-  -- При возникновении ошибки выдать её пользователю
+  -- РџСЂРё РІРѕР·РЅРёРєРЅРѕРІРµРЅРёРё РѕС€РёР±РєРё РІС‹РґР°С‚СЊ РµС‘ РїРѕР»СЊР·РѕРІР°С‚РµР»СЋ
   let msgboxOnError = withErrorHandler []
-  -- При возникновении ошибки выдать её пользователю и заверщить выполнение программы
+  -- РџСЂРё РІРѕР·РЅРёРєРЅРѕРІРµРЅРёРё РѕС€РёР±РєРё РІС‹РґР°С‚СЊ РµС‘ РїРѕР»СЊР·РѕРІР°С‚РµР»СЋ Рё Р·Р°РІРµСЂС‰РёС‚СЊ РІС‹РїРѕР»РЅРµРЅРёРµ РїСЂРѕРіСЂР°РјРјС‹
   let terminateOnError = withErrorHandler [shutdown "" aEXIT_CODE_FATAL_ERROR]
 
 
-  -- Перейти в заданный каталог/архив или выполнить команду
+  -- РџРµСЂРµР№С‚Рё РІ Р·Р°РґР°РЅРЅС‹Р№ РєР°С‚Р°Р»РѕРі/Р°СЂС…РёРІ РёР»Рё РІС‹РїРѕР»РЅРёС‚СЊ РєРѕРјР°РЅРґСѓ
   let select filename = do
         fm <- val fm'
-        handle (\e -> (operationTerminated =: False) >> runFile filename (fm_curdir fm) False) $ do    -- при неудаче перехода запустим файл :)
+        handle (\e -> (operationTerminated =: False) >> runFile filename (fm_curdir fm) False) $ do    -- РїСЂРё РЅРµСѓРґР°С‡Рµ РїРµСЂРµС…РѕРґР° Р·Р°РїСѓСЃС‚РёРј С„Р°Р№Р» :)
           hideErrors $ do
             chdir fm' filename
             New.treeViewScrollToPoint (fm_view fm) 0 0
             --New.treeViewSetCursor (fm_view fm) [0] Nothing
 
-  -- Переход в родительский каталог
+  -- РџРµСЂРµС…РѕРґ РІ СЂРѕРґРёС‚РµР»СЊСЃРєРёР№ РєР°С‚Р°Р»РѕРі
   let goParentDir = do
         fm <- val fm'
-        unless (isFM_Archive fm  &&  isURL(fm_arcname fm)  &&  fm_arcdir fm=="") $ do  -- Запретить Up из архива в инете
+        unless (isFM_Archive fm  &&  isURL(fm_arcname fm)  &&  fm_arcdir fm=="") $ do  -- Р—Р°РїСЂРµС‚РёС‚СЊ Up РёР· Р°СЂС…РёРІР° РІ РёРЅРµС‚Рµ
         chdir fm' ".."
-        -- Выбираем каталог/архив, из которого мы только что вышли
+        -- Р’С‹Р±РёСЂР°РµРј РєР°С‚Р°Р»РѕРі/Р°СЂС…РёРІ, РёР· РєРѕС‚РѕСЂРѕРіРѕ РјС‹ С‚РѕР»СЊРєРѕ С‡С‚Рѕ РІС‹С€Р»Рё
         fmSetCursor fm' (takeFileName$ fm_current fm)
 
-  -- Запись текущего каталога в историю
+  -- Р—Р°РїРёСЃСЊ С‚РµРєСѓС‰РµРіРѕ РєР°С‚Р°Р»РѕРіР° РІ РёСЃС‚РѕСЂРёСЋ
   let saveCurdirToHistory = do
         fm <- val fm'
         fmAddHistory fm' (isFM_Archive fm.$bool "dir" "arcname") =<< fmCanonicalizePath fm' =<< val curdir
 
 
-  -- При нажатии Enter на строке в списке открываем выбранный архив/каталог
+  -- РџСЂРё РЅР°Р¶Р°С‚РёРё Enter РЅР° СЃС‚СЂРѕРєРµ РІ СЃРїРёСЃРєРµ РѕС‚РєСЂС‹РІР°РµРј РІС‹Р±СЂР°РЅРЅС‹Р№ Р°СЂС…РёРІ/РєР°С‚Р°Р»РѕРі
   listView `New.onRowActivated` \path column -> do
     fm <- val fm'
     file <- fmFileAt fm' path
     unless (isFM_Archive fm  &&  not(fdIsDir file)) $ do  -- Run command don't yet work directly from archives
     select (fmname file)
 
-  -- При single-click на свободном пространстве справа/снизу снимаем отметку со всех файлов,
-  -- при double-click там же выбираем все файлы
+  -- РџСЂРё single-click РЅР° СЃРІРѕР±РѕРґРЅРѕРј РїСЂРѕСЃС‚СЂР°РЅСЃС‚РІРµ СЃРїСЂР°РІР°/СЃРЅРёР·Сѓ СЃРЅРёРјР°РµРј РѕС‚РјРµС‚РєСѓ СЃРѕ РІСЃРµС… С„Р°Р№Р»РѕРІ,
+  -- РїСЂРё double-click С‚Р°Рј Р¶Рµ РІС‹Р±РёСЂР°РµРј РІСЃРµ С„Р°Р№Р»С‹
   listView `onButtonPress` \e -> do
     path <- New.treeViewGetPathAtPos listView (round$ eventX e, round$ eventY e)
     coltitle <- case path of
                   Just (_,column,_) -> New.treeViewColumnGetTitle column >>== fromMaybe ""
                   _                 -> return ""
-    -- Пустая строка в coltitle означает клик за пределами списка файлов
+    -- РџСѓСЃС‚Р°СЏ СЃС‚СЂРѕРєР° РІ coltitle РѕР·РЅР°С‡Р°РµС‚ РєР»РёРє Р·Р° РїСЂРµРґРµР»Р°РјРё СЃРїРёСЃРєР° С„Р°Р№Р»РѕРІ
     coltitle=="" &&& e.$eventButton==LeftButton &&&
       ((if e.$eventClick==SingleClick  then fmUnselectAll  else fmSelectAll) fm'  >>  return True)
 
-  -- При переходе в другой каталог/архив отобразить его имя в строке ввода
+  -- РџСЂРё РїРµСЂРµС…РѕРґРµ РІ РґСЂСѓРіРѕР№ РєР°С‚Р°Р»РѕРі/Р°СЂС…РёРІ РѕС‚РѕР±СЂР°Р·РёС‚СЊ РµРіРѕ РёРјСЏ РІ СЃС‚СЂРѕРєРµ РІРІРѕРґР°
   fm' `fmOnChdir` do
     fm <- val fm'
     curdir =: fm_current fm
-    -- Сохраняем в историю имена архивов
+    -- РЎРѕС…СЂР°РЅСЏРµРј РІ РёСЃС‚РѕСЂРёСЋ РёРјРµРЅР° Р°СЂС…РёРІРѕРІ
     isFM_Archive fm  &&&  fm_arcdir fm==""  &&&  saveCurdirToHistory
-    -- Перечитаем историю с диска
+    -- РџРµСЂРµС‡РёС‚Р°РµРј РёСЃС‚РѕСЂРёСЋ СЃ РґРёСЃРєР°
     rereadHistory curdir
 
-  -- При переходе в другой каталог/архив - отобразить его имя в заголовке окна
+  -- РџСЂРё РїРµСЂРµС…РѕРґРµ РІ РґСЂСѓРіРѕР№ РєР°С‚Р°Р»РѕРі/Р°СЂС…РёРІ - РѕС‚РѕР±СЂР°Р·РёС‚СЊ РµРіРѕ РёРјСЏ РІ Р·Р°РіРѕР»РѕРІРєРµ РѕРєРЅР°
   fm' `fmOnChdir` do
     fm <- val fm'
     let title | isFM_Archive fm  =  takeFileName (fm_arcname fm) </> fm_arcdir fm
               | otherwise        =  takeFileName (fm_dir fm)  |||  fm_dir fm
     set (fm_window fm) [windowTitle := title++" - "++aARC_NAME]
 
-  -- Переходим в род. каталог по кнопке Up или нажатию BackSpace в списке файлов
+  -- РџРµСЂРµС…РѕРґРёРј РІ СЂРѕРґ. РєР°С‚Р°Р»РѕРі РїРѕ РєРЅРѕРїРєРµ Up РёР»Рё РЅР°Р¶Р°С‚РёСЋ BackSpace РІ СЃРїРёСЃРєРµ С„Р°Р№Р»РѕРІ
   upButton  `onClick` goParentDir
   "BackSpace" `onKey` goParentDir
 
-  -- Сохранение выбранного архива/каталога в истории
+  -- РЎРѕС…СЂР°РЅРµРЅРёРµ РІС‹Р±СЂР°РЅРЅРѕРіРѕ Р°СЂС…РёРІР°/РєР°С‚Р°Р»РѕРіР° РІ РёСЃС‚РѕСЂРёРё
   saveDirButton `onClick` do
     saveCurdirToHistory
 
-  -- Открытие другого каталога или архива (Enter в строке ввода)
+  -- РћС‚РєСЂС‹С‚РёРµ РґСЂСѓРіРѕРіРѕ РєР°С‚Р°Р»РѕРіР° РёР»Рё Р°СЂС…РёРІР° (Enter РІ СЃС‚СЂРѕРєРµ РІРІРѕРґР°)
   entry curdir `onEntryActivate` do
     saveCurdirToHistory
     select =<< val curdir
 
-  -- Открытие другого каталога или архива (выбор из истории)
+  -- РћС‚РєСЂС‹С‚РёРµ РґСЂСѓРіРѕРіРѕ РєР°С‚Р°Р»РѕРіР° РёР»Рё Р°СЂС…РёРІР° (РІС‹Р±РѕСЂ РёР· РёСЃС‚РѕСЂРёРё)
   widget curdir `New.onChanged` do
     whenJustM_ (New.comboBoxGetActive$ widget curdir) $ \_ -> do
     saveCurdirToHistory
     select =<< val curdir
 
-  -- Выполнить action над файлами, состоящими в соотношении makeRE с именем файла под курсором
+  -- Р’С‹РїРѕР»РЅРёС‚СЊ action РЅР°Рґ С„Р°Р№Р»Р°РјРё, СЃРѕСЃС‚РѕСЏС‰РёРјРё РІ СЃРѕРѕС‚РЅРѕС€РµРЅРёРё makeRE СЃ РёРјРµРЅРµРј С„Р°Р№Р»Р° РїРѕРґ РєСѓСЂСЃРѕСЂРѕРј
   let byFile action makeRE = do
         filename <- fmGetCursor fm'
         action fm' ((match$ makeRE filename).fdBasename)
 
-  -- Клавиши Shift/Ctrl/Alt-Plus/Minus с теми же операциями как в FAR
+  -- РљР»Р°РІРёС€Рё Shift/Ctrl/Alt-Plus/Minus СЃ С‚РµРјРё Р¶Рµ РѕРїРµСЂР°С†РёСЏРјРё РєР°Рє РІ FAR
   "<Shift>KP_Add"      `onKey` fmSelectAll   fm'
   "<Shift>KP_Subtract" `onKey` fmUnselectAll fm'
   "<Ctrl>KP_Add"       `onKey` byFile fmSelectFilenames   (("*" ++).takeExtension)
@@ -437,22 +437,22 @@ myGUI run args = do
   "<Alt>KP_Subtract"   `onKey` byFile fmUnselectFilenames ((++".*").dropExtension)
 
 
-  -- При нажатии заголовка столбца в списке файлов - сортировать по этому столбцу
-  --   (при повторном нажатии - сортировать в обратном порядке)
+  -- РџСЂРё РЅР°Р¶Р°С‚РёРё Р·Р°РіРѕР»РѕРІРєР° СЃС‚РѕР»Р±С†Р° РІ СЃРїРёСЃРєРµ С„Р°Р№Р»РѕРІ - СЃРѕСЂС‚РёСЂРѕРІР°С‚СЊ РїРѕ СЌС‚РѕРјСѓ СЃС‚РѕР»Р±С†Сѓ
+  --   (РїСЂРё РїРѕРІС‚РѕСЂРЅРѕРј РЅР°Р¶Р°С‚РёРё - СЃРѕСЂС‚РёСЂРѕРІР°С‚СЊ РІ РѕР±СЂР°С‚РЅРѕРј РїРѕСЂСЏРґРєРµ)
   onColumnTitleClicked =: \column -> do
     fmModifySortOrder fm' (showSortOrder columns) (calcNewSortOrder column)
     refreshCommand fm'
-    fmSaveSortOrder  fm' =<< fmGetSortOrder fm'  -- запишем в конфиг порядок сортировки
+    fmSaveSortOrder  fm' =<< fmGetSortOrder fm'  -- Р·Р°РїРёС€РµРј РІ РєРѕРЅС„РёРі РїРѕСЂСЏРґРѕРє СЃРѕСЂС‚РёСЂРѕРІРєРё
 
-  -- Отсортируем файлы по сохранённому критерию
+  -- РћС‚СЃРѕСЂС‚РёСЂСѓРµРј С„Р°Р№Р»С‹ РїРѕ СЃРѕС…СЂР°РЅС‘РЅРЅРѕРјСѓ РєСЂРёС‚РµСЂРёСЋ
   fmSetSortOrder fm' (showSortOrder columns) =<< fmRestoreSortOrder fm'
 
 
 ----------------------------------------------------------------------------------------------------
----- Меню File -------------------------------------------------------------------------------------
+---- РњРµРЅСЋ File -------------------------------------------------------------------------------------
 ----------------------------------------------------------------------------------------------------
 
-  -- Открыть архив
+  -- РћС‚РєСЂС‹С‚СЊ Р°СЂС…РёРІ
   openAct `onActionActivate` do
     fm <- val fm'
     let curfile  =  if isFM_Archive fm  then fm_arcname fm  else fm_dir fm </> "."
@@ -467,28 +467,28 @@ myGUI run args = do
   selectAct   `onActionActivate`  byDialog fmSelectFilenames   "0008 Select files"
   unselectAct `onActionActivate`  byDialog fmUnselectFilenames "0009 Unselect files"
 
-  -- Выделить все файлы
+  -- Р’С‹РґРµР»РёС‚СЊ РІСЃРµ С„Р°Р№Р»С‹
   selectAllAct `onActionActivate` do
     fmSelectAll fm'
 
-  -- Инвертировать выделение
+  -- РРЅРІРµСЂС‚РёСЂРѕРІР°С‚СЊ РІС‹РґРµР»РµРЅРёРµ
   invertSelAct `onActionActivate` do
     fmInvertSelection fm'
 
-  -- Обновить список файлов актуальными данными
+  -- РћР±РЅРѕРІРёС‚СЊ СЃРїРёСЃРѕРє С„Р°Р№Р»РѕРІ Р°РєС‚СѓР°Р»СЊРЅС‹РјРё РґР°РЅРЅС‹РјРё
   refreshAct `onActionActivate` do
     refreshCommand fm'
 
-  -- Выход из программы
+  -- Р’С‹С…РѕРґ РёР· РїСЂРѕРіСЂР°РјРјС‹
   exitAct `onActionActivate`
     mainQuit
 
 
 ----------------------------------------------------------------------------------------------------
----- Движок выполнения консольных команд внутри FM gui ---------------------------------------------
+---- Р”РІРёР¶РѕРє РІС‹РїРѕР»РЅРµРЅРёСЏ РєРѕРЅСЃРѕР»СЊРЅС‹С… РєРѕРјР°РЅРґ РІРЅСѓС‚СЂРё FM gui ---------------------------------------------
 ----------------------------------------------------------------------------------------------------
 
-  -- При выполнении операций не выходим по исключениям, а печатаем сообщения о них в логфайл
+  -- РџСЂРё РІС‹РїРѕР»РЅРµРЅРёРё РѕРїРµСЂР°С†РёР№ РЅРµ РІС‹С…РѕРґРёРј РїРѕ РёСЃРєР»СЋС‡РµРЅРёСЏРј, Р° РїРµС‡Р°С‚Р°РµРј СЃРѕРѕР±С‰РµРЅРёСЏ Рѕ РЅРёС… РІ Р»РѕРіС„Р°Р№Р»
   let myHandleErrors action x  =  do operationTerminated =: False
                                      action x `catch` handler
                                      operationTerminated =: False
@@ -502,15 +502,15 @@ myGUI run args = do
                   io$ condPrintLineLn "w" errmsg
                 return ()
 
-  -- Выполнить команду архиватора
+  -- Р’С‹РїРѕР»РЅРёС‚СЊ РєРѕРјР°РЅРґСѓ Р°СЂС…РёРІР°С‚РѕСЂР°
   let runWithMsg ([formatStart,formatSuccess,formatFail],msgArgs,cmd) = do
-        -- Сообщение о начале выполнения команды
+        -- РЎРѕРѕР±С‰РµРЅРёРµ Рѕ РЅР°С‡Р°Р»Рµ РІС‹РїРѕР»РЅРµРЅРёСЏ РєРѕРјР°РЅРґС‹
         msgStart <- i18n formatStart
         postGUIAsync$ fmStackMsg fm' (formatn msgStart msgArgs)
         --postGUIAsync$ fmStackMsg fm' (unwords cmd)
-        -- Выполнить и посчитать число ошибок
+        -- Р’С‹РїРѕР»РЅРёС‚СЊ Рё РїРѕСЃС‡РёС‚Р°С‚СЊ С‡РёСЃР»Рѕ РѕС€РёР±РѕРє
         w <- count_warnings (parseCmdline cmd >>= mapM_ run)
-        -- Сообщение об успешном выполнении либо кол-ве допущенных ошибок
+        -- РЎРѕРѕР±С‰РµРЅРёРµ РѕР± СѓСЃРїРµС€РЅРѕРј РІС‹РїРѕР»РЅРµРЅРёРё Р»РёР±Рѕ РєРѕР»-РІРµ РґРѕРїСѓС‰РµРЅРЅС‹С… РѕС€РёР±РѕРє
         msgFinish <- i18n (if w==0  then formatSuccess  else formatFail)
         postGUIAsync$ fmStackMsg fm' (formatn msgFinish (msgArgs++[show w]))
 
@@ -527,31 +527,31 @@ myGUI run args = do
 
 
 ----------------------------------------------------------------------------------------------------
----- Меню Commands ---------------------------------------------------------------------------------
+---- РњРµРЅСЋ Commands ---------------------------------------------------------------------------------
 ----------------------------------------------------------------------------------------------------
 
-  -- Упаковка данных
+  -- РЈРїР°РєРѕРІРєР° РґР°РЅРЅС‹С…
   addAct `onActionActivate` do
     addDialog fm' exec "a" NoMode
 
-  -- Распаковка архив(ов)
+  -- Р Р°СЃРїР°РєРѕРІРєР° Р°СЂС…РёРІ(РѕРІ)
   extractAct `onActionActivate` do
     archiveOperation fm' $
       extractDialog fm' exec "x"
     rereadHistory curdir
 
-  -- Тестирование архив(ов)
+  -- РўРµСЃС‚РёСЂРѕРІР°РЅРёРµ Р°СЂС…РёРІ(РѕРІ)
   testAct `onActionActivate` do
     archiveOperation fm' $
       extractDialog fm' exec "t"
 
-  -- Информация об архиве
+  -- РРЅС„РѕСЂРјР°С†РёСЏ РѕР± Р°СЂС…РёРІРµ
   arcinfoAct `onActionActivate` do
     msgboxOnError $
       archiveOperation fm' $
         arcinfoDialog fm' exec NoMode
 
-  -- Удаление файлов (из архива)
+  -- РЈРґР°Р»РµРЅРёРµ С„Р°Р№Р»РѕРІ (РёР· Р°СЂС…РёРІР°)
   deleteAct `onActionActivate` do
     fm <- val fm'
     files <- getSelection fm' (if isFM_Archive fm  then xCmdFiles  else const [])
@@ -563,7 +563,7 @@ myGUI run args = do
     whenM (askOkCancel window (formatn msg [head files, show3$ length files])) $ do
       fmDeleteSelected fm'
       if isFM_Archive fm
-        -- Стереть файлы из архива
+        -- РЎС‚РµСЂРµС‚СЊ С„Р°Р№Р»С‹ РёР· Р°СЂС…РёРІР°
         then do closeFMArc fm'
                 let arcname = fm_arcname fm
                 exec [(["0228 Deleting from %1",
@@ -571,15 +571,15 @@ myGUI run args = do
                         "0230 %2 WARNINGS WHILE DELETING FROM %1"],
                        [takeFileName arcname],
                        ["d", "--noarcext", "--", arcname]++files)]
-        -- Удалить файлы на диске
+        -- РЈРґР°Р»РёС‚СЊ С„Р°Р№Р»С‹ РЅР° РґРёСЃРєРµ
         else io$ mapM_ (ignoreErrors.fileRemove.(fm_dir fm </>)) files
 
 
 ----------------------------------------------------------------------------------------------------
----- Меню Tools ------------------------------------------------------------------------------------
+---- РњРµРЅСЋ Tools ------------------------------------------------------------------------------------
 ----------------------------------------------------------------------------------------------------
 
-  -- Защитить архив от записи
+  -- Р—Р°С‰РёС‚РёС‚СЊ Р°СЂС…РёРІ РѕС‚ Р·Р°РїРёСЃРё
   lockAct `onActionActivate` do
     multiArchiveOperation fm' $ \archives -> do
       let msg = "0299 Lock archive(s)?"
@@ -592,29 +592,29 @@ myGUI run args = do
                  [takeFileName arcname],
                  ["ch", "--noarcext", "-k", "--", arcname])]
 
-  -- Изменить комментарий архива
+  -- РР·РјРµРЅРёС‚СЊ РєРѕРјРјРµРЅС‚Р°СЂРёР№ Р°СЂС…РёРІР°
   commentAct `onActionActivate` do
     msgboxOnError $
       archiveOperation fm' $
         arcinfoDialog fm' exec CommentMode
 
-  -- Преобразовать архив в SFX
+  -- РџСЂРµРѕР±СЂР°Р·РѕРІР°С‚СЊ Р°СЂС…РёРІ РІ SFX
   recompressAct `onActionActivate` do
     addDialog fm' exec "ch" RecompressMode
 
-  -- Преобразовать архив в SFX
+  -- РџСЂРµРѕР±СЂР°Р·РѕРІР°С‚СЊ Р°СЂС…РёРІ РІ SFX
   toSfxAct `onActionActivate` do
     addDialog fm' exec "ch" MakeSFXMode
 
-  -- Зашифровать архив
+  -- Р—Р°С€РёС„СЂРѕРІР°С‚СЊ Р°СЂС…РёРІ
   encryptAct `onActionActivate` do
     addDialog fm' exec "ch" EncryptionMode
 
-  -- Добавить RR в архив
+  -- Р”РѕР±Р°РІРёС‚СЊ RR РІ Р°СЂС…РёРІ
   addRrAct `onActionActivate` do
     addDialog fm' exec "ch" ProtectionMode
 
-  -- Восстановить повреждённый архив
+  -- Р’РѕСЃСЃС‚Р°РЅРѕРІРёС‚СЊ РїРѕРІСЂРµР¶РґС‘РЅРЅС‹Р№ Р°СЂС…РёРІ
   repairAct `onActionActivate` do
     multiArchiveOperation fm' $ \archives -> do
       let msg = "0381 Repair archive(s)? Repaired archive(s) will be placed into files named fixed.*"
@@ -627,35 +627,35 @@ myGUI run args = do
                  [takeFileName arcname],
                  ["r", "--noarcext", "--", arcname])]
 
-  -- Модификация архивов
+  -- РњРѕРґРёС„РёРєР°С†РёСЏ Р°СЂС…РёРІРѕРІ
   modifyAct `onActionActivate` do
     addDialog fm' exec "ch" NoMode
 
-  -- Объединение архивов
+  -- РћР±СЉРµРґРёРЅРµРЅРёРµ Р°СЂС…РёРІРѕРІ
   joinAct `onActionActivate` do
     addDialog fm' exec "j" NoMode
 
 
 ----------------------------------------------------------------------------------------------------
----- Меню Options ----------------------------------------------------------------------------------
+---- РњРµРЅСЋ Options ----------------------------------------------------------------------------------
 ----------------------------------------------------------------------------------------------------
 
-  -- Окно настроек программы
+  -- РћРєРЅРѕ РЅР°СЃС‚СЂРѕРµРє РїСЂРѕРіСЂР°РјРјС‹
   settingsAct `onActionActivate` do
     settingsDialog fm'
 
-  -- Действия с логфайлом
+  -- Р”РµР№СЃС‚РІРёСЏ СЃ Р»РѕРіС„Р°Р№Р»РѕРј
   let withLogfile action = do
         logfileHist <- fmGetHistory fm' "logfile"
         case logfileHist of
           logfile:_ | logfile>""  ->  action logfile
           _                       ->  fmErrorMsg fm' "0303 No log file specified in Settings dialog!"
 
-  -- Просмотреть логфайл
+  -- РџСЂРѕСЃРјРѕС‚СЂРµС‚СЊ Р»РѕРіС„Р°Р№Р»
   viewLogAct `onActionActivate` do
     withLogfile runViewCommand
 
-  -- Удалить логфайл
+  -- РЈРґР°Р»РёС‚СЊ Р»РѕРіС„Р°Р№Р»
   clearLogAct `onActionActivate` do
     withLogfile $ \logfile -> do
       msg <- i18n"0304 Clear logfile %1?"
@@ -664,7 +664,7 @@ myGUI run args = do
 
 
 ----------------------------------------------------------------------------------------------------
----- Меню Help -------------------------------------------------------------------------------------
+---- РњРµРЅСЋ Help -------------------------------------------------------------------------------------
 ----------------------------------------------------------------------------------------------------
 
   -- Home/news page for the current locale
@@ -673,10 +673,10 @@ myGUI run args = do
   forumURL <- ("http://apps.sourceforge.net/phpbb/freearc/" ++) ==<< i18n"0371 viewforum.php?f=3"
   wikiURL  <- ("http://freearc.wiki.sourceforge.net/"       ++) ==<< i18n"0372 "
 
-  -- Открыть URL
+  -- РћС‚РєСЂС‹С‚СЊ URL
   let openWebsite url  =  runFile url "." False
 
-  -- Открыть файл помощи
+  -- РћС‚РєСЂС‹С‚СЊ С„Р°Р№Р» РїРѕРјРѕС‰Рё
   let openHelp helpfile = do
         doc  <- i18n helpfile
         file <- findFile libraryFilePlaces ("../Documentation" </> doc)
@@ -684,31 +684,31 @@ myGUI run args = do
           "" -> return ()
           _  -> openWebsite file
 
-  -- Прочитать ИД, сгенерённый для этого компьютера
+  -- РџСЂРѕС‡РёС‚Р°С‚СЊ РР”, СЃРіРµРЅРµСЂС‘РЅРЅС‹Р№ РґР»СЏ СЌС‚РѕРіРѕ РєРѕРјРїСЊСЋС‚РµСЂР°
   let getUserID = do
 #ifndef FREEARC_WIN
-        -- Имитация неработающего Windows Registry для других ОС
+        -- РРјРёС‚Р°С†РёСЏ РЅРµСЂР°Р±РѕС‚Р°СЋС‰РµРіРѕ Windows Registry РґР»СЏ РґСЂСѓРіРёС… РћРЎ
         let registryGetStr root branch key       = return Nothing
             registrySetStr root branch key value = return ()
             hKEY_LOCAL_MACHINE                   = ()
 #endif
-        -- Сначала ищем его в ини-файле
+        -- РЎРЅР°С‡Р°Р»Р° РёС‰РµРј РµРіРѕ РІ РёРЅРё-С„Р°Р№Р»Рµ
         userid <- fmGetHistory1 fm' "UserID" ""
         if userid/=""  then return (Just userid)  else do
-        -- Если не получилось - читаем ключ предыдущей инсталляции из Windows Registry...
+        -- Р•СЃР»Рё РЅРµ РїРѕР»СѓС‡РёР»РѕСЃСЊ - С‡РёС‚Р°РµРј РєР»СЋС‡ РїСЂРµРґС‹РґСѓС‰РµР№ РёРЅСЃС‚Р°Р»Р»СЏС†РёРё РёР· Windows Registry...
         userid <- do userid <- registryGetStr hKEY_LOCAL_MACHINE "SOFTWARE\\FreeArc" "UserID"
                      case userid of
                        Just userid -> return userid
-                                      -- ... или в крайнем случае - генерим новый
+                                      -- ... РёР»Рё РІ РєСЂР°Р№РЅРµРј СЃР»СѓС‡Р°Рµ - РіРµРЅРµСЂРёРј РЅРѕРІС‹Р№
                        Nothing     -> generateRandomBytes 8 >>== encode16
-        -- И записываем его повсюду
+        -- Р Р·Р°РїРёСЃС‹РІР°РµРј РµРіРѕ РїРѕРІСЃСЋРґСѓ
         registrySetStr hKEY_LOCAL_MACHINE "SOFTWARE\\FreeArc" "UserID" userid
         fmReplaceHistory fm' "UserID" userid
-        -- Возвращаем его только если запись в ини-файл была успешной
+        -- Р’РѕР·РІСЂР°С‰Р°РµРј РµРіРѕ С‚РѕР»СЊРєРѕ РµСЃР»Рё Р·Р°РїРёСЃСЊ РІ РёРЅРё-С„Р°Р№Р» Р±С‹Р»Р° СѓСЃРїРµС€РЅРѕР№
         userid1 <- fmGetHistory1 fm' "UserID" ""
         return (if userid==userid1  then Just userid  else Nothing)
 
-  -- Возвращает True раз в сутки
+  -- Р’РѕР·РІСЂР°С‰Р°РµС‚ True СЂР°Р· РІ СЃСѓС‚РєРё
   let daily = do
         last <- fmGetHistory1 fm' "LastCheck" ""
         now  <- getUnixTime
@@ -721,12 +721,12 @@ myGUI run args = do
   -- Size of maximum memory block we can allocate in bytes
   maxBlock <- getMaxMemToAlloc
 
-  -- Регистрирует использование программы и проверяет новости
-  --  (manual=True - ручной вызов из меню, False - ежедневная автопроверка)
+  -- Р РµРіРёСЃС‚СЂРёСЂСѓРµС‚ РёСЃРїРѕР»СЊР·РѕРІР°РЅРёРµ РїСЂРѕРіСЂР°РјРјС‹ Рё РїСЂРѕРІРµСЂСЏРµС‚ РЅРѕРІРѕСЃС‚Рё
+  --  (manual=True - СЂСѓС‡РЅРѕР№ РІС‹Р·РѕРІ РёР· РјРµРЅСЋ, False - РµР¶РµРґРЅРµРІРЅР°СЏ Р°РІС‚РѕРїСЂРѕРІРµСЂРєР°)
   let checkNews manual = do
         fmStackMsg fm' "0295 Checking for updates..."
         forkIO_ $ do
-          -- Сообщим об использовании программы
+          -- РЎРѕРѕР±С‰РёРј РѕР± РёСЃРїРѕР»СЊР·РѕРІР°РЅРёРё РїСЂРѕРіСЂР°РјРјС‹
           whenJustM_ getUserID $ \userid -> do
 #ifdef FREEARC_WIN
             si <- getSystemInfo; let ramLimit = showMem (si.$siMaximumApplicationAddress.$ptrToWordPtr.$toInteger `roundTo` (4*mb))
@@ -743,16 +743,16 @@ myGUI run args = do
                                    ++ "&language=" ++ urlEncode language
             --gui$ fmStackMsg fm' url
             ignoreErrors (fileGetBinary url >> return ())
-          -- Проверим страницу новостей
+          -- РџСЂРѕРІРµСЂРёРј СЃС‚СЂР°РЅРёС†Сѓ РЅРѕРІРѕСЃС‚РµР№
           handleErrors
-            -- Выполняется при недоступности страницы новостей
+            -- Р’С‹РїРѕР»РЅСЏРµС‚СЃСЏ РїСЂРё РЅРµРґРѕСЃС‚СѓРїРЅРѕСЃС‚Рё СЃС‚СЂР°РЅРёС†С‹ РЅРѕРІРѕСЃС‚РµР№
             (gui $ do
                 msg <- i18n"0296 Cannot open %1. Do you want to check the page with browser?"
                 whenM (askOkCancel window (format msg newsURL)) $ do
                   openWebsite newsURL)
-            -- Попытка прочитать страницу новостей
+            -- РџРѕРїС‹С‚РєР° РїСЂРѕС‡РёС‚Р°С‚СЊ СЃС‚СЂР°РЅРёС†Сѓ РЅРѕРІРѕСЃС‚РµР№
             (fileGetBinary newsURL >>== (`showHex` "").crc32) $ \new_crc -> do
-          -- Страница новостей успешно прочитана
+          -- РЎС‚СЂР°РЅРёС†Р° РЅРѕРІРѕСЃС‚РµР№ СѓСЃРїРµС€РЅРѕ РїСЂРѕС‡РёС‚Р°РЅР°
           old_crc <- fmGetHistory1 fm' "news_crc" ""
           gui $ do
           fmStackMsg fm' ""
@@ -765,7 +765,7 @@ myGUI run args = do
              whenM (askOkCancel window (format msg newsURL)) $ do
                openWebsite newsURL
 
-  -- Дважды в час проверять отсутствие новостей
+  -- Р”РІР°Р¶РґС‹ РІ С‡Р°СЃ РїСЂРѕРІРµСЂСЏС‚СЊ РѕС‚СЃСѓС‚СЃС‚РІРёРµ РЅРѕРІРѕСЃС‚РµР№
   forkIO_ $ do
     whenM (fmGetHistoryBool fm' "CheckNews" True) $ do
       foreverM $ do
@@ -774,31 +774,31 @@ myGUI run args = do
         threadDelay (30*60*1000000::Int)  -- 60 minutes is too much for Int!
 
 
-  -- Помощь по использованию GUI
+  -- РџРѕРјРѕС‰СЊ РїРѕ РёСЃРїРѕР»СЊР·РѕРІР°РЅРёСЋ GUI
   helpAct `onActionActivate` do
     openHelp "0256 FreeArc-GUI-Eng.htm"
 
-  -- Помощь по использованию командной строки
+  -- РџРѕРјРѕС‰СЊ РїРѕ РёСЃРїРѕР»СЊР·РѕРІР°РЅРёСЋ РєРѕРјР°РЅРґРЅРѕР№ СЃС‚СЂРѕРєРё
   helpCmdAct `onActionActivate` do
     openHelp "0257 FreeArc036-eng.htm"
 
-  -- Домашняя страница программы
+  -- Р”РѕРјР°С€РЅСЏСЏ СЃС‚СЂР°РЅРёС†Р° РїСЂРѕРіСЂР°РјРјС‹
   homepageAct `onActionActivate` do
     openWebsite homeURL
 
-  -- Домашняя страница программы
+  -- Р”РѕРјР°С€РЅСЏСЏ СЃС‚СЂР°РЅРёС†Р° РїСЂРѕРіСЂР°РјРјС‹
   openForumAct `onActionActivate` do
     openWebsite forumURL
 
-  -- Домашняя страница программы
+  -- Р”РѕРјР°С€РЅСЏСЏ СЃС‚СЂР°РЅРёС†Р° РїСЂРѕРіСЂР°РјРјС‹
   openWikiAct `onActionActivate` do
     openWebsite wikiURL
 
-  -- Проверка обновлений на сайте
+  -- РџСЂРѕРІРµСЂРєР° РѕР±РЅРѕРІР»РµРЅРёР№ РЅР° СЃР°Р№С‚Рµ
   whatsnewAct `onActionActivate` do
     checkNews True
 
-  -- Диалог About
+  -- Р”РёР°Р»РѕРі About
   aboutAct `onActionActivate` do
     bracketCtrlBreak "aboutDialogDestroy" aboutDialogNew widgetDestroy $ \dialog -> do
     dialog `set` [windowTransientFor   := window
@@ -819,11 +819,11 @@ myGUI run args = do
     dialogRun dialog
     return ()
 
-  -- Включить поддержку URL в диалоге About
+  -- Р’РєР»СЋС‡РёС‚СЊ РїРѕРґРґРµСЂР¶РєСѓ URL РІ РґРёР°Р»РѕРіРµ About
   aboutDialogSetUrlHook openWebsite
 
 
-  -- Инициализируем состояние файл-менеджера каталогом/архивом, заданным в командной строке (при его отсутствии - текущим каталогом)
+  -- РРЅРёС†РёР°Р»РёР·РёСЂСѓРµРј СЃРѕСЃС‚РѕСЏРЅРёРµ С„Р°Р№Р»-РјРµРЅРµРґР¶РµСЂР° РєР°С‚Р°Р»РѕРіРѕРј/Р°СЂС…РёРІРѕРј, Р·Р°РґР°РЅРЅС‹Рј РІ РєРѕРјР°РЅРґРЅРѕР№ СЃС‚СЂРѕРєРµ (РїСЂРё РµРіРѕ РѕС‚СЃСѓС‚СЃС‚РІРёРё - С‚РµРєСѓС‰РёРј РєР°С‚Р°Р»РѕРіРѕРј)
   terminateOnError $
     chdir fm' (head (args++["."]))
   fmStatusBarTotals fm'

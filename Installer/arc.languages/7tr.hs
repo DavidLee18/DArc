@@ -16,14 +16,14 @@ main = do (my:szip:old) <- getArgs
               out  = "arc."++lang++".txt"
           readFile my >>= writeFile out.unlines.map (makeLine dict oldLang).lines
 
--- |Сообразить словарь из файла национализации 7-zip
+-- |РЎРѕРѕР±СЂР°Р·РёС‚СЊ СЃР»РѕРІР°СЂСЊ РёР· С„Р°Р№Р»Р° РЅР°С†РёРѕРЅР°Р»РёР·Р°С†РёРё 7-zip
 makeDict x = ("copyright", c): xs
   where l  = x .$ lines
         xs = l .$ map (split2 '=')
                .$ map (\(key,str) -> (trim key, drop 1 $dropEnd 1 $trim str))
         c = l .$drop 2 .$takeWhile ((";"==).take 1) .$map (dropWhile isSpace.drop 1) .$filter (not.null) .$joinWith "\\n"
 
--- |Сообразить словарь из старого файла национализации FreeArc
+-- |РЎРѕРѕР±СЂР°Р·РёС‚СЊ СЃР»РѕРІР°СЂСЊ РёР· СЃС‚Р°СЂРѕРіРѕ С„Р°Р№Р»Р° РЅР°С†РёРѕРЅР°Р»РёР·Р°С†РёРё FreeArc
 makeOldLang x = x .$ lines
                   .$ filter (\s -> length s > 4  &&  s `contains` '=')
                   .$ filter (all isDigit.take 4)
@@ -31,7 +31,7 @@ makeOldLang x = x .$ lines
                   .$ filter (("??"/=).snd)
                   .$ map    (\(a,b) -> (take 4 a, b))
 
--- |Преобразовать строку x в язык, описанный в dict
+-- |РџСЂРµРѕР±СЂР°Р·РѕРІР°С‚СЊ СЃС‚СЂРѕРєСѓ x РІ СЏР·С‹Рє, РѕРїРёСЃР°РЅРЅС‹Р№ РІ dict
 makeLine dict oldLang x =
   case x.$ split2 '=' of
     (x,xs) | (n,eng) <- split2 ' ' x,
@@ -57,7 +57,7 @@ makeSubst dict n = case n of
   _      -> d (trans .$lookup n .$fromMaybe ":(")
   where d n = dict .$lookup n .$fromMaybe "??"
 
--- |Трансляция номеров сообщений из FreeArc в 7-zip
+-- |РўСЂР°РЅСЃР»СЏС†РёСЏ РЅРѕРјРµСЂРѕРІ СЃРѕРѕР±С‰РµРЅРёР№ РёР· FreeArc РІ 7-zip
 trans = map (split2 ' ')
         ["0050 03000102"
         ,"0066 03000103"
@@ -187,53 +187,53 @@ trans = map (split2 ' ')
 
 
 ---------------------------------------------------------------------------------------------------
----- Операции над строками ------------------------------------------------------------------------
+---- РћРїРµСЂР°С†РёРё РЅР°Рґ СЃС‚СЂРѕРєР°РјРё ------------------------------------------------------------------------
 ---------------------------------------------------------------------------------------------------
 
--- |Соединить список строк в единый текст с разделителем: "one, two, three"
+-- |РЎРѕРµРґРёРЅРёС‚СЊ СЃРїРёСЃРѕРє СЃС‚СЂРѕРє РІ РµРґРёРЅС‹Р№ С‚РµРєСЃС‚ СЃ СЂР°Р·РґРµР»РёС‚РµР»РµРј: "one, two, three"
 joinWith :: [a] -> [[a]] -> [a]
 joinWith x  =  concat . intersperse x
 
--- |Разбить строку на две подстроки, разделённые заданным символом
+-- |Р Р°Р·Р±РёС‚СЊ СЃС‚СЂРѕРєСѓ РЅР° РґРІРµ РїРѕРґСЃС‚СЂРѕРєРё, СЂР°Р·РґРµР»С‘РЅРЅС‹Рµ Р·Р°РґР°РЅРЅС‹Рј СЃРёРјРІРѕР»РѕРј
 split2 :: (Eq a) => a -> [a] -> ([a],[a])
 split2 c s  =  (chunk, drop 1 rest)
   where (chunk, rest) = break (==c) s
 
 contains a b = elem b a
 
--- |Удалить n элементов в конце спсика
+-- |РЈРґР°Р»РёС‚СЊ n СЌР»РµРјРµРЅС‚РѕРІ РІ РєРѕРЅС†Рµ СЃРїСЃРёРєР°
 dropEnd n  =  reverse . drop n . reverse
 
--- |Истина, если `s` содержит хотя бы один из элементов множества `set`
+-- |РСЃС‚РёРЅР°, РµСЃР»Рё `s` СЃРѕРґРµСЂР¶РёС‚ С…РѕС‚СЏ Р±С‹ РѕРґРёРЅ РёР· СЌР»РµРјРµРЅС‚РѕРІ РјРЅРѕР¶РµСЃС‚РІР° `set`
 s `contains_one_of` set  =  any (`elem` set) s
 
--- |Последние n элементов
+-- |РџРѕСЃР»РµРґРЅРёРµ n СЌР»РµРјРµРЅС‚РѕРІ
 n `lastElems` xs  =  drop (length xs - n) xs
 
--- |Заменить n'й элемент (считая с 0) в списке `xs` на `x`
+-- |Р—Р°РјРµРЅРёС‚СЊ n'Р№ СЌР»РµРјРµРЅС‚ (СЃС‡РёС‚Р°СЏ СЃ 0) РІ СЃРїРёСЃРєРµ `xs` РЅР° `x`
 replaceAt n x xs  =  hd ++ x : drop 1 tl
     where (hd,tl) = splitAt n xs
 
--- |Изменить n'й элемент (считая с 0) в списке `xs` с `x` на `f x`
+-- |РР·РјРµРЅРёС‚СЊ n'Р№ СЌР»РµРјРµРЅС‚ (СЃС‡РёС‚Р°СЏ СЃ 0) РІ СЃРїРёСЃРєРµ `xs` СЃ `x` РЅР° `f x`
 updateAt n f xs  =  hd ++ f x : tl
     where (hd,x:tl) = splitAt n xs
 
--- |Заменить в списке все вхождения элемента 'from' на 'to'
+-- |Р—Р°РјРµРЅРёС‚СЊ РІ СЃРїРёСЃРєРµ РІСЃРµ РІС…РѕР¶РґРµРЅРёСЏ СЌР»РµРјРµРЅС‚Р° 'from' РЅР° 'to'
 replace from to  =  map (\x -> if x==from  then to  else x)
 
--- |Если первая строка является префиксом второй - возвратить остаток второй строки, иначе Nothing
+-- |Р•СЃР»Рё РїРµСЂРІР°СЏ СЃС‚СЂРѕРєР° СЏРІР»СЏРµС‚СЃСЏ РїСЂРµС„РёРєСЃРѕРј РІС‚РѕСЂРѕР№ - РІРѕР·РІСЂР°С‚РёС‚СЊ РѕСЃС‚Р°С‚РѕРє РІС‚РѕСЂРѕР№ СЃС‚СЂРѕРєРё, РёРЅР°С‡Рµ Nothing
 startFrom (x:xs) (y:ys) | x==y  =  startFrom xs ys
 startFrom [] str                =  Just str
 startFrom _  _                  =  Nothing
 
--- |Проверка, что строка начинается или заканчивается заданными символами
+-- |РџСЂРѕРІРµСЂРєР°, С‡С‚Рѕ СЃС‚СЂРѕРєР° РЅР°С‡РёРЅР°РµС‚СЃСЏ РёР»Рё Р·Р°РєР°РЅС‡РёРІР°РµС‚СЃСЏ Р·Р°РґР°РЅРЅС‹РјРё СЃРёРјРІРѕР»Р°РјРё
 beginWith s = isJust . startFrom s
 endWith   s = beginWith (reverse s) . reverse
 
--- |Попытаемся удалить строку substr в начале str
+-- |РџРѕРїС‹С‚Р°РµРјСЃСЏ СѓРґР°Р»РёС‚СЊ СЃС‚СЂРѕРєСѓ substr РІ РЅР°С‡Р°Р»Рµ str
 tryToSkip substr str  =  (startFrom substr str) `defaultVal` str
 
--- |Попытаться удалить строку substr в конце str
+-- |РџРѕРїС‹С‚Р°С‚СЊСЃСЏ СѓРґР°Р»РёС‚СЊ СЃС‚СЂРѕРєСѓ substr РІ РєРѕРЅС†Рµ str
 tryToSkipAtEnd substr str = reverse (tryToSkip (reverse substr) (reverse str))
 
 -- | The 'isInfixOf' function takes two lists and returns 'True'
@@ -241,51 +241,51 @@ tryToSkipAtEnd substr str = reverse (tryToSkip (reverse substr) (reverse str))
 -- anywhere within the first.
 substr haystack needle  =  any (needle `isPrefixOf`) (tails haystack)
 
--- |Список позиций подстроки в строке
+-- |РЎРїРёСЃРѕРє РїРѕР·РёС†РёР№ РїРѕРґСЃС‚СЂРѕРєРё РІ СЃС‚СЂРѕРєРµ
 strPositions haystack needle  =  elemIndices True$ map (needle `isPrefixOf`) (tails haystack)
 
--- |Заменить в строке `s` все вхождения `from` на `to`
+-- |Р—Р°РјРµРЅРёС‚СЊ РІ СЃС‚СЂРѕРєРµ `s` РІСЃРµ РІС…РѕР¶РґРµРЅРёСЏ `from` РЅР° `to`
 replaceAll from to = repl
   where repl s      | Just remainder <- startFrom from s  =  to ++ repl remainder
         repl (c:cs)                                       =  c : repl cs
         repl []                                           =  []
 
--- |Заменить %1 на заданную строку
+-- |Р—Р°РјРµРЅРёС‚СЊ %1 РЅР° Р·Р°РґР°РЅРЅСѓСЋ СЃС‚СЂРѕРєСѓ
 format msg s  =  replaceAll "%1" s msg
 
--- |Заменить %1..%9 на заданные строки
+-- |Р—Р°РјРµРЅРёС‚СЊ %1..%9 РЅР° Р·Р°РґР°РЅРЅС‹Рµ СЃС‚СЂРѕРєРё
 formatn msg s  =  go msg
   where go ('%':d:rest) | isDigit d = (s !! (digitToInt d-1)) ++ go rest
         go (x:rest)                 = x : go rest
         go ""                       = ""
 
--- |Заменить в строке `s` префикс `from` на `to`
+-- |Р—Р°РјРµРЅРёС‚СЊ РІ СЃС‚СЂРѕРєРµ `s` РїСЂРµС„РёРєСЃ `from` РЅР° `to`
 replaceAtStart from to s =
   case startFrom from s of
     Just remainder  -> to ++ remainder
     Nothing         -> s
 
--- |Заменить в строке `s` суффикс `from` на `to`
+-- |Р—Р°РјРµРЅРёС‚СЊ РІ СЃС‚СЂРѕРєРµ `s` СЃСѓС„С„РёРєСЃ `from` РЅР° `to`
 replaceAtEnd from to s =
   case startFrom (reverse from) (reverse s) of
     Just remainder  -> reverse remainder ++ to
     Nothing         -> s
 
--- |Выровнять строку влево/вправо, дополнив её до заданной ширины пробелами или чем-нибудь ещё
+-- |Р’С‹СЂРѕРІРЅСЏС‚СЊ СЃС‚СЂРѕРєСѓ РІР»РµРІРѕ/РІРїСЂР°РІРѕ, РґРѕРїРѕР»РЅРёРІ РµС‘ РґРѕ Р·Р°РґР°РЅРЅРѕР№ С€РёСЂРёРЅС‹ РїСЂРѕР±РµР»Р°РјРё РёР»Рё С‡РµРј-РЅРёР±СѓРґСЊ РµС‰С‘
 right_fill  c n s  =  s ++ replicate (n-length s) c
 left_fill   c n s  =  replicate (n-length s) c ++ s
 left_justify       =  right_fill ' '
 right_justify      =  left_fill  ' '
 
--- Удалить пробелы в начале/конце строки или по обоим сторонам
+-- РЈРґР°Р»РёС‚СЊ РїСЂРѕР±РµР»С‹ РІ РЅР°С‡Р°Р»Рµ/РєРѕРЅС†Рµ СЃС‚СЂРѕРєРё РёР»Рё РїРѕ РѕР±РѕРёРј СЃС‚РѕСЂРѕРЅР°Рј
 trimLeft  = dropWhile (==' ')
 trimRight = reverse.trimLeft.reverse
 trim      = trimLeft.trimRight
 
--- |Перевести строку в нижний регистр
+-- |РџРµСЂРµРІРµСЃС‚Рё СЃС‚СЂРѕРєСѓ РІ РЅРёР¶РЅРёР№ СЂРµРіРёСЃС‚СЂ
 strLower = map toLower
 
--- |Сравнить две строки, игнорируя регистр
+-- |РЎСЂР°РІРЅРёС‚СЊ РґРІРµ СЃС‚СЂРѕРєРё, РёРіРЅРѕСЂРёСЂСѓСЏ СЂРµРіРёСЃС‚СЂ
 strLowerEq a b  =  strLower a == strLower b
 
 -- |Map various parts of list
@@ -306,9 +306,9 @@ mapLast f xs      =  init xs ++ [f (last xs)]
 
 
 
--- |Заменить Nothing на значение по умолчанию
+-- |Р—Р°РјРµРЅРёС‚СЊ Nothing РЅР° Р·РЅР°С‡РµРЅРёРµ РїРѕ СѓРјРѕР»С‡Р°РЅРёСЋ
 defaultVal = flip fromMaybe
 
 infixl 9  .$
-a.$b         =  b a                -- вариант $ с перевёрнутым порядком аргументов
+a.$b         =  b a                -- РІР°СЂРёР°РЅС‚ $ СЃ РїРµСЂРµРІС‘СЂРЅСѓС‚С‹Рј РїРѕСЂСЏРґРєРѕРј Р°СЂРіСѓРјРµРЅС‚РѕРІ
 

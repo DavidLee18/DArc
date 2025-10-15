@@ -1,6 +1,6 @@
-{-# OPTIONS_GHC -cpp #-}
+{-# LANGUAGE CPP #-}
 ----------------------------------------------------------------------------------------------------
----- Поддержка различных кодировок и локализации интерфейса программы                           ----
+---- РџРѕРґРґРµСЂР¶РєР° СЂР°Р·Р»РёС‡РЅС‹С… РєРѕРґРёСЂРѕРІРѕРє Рё Р»РѕРєР°Р»РёР·Р°С†РёРё РёРЅС‚РµСЂС„РµР№СЃР° РїСЂРѕРіСЂР°РјРјС‹                           ----
 ----------------------------------------------------------------------------------------------------
 -----------------------------------------------------------------------------
 -- |
@@ -33,37 +33,41 @@ import System.Posix.Types
 import System.IO
 import System.IO.Error hiding (catch)
 import System.IO.Unsafe
-import System.Locale
-import System.Time
+-- import System.Locale
+-- import System.Time
 import System.Process
 import System.Directory
 import System.Environment
-#if defined(FREEARC_WIN)
-import System.Win32
-#endif
+
+
+
 
 import Utils
 import Files
 
 
 ---------------------------------------------------------------------------------------------------
----- Глобальные настройки перекодировки для использования в глубоко вложенных функциях ------------
+---- Р“Р»РѕР±Р°Р»СЊРЅС‹Рµ РЅР°СЃС‚СЂРѕР№РєРё РїРµСЂРµРєРѕРґРёСЂРѕРІРєРё РґР»СЏ РёСЃРїРѕР»СЊР·РѕРІР°РЅРёСЏ РІ РіР»СѓР±РѕРєРѕ РІР»РѕР¶РµРЅРЅС‹С… С„СѓРЅРєС†РёСЏС… ------------
 ---------------------------------------------------------------------------------------------------
 
 -- |Translate string from internal to terminal encoding
-str2terminal'     = unsafePerformIO$ newIORef$ unParseData (domainTranslation aCHARSET_DEFAULTS 't')
-str2terminal s    = val str2terminal' >>== ($s)
+{-# NOINLINE str2terminal' #-}
+str2terminal'     = unsafePerformIO$ newIORef$ unParseData (domainTranslation aCharsetDefaults 't')
+str2terminal s    = val str2terminal' >>== ($ s)
 -- |Translate string from terminal to internal encoding
-terminal2str'     = unsafePerformIO$ newIORef$ parseData (domainTranslation aCHARSET_DEFAULTS 't')
-terminal2str s    = val terminal2str' >>== ($s)
+{-# NOINLINE terminal2str' #-}
+terminal2str'     = unsafePerformIO$ newIORef$ parseData (domainTranslation aCharsetDefaults 't')
+terminal2str s    = val terminal2str' >>== ($ s)
 -- |Translate string from cmdline to internal encoding
-cmdline2str'      = unsafePerformIO$ newIORef$ parseData (domainTranslation aCHARSET_DEFAULTS 'p')
-cmdline2str s     = val cmdline2str' >>== ($s)
+{-# NOINLINE cmdline2str' #-}
+cmdline2str'      = unsafePerformIO$ newIORef$ parseData (domainTranslation aCharsetDefaults 'p')
+cmdline2str s     = val cmdline2str' >>== ($ s)
 -- |Translate string from internal to logfile encoding
-str2logfile'      = unsafePerformIO$ newIORef$ unParseData (domainTranslation aCHARSET_DEFAULTS 'i')
-str2logfile s     = val str2logfile' >>== ($s)
+{-# NOINLINE str2logfile' #-}
+str2logfile'      = unsafePerformIO$ newIORef$ unParseData (domainTranslation aCharsetDefaults 'i')
+str2logfile s     = val str2logfile' >>== ($ s)
 
--- |Операция, устанавливающая глобальные настройки перекодировки для использования в глубоко вложенных функциях
+-- |РћРїРµСЂР°С†РёСЏ, СѓСЃС‚Р°РЅР°РІР»РёРІР°СЋС‰Р°СЏ РіР»РѕР±Р°Р»СЊРЅС‹Рµ РЅР°СЃС‚СЂРѕР№РєРё РїРµСЂРµРєРѕРґРёСЂРѕРІРєРё РґР»СЏ РёСЃРїРѕР»СЊР·РѕРІР°РЅРёСЏ РІ РіР»СѓР±РѕРєРѕ РІР»РѕР¶РµРЅРЅС‹С… С„СѓРЅРєС†РёСЏС…
 setGlobalCharsets charsets = do
   str2filesystem' =: unParseData (domainTranslation charsets 'f')
   str2terminal'   =: unParseData (domainTranslation charsets 't')
@@ -73,55 +77,55 @@ setGlobalCharsets charsets = do
   cmdline2str'    =: parseData (domainTranslation charsets 'p')
 
 
--- Получение командной строки
-#ifdef FREEARC_WIN
-myGetArgs = do
-   alloca $ \p_argc -> do
-   p_argv_w <- commandLineToArgvW getCommandLineW p_argc
-   argc     <- peek p_argc
-   argv_w   <- peekArray (i argc) p_argv_w
-   mapM peekTString argv_w >>== tail
+-- РџРѕР»СѓС‡РµРЅРёРµ РєРѕРјР°РЅРґРЅРѕР№ СЃС‚СЂРѕРєРё
 
-foreign import stdcall unsafe "windows.h GetCommandLineW"
-  getCommandLineW :: LPTSTR
 
-foreign import stdcall unsafe "windows.h CommandLineToArgvW"
-  commandLineToArgvW :: LPCWSTR -> Ptr CInt -> IO (Ptr LPWSTR)
 
-#else
+
+
+
+
+
+
+
+
+
+
+
+
 myGetArgs = getArgs >>= mapM cmdline2str
-#endif
+
 
 
 ---------------------------------------------------------------------------------------------------
----- Парсер опции командной строки -sc/--charset --------------------------------------------------
+---- РџР°СЂСЃРµСЂ РѕРїС†РёРё РєРѕРјР°РЅРґРЅРѕР№ СЃС‚СЂРѕРєРё -sc/--charset --------------------------------------------------
 ---------------------------------------------------------------------------------------------------
 
--- |Тип функции, транслирующей входных данные заданного типа в Unicode
+-- |РўРёРї С„СѓРЅРєС†РёРё, С‚СЂР°РЅСЃР»РёСЂСѓСЋС‰РµР№ РІС…РѕРґРЅС‹С… РґР°РЅРЅС‹Рµ Р·Р°РґР°РЅРЅРѕРіРѕ С‚РёРїР° РІ Unicode
 type ParseDataFunc  =  Domain -> String -> String
 
--- |Обработать список опций --charset/-sc, возвратив таблицу кодировок
--- и процедуры чтения/записи файлов с её учётом
-parse_charset_option optionsList = (charsets
+-- |РћР±СЂР°Р±РѕС‚Р°С‚СЊ СЃРїРёСЃРѕРє РѕРїС†РёР№ --charset/-sc, РІРѕР·РІСЂР°С‚РёРІ С‚Р°Р±Р»РёС†Сѓ РєРѕРґРёСЂРѕРІРѕРє
+-- Рё РїСЂРѕС†РµРґСѓСЂС‹ С‡С‚РµРЅРёСЏ/Р·Р°РїРёСЃРё С„Р°Р№Р»РѕРІ СЃ РµС‘ СѓС‡С‘С‚РѕРј
+parseCharsetOption optionsList = (charsets
                                    ,parseFile   . domainTranslation charsets
                                    ,unParseFile . domainTranslation charsets
                                    ,parseData   . domainTranslation charsets
                                    ,unParseData . domainTranslation charsets)
   where
-    -- Таблица кодировок
-    charsets = foldl f aCHARSET_DEFAULTS optionsList
-    -- Функция обработки опций --charset
-    f value "--"      =  aCHARSET_DEFAULTS      -- -sc-- означает восстановить значения по умолчанию
-    f value ('s':cs)  =  _7zToRAR value "l" cs  -- -scs... устанавливает кодировку для листфайлов
+    -- РўР°Р±Р»РёС†Р° РєРѕРґРёСЂРѕРІРѕРє
+    charsets = foldl f aCharsetDefaults optionsList
+    -- Р¤СѓРЅРєС†РёСЏ РѕР±СЂР°Р±РѕС‚РєРё РѕРїС†РёР№ --charset
+    f value "--"      =  aCharsetDefaults      -- -sc-- РѕР·РЅР°С‡Р°РµС‚ РІРѕСЃСЃС‚Р°РЅРѕРІРёС‚СЊ Р·РЅР°С‡РµРЅРёСЏ РїРѕ СѓРјРѕР»С‡Р°РЅРёСЋ
+    f value ('s':cs)  =  _7zToRAR value "l" cs  -- -scs... СѓСЃС‚Р°РЅР°РІР»РёРІР°РµС‚ РєРѕРґРёСЂРѕРІРєСѓ РґР»СЏ Р»РёСЃС‚С„Р°Р№Р»РѕРІ
     f value ('l':cs)  =  _7zToRAR value "l" cs  -- -scl... does the same
-    f value ('c':cs)  =  _7zToRAR value "c" cs  -- -scs... устанавливает кодировку для комментфайлов
-    f value ('f':cs)  =  _7zToRAR value "f" cs  -- -scf... устанавливает кодировку для файловой системы
-    f value ('d':cs)  =  _7zToRAR value "d" cs  -- -scd... устанавливает кодировку для каталога архива
-    f value ('t':cs)  =  _7zToRAR value "t" cs  -- -sct... устанавливает кодировку для терминала (консоли)
-    f value ('p':cs)  =  _7zToRAR value "p" cs  -- -scp... устанавливает кодировку для параметров ком. строки
-    f value ('i':cs)  =  _7zToRAR value "i" cs  -- -sci... устанавливает кодировку для ini-файлов (arc.ini/arc.groups)
-    f value (x:cs)    =  foldl Utils.update value [(c,x) | c<-cs|||"cl"]  -- установить в `x` элементы списка, перечисленные в cs (по умолчанию 'c' и 'l')
-    -- Вспомогательные функции, преобразующие 7zip-овский формат опций в RAR'овский
+    f value ('c':cs)  =  _7zToRAR value "c" cs  -- -scs... СѓСЃС‚Р°РЅР°РІР»РёРІР°РµС‚ РєРѕРґРёСЂРѕРІРєСѓ РґР»СЏ РєРѕРјРјРµРЅС‚С„Р°Р№Р»РѕРІ
+    f value ('f':cs)  =  _7zToRAR value "f" cs  -- -scf... СѓСЃС‚Р°РЅР°РІР»РёРІР°РµС‚ РєРѕРґРёСЂРѕРІРєСѓ РґР»СЏ С„Р°Р№Р»РѕРІРѕР№ СЃРёСЃС‚РµРјС‹
+    f value ('d':cs)  =  _7zToRAR value "d" cs  -- -scd... СѓСЃС‚Р°РЅР°РІР»РёРІР°РµС‚ РєРѕРґРёСЂРѕРІРєСѓ РґР»СЏ РєР°С‚Р°Р»РѕРіР° Р°СЂС…РёРІР°
+    f value ('t':cs)  =  _7zToRAR value "t" cs  -- -sct... СѓСЃС‚Р°РЅР°РІР»РёРІР°РµС‚ РєРѕРґРёСЂРѕРІРєСѓ РґР»СЏ С‚РµСЂРјРёРЅР°Р»Р° (РєРѕРЅСЃРѕР»Рё)
+    f value ('p':cs)  =  _7zToRAR value "p" cs  -- -scp... СѓСЃС‚Р°РЅР°РІР»РёРІР°РµС‚ РєРѕРґРёСЂРѕРІРєСѓ РґР»СЏ РїР°СЂР°РјРµС‚СЂРѕРІ РєРѕРј. СЃС‚СЂРѕРєРё
+    f value ('i':cs)  =  _7zToRAR value "i" cs  -- -sci... СѓСЃС‚Р°РЅР°РІР»РёРІР°РµС‚ РєРѕРґРёСЂРѕРІРєСѓ РґР»СЏ ini-С„Р°Р№Р»РѕРІ (arc.ini/arc.groups)
+    f value (x:cs)    =  foldl Utils.update value [(c,x) | c<-cs|||"cl"]  -- СѓСЃС‚Р°РЅРѕРІРёС‚СЊ РІ `x` СЌР»РµРјРµРЅС‚С‹ СЃРїРёСЃРєР°, РїРµСЂРµС‡РёСЃР»РµРЅРЅС‹Рµ РІ cs (РїРѕ СѓРјРѕР»С‡Р°РЅРёСЋ 'c' Рё 'l')
+    -- Р’СЃРїРѕРјРѕРіР°С‚РµР»СЊРЅС‹Рµ С„СѓРЅРєС†РёРё, РїСЂРµРѕР±СЂР°Р·СѓСЋС‰РёРµ 7zip-РѕРІСЃРєРёР№ С„РѕСЂРјР°С‚ РѕРїС†РёР№ РІ RAR'РѕРІСЃРєРёР№
     _7zToRAR value typ cs  =  f value (g (strLower cs):typ)
     g "utf-8"  = '8';  g "win"  = 'a'
     g "utf8"   = '8';  g "ansi" = 'a'
@@ -129,19 +133,19 @@ parse_charset_option optionsList = (charsets
     g "utf16"  = 'u';  g "oem"  = 'o'
 
 
--- Процедура чтения файла, транслирующая его кодировку и разбивающая на отдельные строки
+-- РџСЂРѕС†РµРґСѓСЂР° С‡С‚РµРЅРёСЏ С„Р°Р№Р»Р°, С‚СЂР°РЅСЃР»РёСЂСѓСЋС‰Р°СЏ РµРіРѕ РєРѕРґРёСЂРѕРІРєСѓ Рё СЂР°Р·Р±РёРІР°СЋС‰Р°СЏ РЅР° РѕС‚РґРµР»СЊРЅС‹Рµ СЃС‚СЂРѕРєРё
 parseFile encoding file  =  fileGetBinary file >>== parseData encoding >>== linesCRLF
 
--- Процедура трансляции входных данных из encoding в Unicode
+-- РџСЂРѕС†РµРґСѓСЂР° С‚СЂР°РЅСЃР»СЏС†РёРё РІС…РѕРґРЅС‹С… РґР°РЅРЅС‹С… РёР· encoding РІ Unicode
 parseData encoding  =  aTRANSLATE_INPUT (charsetTranslation encoding)
 
--- Процедура записи файла, транслирующая данные в кодировку encoding
+-- РџСЂРѕС†РµРґСѓСЂР° Р·Р°РїРёСЃРё С„Р°Р№Р»Р°, С‚СЂР°РЅСЃР»РёСЂСѓСЋС‰Р°СЏ РґР°РЅРЅС‹Рµ РІ РєРѕРґРёСЂРѕРІРєСѓ encoding
 unParseFile encoding file  =  filePutBinary file . unParseData encoding
 
--- Процедура трансляции выходных данных из encoding из Unicode
+-- РџСЂРѕС†РµРґСѓСЂР° С‚СЂР°РЅСЃР»СЏС†РёРё РІС‹С…РѕРґРЅС‹С… РґР°РЅРЅС‹С… РёР· encoding РёР· Unicode
 unParseData encoding  =  aTRANSLATE_OUTPUT (charsetTranslation encoding)
 
--- |Разбиение на строки файла, ипользующего любое представление конца строки (CR, LF, CR+LF)
+-- |Р Р°Р·Р±РёРµРЅРёРµ РЅР° СЃС‚СЂРѕРєРё С„Р°Р№Р»Р°, РёРїРѕР»СЊР·СѓСЋС‰РµРіРѕ Р»СЋР±РѕРµ РїСЂРµРґСЃС‚Р°РІР»РµРЅРёРµ РєРѕРЅС†Р° СЃС‚СЂРѕРєРё (CR, LF, CR+LF)
 linesCRLF = recursive oneline  -- oneline "abc\n..." = ("abc","...")
               where oneline ('\r':'\n':s)  =  ("",'\xFEFF':s)
                     oneline ('\r':s)       =  ("",'\xFEFF':s)
@@ -151,30 +155,30 @@ linesCRLF = recursive oneline  -- oneline "abc\n..." = ("abc","...")
                     oneline ""             =  ("","")
 
 
--- Будем считать, что все GUI конфиг-файлы хранятся в UTF-8
+-- Р‘СѓРґРµРј СЃС‡РёС‚Р°С‚СЊ, С‡С‚Рѕ РІСЃРµ GUI РєРѕРЅС„РёРі-С„Р°Р№Р»С‹ С…СЂР°РЅСЏС‚СЃСЏ РІ UTF-8
 readConfigFile          = parseFile   '8'
 saveConfigFile   file   = unParseFile '8' file . joinWith "\n"
 modifyConfigFile file f = handle (\e->return []) (readConfigFile file) >>== f >>= saveConfigFile file
 
 
 ---------------------------------------------------------------------------------------------------
----- Поддержка различных кодировок для ввода/вывода -----------------------------------------------
+---- РџРѕРґРґРµСЂР¶РєР° СЂР°Р·Р»РёС‡РЅС‹С… РєРѕРґРёСЂРѕРІРѕРє РґР»СЏ РІРІРѕРґР°/РІС‹РІРѕРґР° -----------------------------------------------
 ---------------------------------------------------------------------------------------------------
 
--- |Возвращает charset, используемый в domainCharsets для данных типа domain
+-- |Р’РѕР·РІСЂР°С‰Р°РµС‚ charset, РёСЃРїРѕР»СЊР·СѓРµРјС‹Р№ РІ domainCharsets РґР»СЏ РґР°РЅРЅС‹С… С‚РёРїР° domain
 domainTranslation domainCharsets domain =
   lookup domain domainCharsets `defaultVal` error ("Unknown charset domain "++quote [domain])
 
--- |Трансляция данных, заданных в кодировке charset
+-- |РўСЂР°РЅСЃР»СЏС†РёСЏ РґР°РЅРЅС‹С…, Р·Р°РґР°РЅРЅС‹С… РІ РєРѕРґРёСЂРѕРІРєРµ charset
 charsetTranslation charset =
   lookup charset aCHARSETS `defaultVal` error ("Unknown charset "++quote [charset])
 
--- |Трансляция данных из области domain (листфайлы, конфигфайлы, коммент-файлы...),
--- используя charset, заданный для неё в domainСharsets
+-- |РўСЂР°РЅСЃР»СЏС†РёСЏ РґР°РЅРЅС‹С… РёР· РѕР±Р»Р°СЃС‚Рё domain (Р»РёСЃС‚С„Р°Р№Р»С‹, РєРѕРЅС„РёРіС„Р°Р№Р»С‹, РєРѕРјРјРµРЅС‚-С„Р°Р№Р»С‹...),
+-- РёСЃРїРѕР»СЊР·СѓСЏ charset, Р·Р°РґР°РЅРЅС‹Р№ РґР»СЏ РЅРµС‘ РІ domainРЎharsets
 translation domainCharsets domain =
   charsetTranslation $ domainTranslation domainCharsets domain
 
--- Типы, используемые для представления domain и charset
+-- РўРёРїС‹, РёСЃРїРѕР»СЊР·СѓРµРјС‹Рµ РґР»СЏ РїСЂРµРґСЃС‚Р°РІР»РµРЅРёСЏ domain Рё charset
 type Domain  = Char
 type Charset = Char
 
@@ -185,32 +189,32 @@ data TRANSLATION = TRANSLATION {aTRANSLATE_INPUT, aTRANSLATE_OUTPUT :: String->S
 aCHARSETS = [ ('0', TRANSLATION id               id)
             , ('8', TRANSLATION utf8_to_unicode  unicode2utf8)
             , ('u', TRANSLATION utf16_to_unicode unicode2utf16)
-            ] ++ aLOCAL_CHARSETS
+            ] ++ aLocalCharsets
 
 
-#ifdef FREEARC_UNIX
 
-aLOCAL_CHARSETS = []
 
--- |Default charsets for various domains
-aCHARSET_DEFAULTS = [ ('f','8')  -- filenames in filesystem: UTF-8
-                    , ('d','8')  -- filenames in archive directory: UTF-8
-                    , ('l','8')  -- filelists: UTF-8
-                    , ('c','8')  -- comment files: UTF-8
-                    , ('t','8')  -- terminal: UTF-8
-                    , ('p','8')  -- program arguments: UTF-8
-                    , ('i','8')  -- ini/group files: UTF-8
-                    ]
 
-#else
+
+
+
+
+
+
+
+
+
+
+
+
 
 -- |Windows-specific charsets
-aLOCAL_CHARSETS = [ ('o', TRANSLATION oem2unicode  unicode2oem)
+aLocalCharsets = [ ('o', TRANSLATION oem2unicode  unicode2oem)
                   , ('a', TRANSLATION ansi2unicode unicode2ansi)
                   ]
 
 -- |Default charsets for various domains
-aCHARSET_DEFAULTS = [ ('f','u')  -- filenames in filesystem: UTF-16
+aCharsetDefaults = [ ('f','u')  -- filenames in filesystem: UTF-16
                     , ('d','8')  -- filenames in archive directory: UTF-8
                     , ('l','o')  -- filelists: OEM
                     , ('c','o')  -- comment files: OEM
@@ -223,7 +227,7 @@ aCHARSET_DEFAULTS = [ ('f','u')  -- filenames in filesystem: UTF-16
 ---- Windows-specific codecs ----------------------------------------------------------------------
 ---------------------------------------------------------------------------------------------------
 
--- |Преобразовать виндовые коды символов \r и \n в человеческий вид
+-- |РџСЂРµРѕР±СЂР°Р·РѕРІР°С‚СЊ РІРёРЅРґРѕРІС‹Рµ РєРѕРґС‹ СЃРёРјРІРѕР»РѕРІ \r Рё \n РІ С‡РµР»РѕРІРµС‡РµСЃРєРёР№ РІРёРґ
 iHateWindows = replace (chr 9834) '\r' . replace (chr 9689) '\n'
 
 -- |Translate string from Unicode to OEM encoding
@@ -282,7 +286,7 @@ foreign import stdcall unsafe "winuser.h OemToCharBuffA"
 foreign import stdcall unsafe "winuser.h CharToOemBuffA"
   c_AnsiToOemBuff :: CString -> CString -> DWORD -> IO Bool
 
-#endif
+
 
 
 ---------------------------------------------------------------------------------------------------
@@ -299,7 +303,7 @@ utf16_to_unicode = tryToSkip [chr 0xFEFF] . map chr . fromUTF16 . map ord
   fromUTF16 [] = []
 
 -- |Translate string from Unicode to UTF-16 encoding
-unicode2utf16 = map chr . foldr utf16Char [] . map ord
+unicode2utf16 = map chr . foldr (utf16Char . ord) []
  where
   utf16Char c wcs
     | c < 0x10000 = c `mod` 256 : c `div` 256 : wcs
@@ -315,26 +319,26 @@ utf8_to_unicode s =
     then s
     else (tryToSkip [chr 0xFEFF] . fromUTF' . map ord) s  where
             fromUTF' [] = []
-            fromUTF' (all@(x:xs))
+            fromUTF' all@(x:xs)
                 | x<=0x7F = chr x : fromUTF' xs
                 | x<=0xBF = err
                 | x<=0xDF = twoBytes all
                 | x<=0xEF = threeBytes all
                 | x<=0xFF = fourBytes all
                 | otherwise = err
-            twoBytes (x1:x2:xs) = chr  ((((x1 .&. 0x1F) `shift` 6) .|.
-                                          (x2 .&. 0x3F))):fromUTF' xs
+            twoBytes (x1:x2:xs) = chr  (((x1 .&. 0x1F) `shift` 6) .|.
+                                          (x2 .&. 0x3F)):fromUTF' xs
             twoBytes _ = error "fromUTF: illegal two byte sequence"
 
-            threeBytes (x1:x2:x3:xs) = chr ((((x1 .&. 0x0F) `shift` 12) .|.
+            threeBytes (x1:x2:x3:xs) = chr (((x1 .&. 0x0F) `shift` 12) .|.
                                              ((x2 .&. 0x3F) `shift` 6) .|.
-                                              (x3 .&. 0x3F))):fromUTF' xs
+                                              (x3 .&. 0x3F)):fromUTF' xs
             threeBytes _ = error "fromUTF: illegal three byte sequence"
 
-            fourBytes (x1:x2:x3:x4:xs) = chr ((((x1 .&. 0x0F) `shift` 18) .|.
+            fourBytes (x1:x2:x3:x4:xs) = chr (((x1 .&. 0x0F) `shift` 18) .|.
                                                ((x2 .&. 0x3F) `shift` 12) .|.
                                                ((x3 .&. 0x3F) `shift` 6) .|.
-                                                (x4 .&. 0x3F))):fromUTF' xs
+                                                (x4 .&. 0x3F)):fromUTF' xs
             fourBytes _ = error "fromUTF: illegal four byte sequence"
 
             err = error "fromUTF: illegal UTF-8 character"
@@ -365,37 +369,37 @@ unicode2utf8 s =
 ---------------------------------------------------------------------------------------------------
 
 {-# NOINLINE locale #-}
--- |Локализация: отображение индекса в локализованную строку
+-- |Р›РѕРєР°Р»РёР·Р°С†РёСЏ: РѕС‚РѕР±СЂР°Р¶РµРЅРёРµ РёРЅРґРµРєСЃР° РІ Р»РѕРєР°Р»РёР·РѕРІР°РЅРЅСѓСЋ СЃС‚СЂРѕРєСѓ
 locale :: IORef (Array Int (Maybe String))
 locale = unsafePerformIO $ ref$ array (0,-1) []
 
 {-# NOINLINE setLocale #-}
--- |Установить локализацию по файлу
+-- |РЈСЃС‚Р°РЅРѕРІРёС‚СЊ Р»РѕРєР°Р»РёР·Р°С†РёСЋ РїРѕ С„Р°Р№Р»Сѓ
 setLocale "--"       = return ()
 setLocale localeFile = do
   localeInfo <- parseLocaleFile localeFile
   locale =: localeInfo
 
--- |Переводит строку/список строк на местный язык
+-- |РџРµСЂРµРІРѕРґРёС‚ СЃС‚СЂРѕРєСѓ/СЃРїРёСЃРѕРє СЃС‚СЂРѕРє РЅР° РјРµСЃС‚РЅС‹Р№ СЏР·С‹Рє
 i18ns = mapM i18n
 i18n  = i18n' .>>== fst
 i18n' = i18n_general (val locale)
 
 {-# NOINLINE i18fmt #-}
--- |Отформатировать список строк, используя первую как требущий локализации шаблон,
--- а остальные - как его аргументы
+-- |РћС‚С„РѕСЂРјР°С‚РёСЂРѕРІР°С‚СЊ СЃРїРёСЃРѕРє СЃС‚СЂРѕРє, РёСЃРїРѕР»СЊР·СѓСЏ РїРµСЂРІСѓСЋ РєР°Рє С‚СЂРµР±СѓС‰РёР№ Р»РѕРєР°Р»РёР·Р°С†РёРё С€Р°Р±Р»РѕРЅ,
+-- Р° РѕСЃС‚Р°Р»СЊРЅС‹Рµ - РєР°Рє РµРіРѕ Р°СЂРіСѓРјРµРЅС‚С‹
 i18fmt (x:xs)  =  i18n x >>== (`formatn` xs)
 
 
 {-# NOINLINE parseLocaleFile #-}
--- |Прочитать из файла список строк локализации
+-- |РџСЂРѕС‡РёС‚Р°С‚СЊ РёР· С„Р°Р№Р»Р° СЃРїРёСЃРѕРє СЃС‚СЂРѕРє Р»РѕРєР°Р»РёР·Р°С†РёРё
 parseLocaleFile localeFile = do
-  -- Прочитаем файл локализации или возвратим пустую болванку
+  -- РџСЂРѕС‡РёС‚Р°РµРј С„Р°Р№Р» Р»РѕРєР°Р»РёР·Р°С†РёРё РёР»Рё РІРѕР·РІСЂР°С‚РёРј РїСѓСЃС‚СѓСЋ Р±РѕР»РІР°РЅРєСѓ
   localeInfo <- readConfigFile localeFile `catch` \e -> return ["0000=English"]
-  -- Отбираем строки, начинающиеся на "dddd", и создаём из них массив: dddd -> текст после знака '='
-  -- Если текст после '=' заключён в двойные кавычки - избавимся от них
-  -- Символы '&' заменяются на '_' (различие в акселераторах 7-zip и Gtk)
-  -- \" заменяется на просто ", запись "\\n" на сам символ \n
+  -- РћС‚Р±РёСЂР°РµРј СЃС‚СЂРѕРєРё, РЅР°С‡РёРЅР°СЋС‰РёРµСЃСЏ РЅР° "dddd", Рё СЃРѕР·РґР°С‘Рј РёР· РЅРёС… РјР°СЃСЃРёРІ: dddd -> С‚РµРєСЃС‚ РїРѕСЃР»Рµ Р·РЅР°РєР° '='
+  -- Р•СЃР»Рё С‚РµРєСЃС‚ РїРѕСЃР»Рµ '=' Р·Р°РєР»СЋС‡С‘РЅ РІ РґРІРѕР№РЅС‹Рµ РєР°РІС‹С‡РєРё - РёР·Р±Р°РІРёРјСЃСЏ РѕС‚ РЅРёС…
+  -- РЎРёРјРІРѕР»С‹ '&' Р·Р°РјРµРЅСЏСЋС‚СЃСЏ РЅР° '_' (СЂР°Р·Р»РёС‡РёРµ РІ Р°РєСЃРµР»РµСЂР°С‚РѕСЂР°С… 7-zip Рё Gtk)
+  -- \" Р·Р°РјРµРЅСЏРµС‚СЃСЏ РЅР° РїСЂРѕСЃС‚Рѕ ", Р·Р°РїРёСЃСЊ "\\n" РЅР° СЃР°Рј СЃРёРјРІРѕР» \n
   return$ localeInfo .$ filter   (\s -> length s > 4  &&  s `contains` '=')
                      .$ filter   (all isDigit.take 4)
                      .$ map      (split2 '=')
@@ -406,11 +410,11 @@ parseLocaleFile localeFile = do
                      .$ populateArray Nothing Just
 
 {-# NOINLINE i18n_general #-}
--- |Возвращает локализованный текст надписи и её всплывающую подсказку
+-- |Р’РѕР·РІСЂР°С‰Р°РµС‚ Р»РѕРєР°Р»РёР·РѕРІР°РЅРЅС‹Р№ С‚РµРєСЃС‚ РЅР°РґРїРёСЃРё Рё РµС‘ РІСЃРїР»С‹РІР°СЋС‰СѓСЋ РїРѕРґСЃРєР°Р·РєСѓ
 i18n_general getLocale text = do
-  -- Если текст содержит в начале "dddd ", то вернём вместо него строку локализации за номером dddd
-  -- Если такой строки не найдено - возвратим переданный текст за вычетом "dddd "
-  -- Кроме того, тексты вида "  *  " локализуются в аналогичный вид
+  -- Р•СЃР»Рё С‚РµРєСЃС‚ СЃРѕРґРµСЂР¶РёС‚ РІ РЅР°С‡Р°Р»Рµ "dddd ", С‚Рѕ РІРµСЂРЅС‘Рј РІРјРµСЃС‚Рѕ РЅРµРіРѕ СЃС‚СЂРѕРєСѓ Р»РѕРєР°Р»РёР·Р°С†РёРё Р·Р° РЅРѕРјРµСЂРѕРј dddd
+  -- Р•СЃР»Рё С‚Р°РєРѕР№ СЃС‚СЂРѕРєРё РЅРµ РЅР°Р№РґРµРЅРѕ - РІРѕР·РІСЂР°С‚РёРј РїРµСЂРµРґР°РЅРЅС‹Р№ С‚РµРєСЃС‚ Р·Р° РІС‹С‡РµС‚РѕРј "dddd "
+  -- РљСЂРѕРјРµ С‚РѕРіРѕ, С‚РµРєСЃС‚С‹ РІРёРґР° "  *  " Р»РѕРєР°Р»РёР·СѓСЋС‚СЃСЏ РІ Р°РЅР°Р»РѕРіРёС‡РЅС‹Р№ РІРёРґ
   case splitAt 4 text of
     (d,' ':engText) | all isDigit d -> do
          let f = (engText.$match "  *  ")  &&&  (("  "++).(++"  "))
@@ -421,4 +425,14 @@ i18n_general getLocale text = do
                          else def
          return (g n engText, g (n+1000) "")
     _ -> return (text, "")
+
+
+
+
+
+
+
+
+
+
 

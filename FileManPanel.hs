@@ -30,15 +30,15 @@ import ArcExtract
 import FileManUtils
 
 
--- |Пароли шифрования и расшифровки
+-- |РџР°СЂРѕР»Рё С€РёС„СЂРѕРІР°РЅРёСЏ Рё СЂР°СЃС€РёС„СЂРѕРІРєРё
 encryptionPassword  =  unsafePerformIO$ newIORef$ ""
 decryptionPassword  =  unsafePerformIO$ newIORef$ ""
 
 ----------------------------------------------------------------------------------------------------
----- Операции файл-менеджера -----------------------------------------------------------------------
+---- РћРїРµСЂР°С†РёРё С„Р°Р№Р»-РјРµРЅРµРґР¶РµСЂР° -----------------------------------------------------------------------
 ----------------------------------------------------------------------------------------------------
 
--- |Создать переменную для хранения состояния файл-менеджера
+-- |РЎРѕР·РґР°С‚СЊ РїРµСЂРµРјРµРЅРЅСѓСЋ РґР»СЏ С…СЂР°РЅРµРЅРёСЏ СЃРѕСЃС‚РѕСЏРЅРёСЏ С„Р°Р№Р»-РјРµРЅРµРґР¶РµСЂР°
 newFM window view model selection statusLabel messageCombo = do
   historyFile <- findOrCreateFile configFilePlaces aHISTORY_FILE >>= mvar
   curdir <- io$ getCurrentDirectory
@@ -58,26 +58,26 @@ newFM window view model selection statusLabel messageCombo = do
   selection `New.onSelectionChanged` fmStatusBarTotals fm'
   return fm'
 
--- |Открыть архив и возвратить его как объект состояния файл-менеджера
+-- |РћС‚РєСЂС‹С‚СЊ Р°СЂС…РёРІ Рё РІРѕР·РІСЂР°С‚РёС‚СЊ РµРіРѕ РєР°Рє РѕР±СЉРµРєС‚ СЃРѕСЃС‚РѕСЏРЅРёСЏ С„Р°Р№Р»-РјРµРЅРµРґР¶РµСЂР°
 newFMArc fm' arcname arcdir = do
   xpwd'     <- val decryptionPassword
   xkeyfile' <- fmGetHistory1 fm' "keyfile" ""
   [command] <- io$ parseCmdline$ ["l", arcname]++(xpwd' &&& ["-op"++xpwd'])
                                                ++(xkeyfile' &&& ["--OldKeyfile="++xkeyfile'])
-  command <- (command.$ opt_cook_passwords) command ask_passwords  -- подготовить пароли в команде к использованию
+  command <- (command.$ opt_cook_passwords) command ask_passwords  -- РїРѕРґРіРѕС‚РѕРІРёС‚СЊ РїР°СЂРѕР»Рё РІ РєРѕРјР°РЅРґРµ Рє РёСЃРїРѕР»СЊР·РѕРІР°РЅРёСЋ
   archive <- io$ archiveReadInfo command "" "" (const True) doNothing2 arcname
   let filetree = buildTree$ map (fiToFileData.cfFileInfo)$ arcDirectory archive
   io$ arcClose archive
   return$ FM_Archive archive arcname arcdir filetree
 
--- |Закрыть файл архива чтобы другие операции смогли модифицировать его
+-- |Р—Р°РєСЂС‹С‚СЊ С„Р°Р№Р» Р°СЂС…РёРІР° С‡С‚РѕР±С‹ РґСЂСѓРіРёРµ РѕРїРµСЂР°С†РёРё СЃРјРѕРіР»Рё РјРѕРґРёС„РёС†РёСЂРѕРІР°С‚СЊ РµРіРѕ
 closeFMArc fm' = do
   return ()
   --fm <- val fm'
   --io$ arcClose (fm_archive fm)
   --fm' .= \fm -> fm {subfm = (subfm fm) {subfm_archive = phantomArc}}
 
--- Перейти в архив/каталог filename
+-- РџРµСЂРµР№С‚Рё РІ Р°СЂС…РёРІ/РєР°С‚Р°Р»РѕРі filename
 chdir fm' filename' = do
   fm <- val fm'
   filename <- fmCanonicalizePath fm' filename'
@@ -85,33 +85,33 @@ chdir fm' filename' = do
   msg <- i18n"0071 %1: no such file or directory!"
   if res==Not_Exists  then fmErrorMsg fm' (format msg filename)  else do
   (files, sub) <- case res of
-    -- Список файлов в каталоге на диске
+    -- РЎРїРёСЃРѕРє С„Р°Р№Р»РѕРІ РІ РєР°С‚Р°Р»РѕРіРµ РЅР° РґРёСЃРєРµ
     DiskPath dir -> do filelist <- io$ dir_list dir
                        return (map fiToFileData filelist, FM_Directory dir)
-    -- Список файлов в архиве
+    -- РЎРїРёСЃРѕРє С„Р°Р№Р»РѕРІ РІ Р°СЂС…РёРІРµ
     ArcPath arcname arcdir -> do
                        arc <- if isFM_Archive fm && arcname==fm_arcname fm
                                 then return ((fm.$subfm) {subfm_arcdir=arcdir})
                                 else newFMArc fm' arcname arcdir
                        return (arc.$subfm_filetree.$ftFilesIn arcdir fdArtificialDir, arc)
-  -- Запишем текущий каталог/архив в fm и выведем на экран новый список файлов
+  -- Р—Р°РїРёС€РµРј С‚РµРєСѓС‰РёР№ РєР°С‚Р°Р»РѕРі/Р°СЂС…РёРІ РІ fm Рё РІС‹РІРµРґРµРј РЅР° СЌРєСЂР°РЅ РЅРѕРІС‹Р№ СЃРїРёСЃРѕРє С„Р°Р№Р»РѕРІ
   fm' =: fm {subfm = sub}
   fmSetFilelist fm' (files.$ sortOnColumn (fm_sort_order fm))
-  -- Обновим статусбар и выполним все остальные запрограммированные действия.
+  -- РћР±РЅРѕРІРёРј СЃС‚Р°С‚СѓСЃР±Р°СЂ Рё РІС‹РїРѕР»РЅРёРј РІСЃРµ РѕСЃС‚Р°Р»СЊРЅС‹Рµ Р·Р°РїСЂРѕРіСЂР°РјРјРёСЂРѕРІР°РЅРЅС‹Рµ РґРµР№СЃС‚РІРёСЏ.
   sequence_ (fm_onChdir fm)
   widgetGrabFocus (fm_view fm)
 
--- Отобразить изменение имени архива
+-- РћС‚РѕР±СЂР°Р·РёС‚СЊ РёР·РјРµРЅРµРЅРёРµ РёРјРµРЅРё Р°СЂС…РёРІР°
 fmChangeArcname fm' newname = do
   fm' .= fm_changeArcname newname
   fm <- val fm'
   sequence_ (fm_onChdir fm)
 
--- |Добавить action в список операций, выполняемых при переходе в другой каталог/архив
+-- |Р”РѕР±Р°РІРёС‚СЊ action РІ СЃРїРёСЃРѕРє РѕРїРµСЂР°С†РёР№, РІС‹РїРѕР»РЅСЏРµРјС‹С… РїСЂРё РїРµСЂРµС…РѕРґРµ РІ РґСЂСѓРіРѕР№ РєР°С‚Р°Р»РѕРі/Р°СЂС…РёРІ
 fmOnChdir fm' action = do
   fm' .= \fm -> fm {fm_onChdir = action : fm_onChdir fm}
 
--- |Вывести в строку сообщений информацию об общем объёме файлов и сколько из них выбрано
+-- |Р’С‹РІРµСЃС‚Рё РІ СЃС‚СЂРѕРєСѓ СЃРѕРѕР±С‰РµРЅРёР№ РёРЅС„РѕСЂРјР°С†РёСЋ РѕР± РѕР±С‰РµРј РѕР±СЉС‘РјРµ С„Р°Р№Р»РѕРІ Рё СЃРєРѕР»СЊРєРѕ РёР· РЅРёС… РІС‹Р±СЂР°РЅРѕ
 fmStatusBarTotals fm' = do
   fm <- val fm'
   selected <- getSelectionFileInfo fm'
@@ -120,13 +120,13 @@ fmStatusBarTotals fm' = do
   fmStatusBarMsg fm' $ (selected &&& (format sel   selected++"     "))
                                  ++   format total (fm_filelist fm)
 
--- |Вывести сообщение в строку сообщений
+-- |Р’С‹РІРµСЃС‚Рё СЃРѕРѕР±С‰РµРЅРёРµ РІ СЃС‚СЂРѕРєСѓ СЃРѕРѕР±С‰РµРЅРёР№
 fmStatusBarMsg fm' msg = do
   fm <- val fm'
   labelSetText (fm_statusLabel fm) msg
   return ()
 
--- |Добавить сообщение в pop-up список сообщений
+-- |Р”РѕР±Р°РІРёС‚СЊ СЃРѕРѕР±С‰РµРЅРёРµ РІ pop-up СЃРїРёСЃРѕРє СЃРѕРѕР±С‰РµРЅРёР№
 fmStackMsg fm' msg = do
   fm <- val fm'
   let (box,n')  =  fm_messageCombo fm
@@ -135,16 +135,16 @@ fmStackMsg fm' msg = do
   New.comboBoxSetActive  box n
   return ()
 
--- |Имя файла, находящегося по заданному пути
+-- |РРјСЏ С„Р°Р№Р»Р°, РЅР°С…РѕРґСЏС‰РµРіРѕСЃСЏ РїРѕ Р·Р°РґР°РЅРЅРѕРјСѓ РїСѓС‚Рё
 fmFilenameAt fm' path  =  fmname `fmap` fmFileAt fm' path
 
--- |Файл, находящийся по заданному пути
+-- |Р¤Р°Р№Р», РЅР°С…РѕРґСЏС‰РёР№СЃСЏ РїРѕ Р·Р°РґР°РЅРЅРѕРјСѓ РїСѓС‚Рё
 fmFileAt fm' path = do
   fm <- val fm'
   let fullList = fm_filelist fm
   return$ fullList!!head path
 
--- |Возвратить файл под курсором
+-- |Р’РѕР·РІСЂР°С‚РёС‚СЊ С„Р°Р№Р» РїРѕРґ РєСѓСЂСЃРѕСЂРѕРј
 fmGetCursor fm' = do
   fm <- val fm'
   let fullList  = fm_filelist  fm
@@ -153,40 +153,40 @@ fmGetCursor fm' = do
     [i] -> return (fdBasename$ fullList!!i)
     _   -> return ""
 
--- |Установить курсор на заданный файл
+-- |РЈСЃС‚Р°РЅРѕРІРёС‚СЊ РєСѓСЂСЃРѕСЂ РЅР° Р·Р°РґР°РЅРЅС‹Р№ С„Р°Р№Р»
 fmSetCursor fm' filename = do
   fm <- val fm'
   whenJustM_ (fmFindCursor fm' filename)
              (\cursor -> New.treeViewSetCursor (fm_view fm) cursor Nothing)
 
--- |Возвратить курсор для файла с заданным именем
+-- |Р’РѕР·РІСЂР°С‚РёС‚СЊ РєСѓСЂСЃРѕСЂ РґР»СЏ С„Р°Р№Р»Р° СЃ Р·Р°РґР°РЅРЅС‹Рј РёРјРµРЅРµРј
 fmFindCursor fm' filename = do
   fm <- val fm'
   let fullList  =  fm_filelist  fm
   return (fmap (:[])$  findIndex ((filename==).fmname) fullList)
 
--- |Вывести на экран новый список файлов
+-- |Р’С‹РІРµСЃС‚Рё РЅР° СЌРєСЂР°РЅ РЅРѕРІС‹Р№ СЃРїРёСЃРѕРє С„Р°Р№Р»РѕРІ
 fmSetFilelist fm' files = do
   fm <- val fm'
   fm' =: fm {fm_filelist = files}
   changeList (fm_model fm) (fm_selection fm) files
 
--- |Вывести сообщение об ошибке
+-- |Р’С‹РІРµСЃС‚Рё СЃРѕРѕР±С‰РµРЅРёРµ РѕР± РѕС€РёР±РєРµ
 fmErrorMsg fm' msg = do
   fm <- val fm'
   msgBox (fm_window fm) MessageError msg
 
--- |Вывести информационное сообщение
+-- |Р’С‹РІРµСЃС‚Рё РёРЅС„РѕСЂРјР°С†РёРѕРЅРЅРѕРµ СЃРѕРѕР±С‰РµРЅРёРµ
 fmInfoMsg fm' msg = do
   fm <- val fm'
   msgBox (fm_window fm) MessageInfo msg
 
 
 ----------------------------------------------------------------------------------------------------
----- Выделение файлов ------------------------------------------------------------------------------
+---- Р’С‹РґРµР»РµРЅРёРµ С„Р°Р№Р»РѕРІ ------------------------------------------------------------------------------
 ----------------------------------------------------------------------------------------------------
 
--- |Отметить/разотметить файлы, удовлетворяющие заданному предикату
+-- |РћС‚РјРµС‚РёС‚СЊ/СЂР°Р·РѕС‚РјРµС‚РёС‚СЊ С„Р°Р№Р»С‹, СѓРґРѕРІР»РµС‚РІРѕСЂСЏСЋС‰РёРµ Р·Р°РґР°РЅРЅРѕРјСѓ РїСЂРµРґРёРєР°С‚Сѓ
 fmSelectFilenames   = fmSelUnselFilenames New.treeSelectionSelectPath
 fmUnselectFilenames = fmSelUnselFilenames New.treeSelectionUnselectPath
 fmSelUnselFilenames selectOrUnselect fm' filter_p = do
@@ -196,11 +196,11 @@ fmSelUnselFilenames selectOrUnselect fm' filter_p = do
   for (findIndices filter_p fullList)
       (selectOrUnselect selection.(:[]))
 
--- |Отметить/разотметить все файлы
+-- |РћС‚РјРµС‚РёС‚СЊ/СЂР°Р·РѕС‚РјРµС‚РёС‚СЊ РІСЃРµ С„Р°Р№Р»С‹
 fmSelectAll   fm' = New.treeSelectionSelectAll   . fm_selection =<< val fm'
 fmUnselectAll fm' = New.treeSelectionUnselectAll . fm_selection =<< val fm'
 
--- |Инвертировать выделение
+-- |РРЅРІРµСЂС‚РёСЂРѕРІР°С‚СЊ РІС‹РґРµР»РµРЅРёРµ
 fmInvertSelection fm' = do
   fm <- val fm'
   let files     = length$ fm_filelist fm
@@ -209,25 +209,25 @@ fmInvertSelection fm' = do
     selected <- New.treeSelectionPathIsSelected selection [i]
     (if selected  then New.treeSelectionUnselectPath  else New.treeSelectionSelectPath) selection [i]
 
--- |Список имён избранных файлов + имён каталогов в отображении mapDirName
+-- |РЎРїРёСЃРѕРє РёРјС‘РЅ РёР·Р±СЂР°РЅРЅС‹С… С„Р°Р№Р»РѕРІ + РёРјС‘РЅ РєР°С‚Р°Р»РѕРіРѕРІ РІ РѕС‚РѕР±СЂР°Р¶РµРЅРёРё mapDirName
 getSelection fm' mapDirName = do
   let mapFilenames fd | fdIsDir fd = mapDirName$ fmname fd
                       | otherwise  = [fmname fd]
   getSelectionFileInfo fm' >>== concatMap mapFilenames
 
--- |Список FileInfo избранных файлов
+-- |РЎРїРёСЃРѕРє FileInfo РёР·Р±СЂР°РЅРЅС‹С… С„Р°Р№Р»РѕРІ
 getSelectionFileInfo fm' = do
   fm <- val fm'
   let fullList = fm_filelist fm
   getSelectionRows fm' >>== map (fullList!!)
 
--- |Список номеров избранных файлов
+-- |РЎРїРёСЃРѕРє РЅРѕРјРµСЂРѕРІ РёР·Р±СЂР°РЅРЅС‹С… С„Р°Р№Р»РѕРІ
 getSelectionRows fm' = do
   fm <- val fm'
   let selection = fm_selection fm
   New.treeSelectionGetSelectedRows selection >>== map head
 
--- |Удалить из модели выбранные файлы
+-- |РЈРґР°Р»РёС‚СЊ РёР· РјРѕРґРµР»Рё РІС‹Р±СЂР°РЅРЅС‹Рµ С„Р°Р№Р»С‹
 fmDeleteSelected fm' = do
   rows <- getSelectionRows fm'
   fm <- val fm'
@@ -235,25 +235,25 @@ fmDeleteSelected fm' = do
 
 
 ----------------------------------------------------------------------------------------------------
----- Сортировка списка файлов ----------------------------------------------------------------------
+---- РЎРѕСЂС‚РёСЂРѕРІРєР° СЃРїРёСЃРєР° С„Р°Р№Р»РѕРІ ----------------------------------------------------------------------
 ----------------------------------------------------------------------------------------------------
 
--- |Возвратить текущий порядок сортировки
+-- |Р’РѕР·РІСЂР°С‚РёС‚СЊ С‚РµРєСѓС‰РёР№ РїРѕСЂСЏРґРѕРє СЃРѕСЂС‚РёСЂРѕРІРєРё
 fmGetSortOrder fm'  =  fm_sort_order `fmap` val fm'
--- |Установить порядок сортировки
+-- |РЈСЃС‚Р°РЅРѕРІРёС‚СЊ РїРѕСЂСЏРґРѕРє СЃРѕСЂС‚РёСЂРѕРІРєРё
 fmSetSortOrder fm' showSortOrder  =  fmModifySortOrder fm' showSortOrder . const
--- |Модифицировать порядок сортировки в fm' и показать индикатор сортировки над соответствующим столбцом
+-- |РњРѕРґРёС„РёС†РёСЂРѕРІР°С‚СЊ РїРѕСЂСЏРґРѕРє СЃРѕСЂС‚РёСЂРѕРІРєРё РІ fm' Рё РїРѕРєР°Р·Р°С‚СЊ РёРЅРґРёРєР°С‚РѕСЂ СЃРѕСЂС‚РёСЂРѕРІРєРё РЅР°Рґ СЃРѕРѕС‚РІРµС‚СЃС‚РІСѓСЋС‰РёРј СЃС‚РѕР»Р±С†РѕРј
 fmModifySortOrder fm' showSortOrder f_order = do
   fm <- val fm'
   let sort_order = f_order (fm_sort_order fm)
   fm' =: fm {fm_sort_order = sort_order}
-  -- Модифицируем индикатор сортировки
+  -- РњРѕРґРёС„РёС†РёСЂСѓРµРј РёРЅРґРёРєР°С‚РѕСЂ СЃРѕСЂС‚РёСЂРѕРІРєРё
   let (column, order)  =  break1 isUpper sort_order
   showSortOrder column (if order == "Asc"  then SortAscending  else SortDescending)
 
--- |Сохранить порядок сортировки в историю
+-- |РЎРѕС…СЂР°РЅРёС‚СЊ РїРѕСЂСЏРґРѕРє СЃРѕСЂС‚РёСЂРѕРІРєРё РІ РёСЃС‚РѕСЂРёСЋ
 fmSaveSortOrder    fm'  =  fmReplaceHistory fm' "SortOrder"
--- |Восстановить порядок сортировки из истории
+-- |Р’РѕСЃСЃС‚Р°РЅРѕРІРёС‚СЊ РїРѕСЂСЏРґРѕРє СЃРѕСЂС‚РёСЂРѕРІРєРё РёР· РёСЃС‚РѕСЂРёРё
 fmRestoreSortOrder fm'  =  fmGetHistory1    fm' "SortOrder" "NameAsc"
 
 -- | (ClickedColumnName, OldSortOrder) -> NewSortOrder
@@ -264,7 +264,7 @@ calcNewSortOrder "Size"     _              = "SizeDesc"
 calcNewSortOrder "Modified" "ModifiedDesc" = "ModifiedAsc"
 calcNewSortOrder "Modified" _              = "ModifiedDesc"
 
--- |Выбор функции сортировки по имени колонки
+-- |Р’С‹Р±РѕСЂ С„СѓРЅРєС†РёРё СЃРѕСЂС‚РёСЂРѕРІРєРё РїРѕ РёРјРµРЅРё РєРѕР»РѕРЅРєРё
 sortOnColumn "NameAsc"       =  sortOn (\fd -> (not$ fdIsDir fd, strLower$ fmname fd))
 sortOnColumn "NameDesc"      =  sortOn (\fd -> (     fdIsDir fd, strLower$ fmname fd))  >>> reverse
 --
@@ -278,75 +278,75 @@ sortOnColumn _               =  id
 
 
 ----------------------------------------------------------------------------------------------------
----- Операции с файлом истории ---------------------------------------------------------------------
+---- РћРїРµСЂР°С†РёРё СЃ С„Р°Р№Р»РѕРј РёСЃС‚РѕСЂРёРё ---------------------------------------------------------------------
 ----------------------------------------------------------------------------------------------------
 
--- |Добавить значение в список истории (удалив предыдущие точно такие же строки)
+-- |Р”РѕР±Р°РІРёС‚СЊ Р·РЅР°С‡РµРЅРёРµ РІ СЃРїРёСЃРѕРє РёСЃС‚РѕСЂРёРё (СѓРґР°Р»РёРІ РїСЂРµРґС‹РґСѓС‰РёРµ С‚РѕС‡РЅРѕ С‚Р°РєРёРµ Р¶Рµ СЃС‚СЂРѕРєРё)
 fmAddHistory fm' tags text     =   fmModifyHistory fm' tags text (\tag line -> (line==))
--- |Заменить значение в списке истории (удалив предыдущие значения с этим тегом)
+-- |Р—Р°РјРµРЅРёС‚СЊ Р·РЅР°С‡РµРЅРёРµ РІ СЃРїРёСЃРєРµ РёСЃС‚РѕСЂРёРё (СѓРґР°Р»РёРІ РїСЂРµРґС‹РґСѓС‰РёРµ Р·РЅР°С‡РµРЅРёСЏ СЃ СЌС‚РёРј С‚РµРіРѕРј)
 fmReplaceHistory fm' tags text  =  fmModifyHistory fm' tags text (\tag line -> (tag==).fst.split2 '=')
--- |Добавить/Заменить значение в списке истории
+-- |Р”РѕР±Р°РІРёС‚СЊ/Р—Р°РјРµРЅРёС‚СЊ Р·РЅР°С‡РµРЅРёРµ РІ СЃРїРёСЃРєРµ РёСЃС‚РѕСЂРёРё
 fmModifyHistory fm' tags text deleteCond = ignoreErrors $ do
   fm <- val fm'
-  -- Занесём новый элемент в голову списка и избавимся от дублирующих значений
+  -- Р—Р°РЅРµСЃС‘Рј РЅРѕРІС‹Р№ СЌР»РµРјРµРЅС‚ РІ РіРѕР»РѕРІСѓ СЃРїРёСЃРєР° Рё РёР·Р±Р°РІРёРјСЃСЏ РѕС‚ РґСѓР±Р»РёСЂСѓСЋС‰РёС… Р·РЅР°С‡РµРЅРёР№
   let newItem  =  join2 "=" (mainTag, text)
       mainTag  =  head (split '/' tags)
   withMVar (fm_history_file fm) $ \history_file -> do
     modifyConfigFile history_file ((newItem:) . deleteIf (deleteCond mainTag newItem))
 
--- |Удалить тег из списка истории
+-- |РЈРґР°Р»РёС‚СЊ С‚РµРі РёР· СЃРїРёСЃРєР° РёСЃС‚РѕСЂРёРё
 fmDeleteTagFromHistory fm' tag = ignoreErrors $ do
   fm <- val fm'
   withMVar (fm_history_file fm) $ \history_file -> do
     modifyConfigFile history_file (deleteIf ((tag==).fst.split2 '='))
 
--- |Извлечь список истории по заданному тэгу/тэгам
+-- |РР·РІР»РµС‡СЊ СЃРїРёСЃРѕРє РёСЃС‚РѕСЂРёРё РїРѕ Р·Р°РґР°РЅРЅРѕРјСѓ С‚СЌРіСѓ/С‚СЌРіР°Рј
 fmGetHistory1 fm' tags deflt = do x <- fmGetHistory fm' tags; return (head (x++[deflt]))
 fmGetHistory  fm' tags       = handle (\_ -> return []) $ do
   fm <- val fm'
   hist <- fmGetConfigFile fm'
-  hist.$ map (split2 '=')                           -- разбить каждую строку на тэг+значение
-      .$ filter ((split '/' tags `contains`).fst)   -- отобрать строки с тэгом из списка tags
-      .$ map snd                                    -- оставить только значения.
-      .$ map (splitCmt "")                          -- разбить каждое значение на описание+опции
-      .$ mapM (\x -> case x of                      -- локализовать описание и слить их обратно
+  hist.$ map (split2 '=')                           -- СЂР°Р·Р±РёС‚СЊ РєР°Р¶РґСѓСЋ СЃС‚СЂРѕРєСѓ РЅР° С‚СЌРі+Р·РЅР°С‡РµРЅРёРµ
+      .$ filter ((split '/' tags `contains`).fst)   -- РѕС‚РѕР±СЂР°С‚СЊ СЃС‚СЂРѕРєРё СЃ С‚СЌРіРѕРј РёР· СЃРїРёСЃРєР° tags
+      .$ map snd                                    -- РѕСЃС‚Р°РІРёС‚СЊ С‚РѕР»СЊРєРѕ Р·РЅР°С‡РµРЅРёСЏ.
+      .$ map (splitCmt "")                          -- СЂР°Р·Р±РёС‚СЊ РєР°Р¶РґРѕРµ Р·РЅР°С‡РµРЅРёРµ РЅР° РѕРїРёСЃР°РЅРёРµ+РѕРїС†РёРё
+      .$ mapM (\x -> case x of                      -- Р»РѕРєР°Р»РёР·РѕРІР°С‚СЊ РѕРїРёСЃР°РЅРёРµ Рё СЃР»РёС‚СЊ РёС… РѕР±СЂР°С‚РЅРѕ
                        ("",b) -> return b
                        (a ,b) -> do a <- i18n a; return$ join2 ": " (a,b))
 
--- Чтение/запись в историю булевского значения
+-- Р§С‚РµРЅРёРµ/Р·Р°РїРёСЃСЊ РІ РёСЃС‚РѕСЂРёСЋ Р±СѓР»РµРІСЃРєРѕРіРѕ Р·РЅР°С‡РµРЅРёСЏ
 fmGetHistoryBool     fm' tag deflt  =  fmGetHistory1 fm' tag (bool2str deflt)  >>==  (==bool2str True)
 fmReplaceHistoryBool fm' tag x      =  fmReplaceHistory fm' tag (bool2str x)
 bool2str True  = "1"
 bool2str False = "0"
 
 
--- |Получить содержимое файла истории
+-- |РџРѕР»СѓС‡РёС‚СЊ СЃРѕРґРµСЂР¶РёРјРѕРµ С„Р°Р№Р»Р° РёСЃС‚РѕСЂРёРё
 fmGetConfigFile fm' = do
   fm <- val fm'
   case fm_history fm of
     Nothing      -> withMVar (fm_history_file fm) readConfigFile
     Just history -> return history
 
--- |На время выполнения этих скобок содержимое файла истории читается из поля fm_history
+-- |РќР° РІСЂРµРјСЏ РІС‹РїРѕР»РЅРµРЅРёСЏ СЌС‚РёС… СЃРєРѕР±РѕРє СЃРѕРґРµСЂР¶РёРјРѕРµ С„Р°Р№Р»Р° РёСЃС‚РѕСЂРёРё С‡РёС‚Р°РµС‚СЃСЏ РёР· РїРѕР»СЏ fm_history
 fmCacheConfigFile fm' =
   bracket_ (do history <- fmGetConfigFile fm'
                fm' .= \fm -> fm {fm_history = Just history})
            (do fm' .= \fm -> fm {fm_history = Nothing})
 
--- |Сохранить размеры и положение окна в истории
+-- |РЎРѕС…СЂР°РЅРёС‚СЊ СЂР°Р·РјРµСЂС‹ Рё РїРѕР»РѕР¶РµРЅРёРµ РѕРєРЅР° РІ РёСЃС‚РѕСЂРёРё
 saveSizePos fm' window name = do
     (x,y) <- windowGetPosition window
     (w,h) <- widgetGetSize     window
     fmReplaceHistory fm' (name++"Coord") (unwords$ map show [x,y,w,h])
 
--- |Запомним, было ли окно максимизировано
+-- |Р—Р°РїРѕРјРЅРёРј, Р±С‹Р»Рѕ Р»Рё РѕРєРЅРѕ РјР°РєСЃРёРјРёР·РёСЂРѕРІР°РЅРѕ
 saveMaximized fm' name = fmReplaceHistoryBool fm' (name++"Maximized")
 
--- |Восстановить размеры и положение окна из истории
+-- |Р’РѕСЃСЃС‚Р°РЅРѕРІРёС‚СЊ СЂР°Р·РјРµСЂС‹ Рё РїРѕР»РѕР¶РµРЅРёРµ РѕРєРЅР° РёР· РёСЃС‚РѕСЂРёРё
 restoreSizePos fm' window name deflt = do
     coord <- fmGetHistory1 fm' (name++"Coord") deflt
     let a  = coord.$split ' '
-    when (length(a)==4  &&  all isSignedInt a) $ do  -- проверим что a состоит ровно из 4 чисел
+    when (length(a)==4  &&  all isSignedInt a) $ do  -- РїСЂРѕРІРµСЂРёРј С‡С‚Рѕ a СЃРѕСЃС‚РѕРёС‚ СЂРѕРІРЅРѕ РёР· 4 С‡РёСЃРµР»
       let [x,y,w,h] = map readSignedInt a
       windowMove   window x y  `on` x/= -10000
       windowResize window w h  `on` w/= -10000
@@ -355,18 +355,18 @@ restoreSizePos fm' window name deflt = do
 
 
 ----------------------------------------------------------------------------------------------------
----- Вспомогательные определения -------------------------------------------------------------------
+---- Р’СЃРїРѕРјРѕРіР°С‚РµР»СЊРЅС‹Рµ РѕРїСЂРµРґРµР»РµРЅРёСЏ -------------------------------------------------------------------
 ----------------------------------------------------------------------------------------------------
 
--- Выбирает один из нескольких вариантов по индексу
+-- Р’С‹Р±РёСЂР°РµС‚ РѕРґРёРЅ РёР· РЅРµСЃРєРѕР»СЊРєРёС… РІР°СЂРёР°РЅС‚РѕРІ РїРѕ РёРЅРґРµРєСЃСѓ
 opt `select` variants  =  words (split ',' variants !! opt)
--- Преобразует текст настройки в список опций, предварительно удаляя комментарий в её начале
+-- РџСЂРµРѕР±СЂР°Р·СѓРµС‚ С‚РµРєСЃС‚ РЅР°СЃС‚СЂРѕР№РєРё РІ СЃРїРёСЃРѕРє РѕРїС†РёР№, РїСЂРµРґРІР°СЂРёС‚РµР»СЊРЅРѕ СѓРґР°Р»СЏСЏ РєРѕРјРјРµРЅС‚Р°СЂРёР№ РІ РµС‘ РЅР°С‡Р°Р»Рµ
 cvt1 opt  =  map (opt++) . (||| [""]) . words . clear
--- То же самое, только имя опции добавляется только к словам, не начинающимся с "-"
+-- РўРѕ Р¶Рµ СЃР°РјРѕРµ, С‚РѕР»СЊРєРѕ РёРјСЏ РѕРїС†РёРё РґРѕР±Р°РІР»СЏРµС‚СЃСЏ С‚РѕР»СЊРєРѕ Рє СЃР»РѕРІР°Рј, РЅРµ РЅР°С‡РёРЅР°СЋС‰РёРјСЃСЏ СЃ "-"
 cvt  opt  =  map (\w -> (w!~"-?*" &&& opt)++w) . (||| [""]) . words . clear
--- Удаляет комментарий вида "*: " в начале строки
+-- РЈРґР°Р»СЏРµС‚ РєРѕРјРјРµРЅС‚Р°СЂРёР№ РІРёРґР° "*: " РІ РЅР°С‡Р°Р»Рµ СЃС‚СЂРѕРєРё
 clear     =  trim . snd . splitCmt ""
--- |Разбивает значение на описание+опции
+-- |Р Р°Р·Р±РёРІР°РµС‚ Р·РЅР°С‡РµРЅРёРµ РЅР° РѕРїРёСЃР°РЅРёРµ+РѕРїС†РёРё
 splitCmt xs ""           = ("", reverse xs)
 splitCmt xs ":"          = (reverse xs, "")
 splitCmt xs (':':' ':ws) = (reverse xs, ws)
@@ -374,10 +374,10 @@ splitCmt xs (w:ws)       = splitCmt (w:xs) ws
 
 
 ----------------------------------------------------------------------------------------------------
----- GUI controls, взаимодействующие с FM ----------------------------------------------------------
+---- GUI controls, РІР·Р°РёРјРѕРґРµР№СЃС‚РІСѓСЋС‰РёРµ СЃ FM ----------------------------------------------------------
 ----------------------------------------------------------------------------------------------------
 
--- |Комбинированный виджет, представляющий строку ввода с сохраняемой историей
+-- |РљРѕРјР±РёРЅРёСЂРѕРІР°РЅРЅС‹Р№ РІРёРґР¶РµС‚, РїСЂРµРґСЃС‚Р°РІР»СЏСЋС‰РёР№ СЃС‚СЂРѕРєСѓ РІРІРѕРґР° СЃ СЃРѕС…СЂР°РЅСЏРµРјРѕР№ РёСЃС‚РѕСЂРёРµР№
 data EntryWithHistory = EntryWithHistory
   { ehGtkWidget   :: GtkWidget ComboBoxEntry String
   , entry         :: Entry
@@ -396,8 +396,8 @@ instance GtkWidgetClass EntryWithHistory ComboBoxEntry String where
 
 
 {-# NOINLINE fmEntryWithHistory #-}
--- |Создать комбо-бокс с историей под тегом tag;
--- перед запоминанием в истории пропускать введённый текст через операцию process
+-- |РЎРѕР·РґР°С‚СЊ РєРѕРјР±Рѕ-Р±РѕРєСЃ СЃ РёСЃС‚РѕСЂРёРµР№ РїРѕРґ С‚РµРіРѕРј tag;
+-- РїРµСЂРµРґ Р·Р°РїРѕРјРёРЅР°РЅРёРµРј РІ РёСЃС‚РѕСЂРёРё РїСЂРѕРїСѓСЃРєР°С‚СЊ РІРІРµРґС‘РЅРЅС‹Р№ С‚РµРєСЃС‚ С‡РµСЂРµР· РѕРїРµСЂР°С†РёСЋ process
 fmEntryWithHistory fm' tag filter_p process = do
   -- Create GUI controls
   comboBox <- New.comboBoxEntryNewText
@@ -426,7 +426,7 @@ fmEntryWithHistory fm' tag filter_p process = do
           New.comboBoxPrependText comboBox text
           fmAddHistory fm' tag text
   readHistory
-  -- Установить текст в поле ввода
+  -- РЈСЃС‚Р°РЅРѕРІРёС‚СЊ С‚РµРєСЃС‚ РІ РїРѕР»Рµ РІРІРѕРґР°
   case last of
     last:_ -> entry =: last
     []     -> do history <- val history'
@@ -446,7 +446,7 @@ fmEntryWithHistory fm' tag filter_p process = do
 
 
 {-# NOINLINE fmLabeledEntryWithHistory #-}
--- |Ввод строки с историей под тэгом tag и меткой слева
+-- |Р’РІРѕРґ СЃС‚СЂРѕРєРё СЃ РёСЃС‚РѕСЂРёРµР№ РїРѕРґ С‚СЌРіРѕРј tag Рё РјРµС‚РєРѕР№ СЃР»РµРІР°
 fmLabeledEntryWithHistory fm' tag title = do
   hbox  <- hBoxNew False 0
   title <- label title
@@ -457,7 +457,7 @@ fmLabeledEntryWithHistory fm' tag title = do
 
 
 {-# NOINLINE fmCheckedEntryWithHistory #-}
--- |Ввод строки с историей под тэгом tag и чекбоксом слева
+-- |Р’РІРѕРґ СЃС‚СЂРѕРєРё СЃ РёСЃС‚РѕСЂРёРµР№ РїРѕРґ С‚СЌРіРѕРј tag Рё С‡РµРєР±РѕРєСЃРѕРј СЃР»РµРІР°
 fmCheckedEntryWithHistory fm' tag title = do
   hbox  <- hBoxNew False 0
   checkBox <- checkBox title
@@ -471,7 +471,7 @@ fmCheckedEntryWithHistory fm' tag title = do
 
 
 {-# NOINLINE fmFileBox #-}
--- |Ввод имени файла/каталога с историей под тэгом tag и поиском по диску через вызываемый диалог
+-- |Р’РІРѕРґ РёРјРµРЅРё С„Р°Р№Р»Р°/РєР°С‚Р°Р»РѕРіР° СЃ РёСЃС‚РѕСЂРёРµР№ РїРѕРґ С‚СЌРіРѕРј tag Рё РїРѕРёСЃРєРѕРј РїРѕ РґРёСЃРєСѓ С‡РµСЂРµР· РІС‹Р·С‹РІР°РµРјС‹Р№ РґРёР°Р»РѕРі
 fmFileBox fm' dialog tag dialogType makeControl dialogTitle filters filter_p process = do
   hbox     <- hBoxNew False 0
   control  <- makeControl
@@ -485,10 +485,10 @@ fmFileBox fm' dialog tag dialogType makeControl dialogTitle filters filter_p pro
   return (hbox, control, filename)
 
 {-# NOINLINE fmInputString #-}
--- |Запросить у пользователя строку (с историей ввода)
+-- |Р—Р°РїСЂРѕСЃРёС‚СЊ Сѓ РїРѕР»СЊР·РѕРІР°С‚РµР»СЏ СЃС‚СЂРѕРєСѓ (СЃ РёСЃС‚РѕСЂРёРµР№ РІРІРѕРґР°)
 fmInputString fm' tag title filter_p process = do
   fm <- val fm'
-  -- Создадим диалог со стандартными кнопками OK/Cancel
+  -- РЎРѕР·РґР°РґРёРј РґРёР°Р»РѕРі СЃРѕ СЃС‚Р°РЅРґР°СЂС‚РЅС‹РјРё РєРЅРѕРїРєР°РјРё OK/Cancel
   fmDialog fm' title $ \(dialog,okButton) -> do
     x <- fmEntryWithHistory fm' tag filter_p process
 
@@ -504,7 +504,7 @@ fmInputString fm' tag title filter_p process = do
 
 
 {-# NOINLINE fmCheckButtonWithHistory #-}
--- |Создать чекбокс с историей под тегом tag
+-- |РЎРѕР·РґР°С‚СЊ С‡РµРєР±РѕРєСЃ СЃ РёСЃС‚РѕСЂРёРµР№ РїРѕРґ С‚РµРіРѕРј tag
 fmCheckButtonWithHistory fm' tag deflt title = do
   control <- checkBox title
   let rereadHistory = do
@@ -518,7 +518,7 @@ fmCheckButtonWithHistory fm' tag deflt title = do
            }
 
 {-# NOINLINE fmDialog #-}
--- |Диалог со стандартными кнопками OK/Cancel
+-- |Р”РёР°Р»РѕРі СЃРѕ СЃС‚Р°РЅРґР°СЂС‚РЅС‹РјРё РєРЅРѕРїРєР°РјРё OK/Cancel
 fmDialog fm' title action = do
   fm <- val fm'
   title <- i18n title
@@ -533,7 +533,7 @@ fmDialog fm' title action = do
     action (dialog,okButton)
 
 {-# NOINLINE fmDialogRun #-}
--- |Отработать диалог с сохранением его положения и размера в истории
+-- |РћС‚СЂР°Р±РѕС‚Р°С‚СЊ РґРёР°Р»РѕРі СЃ СЃРѕС…СЂР°РЅРµРЅРёРµРј РµРіРѕ РїРѕР»РѕР¶РµРЅРёСЏ Рё СЂР°Р·РјРµСЂР° РІ РёСЃС‚РѕСЂРёРё
 fmDialogRun fm' dialog name = do
     inside (restoreSizePos fm' dialog name "")
            (saveSizePos    fm' dialog name)
@@ -541,7 +541,7 @@ fmDialogRun fm' dialog name = do
 
 
 ----------------------------------------------------------------------------------------------------
----- Список файлов в архиве ------------------------------------------------------------------------
+---- РЎРїРёСЃРѕРє С„Р°Р№Р»РѕРІ РІ Р°СЂС…РёРІРµ ------------------------------------------------------------------------
 ----------------------------------------------------------------------------------------------------
 
 createFilePanel = do
@@ -552,10 +552,10 @@ createFilePanel = do
   view  <- New.treeViewNew
   set view [ {-New.treeViewSearchColumn := 0, -} New.treeViewRulesHint := True]
   New.treeViewSetHeadersVisible view True
-  -- Создаём и устанавливаем модель
+  -- РЎРѕР·РґР°С‘Рј Рё СѓСЃС‚Р°РЅР°РІР»РёРІР°РµРј РјРѕРґРµР»СЊ
   model <- New.listStoreNew []
   set view [New.treeViewModel := model]
-  -- Создаём колонки для её отображения.
+  -- РЎРѕР·РґР°С‘Рј РєРѕР»РѕРЅРєРё РґР»СЏ РµС‘ РѕС‚РѕР±СЂР°Р¶РµРЅРёСЏ.
   let columnTitles = ["0015 Name", "0016 Size", "0017 Modified", "0018 DIRECTORY"]
       n = map (drop 5) columnTitles
   s <- i18ns columnTitles
@@ -565,7 +565,7 @@ createFilePanel = do
     ,addColumn view model onColumnTitleClicked (n!!1) (s!!1) (\fd -> if (fdIsDir fd) then (s!!3) else (show3$ fdSize fd)) [cellXAlign := 1]
     ,addColumn view model onColumnTitleClicked (n!!2) (s!!2) (guiFormatDateTime.fdTime)                                   []
     ,addColumn view model onColumnTitleClicked ("")   ("")   (const "")                                                   [] ]
-  -- Включаем поиск по первой колонке
+  -- Р’РєР»СЋС‡Р°РµРј РїРѕРёСЃРє РїРѕ РїРµСЂРІРѕР№ РєРѕР»РѕРЅРєРµ
   New.treeViewSetEnableSearch view True
   New.treeViewSetSearchColumn view 0
   New.treeViewSetSearchEqualFunc view $ \col str iter -> do
@@ -579,20 +579,20 @@ createFilePanel = do
   containerAdd scrwin view
   return (scrwin, view, model, selection, columns, onColumnTitleClicked)
 
--- |Задать новый список отображаемых файлов
+-- |Р—Р°РґР°С‚СЊ РЅРѕРІС‹Р№ СЃРїРёСЃРѕРє РѕС‚РѕР±СЂР°Р¶Р°РµРјС‹С… С„Р°Р№Р»РѕРІ
 changeList model selection filelist = do
   New.treeSelectionUnselectAll selection
-  -- Удалить старые данные из модели и заполнить её новыми
+  -- РЈРґР°Р»РёС‚СЊ СЃС‚Р°СЂС‹Рµ РґР°РЅРЅС‹Рµ РёР· РјРѕРґРµР»Рё Рё Р·Р°РїРѕР»РЅРёС‚СЊ РµС‘ РЅРѕРІС‹РјРё
   New.listStoreClear model
   for filelist (New.listStoreAppend model)
 
--- |Добавить во view колонку, отображающую field, с заголовком title
+-- |Р”РѕР±Р°РІРёС‚СЊ РІРѕ view РєРѕР»РѕРЅРєСѓ, РѕС‚РѕР±СЂР°Р¶Р°СЋС‰СѓСЋ field, СЃ Р·Р°РіРѕР»РѕРІРєРѕРј title
 addColumn view model onColumnTitleClicked colname title field attrs = do
   col1 <- New.treeViewColumnNew
   New.treeViewColumnSetTitle col1 title
   renderer1 <- New.cellRendererTextNew
   New.cellLayoutPackStart col1 renderer1 False
-  -- Попытки сделать поле имени автоматически увеличивающимся при увеличении окна программы
+  -- РџРѕРїС‹С‚РєРё СЃРґРµР»Р°С‚СЊ РїРѕР»Рµ РёРјРµРЅРё Р°РІС‚РѕРјР°С‚РёС‡РµСЃРєРё СѓРІРµР»РёС‡РёРІР°СЋС‰РёРјСЃСЏ РїСЂРё СѓРІРµР»РёС‡РµРЅРёРё РѕРєРЅР° РїСЂРѕРіСЂР°РјРјС‹
   -- (bool New.cellLayoutPackStart New.cellLayoutPackEnd expand) col1 renderer1 expand
   -- set col1 [New.treeViewColumnSizing := TreeViewColumnAutosize] `on` expand
   -- set col1 [New.treeViewColumnSizing := TreeViewColumnFixed] `on` not expand
@@ -602,14 +602,14 @@ addColumn view model onColumnTitleClicked colname title field attrs = do
              , New.treeViewColumnSizing      := TreeViewColumnFixed
              , New.treeViewColumnClickable   := True
              , New.treeViewColumnReorderable := True ]
-  -- При нажатии на заголовок столбца вызвать колбэк
+  -- РџСЂРё РЅР°Р¶Р°С‚РёРё РЅР° Р·Р°РіРѕР»РѕРІРѕРє СЃС‚РѕР»Р±С†Р° РІС‹Р·РІР°С‚СЊ РєРѕР»Р±СЌРє
   col1 `New.onColClicked` do
     val onColumnTitleClicked >>= ($colname)
   New.cellLayoutSetAttributes col1 renderer1 model $ \row -> [New.cellText := field row] ++ attrs
   New.treeViewAppendColumn view col1
   return (colname,col1)
 
--- |Показать индикатор сортировки над столбцом colname в направлении order
+-- |РџРѕРєР°Р·Р°С‚СЊ РёРЅРґРёРєР°С‚РѕСЂ СЃРѕСЂС‚РёСЂРѕРІРєРё РЅР°Рґ СЃС‚РѕР»Р±С†РѕРј colname РІ РЅР°РїСЂР°РІР»РµРЅРёРё order
 showSortOrder columns colname order = do
   for (map snd columns) (`New.treeViewColumnSetSortIndicator` False)
   let Just col1  =  colname `lookup` columns

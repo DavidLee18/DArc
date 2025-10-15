@@ -564,7 +564,7 @@ STDMETHODIMP CMatchFinder::Skip(UInt32 num)
 
 void CMatchFinder::Normalize()
 {
-  // Сдвинуть назад виртуальные позиции. Минимум на 128 мб (актуально для словаря в 1гб, поскольку kMaxValForNormalize=1гб)
+  // РЎРґРІРёРЅСѓС‚СЊ РЅР°Р·Р°Рґ РІРёСЂС‚СѓР°Р»СЊРЅС‹Рµ РїРѕР·РёС†РёРё. РњРёРЅРёРјСѓРј РЅР° 128 РјР± (Р°РєС‚СѓР°Р»СЊРЅРѕ РґР»СЏ СЃР»РѕРІР°СЂСЏ РІ 1РіР±, РїРѕСЃРєРѕР»СЊРєСѓ kMaxValForNormalize=1РіР±)
   UInt32 subValue = mymax (_pos - _cyclicBufferSize, 128<<20);
   {
     CIndex *items = _hash;

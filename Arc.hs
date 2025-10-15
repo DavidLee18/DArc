@@ -1,29 +1,29 @@
-{-# OPTIONS_GHC -cpp #-}
+{-# LANGUAGE CPP #-}
 ----------------------------------------------------------------------------------------------------
----- Основной модуль программы.                                                                 ----
----- Вызывает parseCmdline из модуля Cmdline для разбора командной строки и выполняет каждую    ----
-----   полученную команду.                                                                      ----
----- Если команда должна обработать несколько архивов, то find_archives дублирует её            ----
-----   для каждого из них.                                                                      ----
----- Затем каждая команда сводится к выполнению одной из следующих задач:                       ----
----- * изменение архива  с помощью  runArchiveCreate   из модуля ArcCreate   (команды a/f/m/u/j/d/ch/c/k/rr)
----- * распаковка архива         -  runArchiveExtract  -         ArcExtract  (команды t/e/x)    ----
----- * получение листинга архива -  runArchiveList     -         ArcList     (команды l/v)      ----
----- * восстановление архива     -  runArchiveRecovery -         ArcRecover  (команда r)        ----
----- которым передаются аргументы в соответствии со спецификой конкретной выполняемой команды.  ----
+---- РћСЃРЅРѕРІРЅРѕР№ РјРѕРґСѓР»СЊ РїСЂРѕРіСЂР°РјРјС‹.                                                                 ----
+---- Р’С‹Р·С‹РІР°РµС‚ parseCmdline РёР· РјРѕРґСѓР»СЏ Cmdline РґР»СЏ СЂР°Р·Р±РѕСЂР° РєРѕРјР°РЅРґРЅРѕР№ СЃС‚СЂРѕРєРё Рё РІС‹РїРѕР»РЅСЏРµС‚ РєР°Р¶РґСѓСЋ    ----
+----   РїРѕР»СѓС‡РµРЅРЅСѓСЋ РєРѕРјР°РЅРґСѓ.                                                                      ----
+---- Р•СЃР»Рё РєРѕРјР°РЅРґР° РґРѕР»Р¶РЅР° РѕР±СЂР°Р±РѕС‚Р°С‚СЊ РЅРµСЃРєРѕР»СЊРєРѕ Р°СЂС…РёРІРѕРІ, С‚Рѕ findArchives РґСѓР±Р»РёСЂСѓРµС‚ РµС‘            ----
+----   РґР»СЏ РєР°Р¶РґРѕРіРѕ РёР· РЅРёС….                                                                      ----
+---- Р—Р°С‚РµРј РєР°Р¶РґР°СЏ РєРѕРјР°РЅРґР° СЃРІРѕРґРёС‚СЃСЏ Рє РІС‹РїРѕР»РЅРµРЅРёСЋ РѕРґРЅРѕР№ РёР· СЃР»РµРґСѓСЋС‰РёС… Р·Р°РґР°С‡:                       ----
+---- * РёР·РјРµРЅРµРЅРёРµ Р°СЂС…РёРІР°  СЃ РїРѕРјРѕС‰СЊСЋ  runArchiveCreate   РёР· РјРѕРґСѓР»СЏ ArcCreate   (РєРѕРјР°РЅРґС‹ a/f/m/u/j/d/ch/c/k/rr)
+---- * СЂР°СЃРїР°РєРѕРІРєР° Р°СЂС…РёРІР°         -  runArchiveExtract  -         ArcExtract  (РєРѕРјР°РЅРґС‹ t/e/x)    ----
+---- * РїРѕР»СѓС‡РµРЅРёРµ Р»РёСЃС‚РёРЅРіР° Р°СЂС…РёРІР° -  runArchiveList     -         ArcList     (РєРѕРјР°РЅРґС‹ l/v)      ----
+---- * РІРѕСЃСЃС‚Р°РЅРѕРІР»РµРЅРёРµ Р°СЂС…РёРІР°     -  runArchiveRecovery -         ArcRecover  (РєРѕРјР°РЅРґР° r)        ----
+---- РєРѕС‚РѕСЂС‹Рј РїРµСЂРµРґР°СЋС‚СЃСЏ Р°СЂРіСѓРјРµРЅС‚С‹ РІ СЃРѕРѕС‚РІРµС‚СЃС‚РІРёРё СЃРѕ СЃРїРµС†РёС„РёРєРѕР№ РєРѕРЅРєСЂРµС‚РЅРѕР№ РІС‹РїРѕР»РЅСЏРµРјРѕР№ РєРѕРјР°РЅРґС‹.  ----
 ----                                                                                            ----
----- Эти процедуры в свою очередь прямо или косвенно обращаются к модулям:                      ----
-----   ArhiveFileList   - для работы со списками архивируемых файлов                            ----
-----   ArhiveDirectory  - для чтения/записи оглавления архива                                   ----
-----   ArhiveStructure  - для работы со структурой архива                                       ----
-----   ByteStream       - для превращения каталога архива в последовательность байтов           ----
-----   Compression      - для вызова алгоритмов упаковки, распаковки и вычисления CRC           ----
-----   UI               - для информирования пользователя о ходе выполняемых работ :)           ----
-----   Errors           - для сигнализации о возникших ошибках и записи в логфайл               ----
-----   FileInfo         - для поиска файлов на диске и получения информации о них               ----
-----   Files            - для всех операций с файлами на диске и именами файлов                 ----
-----   Process          - для разделения алгоритма на параллельные взаимодействующие процессы   ----
-----   Utils            - для всех остальных вспомогательных функций                            ----
+---- Р­С‚Рё РїСЂРѕС†РµРґСѓСЂС‹ РІ СЃРІРѕСЋ РѕС‡РµСЂРµРґСЊ РїСЂСЏРјРѕ РёР»Рё РєРѕСЃРІРµРЅРЅРѕ РѕР±СЂР°С‰Р°СЋС‚СЃСЏ Рє РјРѕРґСѓР»СЏРј:                      ----
+----   ArhiveFileList   - РґР»СЏ СЂР°Р±РѕС‚С‹ СЃРѕ СЃРїРёСЃРєР°РјРё Р°СЂС…РёРІРёСЂСѓРµРјС‹С… С„Р°Р№Р»РѕРІ                            ----
+----   ArhiveDirectory  - РґР»СЏ С‡С‚РµРЅРёСЏ/Р·Р°РїРёСЃРё РѕРіР»Р°РІР»РµРЅРёСЏ Р°СЂС…РёРІР°                                   ----
+----   ArhiveStructure  - РґР»СЏ СЂР°Р±РѕС‚С‹ СЃРѕ СЃС‚СЂСѓРєС‚СѓСЂРѕР№ Р°СЂС…РёРІР°                                       ----
+----   ByteStream       - РґР»СЏ РїСЂРµРІСЂР°С‰РµРЅРёСЏ РєР°С‚Р°Р»РѕРіР° Р°СЂС…РёРІР° РІ РїРѕСЃР»РµРґРѕРІР°С‚РµР»СЊРЅРѕСЃС‚СЊ Р±Р°Р№С‚РѕРІ           ----
+----   Compression      - РґР»СЏ РІС‹Р·РѕРІР° Р°Р»РіРѕСЂРёС‚РјРѕРІ СѓРїР°РєРѕРІРєРё, СЂР°СЃРїР°РєРѕРІРєРё Рё РІС‹С‡РёСЃР»РµРЅРёСЏ CRC           ----
+----   UI               - РґР»СЏ РёРЅС„РѕСЂРјРёСЂРѕРІР°РЅРёСЏ РїРѕР»СЊР·РѕРІР°С‚РµР»СЏ Рѕ С…РѕРґРµ РІС‹РїРѕР»РЅСЏРµРјС‹С… СЂР°Р±РѕС‚ :)           ----
+----   Errors           - РґР»СЏ СЃРёРіРЅР°Р»РёР·Р°С†РёРё Рѕ РІРѕР·РЅРёРєС€РёС… РѕС€РёР±РєР°С… Рё Р·Р°РїРёСЃРё РІ Р»РѕРіС„Р°Р№Р»               ----
+----   FileInfo         - РґР»СЏ РїРѕРёСЃРєР° С„Р°Р№Р»РѕРІ РЅР° РґРёСЃРєРµ Рё РїРѕР»СѓС‡РµРЅРёСЏ РёРЅС„РѕСЂРјР°С†РёРё Рѕ РЅРёС…               ----
+----   Files            - РґР»СЏ РІСЃРµС… РѕРїРµСЂР°С†РёР№ СЃ С„Р°Р№Р»Р°РјРё РЅР° РґРёСЃРєРµ Рё РёРјРµРЅР°РјРё С„Р°Р№Р»РѕРІ                 ----
+----   Process          - РґР»СЏ СЂР°Р·РґРµР»РµРЅРёСЏ Р°Р»РіРѕСЂРёС‚РјР° РЅР° РїР°СЂР°Р»Р»РµР»СЊРЅС‹Рµ РІР·Р°РёРјРѕРґРµР№СЃС‚РІСѓСЋС‰РёРµ РїСЂРѕС†РµСЃСЃС‹   ----
+----   Utils            - РґР»СЏ РІСЃРµС… РѕСЃС‚Р°Р»СЊРЅС‹С… РІСЃРїРѕРјРѕРіР°С‚РµР»СЊРЅС‹С… С„СѓРЅРєС†РёР№                            ----
 ----------------------------------------------------------------------------------------------------
 module Main where
 
@@ -52,29 +52,29 @@ import FileManager
 #endif
 
 
--- |Главная функция программы
+-- |Р“Р»Р°РІРЅР°СЏ С„СѓРЅРєС†РёСЏ РїСЂРѕРіСЂР°РјРјС‹
 main         =  (doMain =<< myGetArgs) >> shutdown "" aEXIT_CODE_SUCCESS
--- |Дублирующая главная функция для интерактивной отладки
+-- |Р”СѓР±Р»РёСЂСѓСЋС‰Р°СЏ РіР»Р°РІРЅР°СЏ С„СѓРЅРєС†РёСЏ РґР»СЏ РёРЅС‚РµСЂР°РєС‚РёРІРЅРѕР№ РѕС‚Р»Р°РґРєРё
 arc cmdline  =  doMain (words cmdline)
 
--- |Превратить командную строку в набор команд и выполнить их
+-- |РџСЂРµРІСЂР°С‚РёС‚СЊ РєРѕРјР°РЅРґРЅСѓСЋ СЃС‚СЂРѕРєСѓ РІ РЅР°Р±РѕСЂ РєРѕРјР°РЅРґ Рё РІС‹РїРѕР»РЅРёС‚СЊ РёС…
 doMain args  = do
 #ifdef FREEARC_GUI
-  bg $ do                           -- выполняем в новом треде, не являющемся bound thread
+  bg $ do                           -- РІС‹РїРѕР»РЅСЏРµРј РІ РЅРѕРІРѕРј С‚СЂРµРґРµ, РЅРµ СЏРІР»СЏСЋС‰РµРјСЃСЏ bound thread
 #endif
   setUncaughtExceptionHandler handler
-  setCtrlBreakHandler $ do          -- Организуем обработку ^Break
-  ensureCtrlBreak "resetConsoleTitle" (resetConsoleTitle) $ do
+  setCtrlBreakHandler $ do          -- РћСЂРіР°РЅРёР·СѓРµРј РѕР±СЂР°Р±РѕС‚РєСѓ ^Break
+  ensureCtrlBreak "resetConsoleTitle" resetConsoleTitle $ do
   luaLevel "Program" [("command", args)] $ do
 #ifdef FREEARC_GUI
-  if length args < 2                -- При вызове программы без аргументов или с одним аргументом (именем каталога/архива)
-    then myGUI run args             --   запускаем полноценный Archive Manager
-    else do                         --   а иначе - просто отрабатываем команды (де)архивации
+  if length args < 2                -- РџСЂРё РІС‹Р·РѕРІРµ РїСЂРѕРіСЂР°РјРјС‹ Р±РµР· Р°СЂРіСѓРјРµРЅС‚РѕРІ РёР»Рё СЃ РѕРґРЅРёРј Р°СЂРіСѓРјРµРЅС‚РѕРј (РёРјРµРЅРµРј РєР°С‚Р°Р»РѕРіР°/Р°СЂС…РёРІР°)
+    then myGUI run args             --   Р·Р°РїСѓСЃРєР°РµРј РїРѕР»РЅРѕС†РµРЅРЅС‹Р№ Archive Manager
+    else do                         --   Р° РёРЅР°С‡Рµ - РїСЂРѕСЃС‚Рѕ РѕС‚СЂР°Р±Р°С‚С‹РІР°РµРј РєРѕРјР°РЅРґС‹ (РґРµ)Р°СЂС…РёРІР°С†РёРё
 #endif
-  uiStartProgram                    -- Открыть UI
-  commands <- parseCmdline args     -- Превратить командную строку в список команд на выполнение
-  mapM_ run commands                -- Выполнить каждую полученную команду
-  uiDoneProgram                     -- Закрыть UI
+  uiStartProgram                    -- РћС‚РєСЂС‹С‚СЊ UI
+  commands <- parseCmdline args     -- РџСЂРµРІСЂР°С‚РёС‚СЊ РєРѕРјР°РЅРґРЅСѓСЋ СЃС‚СЂРѕРєСѓ РІ СЃРїРёСЃРѕРє РєРѕРјР°РЅРґ РЅР° РІС‹РїРѕР»РЅРµРЅРёРµ
+  mapM_ run commands                -- Р’С‹РїРѕР»РЅРёС‚СЊ РєР°Р¶РґСѓСЋ РїРѕР»СѓС‡РµРЅРЅСѓСЋ РєРѕРјР°РЅРґСѓ
+  uiDoneProgram                     -- Р—Р°РєСЂС‹С‚СЊ UI
 
  where
   handler ex  =
@@ -89,156 +89,156 @@ doMain args  = do
         other       -> [show ex]
 
 
--- |Диспетчеризует команду и организует её повторение для каждого подходящего архива
-run command @ Command
+-- |Р”РёСЃРїРµС‚С‡РµСЂРёР·СѓРµС‚ РєРѕРјР°РЅРґСѓ Рё РѕСЂРіР°РЅРёР·СѓРµС‚ РµС‘ РїРѕРІС‚РѕСЂРµРЅРёРµ РґР»СЏ РєР°Р¶РґРѕРіРѕ РїРѕРґС…РѕРґСЏС‰РµРіРѕ Р°СЂС…РёРІР°
+run command@Command
                 { cmd_name            = cmd
                 , cmd_setup_command   = setup_command
                 , opt_scan_subdirs    = scan_subdirs
                 } = do
-  performGC       -- почистить мусор после обработки предыдущих команд
-  setup_command   -- выполнить настройки, необходимые перед началом выполнения команды
+  performGC       -- РїРѕС‡РёСЃС‚РёС‚СЊ РјСѓСЃРѕСЂ РїРѕСЃР»Рµ РѕР±СЂР°Р±РѕС‚РєРё РїСЂРµРґС‹РґСѓС‰РёС… РєРѕРјР°РЅРґ
+  setup_command   -- РІС‹РїРѕР»РЅРёС‚СЊ РЅР°СЃС‚СЂРѕР№РєРё, РЅРµРѕР±С…РѕРґРёРјС‹Рµ РїРµСЂРµРґ РЅР°С‡Р°Р»РѕРј РІС‹РїРѕР»РЅРµРЅРёСЏ РєРѕРјР°РЅРґС‹
   luaLevel "Command" [("command", cmd)] $ do
-  case (cmd) of
-    "create" -> find_archives  False           run_add     command
-    "a"      -> find_archives  False           run_add     command
-    "f"      -> find_archives  False           run_add     command
-    "m"      -> find_archives  False           run_add     command
-    "mf"     -> find_archives  False           run_add     command
-    "u"      -> find_archives  False           run_add     command
-    "j"      -> find_archives  False           run_join    command
-    "cw"     -> find_archives  False           run_cw      command
-    "ch"     -> find_archives  scan_subdirs    run_copy    command
-    's':_    -> find_archives  scan_subdirs    run_copy    command
-    "c"      -> find_archives  scan_subdirs    run_copy    command
-    "k"      -> find_archives  scan_subdirs    run_copy    command
-    'r':'r':_-> find_archives  scan_subdirs    run_copy    command
-    "r"      -> find_archives  scan_subdirs    run_recover command
-    "d"      -> find_archives  scan_subdirs    run_delete  command
-    "e"      -> find_archives  scan_subdirs    run_extract command
-    "x"      -> find_archives  scan_subdirs    run_extract command
-    "t"      -> find_archives  scan_subdirs    run_test    command
-    "l"      -> find_archives  scan_subdirs    run_list    command
-    "lb"     -> find_archives  scan_subdirs    run_list    command
-    "lt"     -> find_archives  scan_subdirs    run_list    command
-    "v"      -> find_archives  scan_subdirs    run_list    command
+  case cmd of
+    "create" -> findArchives  False           runAdd     command
+    "a"      -> findArchives  False           runAdd     command
+    "f"      -> findArchives  False           runAdd     command
+    "m"      -> findArchives  False           runAdd     command
+    "mf"     -> findArchives  False           runAdd     command
+    "u"      -> findArchives  False           runAdd     command
+    "j"      -> findArchives  False           runJoin    command
+    "cw"     -> findArchives  False           runCw      command
+    "ch"     -> findArchives  scan_subdirs    runCopy    command
+    's':_    -> findArchives  scan_subdirs    runCopy    command
+    "c"      -> findArchives  scan_subdirs    runCopy    command
+    "k"      -> findArchives  scan_subdirs    runCopy    command
+    'r':'r':_-> findArchives  scan_subdirs    runCopy    command
+    "r"      -> findArchives  scan_subdirs    runRecover command
+    "d"      -> findArchives  scan_subdirs    runDelete  command
+    "e"      -> findArchives  scan_subdirs    runExtract command
+    "x"      -> findArchives  scan_subdirs    runExtract command
+    "t"      -> findArchives  scan_subdirs    runTest    command
+    "l"      -> findArchives  scan_subdirs    runList    command
+    "lb"     -> findArchives  scan_subdirs    runList    command
+    "lt"     -> findArchives  scan_subdirs    runList    command
+    "v"      -> findArchives  scan_subdirs    runList    command
     _ -> registerError$ UNKNOWN_CMD cmd aLL_COMMANDS
 
 
--- |Ищет архивы, подходящие под маску arcspec, и выполняет заданную команду на каждом из них
-find_archives scan_subdirs   -- искать архивы и в подкаталогах?
-              run_command    -- процедура, которую нужно запустить на каждом найденном архиве
-              command @ Command {cmd_arcspec = arcspec} = do
-  uiStartCommand command   -- Отметим начало выполнения команды
+-- |РС‰РµС‚ Р°СЂС…РёРІС‹, РїРѕРґС…РѕРґСЏС‰РёРµ РїРѕРґ РјР°СЃРєСѓ arcspec, Рё РІС‹РїРѕР»РЅСЏРµС‚ Р·Р°РґР°РЅРЅСѓСЋ РєРѕРјР°РЅРґСѓ РЅР° РєР°Р¶РґРѕРј РёР· РЅРёС…
+findArchives scan_subdirs   -- РёСЃРєР°С‚СЊ Р°СЂС…РёРІС‹ Рё РІ РїРѕРґРєР°С‚Р°Р»РѕРіР°С…?
+              run_command    -- РїСЂРѕС†РµРґСѓСЂР°, РєРѕС‚РѕСЂСѓСЋ РЅСѓР¶РЅРѕ Р·Р°РїСѓСЃС‚РёС‚СЊ РЅР° РєР°Р¶РґРѕРј РЅР°Р№РґРµРЅРЅРѕРј Р°СЂС…РёРІРµ
+              command@Command {cmd_arcspec = arcspec} = do
+  uiStartCommand command   -- РћС‚РјРµС‚РёРј РЅР°С‡Р°Р»Рѕ РІС‹РїРѕР»РЅРµРЅРёСЏ РєРѕРјР°РЅРґС‹
   arclist <- if scan_subdirs || is_wildcard arcspec
                then find_files scan_subdirs arcspec >>== map diskName
                else return [arcspec]
   results <- foreach arclist $ \arcname -> do
-    performGC   -- почистить мусор после обработки предыдущих архивов
+    performGC   -- РїРѕС‡РёСЃС‚РёС‚СЊ РјСѓСЃРѕСЂ РїРѕСЃР»Рµ РѕР±СЂР°Р±РѕС‚РєРё РїСЂРµРґС‹РґСѓС‰РёС… Р°СЂС…РёРІРѕРІ
     luaLevel "Archive" [("arcname", arcname)] $ do
-    -- Если указана опция -ad, то добавить к базовому каталогу на диске имя архива (без расширения)
+    -- Р•СЃР»Рё СѓРєР°Р·Р°РЅР° РѕРїС†РёСЏ -ad, С‚Рѕ РґРѕР±Р°РІРёС‚СЊ Рє Р±Р°Р·РѕРІРѕРјСѓ РєР°С‚Р°Р»РѕРіСѓ РЅР° РґРёСЃРєРµ РёРјСЏ Р°СЂС…РёРІР° (Р±РµР· СЂР°СЃС€РёСЂРµРЅРёСЏ)
     let add_dir  =  opt_add_dir command  &&&  (</> takeBaseName arcname)
-    run_command command { cmd_arcspec      = error "find_archives:cmd_arcspec undefined"  -- cmd_arcspec нам больше не понадобится.
+    run_command command { cmd_arcspec      = error "findArchives:cmd_arcspec undefined"  -- cmd_arcspec РЅР°Рј Р±РѕР»СЊС€Рµ РЅРµ РїРѕРЅР°РґРѕР±РёС‚СЃСЏ.
                         , cmd_arclist      = arclist
                         , cmd_arcname      = arcname
                         , opt_disk_basedir = add_dir (opt_disk_basedir command)
                         }
-  uiDoneCommand command results   -- доложить о результатах выполнения команды над всеми архивами
+  uiDoneCommand command results   -- РґРѕР»РѕР¶РёС‚СЊ Рѕ СЂРµР·СѓР»СЊС‚Р°С‚Р°С… РІС‹РїРѕР»РЅРµРЅРёСЏ РєРѕРјР°РЅРґС‹ РЅР°Рґ РІСЃРµРјРё Р°СЂС…РёРІР°РјРё
 
 
--- |Команды добавления в архив: create, a, f, m, u
-run_add cmd = do
+-- |РљРѕРјР°РЅРґС‹ РґРѕР±Р°РІР»РµРЅРёСЏ РІ Р°СЂС…РёРІ: create, a, f, m, u
+runAdd cmd = do
   msg <- i18n"0246 Found %1 files"
   let diskfiles =  find_and_filter_files (cmd_filespecs cmd) (uiScanning msg) find_criteria
       find_criteria  =  FileFind{ ff_ep             = opt_add_exclude_path cmd
                                 , ff_scan_subdirs   = opt_scan_subdirs     cmd
                                 , ff_include_dirs   = opt_include_dirs     cmd
                                 , ff_no_nst_filters = opt_no_nst_filters   cmd
-                                , ff_filter_f       = add_file_filter      cmd
+                                , ff_filter_f       = addFileFilter      cmd
                                 , ff_group_f        = opt_find_group       cmd.$Just
                                 , ff_arc_basedir    = opt_arc_basedir      cmd
                                 , ff_disk_basedir   = opt_disk_basedir     cmd}
-  runArchiveAdd cmd{ cmd_diskfiles      = diskfiles     -- файлы, которые нужно добавить с диска
-                   , cmd_archive_filter = const True }  -- фильтр отбора файлов из открываемых архивов
+  runArchiveAdd cmd{ cmd_diskfiles      = diskfiles     -- С„Р°Р№Р»С‹, РєРѕС‚РѕСЂС‹Рµ РЅСѓР¶РЅРѕ РґРѕР±Р°РІРёС‚СЊ СЃ РґРёСЃРєР°
+                   , cmd_archive_filter = const True }  -- С„РёР»СЊС‚СЂ РѕС‚Р±РѕСЂР° С„Р°Р№Р»РѕРІ РёР· РѕС‚РєСЂС‹РІР°РµРјС‹С… Р°СЂС…РёРІРѕРІ
 
 
--- |Команда слияния архивов: j
-run_join cmd @ Command { cmd_filespecs = filespecs
+-- |РљРѕРјР°РЅРґР° СЃР»РёСЏРЅРёСЏ Р°СЂС…РёРІРѕРІ: j
+runJoin cmd@Command { cmd_filespecs = filespecs
                        , opt_noarcext  = noarcext
                        } = do
   msg <- i18n"0247 Found %1 archives"
-  let arcspecs  =  map (addArcExtension noarcext) filespecs   -- добавим к именам расширение по умолчанию (".arc")
+  let arcspecs  =  map (addArcExtension noarcext) filespecs   -- РґРѕР±Р°РІРёРј Рє РёРјРµРЅР°Рј СЂР°СЃС€РёСЂРµРЅРёРµ РїРѕ СѓРјРѕР»С‡Р°РЅРёСЋ (".arc")
       arcnames  =  map diskName ==<< find_and_filter_files arcspecs (uiScanning msg) find_criteria
       find_criteria  =  FileFind{ ff_ep             = opt_add_exclude_path cmd
                                 , ff_scan_subdirs   = opt_scan_subdirs     cmd
                                 , ff_include_dirs   = Just False
                                 , ff_no_nst_filters = opt_no_nst_filters   cmd
-                                , ff_filter_f       = add_file_filter      cmd
+                                , ff_filter_f       = addFileFilter      cmd
                                 , ff_group_f        = Nothing
                                 , ff_arc_basedir    = ""
                                 , ff_disk_basedir   = opt_disk_basedir     cmd}
-  runArchiveAdd cmd{ cmd_added_arcnames = arcnames      -- дополнительные входные архивы
-                   , cmd_archive_filter = const True }  -- фильтр отбора файлов из открываемых архивов
+  runArchiveAdd cmd{ cmd_added_arcnames = arcnames      -- РґРѕРїРѕР»РЅРёС‚РµР»СЊРЅС‹Рµ РІС…РѕРґРЅС‹Рµ Р°СЂС…РёРІС‹
+                   , cmd_archive_filter = const True }  -- С„РёР»СЊС‚СЂ РѕС‚Р±РѕСЂР° С„Р°Р№Р»РѕРІ РёР· РѕС‚РєСЂС‹РІР°РµРјС‹С… Р°СЂС…РёРІРѕРІ
 
 
--- |Команды копирования архива с внесением изменений: ch, c, k. s, rr
-run_copy    = runArchiveAdd                    . setArcFilter full_file_filter
--- |Команда удаления из архива: d
-run_delete  = runArchiveAdd                    . setArcFilter ((not.).full_file_filter)
--- |Команды извлечения из архива: e, x
-run_extract = runArchiveExtract pretestArchive . setArcFilter (test_dirs extract_file_filter)
--- |Команда тестирования архива: t
-run_test    = runArchiveExtract pretestArchive . setArcFilter (test_dirs full_file_filter)
--- |Команды получения листинга архива: l, v
-run_list    = runArchiveList pretestArchive    . setArcFilter (test_dirs full_file_filter)
--- |Команда записи архивного комментария в файл: cw
-run_cw      = runCommentWrite
--- |Команда восстановления архива: r
-run_recover = runArchiveRecovery
+-- |РљРѕРјР°РЅРґС‹ РєРѕРїРёСЂРѕРІР°РЅРёСЏ Р°СЂС…РёРІР° СЃ РІРЅРµСЃРµРЅРёРµРј РёР·РјРµРЅРµРЅРёР№: ch, c, k. s, rr
+runCopy    = runArchiveAdd                    . setArcFilter fullFileFilter
+-- |РљРѕРјР°РЅРґР° СѓРґР°Р»РµРЅРёСЏ РёР· Р°СЂС…РёРІР°: d
+runDelete  = runArchiveAdd                    . setArcFilter ((not.).fullFileFilter)
+-- |РљРѕРјР°РЅРґС‹ РёР·РІР»РµС‡РµРЅРёСЏ РёР· Р°СЂС…РёРІР°: e, x
+runExtract = runArchiveExtract pretestArchive . setArcFilter (test_dirs extractFileFilter)
+-- |РљРѕРјР°РЅРґР° С‚РµСЃС‚РёСЂРѕРІР°РЅРёСЏ Р°СЂС…РёРІР°: t
+runTest    = runArchiveExtract pretestArchive . setArcFilter (test_dirs fullFileFilter)
+-- |РљРѕРјР°РЅРґС‹ РїРѕР»СѓС‡РµРЅРёСЏ Р»РёСЃС‚РёРЅРіР° Р°СЂС…РёРІР°: l, v
+runList    = runArchiveList pretestArchive    . setArcFilter (test_dirs fullFileFilter)
+-- |РљРѕРјР°РЅРґР° Р·Р°РїРёСЃРё Р°СЂС…РёРІРЅРѕРіРѕ РєРѕРјРјРµРЅС‚Р°СЂРёСЏ РІ С„Р°Р№Р»: cw
+runCw      = runCommentWrite
+-- |РљРѕРјР°РЅРґР° РІРѕСЃСЃС‚Р°РЅРѕРІР»РµРЅРёСЏ Р°СЂС…РёРІР°: r
+runRecover = runArchiveRecovery
 
 -- |Just shortcut
 runArchiveAdd  =  runArchiveCreate pretestArchive writeRecoveryBlocks
 
-{-# NOINLINE find_archives #-}
-{-# NOINLINE run_add #-}
-{-# NOINLINE run_join #-}
-{-# NOINLINE run_copy #-}
-{-# NOINLINE run_delete #-}
-{-# NOINLINE run_extract #-}
-{-# NOINLINE run_test #-}
-{-# NOINLINE run_list #-}
+{-# NOINLINE findArchives #-}
+{-# NOINLINE runAdd #-}
+{-# NOINLINE runJoin #-}
+{-# NOINLINE runCopy #-}
+{-# NOINLINE runDelete #-}
+{-# NOINLINE runExtract #-}
+{-# NOINLINE runTest #-}
+{-# NOINLINE runList #-}
 
 
 ----------------------------------------------------------------------------------------------------
----- Критерии отбора файлов, подлежащих обработке, для различных типов команд ----------------------
+---- РљСЂРёС‚РµСЂРёРё РѕС‚Р±РѕСЂР° С„Р°Р№Р»РѕРІ, РїРѕРґР»РµР¶Р°С‰РёС… РѕР±СЂР°Р±РѕС‚РєРµ, РґР»СЏ СЂР°Р·Р»РёС‡РЅС‹С… С‚РёРїРѕРІ РєРѕРјР°РЅРґ ----------------------
 ----------------------------------------------------------------------------------------------------
 
--- |Установить в cmd предикат выбора из архива обрабатываемых файлов
+-- |РЈСЃС‚Р°РЅРѕРІРёС‚СЊ РІ cmd РїСЂРµРґРёРєР°С‚ РІС‹Р±РѕСЂР° РёР· Р°СЂС…РёРІР° РѕР±СЂР°Р±Р°С‚С‹РІР°РµРјС‹С… С„Р°Р№Р»РѕРІ
 setArcFilter filter cmd  =  cmd {cmd_archive_filter = filter cmd}
 
--- |Отобрать файлы в соответствии с фильтром opt_file_filter, за исключением
--- обрабатываемых этой командой архивов и временных файлов, создаваемых при архивации
-add_file_filter cmd      =  all_functions [opt_file_filter cmd, not.overwrite_f cmd]
+-- |РћС‚РѕР±СЂР°С‚СЊ С„Р°Р№Р»С‹ РІ СЃРѕРѕС‚РІРµС‚СЃС‚РІРёРё СЃ С„РёР»СЊС‚СЂРѕРј opt_file_filter, Р·Р° РёСЃРєР»СЋС‡РµРЅРёРµРј
+-- РѕР±СЂР°Р±Р°С‚С‹РІР°РµРјС‹С… СЌС‚РѕР№ РєРѕРјР°РЅРґРѕР№ Р°СЂС…РёРІРѕРІ Рё РІСЂРµРјРµРЅРЅС‹С… С„Р°Р№Р»РѕРІ, СЃРѕР·РґР°РІР°РµРјС‹С… РїСЂРё Р°СЂС…РёРІР°С†РёРё
+addFileFilter cmd      =  all_functions [opt_file_filter cmd, not.overwriteF cmd]
 
--- |Отобрать файлы в соответствии с фильтром full_file_filter, за исключением
--- обрабатываемых этой командой архивов и временных файлов, создаваемых при архивации
-extract_file_filter cmd  =  all_functions [full_file_filter cmd, not.overwrite_f cmd]
+-- |РћС‚РѕР±СЂР°С‚СЊ С„Р°Р№Р»С‹ РІ СЃРѕРѕС‚РІРµС‚СЃС‚РІРёРё СЃ С„РёР»СЊС‚СЂРѕРј fullFileFilter, Р·Р° РёСЃРєР»СЋС‡РµРЅРёРµРј
+-- РѕР±СЂР°Р±Р°С‚С‹РІР°РµРјС‹С… СЌС‚РѕР№ РєРѕРјР°РЅРґРѕР№ Р°СЂС…РёРІРѕРІ Рё РІСЂРµРјРµРЅРЅС‹С… С„Р°Р№Р»РѕРІ, СЃРѕР·РґР°РІР°РµРјС‹С… РїСЂРё Р°СЂС…РёРІР°С†РёРё
+extractFileFilter cmd  =  all_functions [fullFileFilter cmd, not.overwriteF cmd]
 
--- |Отбирает среди файлов, маски которых указаны в командной строке,
--- соответствующие фильтру opt_file_filter
-full_file_filter cmd  =  all_functions
+-- |РћС‚Р±РёСЂР°РµС‚ СЃСЂРµРґРё С„Р°Р№Р»РѕРІ, РјР°СЃРєРё РєРѕС‚РѕСЂС‹С… СѓРєР°Р·Р°РЅС‹ РІ РєРѕРјР°РЅРґРЅРѕР№ СЃС‚СЂРѕРєРµ,
+-- СЃРѕРѕС‚РІРµС‚СЃС‚РІСѓСЋС‰РёРµ С„РёР»СЊС‚СЂСѓ opt_file_filter
+fullFileFilter cmd  =  all_functions
                            [  match_filespecs (opt_match_with cmd) (cmd_filespecs cmd) . fiFilteredName
                            ,  opt_file_filter cmd
                            ]
 
--- |Отбирает обрабатываемые архивы и временные файлы, создаваемые при архивации,
--- а также файлы, которые могут их перезаписать при распаковке
-overwrite_f cmd  =  in_arclist_or_temparc . fiDiskName
+-- |РћС‚Р±РёСЂР°РµС‚ РѕР±СЂР°Р±Р°С‚С‹РІР°РµРјС‹Рµ Р°СЂС…РёРІС‹ Рё РІСЂРµРјРµРЅРЅС‹Рµ С„Р°Р№Р»С‹, СЃРѕР·РґР°РІР°РµРјС‹Рµ РїСЂРё Р°СЂС…РёРІР°С†РёРё,
+-- Р° С‚Р°РєР¶Рµ С„Р°Р№Р»С‹, РєРѕС‚РѕСЂС‹Рµ РјРѕРіСѓС‚ РёС… РїРµСЂРµР·Р°РїРёСЃР°С‚СЊ РїСЂРё СЂР°СЃРїР°РєРѕРІРєРµ
+overwriteF cmd  =  in_arclist_or_temparc . fiDiskName
   where in_arclist_or_temparc filename =
             fpFullname filename `elem` cmd_arclist cmd
             || all_functions [(temparc_prefix `isPrefixOf`), (temparc_suffix `isSuffixOf`)]
                              (fpBasename filename)
 
--- |Добавить в фильтр отбора файлов `filter_f` отбор каталогов в соответствии с опциями команды `cmd`
+-- |Р”РѕР±Р°РІРёС‚СЊ РІ С„РёР»СЊС‚СЂ РѕС‚Р±РѕСЂР° С„Р°Р№Р»РѕРІ `filter_f` РѕС‚Р±РѕСЂ РєР°С‚Р°Р»РѕРіРѕРІ РІ СЃРѕРѕС‚РІРµС‚СЃС‚РІРёРё СЃ РѕРїС†РёСЏРјРё РєРѕРјР°РЅРґС‹ `cmd`
 test_dirs filter_f cmd fi  =  if fiIsDir fi
                                 then opt_x_include_dirs cmd
                                 else filter_f cmd fi

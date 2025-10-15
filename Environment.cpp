@@ -7,7 +7,7 @@
 #include "Environment.h"
 #include "Compression/Compression.h"
 
-// Изменим настройки RTS, включив compacting GC начиная с 40 mb:
+// РР·РјРµРЅРёРј РЅР°СЃС‚СЂРѕР№РєРё RTS, РІРєР»СЋС‡РёРІ compacting GC РЅР°С‡РёРЅР°СЏ СЃ 40 mb:
 char *ghc_rts_opts = "-c1 -M4000m";
 
 
@@ -288,12 +288,12 @@ void RunFile (const CFILENAME filename, const CFILENAME curdir, int wait_finish)
 void FormatDateTime (char *buf, int bufsize, time_t t)
 {
   struct tm *p;
-  if (t==-1)  t=0;  // Иначе получим вылет :(
+  if (t==-1)  t=0;  // РРЅР°С‡Рµ РїРѕР»СѓС‡РёРј РІС‹Р»РµС‚ :(
   p = localtime(&t);
   strftime( buf, bufsize, "%Y-%m-%d %H:%M:%S", p);
 }
 
-// Максимальная длина имени файла
+// РњР°РєСЃРёРјР°Р»СЊРЅР°СЏ РґР»РёРЅР° РёРјРµРЅРё С„Р°Р№Р»Р°
 int long_path_size (void)
 {
   return MY_FILENAME_MAX;
@@ -344,7 +344,7 @@ uint UpdateCRC( void *Addr, uint Size, uint StartCRC)
   return(StartCRC);
 }
 
-// Вычислить CRC блока данных
+// Р’С‹С‡РёСЃР»РёС‚СЊ CRC Р±Р»РѕРєР° РґР°РЅРЅС‹С…
 uint CalcCRC( void *Addr, uint Size)
 {
   return UpdateCRC (Addr, Size, INIT_CRC) ^ INIT_CRC;
@@ -352,7 +352,7 @@ uint CalcCRC( void *Addr, uint Size)
 
 
 
-// От-xor-ить два блока данных
+// РћС‚-xor-РёС‚СЊ РґРІР° Р±Р»РѕРєР° РґР°РЅРЅС‹С…
 void memxor (char *dest, char *src, uint size)
 {
   if (size) do
@@ -360,7 +360,7 @@ void memxor (char *dest, char *src, uint size)
   while (--size);
 }
 
-// Вернуть имя файла без имени каталога
+// Р’РµСЂРЅСѓС‚СЊ РёРјСЏ С„Р°Р№Р»Р° Р±РµР· РёРјРµРЅРё РєР°С‚Р°Р»РѕРіР°
 FILENAME basename (FILENAME fullname)
 {
   char *basename = fullname;
@@ -370,7 +370,7 @@ FILENAME basename (FILENAME fullname)
   return basename;
 }
 
-// Создать каталоги на пути к name
+// РЎРѕР·РґР°С‚СЊ РєР°С‚Р°Р»РѕРіРё РЅР° РїСѓС‚Рё Рє name
 void BuildPathTo (CFILENAME name)
 {
   CFILENAME path_ptr = NULL;

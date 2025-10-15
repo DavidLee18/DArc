@@ -2,7 +2,7 @@
 4x4 version 0.2 - bigger, longer, stronger ;)
 * fast compression modes made even faster (direct i/o to compression buffers; larger blocks to avoid disk trashing; MM tables disabled in -2/-3 modes)
 * high compression modes made even higher (256mb dictionary, saving output to temp. files)
-* multi-threaded decompression with direct i/o  (lzma, „¢•´. ™Æ´-¢Æ ‚‡•§Æ¢ §•™Æ¨Ø‡•··®® Ø‡® ¨†´Æ¨ blocksize)
+* multi-threaded decompression with direct i/o  (lzma, —É–≤–µ–ª. –∫–æ–ª-–≤–æ —Ç—Ä–µ–¥–æ–≤ –¥–µ–∫–æ–º–ø—Ä–µ—Å—Å–∏–∏ –ø—Ä–∏ –º–∞–ª–æ–º blocksize)
 * fast text compression modes 1t..4t using grzip - now 4x4 is 10x faster than lzturbo on ENWIK9!
 -}
 

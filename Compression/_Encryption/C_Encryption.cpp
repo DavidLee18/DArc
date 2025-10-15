@@ -51,10 +51,10 @@ extern "C" {
 
 
 /*-------------------------------------------------*/
-/* Инициализация библиотеки шифрования LibTomCrypt */
+/* РРЅРёС†РёР°Р»РёР·Р°С†РёСЏ Р±РёР±Р»РёРѕС‚РµРєРё С€РёС„СЂРѕРІР°РЅРёСЏ LibTomCrypt */
 /*-------------------------------------------------*/
 
-// Зарегистировать все включённые в программу алгоритмы
+// Р—Р°СЂРµРіРёСЃС‚РёСЂРѕРІР°С‚СЊ РІСЃРµ РІРєР»СЋС‡С‘РЅРЅС‹Рµ РІ РїСЂРѕРіСЂР°РјРјСѓ Р°Р»РіРѕСЂРёС‚РјС‹
 int register_all()
 {
     register_cipher (&aes_enc_desc);
@@ -78,7 +78,7 @@ int register_all()
 }
 int call_register_all = register_all();
 
-// Размер буфера Fortuna PRNG
+// Р Р°Р·РјРµСЂ Р±СѓС„РµСЂР° Fortuna PRNG
 int fortuna_size (void)
 {
     return sizeof(prng_state);
@@ -86,7 +86,7 @@ int fortuna_size (void)
 
 
 /*------------------------------------------------------*/
-/* Обобщённый интерфейс к режимам шифрования (CFB,CTR)  */
+/* РћР±РѕР±С‰С‘РЅРЅС‹Р№ РёРЅС‚РµСЂС„РµР№СЃ Рє СЂРµР¶РёРјР°Рј С€РёС„СЂРѕРІР°РЅРёСЏ (CFB,CTR)  */
 /*------------------------------------------------------*/
 
 struct EncryptionMode
@@ -138,7 +138,7 @@ struct EncryptionMode
     }
 };
 
-// Найти номер режима шифрования по его имени
+// РќР°Р№С‚Рё РЅРѕРјРµСЂ СЂРµР¶РёРјР° С€РёС„СЂРѕРІР°РЅРёСЏ РїРѕ РµРіРѕ РёРјРµРЅРё
 int find_mode (char *name)
 {
     if (strequ(name,"ctr"))  return  0;
@@ -148,10 +148,10 @@ int find_mode (char *name)
 
 
 /*-------------------------------------------------*/
-/* Пользовательские функции                        */
+/* РџРѕР»СЊР·РѕРІР°С‚РµР»СЊСЃРєРёРµ С„СѓРЅРєС†РёРё                        */
 /*-------------------------------------------------*/
 
-// Генерация ключа по паролю и salt с использованием numIterations итераций хеширования (PKCS5#2)
+// Р“РµРЅРµСЂР°С†РёСЏ РєР»СЋС‡Р° РїРѕ РїР°СЂРѕР»СЋ Рё salt СЃ РёСЃРїРѕР»СЊР·РѕРІР°РЅРёРµРј numIterations РёС‚РµСЂР°С†РёР№ С…РµС€РёСЂРѕРІР°РЅРёСЏ (PKCS5#2)
 void Pbkdf2Hmac (const BYTE *pwd, int pwdSize, const BYTE *salt, int saltSize,
                  int numIterations, BYTE *key, int keySize)
 {
@@ -160,44 +160,44 @@ void Pbkdf2Hmac (const BYTE *pwd, int pwdSize, const BYTE *salt, int saltSize,
     pkcs_5_alg2 (pwd, pwdSize, salt, saltSize, numIterations, hash, key, &ulKeySize);
 }
 
-// Зашифровывает или расшифровывает поток данных, в зависимости от значения DoEncryption
+// Р—Р°С€РёС„СЂРѕРІС‹РІР°РµС‚ РёР»Рё СЂР°СЃС€РёС„СЂРѕРІС‹РІР°РµС‚ РїРѕС‚РѕРє РґР°РЅРЅС‹С…, РІ Р·Р°РІРёСЃРёРјРѕСЃС‚Рё РѕС‚ Р·РЅР°С‡РµРЅРёСЏ DoEncryption
 int docrypt (enum TEncrypt DoEncryption, int cipher, int mode, BYTE *key, int keysize, int rounds, BYTE *iv,
              CALLBACK_FUNC *callback, void *auxdata)
 {
     EncryptionMode encryptor(mode);
     encryptor.start (cipher, iv, key, keysize, rounds);
 
-    int InSize = FREEARC_ERRCODE_NOT_ENOUGH_MEMORY;  // количество прочитанных байт или код ошибки
-    int RemainderSize = 0;                           // необработанный остаток предыдущего блока (всегда 0 в нынешней реализации)
-    BYTE* Buf = (BYTE*)malloc(LARGE_BUFFER_SIZE);    // место для данных
-    if (!Buf)   goto Exit;                           // выход при нехватке памяти
+    int InSize = FREEARC_ERRCODE_NOT_ENOUGH_MEMORY;  // РєРѕР»РёС‡РµСЃС‚РІРѕ РїСЂРѕС‡РёС‚Р°РЅРЅС‹С… Р±Р°Р№С‚ РёР»Рё РєРѕРґ РѕС€РёР±РєРё
+    int RemainderSize = 0;                           // РЅРµРѕР±СЂР°Р±РѕС‚Р°РЅРЅС‹Р№ РѕСЃС‚Р°С‚РѕРє РїСЂРµРґС‹РґСѓС‰РµРіРѕ Р±Р»РѕРєР° (РІСЃРµРіРґР° 0 РІ РЅС‹РЅРµС€РЅРµР№ СЂРµР°Р»РёР·Р°С†РёРё)
+    BYTE* Buf = (BYTE*)malloc(LARGE_BUFFER_SIZE);    // РјРµСЃС‚Рѕ РґР»СЏ РґР°РЅРЅС‹С…
+    if (!Buf)   goto Exit;                           // РІС‹С…РѕРґ РїСЂРё РЅРµС…РІР°С‚РєРµ РїР°РјСЏС‚Рё
 
-    while ( (InSize = callback ("read", Buf+RemainderSize, LARGE_BUFFER_SIZE-RemainderSize, auxdata)) >= 0 )  // выход при ошибке чтения
+    while ( (InSize = callback ("read", Buf+RemainderSize, LARGE_BUFFER_SIZE-RemainderSize, auxdata)) >= 0 )  // РІС‹С…РѕРґ РїСЂРё РѕС€РёР±РєРµ С‡С‚РµРЅРёСЏ
     {
-        if ((InSize+=RemainderSize)==0)     break;  // выход, если данных больше нет
+        if ((InSize+=RemainderSize)==0)     break;  // РІС‹С…РѕРґ, РµСЃР»Рё РґР°РЅРЅС‹С… Р±РѕР»СЊС€Рµ РЅРµС‚
 
         DoEncryption==ENCRYPT
           ? encryptor.encrypt(Buf, Buf, InSize)
           : encryptor.decrypt(Buf, Buf, InSize);
 
         int OutSize = InSize, x;
-        if( (x=callback("write",Buf,OutSize,auxdata))<0 )   {InSize=x; break;}  // выход при ошибке записи
+        if( (x=callback("write",Buf,OutSize,auxdata))<0 )   {InSize=x; break;}  // РІС‹С…РѕРґ РїСЂРё РѕС€РёР±РєРµ Р·Р°РїРёСЃРё
         RemainderSize = InSize-OutSize;
-        // Перенесём необработанный остаток данных в начало буфера
+        // РџРµСЂРµРЅРµСЃС‘Рј РЅРµРѕР±СЂР°Р±РѕС‚Р°РЅРЅС‹Р№ РѕСЃС‚Р°С‚РѕРє РґР°РЅРЅС‹С… РІ РЅР°С‡Р°Р»Рѕ Р±СѓС„РµСЂР°
         if (RemainderSize>0)                memmove (Buf, Buf+OutSize, RemainderSize);
     }
 Exit:
     encryptor.done();
     free (Buf);
-    return InSize;  // возвратим код ошибки или 0 если всё в порядке
+    return InSize;  // РІРѕР·РІСЂР°С‚РёРј РєРѕРґ РѕС€РёР±РєРё РёР»Рё 0 РµСЃР»Рё РІСЃС‘ РІ РїРѕСЂСЏРґРєРµ
 }
 
 
 /*-------------------------------------------------*/
-/* Реализация класса ENCRYPTION_METHOD             */
+/* Р РµР°Р»РёР·Р°С†РёСЏ РєР»Р°СЃСЃР° ENCRYPTION_METHOD             */
 /*-------------------------------------------------*/
 
-// Конструктор, присваивающий параметрам метода сжатия значения по умолчанию
+// РљРѕРЅСЃС‚СЂСѓРєС‚РѕСЂ, РїСЂРёСЃРІР°РёРІР°СЋС‰РёР№ РїР°СЂР°РјРµС‚СЂР°Рј РјРµС‚РѕРґР° СЃР¶Р°С‚РёСЏ Р·РЅР°С‡РµРЅРёСЏ РїРѕ СѓРјРѕР»С‡Р°РЅРёСЋ
 ENCRYPTION_METHOD::ENCRYPTION_METHOD()
 {
     cipher        = -1;
@@ -211,17 +211,17 @@ ENCRYPTION_METHOD::ENCRYPTION_METHOD()
     strcpy(code, "");
 }
 
-// Универсальный метод, отвечает на запросы "encryption?", "KeySize" и "IVSize"
+// РЈРЅРёРІРµСЂСЃР°Р»СЊРЅС‹Р№ РјРµС‚РѕРґ, РѕС‚РІРµС‡Р°РµС‚ РЅР° Р·Р°РїСЂРѕСЃС‹ "encryption?", "KeySize" Рё "IVSize"
 int ENCRYPTION_METHOD::doit (char *what, int param, void *data, CALLBACK_FUNC *callback)
 {
-         if (strequ (what, "encryption?"))    return 1;               // Да, это алгоритм шифрования
-    else if (strequ (what, "keySize"))        return keySize;         // Возвращает размер ключа, используемого в данном методе сжатия
-    else if (strequ (what, "ivSize"))         return ivSize;          // Возвращает размер InitVector, используемого в данном методе сжатия
-    else if (strequ (what, "numIterations"))  return numIterations;   // Возвращает количество итераций, используемых при генерации ключа по password+salt
-    else                                      return COMPRESSION_METHOD::doit (what, param, data, callback);  // Передать остальные вызовы родительской процедуре
+         if (strequ (what, "encryption?"))    return 1;               // Р”Р°, СЌС‚Рѕ Р°Р»РіРѕСЂРёС‚Рј С€РёС„СЂРѕРІР°РЅРёСЏ
+    else if (strequ (what, "keySize"))        return keySize;         // Р’РѕР·РІСЂР°С‰Р°РµС‚ СЂР°Р·РјРµСЂ РєР»СЋС‡Р°, РёСЃРїРѕР»СЊР·СѓРµРјРѕРіРѕ РІ РґР°РЅРЅРѕРј РјРµС‚РѕРґРµ СЃР¶Р°С‚РёСЏ
+    else if (strequ (what, "ivSize"))         return ivSize;          // Р’РѕР·РІСЂР°С‰Р°РµС‚ СЂР°Р·РјРµСЂ InitVector, РёСЃРїРѕР»СЊР·СѓРµРјРѕРіРѕ РІ РґР°РЅРЅРѕРј РјРµС‚РѕРґРµ СЃР¶Р°С‚РёСЏ
+    else if (strequ (what, "numIterations"))  return numIterations;   // Р’РѕР·РІСЂР°С‰Р°РµС‚ РєРѕР»РёС‡РµСЃС‚РІРѕ РёС‚РµСЂР°С†РёР№, РёСЃРїРѕР»СЊР·СѓРµРјС‹С… РїСЂРё РіРµРЅРµСЂР°С†РёРё РєР»СЋС‡Р° РїРѕ password+salt
+    else                                      return COMPRESSION_METHOD::doit (what, param, data, callback);  // РџРµСЂРµРґР°С‚СЊ РѕСЃС‚Р°Р»СЊРЅС‹Рµ РІС‹Р·РѕРІС‹ СЂРѕРґРёС‚РµР»СЊСЃРєРѕР№ РїСЂРѕС†РµРґСѓСЂРµ
 }
 
-// Декодирование строки, записанной в шестнадцатеричном виде, в последовательность байт
+// Р”РµРєРѕРґРёСЂРѕРІР°РЅРёРµ СЃС‚СЂРѕРєРё, Р·Р°РїРёСЃР°РЅРЅРѕР№ РІ С€РµСЃС‚РЅР°РґС†Р°С‚РµСЂРёС‡РЅРѕРј РІРёРґРµ, РІ РїРѕСЃР»РµРґРѕРІР°С‚РµР»СЊРЅРѕСЃС‚СЊ Р±Р°Р№С‚
 void decode16 (char *src, BYTE *dst)
 {
     for( ; src[0] && src[1]; src+=2)
@@ -229,7 +229,7 @@ void decode16 (char *src, BYTE *dst)
 }
 
 
-// Функция распаковки
+// Р¤СѓРЅРєС†РёСЏ СЂР°СЃРїР°РєРѕРІРєРё
 int ENCRYPTION_METHOD::decompress (CALLBACK_FUNC *callback, void *auxdata)
 {
     BYTE key_bytes[MAXKEYSIZE];  decode16 (key, key_bytes);
@@ -239,7 +239,7 @@ int ENCRYPTION_METHOD::decompress (CALLBACK_FUNC *callback, void *auxdata)
 
 #ifndef FREEARC_DECOMPRESS_ONLY
 
-// Функция упаковки
+// Р¤СѓРЅРєС†РёСЏ СѓРїР°РєРѕРІРєРё
 int ENCRYPTION_METHOD::compress (CALLBACK_FUNC *callback, void *auxdata)
 {
     BYTE key_bytes[MAXKEYSIZE];  decode16 (key, key_bytes);
@@ -247,7 +247,7 @@ int ENCRYPTION_METHOD::compress (CALLBACK_FUNC *callback, void *auxdata)
     return docrypt (ENCRYPT, cipher, mode, key_bytes, strlen(key)/2, rounds, iv_bytes, callback, auxdata);
 }
 
-// Записать в buf[MAX_METHOD_STRLEN] строку, описывающую метод сжатия и его параметры (функция, обратная к parse_ENCRYPTION)
+// Р—Р°РїРёСЃР°С‚СЊ РІ buf[MAX_METHOD_STRLEN] СЃС‚СЂРѕРєСѓ, РѕРїРёСЃС‹РІР°СЋС‰СѓСЋ РјРµС‚РѕРґ СЃР¶Р°С‚РёСЏ Рё РµРіРѕ РїР°СЂР°РјРµС‚СЂС‹ (С„СѓРЅРєС†РёСЏ, РѕР±СЂР°С‚РЅР°СЏ Рє parse_ENCRYPTION)
 void ENCRYPTION_METHOD::ShowCompressionMethod (char *buf)
 {
     sprintf (buf, "%s-%d/%s:n%d:r%d%s%s%s%s%s%s%s%s"
@@ -264,29 +264,29 @@ void ENCRYPTION_METHOD::ShowCompressionMethod (char *buf)
 
 #endif  // !defined (FREEARC_DECOMPRESS_ONLY)
 
-// Конструирует объект типа ENCRYPTION_METHOD с заданными параметрами упаковки
-// или возвращает NULL, если это другой метод сжатия или допущена ошибка в параметрах
+// РљРѕРЅСЃС‚СЂСѓРёСЂСѓРµС‚ РѕР±СЉРµРєС‚ С‚РёРїР° ENCRYPTION_METHOD СЃ Р·Р°РґР°РЅРЅС‹РјРё РїР°СЂР°РјРµС‚СЂР°РјРё СѓРїР°РєРѕРІРєРё
+// РёР»Рё РІРѕР·РІСЂР°С‰Р°РµС‚ NULL, РµСЃР»Рё СЌС‚Рѕ РґСЂСѓРіРѕР№ РјРµС‚РѕРґ СЃР¶Р°С‚РёСЏ РёР»Рё РґРѕРїСѓС‰РµРЅР° РѕС€РёР±РєР° РІ РїР°СЂР°РјРµС‚СЂР°С…
 COMPRESSION_METHOD* parse_ENCRYPTION (char** parameters)
 {
-    int error = 0;  // Признак того, что при разборе параметров произошла ошибка
+    int error = 0;  // РџСЂРёР·РЅР°Рє С‚РѕРіРѕ, С‡С‚Рѕ РїСЂРё СЂР°Р·Р±РѕСЂРµ РїР°СЂР°РјРµС‚СЂРѕРІ РїСЂРѕРёР·РѕС€Р»Р° РѕС€РёР±РєР°
 
-    // Делаем локальную копию, поскольку split портит строку
+    // Р”РµР»Р°РµРј Р»РѕРєР°Р»СЊРЅСѓСЋ РєРѕРїРёСЋ, РїРѕСЃРєРѕР»СЊРєСѓ split РїРѕСЂС‚РёС‚ СЃС‚СЂРѕРєСѓ
     char local_method[MAX_METHOD_STRLEN];
     strncopy (local_method, parameters[0], MAX_METHOD_STRLEN);
 
-    // Разбиваем строку метода на максимум 2 части, разделённые знаком '/'
-    // Это метод и режим шифрования (например, "aes/cfb")
+    // Р Р°Р·Р±РёРІР°РµРј СЃС‚СЂРѕРєСѓ РјРµС‚РѕРґР° РЅР° РјР°РєСЃРёРјСѓРј 2 С‡Р°СЃС‚Рё, СЂР°Р·РґРµР»С‘РЅРЅС‹Рµ Р·РЅР°РєРѕРј '/'
+    // Р­С‚Рѕ РјРµС‚РѕРґ Рё СЂРµР¶РёРј С€РёС„СЂРѕРІР°РЅРёСЏ (РЅР°РїСЂРёРјРµСЂ, "aes/cfb")
     char *parts[3];
     split (local_method, '/', parts, 3);
     int mode    = parts[1]? find_mode(parts[1]) : 0;
 
-    // Разбиваем строку метода на максимум 2 части, разделённые знаком '-'
-    // После '-' может быть указан размер ключа в битах (например, "aes-128")
+    // Р Р°Р·Р±РёРІР°РµРј СЃС‚СЂРѕРєСѓ РјРµС‚РѕРґР° РЅР° РјР°РєСЃРёРјСѓРј 2 С‡Р°СЃС‚Рё, СЂР°Р·РґРµР»С‘РЅРЅС‹Рµ Р·РЅР°РєРѕРј '-'
+    // РџРѕСЃР»Рµ '-' РјРѕР¶РµС‚ Р±С‹С‚СЊ СѓРєР°Р·Р°РЅ СЂР°Р·РјРµСЂ РєР»СЋС‡Р° РІ Р±РёС‚Р°С… (РЅР°РїСЂРёРјРµСЂ, "aes-128")
     split (local_method, '-', parts, 3);
 
     int cipher  = find_cipher(parts[0]);
     int keySize = parts[1]? parseInt (parts[1], &error)/8 : 0;
-    if (mode<0 || cipher<0 || error)   return NULL;   // Это не метод ENCRYPTION
+    if (mode<0 || cipher<0 || error)   return NULL;   // Р­С‚Рѕ РЅРµ РјРµС‚РѕРґ ENCRYPTION
 
     ENCRYPTION_METHOD *p = new ENCRYPTION_METHOD;
     p->cipher  = cipher;
@@ -294,11 +294,11 @@ COMPRESSION_METHOD* parse_ENCRYPTION (char** parameters)
     p->keySize = keySize? keySize : cipher_descriptor[cipher].max_key_length;
     p->ivSize  = cipher_descriptor[cipher].block_length;
 
-    // Переберём все параметры метода (или выйдем раньше при возникновении ошибки при разборе очередного параметра)
+    // РџРµСЂРµР±РµСЂС‘Рј РІСЃРµ РїР°СЂР°РјРµС‚СЂС‹ РјРµС‚РѕРґР° (РёР»Рё РІС‹Р№РґРµРј СЂР°РЅСЊС€Рµ РїСЂРё РІРѕР·РЅРёРєРЅРѕРІРµРЅРёРё РѕС€РёР±РєРё РїСЂРё СЂР°Р·Р±РѕСЂРµ РѕС‡РµСЂРµРґРЅРѕРіРѕ РїР°СЂР°РјРµС‚СЂР°)
     while (*++parameters && !error)
     {
       char* param = *parameters;
-      switch (*param) {                    // Параметры, содержащие значения
+      switch (*param) {                    // РџР°СЂР°РјРµС‚СЂС‹, СЃРѕРґРµСЂР¶Р°С‰РёРµ Р·РЅР°С‡РµРЅРёСЏ
         case 'k':  strncopy (p->key,  param+1, sizeof (p->key));    continue;
         case 'i':  strncopy (p->iv,   param+1, sizeof (p->iv));     continue;
         case 's':  strncopy (p->salt, param+1, sizeof (p->salt));   continue;
@@ -308,9 +308,9 @@ COMPRESSION_METHOD* parse_ENCRYPTION (char** parameters)
         default :  error=1;                                         continue;
       }
     }
-    if (error)  {delete p; return NULL;}  // Ошибка при парсинге параметров метода
+    if (error)  {delete p; return NULL;}  // РћС€РёР±РєР° РїСЂРё РїР°СЂСЃРёРЅРіРµ РїР°СЂР°РјРµС‚СЂРѕРІ РјРµС‚РѕРґР°
     return p;
 }
 
-static int ENCRYPTION_x = AddCompressionMethod (parse_ENCRYPTION);   // Зарегистрируем парсер метода ENCRYPTION
+static int ENCRYPTION_x = AddCompressionMethod (parse_ENCRYPTION);   // Р—Р°СЂРµРіРёСЃС‚СЂРёСЂСѓРµРј РїР°СЂСЃРµСЂ РјРµС‚РѕРґР° ENCRYPTION
 

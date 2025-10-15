@@ -38,7 +38,7 @@ import FileManPanel
 import FileManUtils
 
 ----------------------------------------------------------------------------------------------------
----- Диалог распаковки файлов ----------------------------------------------------------------------
+---- Р”РёР°Р»РѕРі СЂР°СЃРїР°РєРѕРІРєРё С„Р°Р№Р»РѕРІ ----------------------------------------------------------------------
 ----------------------------------------------------------------------------------------------------
 
 extractDialog fm' exec cmd arcnames arcdir files = do
@@ -55,7 +55,7 @@ extractDialog fm' exec cmd arcnames arcdir files = do
                    (_,   files,  [arcname]) -> "0026 Extract %2 files from %3"
                    (_,   files,  arcnames)  -> "0027 Extract files from %4 archives"
   let wintitle  =  formatn title [head files, show3$ length files, takeFileName$ head arcnames, show3$ length arcnames]
-  -- Создадим диалог со стандартными кнопками OK/Cancel
+  -- РЎРѕР·РґР°РґРёРј РґРёР°Р»РѕРі СЃРѕ СЃС‚Р°РЅРґР°СЂС‚РЅС‹РјРё РєРЅРѕРїРєР°РјРё OK/Cancel
   fmDialog fm' wintitle $ \(dialog,okButton) -> do
     upbox <- dialogGetUpper dialog
     overwrite <- radioFrame "0005 Overwrite mode"
@@ -80,14 +80,14 @@ extractDialog fm' exec cmd arcnames arcdir files = do
     addDirButton <- checkBox "0014 Append archive name to the output directory"
     ; boxPackStart vbox (widget addDirButton) PackNatural 0
 
-    (decryption, decryptionOnOK) <- decryptionBox fm' dialog   -- Настройки расшифровки
+    (decryption, decryptionOnOK) <- decryptionBox fm' dialog   -- РќР°СЃС‚СЂРѕР№РєРё СЂР°СЃС€РёС„СЂРѕРІРєРё
     ; boxPackStart upbox decryption           PackNatural 5
 
     (hbox, options, optionsStr)  <- fmCheckedEntryWithHistory fm' "xoptions" "0072 Additional options:"
     ; boxPackStart upbox hbox                 PackNatural 5
 
 
-    -- Установим выходной каталог в значение по умолчанию
+    -- РЈСЃС‚Р°РЅРѕРІРёРј РІС‹С…РѕРґРЅРѕР№ РєР°С‚Р°Р»РѕРі РІ Р·РЅР°С‡РµРЅРёРµ РїРѕ СѓРјРѕР»С‡Р°РЅРёСЋ
     case arcnames of
       [arcname] -> dir =: takeBaseName arcname
       _         -> do dir=:"."; addDirButton=:True
@@ -128,7 +128,7 @@ extractDialog fm' exec cmd arcnames arcdir files = do
 
 
 ----------------------------------------------------------------------------------------------------
----- Диалог информации об архиве -------------------------------------------------------------------
+---- Р”РёР°Р»РѕРі РёРЅС„РѕСЂРјР°С†РёРё РѕР± Р°СЂС…РёРІРµ -------------------------------------------------------------------
 ----------------------------------------------------------------------------------------------------
 
 arcinfoDialog fm' exec mode arcnames arcdir files = do
@@ -140,33 +140,33 @@ arcinfoDialog fm' exec mode arcnames arcdir files = do
   let archive = subfm_archive fm_arc
   title <- i18n"0085 All about %1"
   let wintitle  =  format title (takeFileName arcname)
-  -- Создадим диалог со стандартными кнопками OK/Cancel
+  -- РЎРѕР·РґР°РґРёРј РґРёР°Р»РѕРі СЃРѕ СЃС‚Р°РЅРґР°СЂС‚РЅС‹РјРё РєРЅРѕРїРєР°РјРё OK/Cancel
   fmDialog fm' wintitle $ \(dialog,okButton) -> do
     (nb,newPage) <- startNotebook dialog
------- Главная закладка ----------------------------------------------------------------------------
+------ Р“Р»Р°РІРЅР°СЏ Р·Р°РєР»Р°РґРєР° ----------------------------------------------------------------------------
     vbox <- newPage "0174 Main";  let pack n makeControl = do control <- makeControl
                                                               boxPackStart vbox control PackNatural n
 
     let filelist    = map (cfFileInfo)$ arcDirectory archive
         footer      = arcFooter archive
-        dataBlocks  = arcDataBlocks archive        -- список солид-блоков
+        dataBlocks  = arcDataBlocks archive        -- СЃРїРёСЃРѕРє СЃРѕР»РёРґ-Р±Р»РѕРєРѕРІ
         numOfBlocks = length dataBlocks
         empty       = "-"
     ;   yes        <- i18n"0101 Yes" >>== replaceAll "_" ""
 
-    let origsize = sum$ map blOrigSize dataBlocks  -- суммарный объём файлов в распакованном виде
-        compsize = sum$ map blCompSize dataBlocks  -- суммарный объём файлов в упакованном виде
-        getCompressors = partition isEncryption.blCompressor  -- разделить алг-мы шифрования и сжатия для блока
-        (encryptors, compressors) = unzip$ map getCompressors dataBlocks  -- список алг. шифрования и сжатия.
-        header_encryptors = deleteIf null$ map (fst.getCompressors) (ftBlocks footer)  -- алгоритмы шифрования служебных блоков
-        all_encryptors = deleteIf null encryptors ++ header_encryptors   -- а теперь все вместе :)
-        ciphers = joinWith "\n"$ removeDups$ map (join_compressor.map method_name) all_encryptors   -- имена алг. шифрования.
+    let origsize = sum$ map blOrigSize dataBlocks  -- СЃСѓРјРјР°СЂРЅС‹Р№ РѕР±СЉС‘Рј С„Р°Р№Р»РѕРІ РІ СЂР°СЃРїР°РєРѕРІР°РЅРЅРѕРј РІРёРґРµ
+        compsize = sum$ map blCompSize dataBlocks  -- СЃСѓРјРјР°СЂРЅС‹Р№ РѕР±СЉС‘Рј С„Р°Р№Р»РѕРІ РІ СѓРїР°РєРѕРІР°РЅРЅРѕРј РІРёРґРµ
+        getCompressors = partition isEncryption.blCompressor  -- СЂР°Р·РґРµР»РёС‚СЊ Р°Р»Рі-РјС‹ С€РёС„СЂРѕРІР°РЅРёСЏ Рё СЃР¶Р°С‚РёСЏ РґР»СЏ Р±Р»РѕРєР°
+        (encryptors, compressors) = unzip$ map getCompressors dataBlocks  -- СЃРїРёСЃРѕРє Р°Р»Рі. С€РёС„СЂРѕРІР°РЅРёСЏ Рё СЃР¶Р°С‚РёСЏ.
+        header_encryptors = deleteIf null$ map (fst.getCompressors) (ftBlocks footer)  -- Р°Р»РіРѕСЂРёС‚РјС‹ С€РёС„СЂРѕРІР°РЅРёСЏ СЃР»СѓР¶РµР±РЅС‹С… Р±Р»РѕРєРѕРІ
+        all_encryptors = deleteIf null encryptors ++ header_encryptors   -- Р° С‚РµРїРµСЂСЊ РІСЃРµ РІРјРµСЃС‚Рµ :)
+        ciphers = joinWith "\n"$ removeDups$ map (join_compressor.map method_name) all_encryptors   -- РёРјРµРЅР° Р°Р»Рі. С€РёС„СЂРѕРІР°РЅРёСЏ.
         formatMem s  =  x++" "++y  where (x,y) = span isDigit$ showMem s
 
-    let -- Максимальные словари основных и вспомогательных алгоритмов
+    let -- РњР°РєСЃРёРјР°Р»СЊРЅС‹Рµ СЃР»РѕРІР°СЂРё РѕСЃРЅРѕРІРЅС‹С… Рё РІСЃРїРѕРјРѕРіР°С‚РµР»СЊРЅС‹С… Р°Р»РіРѕСЂРёС‚РјРѕРІ
         dicts = compressors.$ map (splitAt 1.reverse.map getDictionary)  -- [([mainDict],[auxDict1,auxDict2..])...]
                            .$ map (\([x],ys) -> (x, maximum(0:ys)))      -- [(mainDict,maxAuxDict)...]
-                           .$ ((0,0):) .$ sort .$ last                   -- Выбираем строчку с макс. основным и вспом. словарём
+                           .$ ((0,0):) .$ sort .$ last                   -- Р’С‹Р±РёСЂР°РµРј СЃС‚СЂРѕС‡РєСѓ СЃ РјР°РєСЃ. РѕСЃРЅРѕРІРЅС‹Рј Рё РІСЃРїРѕРј. СЃР»РѕРІР°СЂС‘Рј
         dictionaries  =  case dicts of
                            (0,0)                     -> empty
                            (maxMainDict, 0)          -> formatMem maxMainDict
@@ -196,7 +196,7 @@ arcinfoDialog fm' exec mode arcnames arcdir files = do
     boxPackStart vbox table PackNatural (ciphers &&& 10)
 
 
------- Закладка комментария архива -----------------------------------------------------------------
+------ Р—Р°РєР»Р°РґРєР° РєРѕРјРјРµРЅС‚Р°СЂРёСЏ Р°СЂС…РёРІР° -----------------------------------------------------------------
     vbox <- newPage "0199 Comment"
 
     comment <- scrollableTextView (ftComment footer) []
@@ -223,21 +223,21 @@ arcinfoDialog fm' exec mode arcnames arcdir files = do
 
 
 ----------------------------------------------------------------------------------------------------
----- Диалог настроек программы ---------------------------------------------------------------------
+---- Р”РёР°Р»РѕРі РЅР°СЃС‚СЂРѕРµРє РїСЂРѕРіСЂР°РјРјС‹ ---------------------------------------------------------------------
 ----------------------------------------------------------------------------------------------------
 
 settingsDialog fm' = do
   fm <- val fm'
   fmDialog fm' "0067 Settings" $ \(dialog,okButton) -> do
     (nb,newPage) <- startNotebook dialog
------- Главная закладка ----------------------------------------------------------------------
+------ Р“Р»Р°РІРЅР°СЏ Р·Р°РєР»Р°РґРєР° ----------------------------------------------------------------------
     vbox <- newPage "0174 Main";  let pack x = boxPackStart vbox x PackNatural 1
     aboutLabel         <- labelNewWithMnemonic aARC_HEADER_WITH_DATE
     langLabel          <- label "0068 Language:"
     langComboBox       <- New.comboBoxNewText
     editLangButton     <- button "0069 Edit"
     convertLangButton  <- button "0070 Import"
-    -- Логфайл
+    -- Р›РѕРіС„Р°Р№Р»
     (logfileBox, _, logfile) <- fmFileBox fm' dialog
                                           "logfile" FileChooserActionSave
                                    (label "0166 Logfile:")
@@ -246,7 +246,7 @@ settingsDialog fm' = do
                                           (const$ return True)
                                           (fmCanonicalizeDiskPath fm')
     ; viewLogfileButton <- button "0292 View"
-    -- Прочее
+    -- РџСЂРѕС‡РµРµ
     toolbarTextButton   <- fmCheckButtonWithHistory fm' "ToolbarCaptions" True "0361 Add captions to toolbar buttons"
     checkNewsButton     <- fmCheckButtonWithHistory fm' "CheckNews"       True "0370 Watch for new versions via Internet"
     registerButton      <- button "0172 Associate FreeArc with .arc files"
@@ -255,15 +255,15 @@ settingsDialog fm' = do
             "0169 Passwords need to be entered again after restart."]
 
 -----------------------------------------------------------------------------------------------
-    -- Информация о текущем языке локализации
+    -- РРЅС„РѕСЂРјР°С†РёСЏ Рѕ С‚РµРєСѓС‰РµРј СЏР·С‹РєРµ Р»РѕРєР°Р»РёР·Р°С†РёРё
     langTable <- tableNew 2 2 False
     let dataset = [("0170 Full name:", "0000 English"), ("0171 Copyright:", "0159 ")]
     labels <- foreach [0..1] $ \y -> do
-      -- Первая колонка
+      -- РџРµСЂРІР°СЏ РєРѕР»РѕРЅРєР°
       label1 <- labelNew Nothing;  let x=0
       tableAttach langTable label1 (x+0) (x+1) y (y+1) [Fill] [Fill] 5 5
       miscSetAlignment label1 0 0
-      -- Вторая колонка
+      -- Р’С‚РѕСЂР°СЏ РєРѕР»РѕРЅРєР°
       label2 <- labelNew Nothing
       tableAttach langTable label2 (x+1) (x+2) y (y+1) [Expand, Fill] [Expand, Fill] 5 5
       set label2 [labelSelectable := True]
@@ -277,40 +277,40 @@ settingsDialog fm' = do
     --
     showLang i18n
 
-    -- Текущие настройки
+    -- РўРµРєСѓС‰РёРµ РЅР°СЃС‚СЂРѕР№РєРё
     inifile  <- io$ findFile configFilePlaces aINI_FILE
     settings <- inifile  &&&  io(readConfigFile inifile) >>== map (split2 '=')
     let langFile =  settings.$lookup aINITAG_LANGUAGE `defaultVal` ""
 
-    -- Заполнить список языков именами файлов в каталоге arc.languages и выбрать активный язык
+    -- Р—Р°РїРѕР»РЅРёС‚СЊ СЃРїРёСЃРѕРє СЏР·С‹РєРѕРІ РёРјРµРЅР°РјРё С„Р°Р№Р»РѕРІ РІ РєР°С‚Р°Р»РѕРіРµ arc.languages Рё РІС‹Р±СЂР°С‚СЊ Р°РєС‚РёРІРЅС‹Р№ СЏР·С‹Рє
     langDir   <- io$ findDir libraryFilePlaces aLANG_DIR
     langFiles <- langDir &&& (io(dir_list langDir) >>== map baseName >>== sort >>== filter (match "arc.*.txt"))
-    -- Отобразим языки в 5 столбцов, с сортировкой по столбцам
+    -- РћС‚РѕР±СЂР°Р·РёРј СЏР·С‹РєРё РІ 5 СЃС‚РѕР»Р±С†РѕРІ, СЃ СЃРѕСЂС‚РёСЂРѕРІРєРѕР№ РїРѕ СЃС‚РѕР»Р±С†Р°Рј
     let cols = 5
     ;   langComboBox `New.comboBoxSetWrapWidth` cols
     let rows = (length langFiles) `divRoundUp` cols;  add = rows*cols - length langFiles
-        sortOnColumn x  =  r*cols+c  where (c,r) = x `divMod` rows  -- пересчитать из поколоночных позиций в построчные
+        sortOnColumn x  =  r*cols+c  where (c,r) = x `divMod` rows  -- РїРµСЂРµСЃС‡РёС‚Р°С‚СЊ РёР· РїРѕРєРѕР»РѕРЅРѕС‡РЅС‹С… РїРѕР·РёС†РёР№ РІ РїРѕСЃС‚СЂРѕС‡РЅС‹Рµ
     ;   langFiles <- return$ map snd $ sort $ zip (map sortOnColumn [0..]) (langFiles ++ replicate add "")
     --
     for langFiles (New.comboBoxAppendText langComboBox . mapHead toUpper . replace '_' ' ' . dropEnd 4 . drop 4)
     whenJust_ (elemIndex (takeFileName langFile) langFiles)
               (New.comboBoxSetActive langComboBox)
 
-    -- Определить файл локализации, соответствующий выбранному в комбобоксе языку
+    -- РћРїСЂРµРґРµР»РёС‚СЊ С„Р°Р№Р» Р»РѕРєР°Р»РёР·Р°С†РёРё, СЃРѕРѕС‚РІРµС‚СЃС‚РІСѓСЋС‰РёР№ РІС‹Р±СЂР°РЅРЅРѕРјСѓ РІ РєРѕРјР±РѕР±РѕРєСЃРµ СЏР·С‹РєСѓ
     let getCurrentLangFile = do
           lang <- New.comboBoxGetActive langComboBox
           case lang of
             Just lang -> myCanonicalizePath (langDir </> (langFiles !! lang))
             Nothing   -> return ""
 
-    -- При выборе другого языка локализации вывести информацию о нём
+    -- РџСЂРё РІС‹Р±РѕСЂРµ РґСЂСѓРіРѕРіРѕ СЏР·С‹РєР° Р»РѕРєР°Р»РёР·Р°С†РёРё РІС‹РІРµСЃС‚Рё РёРЅС„РѕСЂРјР°С†РёСЋ Рѕ РЅС‘Рј
     langComboBox `New.onChanged` do
       whenJustM_ (New.comboBoxGetActive langComboBox) $ \_ -> do
         langFile   <- getCurrentLangFile
         localeInfo <- parseLocaleFile langFile
         showLang (i18n_general (return localeInfo) .>>== fst)
 
-    -- Редактирование текущего файла локализации/логфайла
+    -- Р РµРґР°РєС‚РёСЂРѕРІР°РЅРёРµ С‚РµРєСѓС‰РµРіРѕ С„Р°Р№Р»Р° Р»РѕРєР°Р»РёР·Р°С†РёРё/Р»РѕРіС„Р°Р№Р»Р°
     editLangButton    `onClick` (runEditCommand =<< getCurrentLangFile)
     viewLogfileButton `onClick` (runViewCommand =<< val logfile)
 
@@ -332,7 +332,7 @@ settingsDialog fm' = do
       regCmd   "extract-folder" "Extract to new folder" "x -ad"
       regCmd   "extract-here"   "Extract here"          "x"
       regCmd   "test"           "Test"                  "t"
-      -- todo: extract to ...;    *: add to archive; add to ...; выбор надписи и профайла/опций пользователя
+      -- todo: extract to ...;    *: add to archive; add to ...; РІС‹Р±РѕСЂ РЅР°РґРїРёСЃРё Рё РїСЂРѕС„Р°Р№Р»Р°/РѕРїС†РёР№ РїРѕР»СЊР·РѕРІР°С‚РµР»СЏ
       return ()
 #endif
 
@@ -355,13 +355,13 @@ settingsDialog fm' = do
     boxPackStart vbox       (widget  registerButton)     PackNatural 5   `on` isWindows
     boxPackStart vbox       (widget  notes)              PackNatural 5
 
------- Закладка сжатия ------------------------------------------------------------------------
+------ Р—Р°РєР»Р°РґРєР° СЃР¶Р°С‚РёСЏ ------------------------------------------------------------------------
     (_, saveCompressionHistories) <- compressionPage fm' =<< newPage "0106 Compression"
 
------- Закладка шифрования --------------------------------------------------------------------
+------ Р—Р°РєР»Р°РґРєР° С€РёС„СЂРѕРІР°РЅРёСЏ --------------------------------------------------------------------
     (_, saveEncryptionHistories)  <-  encryptionPage fm' dialog okButton =<< newPage "0119 Encryption"
 
------- Закладка информации о системе ----------------------------------------------------------
+------ Р—Р°РєР»Р°РґРєР° РёРЅС„РѕСЂРјР°С†РёРё Рѕ СЃРёСЃС‚РµРјРµ ----------------------------------------------------------
     vbox <- newPage "0388 Info";  let pack n makeControl = do control <- makeControl
                                                               boxPackStart vbox control PackNatural n
 
@@ -374,7 +374,7 @@ settingsDialog fm' = do
     choice <- fmDialogRun fm' dialog "SettingsDialog"
     windowPresent (fm_window fm)
     when (choice==ResponseOk) $ do
-      -- Сохраняем настройки в INI-файл, пароли - в глоб. переменных, keyfile - в истории
+      -- РЎРѕС…СЂР°РЅСЏРµРј РЅР°СЃС‚СЂРѕР№РєРё РІ INI-С„Р°Р№Р», РїР°СЂРѕР»Рё - РІ РіР»РѕР±. РїРµСЂРµРјРµРЅРЅС‹С…, keyfile - РІ РёСЃС‚РѕСЂРёРё
       langFile <- getCurrentLangFile
       inifile  <- io$ findOrCreateFile configFilePlaces aINI_FILE
       io$ buildPathTo inifile
@@ -387,16 +387,16 @@ settingsDialog fm' = do
 
 
 ----------------------------------------------------------------------------------------------------
----- Закладка сжатия -------------------------------------------------------------------------------
+---- Р—Р°РєР»Р°РґРєР° СЃР¶Р°С‚РёСЏ -------------------------------------------------------------------------------
 ----------------------------------------------------------------------------------------------------
 
 compressionPage fm' vbox = do
   let pack x = boxPackStart vbox x PackNatural 1
-  -- Алгоритм сжатия.
+  -- РђР»РіРѕСЂРёС‚Рј СЃР¶Р°С‚РёСЏ.
   (hbox, cmethod) <- fmLabeledEntryWithHistory fm' "compression" "0175 Compression profile:";  pack hbox
   ; save <- button "0178 Save";  boxPackStart hbox (widget save) PackNatural 5
 
-  -- Настройки алгоритма сжатия.
+  -- РќР°СЃС‚СЂРѕР№РєРё Р°Р»РіРѕСЂРёС‚РјР° СЃР¶Р°С‚РёСЏ.
   hbox <- hBoxNew False 0;  pack hbox
   ; vbox1 <- vBoxNew False 0
   ;   method <- radioFrame "0107 Compression level" levels
@@ -409,7 +409,7 @@ compressionPage fm' vbox = do
   ; methodText <- labelNew Nothing
   ;   boxPackStart hbox methodText PackGrow 0
 
-  -- Настройки размера солид-блока
+  -- РќР°СЃС‚СЂРѕР№РєРё СЂР°Р·РјРµСЂР° СЃРѕР»РёРґ-Р±Р»РѕРєР°
   vbox1 <- vBoxNew False 0;  let pack1 x = boxPackStart vbox1 x PackNatural 1
   ; (hbox, solidBytesOn, solidBytes) <- fmCheckedEntryWithHistory fm' "bytes" "0138 Bytes, no more than:";  pack1 hbox
   ; (hbox, solidFilesOn, solidFiles) <- fmCheckedEntryWithHistory fm' "files" "0139 Files, no more than:";  pack1 hbox
@@ -417,13 +417,13 @@ compressionPage fm' vbox = do
   solidBlocksFrame <- frameNew;  pack solidBlocksFrame;  s <- i18n"0177 Limit solid blocks"
   set solidBlocksFrame [containerChild := vbox1, frameLabel := s, containerBorderWidth := 5]
 
-  -- Инициализация полей
+  -- РРЅРёС†РёР°Р»РёР·Р°С†РёСЏ РїРѕР»РµР№
   let m=4; x=False
   method  =: (6-m) .$ clipTo 0 5
   xMethod =: x
   autodetect =: True
 
-  -- Опубликовать описание первоначально выбранного метода сжатия и обновлять его при изменениях настроек
+  -- РћРїСѓР±Р»РёРєРѕРІР°С‚СЊ РѕРїРёСЃР°РЅРёРµ РїРµСЂРІРѕРЅР°С‡Р°Р»СЊРЅРѕ РІС‹Р±СЂР°РЅРЅРѕРіРѕ РјРµС‚РѕРґР° СЃР¶Р°С‚РёСЏ Рё РѕР±РЅРѕРІР»СЏС‚СЊ РµРіРѕ РїСЂРё РёР·РјРµРЅРµРЅРёСЏС… РЅР°СЃС‚СЂРѕРµРє
   let parsePhysMem = parseMemWithPercents (toInteger getPhysicalMemory `roundTo` (4*mb))
   let getSimpleMethod = do
         m <- val method
@@ -472,13 +472,13 @@ compressionPage fm' vbox = do
   describeMethod .$ setOnUpdate solidFiles
   describeMethod .$ setOnUpdate solidByExtension
 
-  -- Сохранение истории строковых полей и обработка нажатия на Save
+  -- РЎРѕС…СЂР°РЅРµРЅРёРµ РёСЃС‚РѕСЂРёРё СЃС‚СЂРѕРєРѕРІС‹С… РїРѕР»РµР№ Рё РѕР±СЂР°Р±РѕС‚РєР° РЅР°Р¶Р°С‚РёСЏ РЅР° Save
   let saveHistories = do
         whenM (val solidBytesOn) $ do saveHistory solidBytes
         whenM (val solidFilesOn) $ do saveHistory solidFiles
   save `onClick` do saveHistories; saveHistory cmethod
 
-  -- Возвратим метод назначения реакции на изменение настройки сжатия и процедуру, выполняемую при нажатии на OK
+  -- Р’РѕР·РІСЂР°С‚РёРј РјРµС‚РѕРґ РЅР°Р·РЅР°С‡РµРЅРёСЏ СЂРµР°РєС†РёРё РЅР° РёР·РјРµРЅРµРЅРёРµ РЅР°СЃС‚СЂРѕР№РєРё СЃР¶Р°С‚РёСЏ Рё РїСЂРѕС†РµРґСѓСЂСѓ, РІС‹РїРѕР»РЅСЏРµРјСѓСЋ РїСЂРё РЅР°Р¶Р°С‚РёРё РЅР° OK
   return (\act -> setOnUpdate cmethod (val cmethod >>= act), saveHistories)
 
 {-
@@ -501,25 +501,25 @@ levels = [ "0108 Maximum",
 
 
 ----------------------------------------------------------------------------------------------------
----- Закладка шифрования -------------------------------------------------------------------------------
+---- Р—Р°РєР»Р°РґРєР° С€РёС„СЂРѕРІР°РЅРёСЏ -------------------------------------------------------------------------------
 ----------------------------------------------------------------------------------------------------
 
 encryptionPage fm' dialog okButton vbox = do
   let pack x = boxPackStart vbox x PackNatural 1
-  (hbox, pwds)  <-  pwdBox 2;  pack hbox   -- Создаёт таблицу с полями для ввода двух паролей
+  (hbox, pwds)  <-  pwdBox 2;  pack hbox   -- РЎРѕР·РґР°С‘С‚ С‚Р°Р±Р»РёС†Сѓ СЃ РїРѕР»СЏРјРё РґР»СЏ РІРІРѕРґР° РґРІСѓС… РїР°СЂРѕР»РµР№
 
-  -- Фрейм шифрования.
+  -- Р¤СЂРµР№Рј С€РёС„СЂРѕРІР°РЅРёСЏ.
   vbox1 <- vBoxNew False 0
   frame <- frameNew;  s <- i18n"0119 Encryption"
   set frame [containerChild := vbox1, frameLabel := s, containerBorderWidth := 5]
   let pack1 x = boxPackStart vbox1 x PackNatural 1
   boxPackStart vbox frame        PackNatural 10
 
-  -- Алгоритм шифрования.
+  -- РђР»РіРѕСЂРёС‚Рј С€РёС„СЂРѕРІР°РЅРёСЏ.
   (hbox, method) <- fmLabeledEntryWithHistory fm' "encryption" "0179 Encryption profile:";  pack1 hbox
   ; save <- button "0180 Save";  boxPackStart hbox (widget save) PackNatural 0
 
-  -- Настройки шифрования.
+  -- РќР°СЃС‚СЂРѕР№РєРё С€РёС„СЂРѕРІР°РЅРёСЏ.
   encryptHeaders <- checkBox "0120 Encrypt archive directory";  pack1 (widget encryptHeaders)
   usePwd <- checkBox "0181 Use password";  pack1 (widget usePwd)
   (hbox, keyfileOn, keyfile) <- fmFileBox fm' dialog
@@ -533,18 +533,18 @@ encryptionPage fm' dialog okButton vbox = do
   ; boxPackStart hbox (widget createKeyfile) PackNatural 0;  pack1 hbox
   (hbox, encAlg) <- fmLabeledEntryWithHistory fm' "encryptor" "0121 Encryption algorithm:";  pack1 hbox
 
-  -- Настройки расшифровки
+  -- РќР°СЃС‚СЂРѕР№РєРё СЂР°СЃС€РёС„СЂРѕРІРєРё
   (decryption, decryptionOnOK) <- decryptionBox fm' dialog
   ; boxPackStart vbox decryption        PackNatural 10
 
-  -- Разрешаем нажать OK только если оба введённых пароля одинаковы
+  -- Р Р°Р·СЂРµС€Р°РµРј РЅР°Р¶Р°С‚СЊ OK С‚РѕР»СЊРєРѕ РµСЃР»Рё РѕР±Р° РІРІРµРґС‘РЅРЅС‹С… РїР°СЂРѕР»СЏ РѕРґРёРЅР°РєРѕРІС‹
   let [pwd1,pwd2] = pwds
   for pwds $ flip afterKeyRelease $ \e -> do
     [pwd1', pwd2'] <- mapM val pwds
     okButton `widgetSetSensitivity` (pwd1'==pwd2')
     return False
 
-  -- Создать новый файл-ключ, записав криптографически случайные данные в указанный пользователем файл
+  -- РЎРѕР·РґР°С‚СЊ РЅРѕРІС‹Р№ С„Р°Р№Р»-РєР»СЋС‡, Р·Р°РїРёСЃР°РІ РєСЂРёРїС‚РѕРіСЂР°С„РёС‡РµСЃРєРё СЃР»СѓС‡Р°Р№РЅС‹Рµ РґР°РЅРЅС‹Рµ РІ СѓРєР°Р·Р°РЅРЅС‹Р№ РїРѕР»СЊР·РѕРІР°С‚РµР»РµРј С„Р°Р№Р»
   createKeyfile `onClick` do
     title <- i18n "0126 Create new keyfile"
     bracketCtrlBreak "createKeyfile" (fileChooserDialogNew (Just title) (Just$ castToWindow dialog) FileChooserActionSave [("OK",ResponseOk), ("Cancel",ResponseCancel)]) widgetDestroy $ \chooserDialog -> do
@@ -561,24 +561,24 @@ encryptionPage fm' dialog okButton vbox = do
           keyfile   =: filename
           keyfileOn =: True
 
-  -- Инициализация: прочитаем пароли из глобальных переменных
+  -- РРЅРёС†РёР°Р»РёР·Р°С†РёСЏ: РїСЂРѕС‡РёС‚Р°РµРј РїР°СЂРѕР»Рё РёР· РіР»РѕР±Р°Р»СЊРЅС‹С… РїРµСЂРµРјРµРЅРЅС‹С…
   pwd1 =:: val encryptionPassword
   pwd2 =:: val encryptionPassword
 
-  -- Сохранение истории строковых полей и обработка нажатия на Save
+  -- РЎРѕС…СЂР°РЅРµРЅРёРµ РёСЃС‚РѕСЂРёРё СЃС‚СЂРѕРєРѕРІС‹С… РїРѕР»РµР№ Рё РѕР±СЂР°Р±РѕС‚РєР° РЅР°Р¶Р°С‚РёСЏ РЅР° Save
   let saveHistories = do
         whenM (val keyfileOn) $ do saveHistory keyfile
         saveHistory encAlg
   save `onClick` do saveHistories; saveHistory method
 
-  -- Действия, выполняемые при нажатии на OK. Возвращает опции, которые нужно добавить в командную строку
+  -- Р”РµР№СЃС‚РІРёСЏ, РІС‹РїРѕР»РЅСЏРµРјС‹Рµ РїСЂРё РЅР°Р¶Р°С‚РёРё РЅР° OK. Р’РѕР·РІСЂР°С‰Р°РµС‚ РѕРїС†РёРё, РєРѕС‚РѕСЂС‹Рµ РЅСѓР¶РЅРѕ РґРѕР±Р°РІРёС‚СЊ РІ РєРѕРјР°РЅРґРЅСѓСЋ СЃС‚СЂРѕРєСѓ
   let onOK encryption = do
         saveHistories
         pwd' <- val pwd1;  encryptionPassword =: pwd'
         decryptionOptions <- decryptionOnOK
         return$ decryptionOptions ++ ((words encryption `contains` "-p?") &&& pwd' &&& ["-p"++pwd'])
 
-  -- Формирует профиль шифрования и вызывается при изменении любых опций в этом фрейме
+  -- Р¤РѕСЂРјРёСЂСѓРµС‚ РїСЂРѕС„РёР»СЊ С€РёС„СЂРѕРІР°РЅРёСЏ Рё РІС‹Р·С‹РІР°РµС‚СЃСЏ РїСЂРё РёР·РјРµРЅРµРЅРёРё Р»СЋР±С‹С… РѕРїС†РёР№ РІ СЌС‚РѕРј С„СЂРµР№РјРµ
   let makeProfile = do
         usePwd'         <- val usePwd
         keyfileOn'      <- val keyfileOn
@@ -597,12 +597,12 @@ encryptionPage fm' dialog okButton vbox = do
   makeProfile .$ setOnUpdate encAlg
   makeProfile .$ setOnUpdate encryptHeaders
 
-  -- Возвратим метод назначения реакции на изменение настроек шифрования и процедуру, выполняемую при нажатии на OK
+  -- Р’РѕР·РІСЂР°С‚РёРј РјРµС‚РѕРґ РЅР°Р·РЅР°С‡РµРЅРёСЏ СЂРµР°РєС†РёРё РЅР° РёР·РјРµРЅРµРЅРёРµ РЅР°СЃС‚СЂРѕРµРє С€РёС„СЂРѕРІР°РЅРёСЏ Рё РїСЂРѕС†РµРґСѓСЂСѓ, РІС‹РїРѕР»РЅСЏРµРјСѓСЋ РїСЂРё РЅР°Р¶Р°С‚РёРё РЅР° OK
   return (\act -> setOnUpdate method (val method >>= act), onOK)
 
 
 ----------------------------------------------------------------------------------------------------
----- Фрейм расшифровки -----------------------------------------------------------------------------
+---- Р¤СЂРµР№Рј СЂР°СЃС€РёС„СЂРѕРІРєРё -----------------------------------------------------------------------------
 ----------------------------------------------------------------------------------------------------
 
 decryptionBox fm' dialog = do
@@ -625,9 +625,9 @@ decryptionBox fm' dialog = do
   ; boxPackStart hbox pwd          PackGrow    5
   boxPackStart vbox hbox       PackNatural 0
   boxPackStart vbox keyfileBox PackNatural 5
-  -- Прочитаем пароли из глобальных переменных
+  -- РџСЂРѕС‡РёС‚Р°РµРј РїР°СЂРѕР»Рё РёР· РіР»РѕР±Р°Р»СЊРЅС‹С… РїРµСЂРµРјРµРЅРЅС‹С…
   pwd =:: val decryptionPassword
-  -- Действие, выполняемое при нажатии на OK. Возвращает опции, которые нужно добавить к командной строке
+  -- Р”РµР№СЃС‚РІРёРµ, РІС‹РїРѕР»РЅСЏРµРјРѕРµ РїСЂРё РЅР°Р¶Р°С‚РёРё РЅР° OK. Р’РѕР·РІСЂР°С‰Р°РµС‚ РѕРїС†РёРё, РєРѕС‚РѕСЂС‹Рµ РЅСѓР¶РЅРѕ РґРѕР±Р°РІРёС‚СЊ Рє РєРѕРјР°РЅРґРЅРѕР№ СЃС‚СЂРѕРєРµ
   let onOK = do
         pwd'     <- val pwd;      decryptionPassword =: pwd'
         keyfile' <- val keyfile;  saveHistory keyfile
@@ -638,10 +638,10 @@ decryptionBox fm' dialog = do
 
 
 ----------------------------------------------------------------------------------------------------
----- Вспомогательные определения -------------------------------------------------------------------
+---- Р’СЃРїРѕРјРѕРіР°С‚РµР»СЊРЅС‹Рµ РѕРїСЂРµРґРµР»РµРЅРёСЏ -------------------------------------------------------------------
 ----------------------------------------------------------------------------------------------------
 
--- |Выполнить операцию над выбранными файлами в архиве/всеми файлами в выбранных архивах
+-- |Р’С‹РїРѕР»РЅРёС‚СЊ РѕРїРµСЂР°С†РёСЋ РЅР°Рґ РІС‹Р±СЂР°РЅРЅС‹РјРё С„Р°Р№Р»Р°РјРё РІ Р°СЂС…РёРІРµ/РІСЃРµРјРё С„Р°Р№Р»Р°РјРё РІ РІС‹Р±СЂР°РЅРЅС‹С… Р°СЂС…РёРІР°С…
 archiveOperation fm' action = do
   fm <- val fm'
   files <- getSelection fm' (if isFM_Archive fm  then xCmdFiles  else const [])
@@ -650,7 +650,7 @@ archiveOperation fm' action = do
     else do fullnames <- mapM (fmCanonicalizePath fm') files
             action fullnames "" []
 
--- |Выполняет операцию, которой нужно передать только имена архивов
+-- |Р’С‹РїРѕР»РЅСЏРµС‚ РѕРїРµСЂР°С†РёСЋ, РєРѕС‚РѕСЂРѕР№ РЅСѓР¶РЅРѕ РїРµСЂРµРґР°С‚СЊ С‚РѕР»СЊРєРѕ РёРјРµРЅР° Р°СЂС…РёРІРѕРІ
 multiArchiveOperation fm' action = do
   fm <- val fm'
   if isFM_Archive fm
@@ -659,31 +659,31 @@ multiArchiveOperation fm' action = do
             fullnames <- mapM (fmCanonicalizePath fm') files
             action fullnames
 
--- |Обновить содержимое панели файл-менеджера актуальными данными
+-- |РћР±РЅРѕРІРёС‚СЊ СЃРѕРґРµСЂР¶РёРјРѕРµ РїР°РЅРµР»Рё С„Р°Р№Р»-РјРµРЅРµРґР¶РµСЂР° Р°РєС‚СѓР°Р»СЊРЅС‹РјРё РґР°РЅРЅС‹РјРё
 refreshCommand fm' = do
   fm <- val fm'
   curfile <- fmGetCursor fm'
   selected <- getSelection fm' (:[])
-  -- Обновим содержимое каталога/архива и восстановим текущий файл и список отмеченных
+  -- РћР±РЅРѕРІРёРј СЃРѕРґРµСЂР¶РёРјРѕРµ РєР°С‚Р°Р»РѕРіР°/Р°СЂС…РёРІР° Рё РІРѕСЃСЃС‚Р°РЅРѕРІРёРј С‚РµРєСѓС‰РёР№ С„Р°Р№Р» Рё СЃРїРёСЃРѕРє РѕС‚РјРµС‡РµРЅРЅС‹С…
   chdir fm' (fm_current fm)
   when (selected>[]) $ do
     fmSetCursor fm' curfile
   fmUnselectFilenames fm' (const True)
   fmSelectFilenames   fm' ((`elem` selected).fmname)
 
--- |Просмотреть файл
+-- |РџСЂРѕСЃРјРѕС‚СЂРµС‚СЊ С„Р°Р№Р»
 runViewCommand           = runEditCommand
 
--- |Редактировать файл
+-- |Р РµРґР°РєС‚РёСЂРѕРІР°С‚СЊ С„Р°Р№Р»
 runEditCommand filename  = run (iif isWindows "notepad" "gedit") [filename]
   where run cmd params = forkIO (rawSystem cmd params >> return ()) >> return ()
   -- edit filename | isWindows && takeExtension filename == "txt"  =  todo: direct shell open command
 
--- |Определяет то, как имена каталогов подставляются в команды
+-- |РћРїСЂРµРґРµР»СЏРµС‚ С‚Рѕ, РєР°Рє РёРјРµРЅР° РєР°С‚Р°Р»РѕРіРѕРІ РїРѕРґСЃС‚Р°РІР»СЏСЋС‚СЃСЏ РІ РєРѕРјР°РЅРґС‹
 addCmdFiles dirname =  [dirname++"/"]
 xCmdFiles   dirname =  [dirname++"/*"]
 
--- Поместим все контролы в симпатичный notebook и получим процедуру создания новых страниц в нём
+-- РџРѕРјРµСЃС‚РёРј РІСЃРµ РєРѕРЅС‚СЂРѕР»С‹ РІ СЃРёРјРїР°С‚РёС‡РЅС‹Р№ notebook Рё РїРѕР»СѓС‡РёРј РїСЂРѕС†РµРґСѓСЂСѓ СЃРѕР·РґР°РЅРёСЏ РЅРѕРІС‹С… СЃС‚СЂР°РЅРёС† РІ РЅС‘Рј
 startNotebook dialog = do
   upbox <- dialogGetUpper dialog
   nb <- notebookNew;  boxPackStart upbox nb PackGrow 0
@@ -692,6 +692,6 @@ startNotebook dialog = do
                         return vbox
   return (nb,newPage)
 
--- |Режимы диалогов
+-- |Р РµР¶РёРјС‹ РґРёР°Р»РѕРіРѕРІ
 data DialogMode = EncryptionMode | ProtectionMode | RecompressMode | CommentMode | MakeSFXMode | NoMode  deriving Eq
 

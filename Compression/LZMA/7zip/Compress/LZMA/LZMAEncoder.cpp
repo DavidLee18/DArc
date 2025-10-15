@@ -1099,19 +1099,19 @@ HRESULT CEncoder::GetOptimumFast(UInt32 position, UInt32 &backRes, UInt32 &lenRe
       lenMain = matchDistances[numDistancePairs - 2];
       backMain = matchDistances[numDistancePairs - 1];
     }
-    // Отбросим матч, если дистанция слишком велика для такой длины
+    // РћС‚Р±СЂРѕСЃРёРј РјР°С‚С‡, РµСЃР»Рё РґРёСЃС‚Р°РЅС†РёСЏ СЃР»РёС€РєРѕРј РІРµР»РёРєР° РґР»СЏ С‚Р°РєРѕР№ РґР»РёРЅС‹
     static const int maxDist[] = {0, 0, 128, 2048, 64<<10, 2<<20, 12<<20};
     if (lenMain < sizeof(maxDist)/sizeof(*maxDist)
     	&& backMain >= maxDist[lenMain])
       lenMain = 1;
   }
 
-  // Если нашёлся подходящий REPDIST, то используем его при определённых условиях
+  // Р•СЃР»Рё РЅР°С€С‘Р»СЃСЏ РїРѕРґС…РѕРґСЏС‰РёР№ REPDIST, С‚Рѕ РёСЃРїРѕР»СЊР·СѓРµРј РµРіРѕ РїСЂРё РѕРїСЂРµРґРµР»С‘РЅРЅС‹С… СѓСЃР»РѕРІРёСЏС…
   if (repLens[repMaxIndex] >= 2)
   {
-    if (repLens[repMaxIndex] + 1 >= lenMain ||                                   //  или  replen+1 >= len
-        repLens[repMaxIndex] + 2 >= lenMain && (backMain > (1 << 9)) ||          //  или  replen+2 >= len  &&  dist > 512
-        repLens[repMaxIndex] + 3 >= lenMain && (backMain > (1 << 15)))           //  или  replen+3 >= len  &&  dist > 32k
+    if (repLens[repMaxIndex] + 1 >= lenMain ||                                   //  РёР»Рё  replen+1 >= len
+        repLens[repMaxIndex] + 2 >= lenMain && (backMain > (1 << 9)) ||          //  РёР»Рё  replen+2 >= len  &&  dist > 512
+        repLens[repMaxIndex] + 3 >= lenMain && (backMain > (1 << 15)))           //  РёР»Рё  replen+3 >= len  &&  dist > 32k
     {
       backRes = repMaxIndex;
       lenRes = repLens[repMaxIndex];
@@ -1148,9 +1148,9 @@ HRESULT CEncoder::GetOptimumFast(UInt32 position, UInt32 &backRes, UInt32 &lenRe
       }
       UInt32 len;
       for (len = 2; len < numAvailableBytes && data[len] == data[(size_t)len - backOffset]; len++);
-      if (len + 1 >= lenMain ||                                   //  или  replen+1 >= len
-          len + 2 >= lenMain && (backMain > (1 << 9)) ||          //  или  replen+2 >= len  &&  dist > 512
-          len + 3 >= lenMain && (backMain > (1 << 15)))           //  или  replen+3 >= len  &&  dist > 32k
+      if (len + 1 >= lenMain ||                                   //  РёР»Рё  replen+1 >= len
+          len + 2 >= lenMain && (backMain > (1 << 9)) ||          //  РёР»Рё  replen+2 >= len  &&  dist > 512
+          len + 3 >= lenMain && (backMain > (1 << 15)))           //  РёР»Рё  replen+3 >= len  &&  dist > 32k
 //      if (len + 1 >= lenMain)
       {
         _longestMatchWasFound = true;

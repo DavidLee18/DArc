@@ -55,7 +55,7 @@ extern "C" {
 #include "WFC_Ari.c"
 #include "Rec_Flt.c"
 
-const sint32 RESERVED = 0;  // неиспользуемые байты в заголовке заполняются этим значением
+const sint32 RESERVED = 0;  // РЅРµРёСЃРїРѕР»СЊР·СѓРµРјС‹Рµ Р±Р°Р№С‚С‹ РІ Р·Р°РіРѕР»РѕРІРєРµ Р·Р°РїРѕР»РЅСЏСЋС‚СЃСЏ СЌС‚РёРј Р·РЅР°С‡РµРЅРёРµРј
 
 #ifndef FREEARC_DECOMPRESS_ONLY
 
@@ -415,7 +415,7 @@ struct GRZipMTCompressor : MTCompressor<GRZipCompressionThread>
 {
     sint32  Mode;
     int     BlockSize;
-    int     AdaptiveBlockSize;       // использовать переменный размер блока
+    int     AdaptiveBlockSize;       // РёСЃРїРѕР»СЊР·РѕРІР°С‚СЊ РїРµСЂРµРјРµРЅРЅС‹Р№ СЂР°Р·РјРµСЂ Р±Р»РѕРєР°
 
     GRZipMTCompressor (int Method,
                        int BlockSize,
@@ -448,22 +448,22 @@ struct GRZipMTCompressor : MTCompressor<GRZipCompressionThread>
     int main_cycle()
     {
         GRZipCompressionThread *job = FreeJobs.Get();   // Acquire first compression job
-        char* RemainderPos; int RemainderSize=0;        // остаток данных с предыдущего раза - адрес и количество
+        char* RemainderPos; int RemainderSize=0;        // РѕСЃС‚Р°С‚РѕРє РґР°РЅРЅС‹С… СЃ РїСЂРµРґС‹РґСѓС‰РµРіРѕ СЂР°Р·Р° - Р°РґСЂРµСЃ Рё РєРѕР»РёС‡РµСЃС‚РІРѕ
         while ( (job->InSize = callback ("read", job->InBuf + RemainderSize, BlockSize - RemainderSize, auxdata)) >= 0 )
         {
-          if ((job->InSize+=RemainderSize)==0)     return 0;  // Данных больше нет
+          if ((job->InSize+=RemainderSize)==0)     return 0;  // Р”Р°РЅРЅС‹С… Р±РѕР»СЊС€Рµ РЅРµС‚
           if (errcode < 0)                         return 0;  // Error in other thread
           RemainderSize=0;
           if (AdaptiveBlockSize)
-          {  // Пошукаем статистику прочитанных данных - может, нет смысла сжимать их общим блоком
+          {  // РџРѕС€СѓРєР°РµРј СЃС‚Р°С‚РёСЃС‚РёРєСѓ РїСЂРѕС‡РёС‚Р°РЅРЅС‹С… РґР°РЅРЅС‹С… - РјРѕР¶РµС‚, РЅРµС‚ СЃРјС‹СЃР»Р° СЃР¶РёРјР°С‚СЊ РёС… РѕР±С‰РёРј Р±Р»РѕРєРѕРј
              sint32 NewSize = GRZip_GetAdaptiveBlockSize ((uint8*) job->InBuf, job->InSize);
-             // Принято решение сжать только первые NewSize байт. Остальное оставим на следующий раз
+             // РџСЂРёРЅСЏС‚Рѕ СЂРµС€РµРЅРёРµ СЃР¶Р°С‚СЊ С‚РѕР»СЊРєРѕ РїРµСЂРІС‹Рµ NewSize Р±Р°Р№С‚. РћСЃС‚Р°Р»СЊРЅРѕРµ РѕСЃС‚Р°РІРёРј РЅР° СЃР»РµРґСѓСЋС‰РёР№ СЂР°Р·
              RemainderPos=job->InBuf+NewSize; RemainderSize=job->InSize-NewSize; job->InSize=NewSize;
           }
           WriterJobs.Put(job);
           job->StartOperation.Signal();
           job = FreeJobs.Get();                     // Acquire next compression job
-          // Перенесём необработанный остаток данных в начало буфера
+          // РџРµСЂРµРЅРµСЃС‘Рј РЅРµРѕР±СЂР°Р±РѕС‚Р°РЅРЅС‹Р№ РѕСЃС‚Р°С‚РѕРє РґР°РЅРЅС‹С… РІ РЅР°С‡Р°Р»Рѕ Р±СѓС„РµСЂР°
           if (RemainderSize>0)   memmove(job->InBuf, RemainderPos, RemainderSize);
         }
         return job->InSize;
@@ -554,7 +554,7 @@ struct GRZipMTDecompressor : MTCompressor<GRZipDecompressionThread>
         while (1)
         {
             sint32 NumRead=callback("read",BlockSign,28,auxdata);
-            if (NumRead==0)                                          return FREEARC_OK;    // Конец данных
+            if (NumRead==0)                                          return FREEARC_OK;    // РљРѕРЅРµС† РґР°РЅРЅС‹С…
             if (NumRead!=28)                                         return NumRead<0? NumRead:FREEARC_ERRCODE_BAD_COMPRESSED_DATA;
             if (GRZip_CheckBlockSign(BlockSign,28)!=GRZ_NO_ERROR)    return FREEARC_ERRCODE_BAD_COMPRESSED_DATA;
 
@@ -581,9 +581,9 @@ int __cdecl grzip_decompress (CALLBACK_FUNC *callback, void *auxdata)
 
 
 /*-------------------------------------------------*/
-/* Реализация класса GRZIP_METHOD                  */
+/* Р РµР°Р»РёР·Р°С†РёСЏ РєР»Р°СЃСЃР° GRZIP_METHOD                  */
 /*-------------------------------------------------*/
-// Конструктор, присваивающий параметрам метода сжатия значения по умолчанию
+// РљРѕРЅСЃС‚СЂСѓРєС‚РѕСЂ, РїСЂРёСЃРІР°РёРІР°СЋС‰РёР№ РїР°СЂР°РјРµС‚СЂР°Рј РјРµС‚РѕРґР° СЃР¶Р°С‚РёСЏ Р·РЅР°С‡РµРЅРёСЏ РїРѕ СѓРјРѕР»С‡Р°РЅРёСЋ
 GRZIP_METHOD::GRZIP_METHOD()
 {
   Method              = 1;
@@ -596,7 +596,7 @@ GRZIP_METHOD::GRZIP_METHOD()
   DeltaFilter         = 0;
 }
 
-// Функция распаковки
+// Р¤СѓРЅРєС†РёСЏ СЂР°СЃРїР°РєРѕРІРєРё
 int GRZIP_METHOD::decompress (CALLBACK_FUNC *callback, void *auxdata)
 {
   // Use faster function from DLL if possible
@@ -608,7 +608,7 @@ int GRZIP_METHOD::decompress (CALLBACK_FUNC *callback, void *auxdata)
 
 #ifndef FREEARC_DECOMPRESS_ONLY
 
-// Функция упаковки
+// Р¤СѓРЅРєС†РёСЏ СѓРїР°РєРѕРІРєРё
 int GRZIP_METHOD::compress (CALLBACK_FUNC *callback, void *auxdata)
 {
   // Use faster function from DLL if possible
@@ -628,7 +628,7 @@ int GRZIP_METHOD::compress (CALLBACK_FUNC *callback, void *auxdata)
                          auxdata);
 }
 
-// Установить размер блока и уменьшить размер хэша, если он слишком велик для такого маленького блока
+// РЈСЃС‚Р°РЅРѕРІРёС‚СЊ СЂР°Р·РјРµСЂ Р±Р»РѕРєР° Рё СѓРјРµРЅСЊС€РёС‚СЊ СЂР°Р·РјРµСЂ С…СЌС€Р°, РµСЃР»Рё РѕРЅ СЃР»РёС€РєРѕРј РІРµР»РёРє РґР»СЏ С‚Р°РєРѕРіРѕ РјР°Р»РµРЅСЊРєРѕРіРѕ Р±Р»РѕРєР°
 void GRZIP_METHOD::SetBlockSize (MemSize bs)
 {
   if (bs>0) {
@@ -637,7 +637,7 @@ void GRZIP_METHOD::SetBlockSize (MemSize bs)
   }
 }
 
-// Записать в buf[MAX_METHOD_STRLEN] строку, описывающую метод сжатия и его параметры (функция, обратная к parse_GRZIP)
+// Р—Р°РїРёСЃР°С‚СЊ РІ buf[MAX_METHOD_STRLEN] СЃС‚СЂРѕРєСѓ, РѕРїРёСЃС‹РІР°СЋС‰СѓСЋ РјРµС‚РѕРґ СЃР¶Р°С‚РёСЏ Рё РµРіРѕ РїР°СЂР°РјРµС‚СЂС‹ (С„СѓРЅРєС†РёСЏ, РѕР±СЂР°С‚РЅР°СЏ Рє parse_GRZIP)
 void GRZIP_METHOD::ShowCompressionMethod (char *buf)
 {
   char LZP_Str[100], BlockSizeStr[100];
@@ -653,46 +653,46 @@ void GRZIP_METHOD::ShowCompressionMethod (char *buf)
 
 #endif  // !defined (FREEARC_DECOMPRESS_ONLY)
 
-// Конструирует объект типа GRZIP_METHOD с заданными параметрами упаковки
-// или возвращает NULL, если это другой метод сжатия или допущена ошибка при задании параметров
+// РљРѕРЅСЃС‚СЂСѓРёСЂСѓРµС‚ РѕР±СЉРµРєС‚ С‚РёРїР° GRZIP_METHOD СЃ Р·Р°РґР°РЅРЅС‹РјРё РїР°СЂР°РјРµС‚СЂР°РјРё СѓРїР°РєРѕРІРєРё
+// РёР»Рё РІРѕР·РІСЂР°С‰Р°РµС‚ NULL, РµСЃР»Рё СЌС‚Рѕ РґСЂСѓРіРѕР№ РјРµС‚РѕРґ СЃР¶Р°С‚РёСЏ РёР»Рё РґРѕРїСѓС‰РµРЅР° РѕС€РёР±РєР° РїСЂРё Р·Р°РґР°РЅРёРё РїР°СЂР°РјРµС‚СЂРѕРІ
 COMPRESSION_METHOD* parse_GRZIP (char** parameters)
 {
   if (strcmp (parameters[0], "grzip") == 0) {
-    // Если название метода (нулевой параметр) - "grzip", то разберём остальные параметры
+    // Р•СЃР»Рё РЅР°Р·РІР°РЅРёРµ РјРµС‚РѕРґР° (РЅСѓР»РµРІРѕР№ РїР°СЂР°РјРµС‚СЂ) - "grzip", С‚Рѕ СЂР°Р·Р±РµСЂС‘Рј РѕСЃС‚Р°Р»СЊРЅС‹Рµ РїР°СЂР°РјРµС‚СЂС‹
 
     GRZIP_METHOD *p = new GRZIP_METHOD;
-    int error = 0;  // Признак того, что при разборе параметров произошла ошибка
+    int error = 0;  // РџСЂРёР·РЅР°Рє С‚РѕРіРѕ, С‡С‚Рѕ РїСЂРё СЂР°Р·Р±РѕСЂРµ РїР°СЂР°РјРµС‚СЂРѕРІ РїСЂРѕРёР·РѕС€Р»Р° РѕС€РёР±РєР°
 
-    while (!error && *++parameters)  // Переберём все параметры метода
+    while (!error && *++parameters)  // РџРµСЂРµР±РµСЂС‘Рј РІСЃРµ РїР°СЂР°РјРµС‚СЂС‹ РјРµС‚РѕРґР°
     {
       char *param = *parameters;
-      if (strlen(param)==1) switch (*param) {    // Однобуквенные параметры
+      if (strlen(param)==1) switch (*param) {    // РћРґРЅРѕР±СѓРєРІРµРЅРЅС‹Рµ РїР°СЂР°РјРµС‚СЂС‹
         case 's':  p->AlternativeBWTSort  = 1; continue;
         case 'a':  p->AdaptiveBlockSize   = 1; continue;
         case 'l':  p->EnableLZP           = 0; continue;
         case 'd':  p->DeltaFilter         = 1; continue;
         case 'p':  p->AdaptiveBlockSize=0; p->EnableLZP=0; p->DeltaFilter=1; continue;
       }
-      else switch (*param) {                    // Параметры, содержащие значения
+      else switch (*param) {                    // РџР°СЂР°РјРµС‚СЂС‹, СЃРѕРґРµСЂР¶Р°С‰РёРµ Р·РЅР°С‡РµРЅРёСЏ
         case 'm':  p->Method      = parseInt (param+1, &error); continue;
         case 'b':  p->BlockSize   = parseMem (param+1, &error); continue;
         case 'l':  p->MinMatchLen = parseInt (param+1, &error); continue;
         case 'h':  p->HashSizeLog = parseInt (param+1, &error); continue;
       }
-      // Сюда мы попадаем, если в параметре не указано его название
-      // Если этот параметр удастся разобрать как целое число (т.е. в нём - только цифры),
-      // то присвоим его значение полю MinMatchLen, иначе попробуем разобрать его как BlockSize
+      // РЎСЋРґР° РјС‹ РїРѕРїР°РґР°РµРј, РµСЃР»Рё РІ РїР°СЂР°РјРµС‚СЂРµ РЅРµ СѓРєР°Р·Р°РЅРѕ РµРіРѕ РЅР°Р·РІР°РЅРёРµ
+      // Р•СЃР»Рё СЌС‚РѕС‚ РїР°СЂР°РјРµС‚СЂ СѓРґР°СЃС‚СЃСЏ СЂР°Р·РѕР±СЂР°С‚СЊ РєР°Рє С†РµР»РѕРµ С‡РёСЃР»Рѕ (С‚.Рµ. РІ РЅС‘Рј - С‚РѕР»СЊРєРѕ С†РёС„СЂС‹),
+      // С‚Рѕ РїСЂРёСЃРІРѕРёРј РµРіРѕ Р·РЅР°С‡РµРЅРёРµ РїРѕР»СЋ MinMatchLen, РёРЅР°С‡Рµ РїРѕРїСЂРѕР±СѓРµРј СЂР°Р·РѕР±СЂР°С‚СЊ РµРіРѕ РєР°Рє BlockSize
       int n = parseInt (param, &error);
       if (!error) p->MinMatchLen = n;
       else        error=0, p->BlockSize = parseMem (param, &error);
     }
-    if (error)  {delete p; return NULL;}  // Ошибка при парсинге параметров метода
+    if (error)  {delete p; return NULL;}  // РћС€РёР±РєР° РїСЂРё РїР°СЂСЃРёРЅРіРµ РїР°СЂР°РјРµС‚СЂРѕРІ РјРµС‚РѕРґР°
     return p;
   } else
-    return NULL;   // Это не метод grzip
+    return NULL;   // Р­С‚Рѕ РЅРµ РјРµС‚РѕРґ grzip
 }
 
-static int GRZIP_x = AddCompressionMethod (parse_GRZIP);   // Зарегистрируем парсер метода GRZIP
+static int GRZIP_x = AddCompressionMethod (parse_GRZIP);   // Р—Р°СЂРµРіРёСЃС‚СЂРёСЂСѓРµРј РїР°СЂСЃРµСЂ РјРµС‚РѕРґР° GRZIP
 
 /*-------------------------------------------------*/
 /* End                                  libGRZip.c */

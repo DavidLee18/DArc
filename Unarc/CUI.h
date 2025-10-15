@@ -63,9 +63,9 @@ FILENAME UI::GetOutDir()
 bool UI::AllowProcessing (char cmd, int silent, FILENAME arcname, char* comment, int cmtsize, FILENAME _outdir)
 {
   strcpy (outdir, _outdir);
-  printf (". %s archive: %s\n",                       // Выведем имя обрабатываемого архива
+  printf (". %s archive: %s\n",                       // ╨Т╤Л╨▓╨╡╨┤╨╡╨╝ ╨╕╨╝╤П ╨╛╨▒╤А╨░╨▒╨░╤В╤Л╨▓╨░╨╡╨╝╨╛╨│╨╛ ╨░╤А╤Е╨╕╨▓╨░
     cmd=='l'||cmd=='v'? "Listing" : cmd=='t' ? "Testing" : "Extracting", drop_dirname(arcname));
-  if (cmtsize>0)                                      // Выведем архивный комментарий
+  if (cmtsize>0)                                      // ╨Т╤Л╨▓╨╡╨┤╨╡╨╝ ╨░╤А╤Е╨╕╨▓╨╜╤Л╨╣ ╨║╨╛╨╝╨╝╨╡╨╜╤В╨░╤А╨╕╨╣
 #ifdef FREEARC_WIN
 {
     // Convert comment from UTF-8 to OEM encoding before printing
@@ -81,7 +81,7 @@ bool UI::AllowProcessing (char cmd, int silent, FILENAME arcname, char* comment,
 #endif
 
 #ifdef FREEARC_SFX
-  // В SFX необходимо запросить согласие пользователя перед началом распаковки
+  // ╨Т SFX ╨╜╨╡╨╛╨▒╤Е╨╛╨┤╨╕╨╝╨╛ ╨╖╨░╨┐╤А╨╛╤Б╨╕╤В╤М ╤Б╨╛╨│╨╗╨░╤Б╨╕╨╡ ╨┐╨╛╨╗╤М╨╖╨╛╨▓╨░╤В╨╡╨╗╤П ╨┐╨╡╤А╨╡╨┤ ╨╜╨░╤З╨░╨╗╨╛╨╝ ╤А╨░╤Б╨┐╨░╨║╨╛╨▓╨║╨╕
   if (!silent)
   {
     char answer[256];

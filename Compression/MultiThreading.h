@@ -180,7 +180,7 @@ void MTCompressor<Job>::WriterThread()
             break;
         // Wait until (de)compression will be finished
         job->OperationFinished.Lock();
-        // Çàïèñàòü ñæàòûé áëîê è âûéòè, åñëè ïðè çàïèñè ïðîèçîøëà îøèáêà/áîëüøå äàííûõ íå íóæíî
+        // Ð—Ð°Ð¿Ð¸ÑÐ°Ñ‚ÑŒ ÑÐ¶Ð°Ñ‚Ñ‹Ð¹ Ð±Ð»Ð¾Ðº Ð¸ Ð²Ñ‹Ð¹Ñ‚Ð¸, ÐµÑÐ»Ð¸ Ð¿Ñ€Ð¸ Ð·Ð°Ð¿Ð¸ÑÐ¸ Ð¿Ñ€Ð¾Ð¸Ð·Ð¾ÑˆÐ»Ð° Ð¾ÑˆÐ¸Ð±ÐºÐ°/Ð±Ð¾Ð»ÑŒÑˆÐµ Ð´Ð°Ð½Ð½Ñ‹Ñ… Ð½Ðµ Ð½ÑƒÐ¶Ð½Ð¾
         if (SetErrCode(callback("write", job->OutBuf, job->OutSize, auxdata)) < 0)
             break;
         // After-write cleanup

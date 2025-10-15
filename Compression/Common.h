@@ -30,7 +30,7 @@ extern "C" {
 #endif
 
 /******************************************************************************
-** Базовые определения FREEARC ************************************************
+** Р‘Р°Р·РѕРІС‹Рµ РѕРїСЂРµРґРµР»РµРЅРёСЏ FREEARC ************************************************
 ******************************************************************************/
 #if !defined(FREEARC_WIN) && !defined(FREEARC_UNIX)
 #error "You must define OS!"
@@ -63,7 +63,7 @@ extern "C" {
 
 
 /******************************************************************************
-** Синонимы для простых типов, используемых в программе ***********************
+** РЎРёРЅРѕРЅРёРјС‹ РґР»СЏ РїСЂРѕСЃС‚С‹С… С‚РёРїРѕРІ, РёСЃРїРѕР»СЊР·СѓРµРјС‹С… РІ РїСЂРѕРіСЂР°РјРјРµ ***********************
 ******************************************************************************/
 typedef unsigned long        ulong;
 typedef unsigned int         uint,   UINT;
@@ -90,17 +90,17 @@ typedef          __int8      sint8,  int8;
 typedef unsigned __int8      uint8,  byte, BYTE;
 #endif
 
-typedef unsigned             MemSize;          // объём памяти
-typedef char*                FILENAME;         // имя файла
+typedef unsigned             MemSize;          // РѕР±СЉС‘Рј РїР°РјСЏС‚Рё
+typedef char*                FILENAME;         // РёРјСЏ С„Р°Р№Р»Р°
 #ifdef FREEARC_WIN
-typedef int64                FILESIZE;         // размер файла
+typedef int64                FILESIZE;         // СЂР°Р·РјРµСЂ С„Р°Р№Р»Р°
 #else
 typedef off_t                FILESIZE;
 #endif
 
 
 /******************************************************************************
-** Стандартные определения ****************************************************
+** РЎС‚Р°РЅРґР°СЂС‚РЅС‹Рµ РѕРїСЂРµРґРµР»РµРЅРёСЏ ****************************************************
 ******************************************************************************/
 #define make4byte(a,b,c,d)       ((a)+256*((b)+256*((c)+256*(((uint32)d)))))
 #define iterate(num, statement)  {for( int i=0; i<(num); i++) {statement;}}
@@ -384,11 +384,11 @@ static inline void setvalue64 (void *p, uint64 x)
 // Exit code used to indicate serious problems in FreeArc utilities
 #define FREEARC_EXIT_ERROR 2
 
-// Переменные, используемые для сигнализации об ошибках из глубоко вложеных процедур
+// РџРµСЂРµРјРµРЅРЅС‹Рµ, РёСЃРїРѕР»СЊР·СѓРµРјС‹Рµ РґР»СЏ СЃРёРіРЅР°Р»РёР·Р°С†РёРё РѕР± РѕС€РёР±РєР°С… РёР· РіР»СѓР±РѕРєРѕ РІР»РѕР¶РµРЅС‹С… РїСЂРѕС†РµРґСѓСЂ
 extern int jmpready;
 extern jmp_buf jumper;
 
-// Процедура сообщения о неожиданных ошибочных ситуациях
+// РџСЂРѕС†РµРґСѓСЂР° СЃРѕРѕР±С‰РµРЅРёСЏ Рѕ РЅРµРѕР¶РёРґР°РЅРЅС‹С… РѕС€РёР±РѕС‡РЅС‹С… СЃРёС‚СѓР°С†РёСЏС…
 #ifndef CHECK
 #  if defined(FREEARC_WIN) && defined(FREEARC_GUI)
 #    define CHECK(a,b)           {if (!(a))  {if (jmpready) longjmp(jumper,1);  char *s=(char*)malloc(MY_FILENAME_MAX*4);  WCHAR *utf16=(WCHAR*) malloc(MY_FILENAME_MAX*4);  sprintf b;  utf8_to_utf16(s,utf16);  MessageBoxW(NULL, utf16, L"Error encountered", MB_ICONERROR);  ON_CHECK_FAIL();  exit(FREEARC_EXIT_ERROR);}}
@@ -403,16 +403,16 @@ extern jmp_buf jumper;
 #define ON_CHECK_FAIL()
 #endif
 
-// Устанавливает Jump Point с кодом возврата retcode
+// РЈСЃС‚Р°РЅР°РІР»РёРІР°РµС‚ Jump Point СЃ РєРѕРґРѕРј РІРѕР·РІСЂР°С‚Р° retcode
 #define SET_JMP_POINT(retcode)                                                         \
 {                                                                                      \
   if (!jmpready && setjmp(jumper) != 0)                                                \
-    /* Сюда мы попадём при возникновении ошибки в одной из вызываемых процедур */      \
+    /* РЎСЋРґР° РјС‹ РїРѕРїР°РґС‘Рј РїСЂРё РІРѕР·РЅРёРєРЅРѕРІРµРЅРёРё РѕС€РёР±РєРё РІ РѕРґРЅРѕР№ РёР· РІС‹Р·С‹РІР°РµРјС‹С… РїСЂРѕС†РµРґСѓСЂ */      \
     {jmpready = FALSE; return retcode;}                                                \
   jmpready = TRUE;                                                                     \
 }
 
-// Снимает Jump Point
+// РЎРЅРёРјР°РµС‚ Jump Point
 #define RESET_JMP_POINT()                                                              \
 {                                                                                      \
   jmpready = FALSE;                                                                    \
@@ -467,12 +467,12 @@ void BigFree(void *address) throw();
 #endif
 
 // ****************************************************************************
-// Функции парсинга и арифметики **********************************************
+// Р¤СѓРЅРєС†РёРё РїР°СЂСЃРёРЅРіР° Рё Р°СЂРёС„РјРµС‚РёРєРё **********************************************
 // ****************************************************************************
-void strncopy (char *to, char *from, int len);   // Копирует строчку from в to, но не более len символов
-int  split (char *str, char splitter, char **result, int result_size);  // Разбить строку str на подстроки, разделённые символом splitter
-char*subst (char *original, char *from, char *to);  // Заменяет в строке original все вхождения from на to
-char*trim_spaces (char *s);                      // Пропускает пробелы в начале строки и убирает их в конце, модифицируя строку
+void strncopy (char *to, char *from, int len);   // РљРѕРїРёСЂСѓРµС‚ СЃС‚СЂРѕС‡РєСѓ from РІ to, РЅРѕ РЅРµ Р±РѕР»РµРµ len СЃРёРјРІРѕР»РѕРІ
+int  split (char *str, char splitter, char **result, int result_size);  // Р Р°Р·Р±РёС‚СЊ СЃС‚СЂРѕРєСѓ str РЅР° РїРѕРґСЃС‚СЂРѕРєРё, СЂР°Р·РґРµР»С‘РЅРЅС‹Рµ СЃРёРјРІРѕР»РѕРј splitter
+char*subst (char *original, char *from, char *to);  // Р—Р°РјРµРЅСЏРµС‚ РІ СЃС‚СЂРѕРєРµ original РІСЃРµ РІС…РѕР¶РґРµРЅРёСЏ from РЅР° to
+char*trim_spaces (char *s);                      // РџСЂРѕРїСѓСЃРєР°РµС‚ РїСЂРѕР±РµР»С‹ РІ РЅР°С‡Р°Р»Рµ СЃС‚СЂРѕРєРё Рё СѓР±РёСЂР°РµС‚ РёС… РІ РєРѕРЅС†Рµ, РјРѕРґРёС„РёС†РёСЂСѓСЏ СЃС‚СЂРѕРєСѓ
 char *str_replace_n (char *orig, char *from, int how_many, char *to);   // Replace from:how_many substring and put result in new allocated area
 char *str_replace   (char *orig, char *from, char *to);    // Replace substring and put result in new allocated area
 #endif // !FREEARC_STANDALONE_TORNADO
@@ -515,8 +515,8 @@ static inline MemSize lb (MemSize n)
     return result;
 }
 
-// Эта процедура округляет число к ближайшей сверху степени
-// базы, например f(13,2)=16
+// Р­С‚Р° РїСЂРѕС†РµРґСѓСЂР° РѕРєСЂСѓРіР»СЏРµС‚ С‡РёСЃР»Рѕ Рє Р±Р»РёР¶Р°Р№С€РµР№ СЃРІРµСЂС…Сѓ СЃС‚РµРїРµРЅРё
+// Р±Р°Р·С‹, РЅР°РїСЂРёРјРµСЂ f(13,2)=16
 static inline MemSize roundup_to_power_of (MemSize n, MemSize base)
 {
     MemSize result = base;
@@ -530,8 +530,8 @@ static inline MemSize roundup_to_power_of (MemSize n, MemSize base)
     return result;
 }
 
-// Эта процедура округляет число к ближайшей снизу степени
-// базы, например f(13,2)=8
+// Р­С‚Р° РїСЂРѕС†РµРґСѓСЂР° РѕРєСЂСѓРіР»СЏРµС‚ С‡РёСЃР»Рѕ Рє Р±Р»РёР¶Р°Р№С€РµР№ СЃРЅРёР·Сѓ СЃС‚РµРїРµРЅРё
+// Р±Р°Р·С‹, РЅР°РїСЂРёРјРµСЂ f(13,2)=8
 static inline MemSize rounddown_to_power_of (MemSize n, MemSize base)
 {
     MemSize result = 1;
@@ -545,8 +545,8 @@ static inline MemSize rounddown_to_power_of (MemSize n, MemSize base)
     return result;
 }
 
-// Эта процедура округляет число к логарифмически ближайшей степени
-// базы, например f(9,2)=8  f(15,2)=16
+// Р­С‚Р° РїСЂРѕС†РµРґСѓСЂР° РѕРєСЂСѓРіР»СЏРµС‚ С‡РёСЃР»Рѕ Рє Р»РѕРіР°СЂРёС„РјРёС‡РµСЃРєРё Р±Р»РёР¶Р°Р№С€РµР№ СЃС‚РµРїРµРЅРё
+// Р±Р°Р·С‹, РЅР°РїСЂРёРјРµСЂ f(9,2)=8  f(15,2)=16
 static inline MemSize round_to_nearest_power_of (MemSize n, MemSize base)
 {
     MemSize result;
@@ -556,7 +556,7 @@ static inline MemSize round_to_nearest_power_of (MemSize n, MemSize base)
     return result;
 }
 
-// Превращает число в строку, разделённую точками: "1.234.567"
+// РџСЂРµРІСЂР°С‰Р°РµС‚ С‡РёСЃР»Рѕ РІ СЃС‚СЂРѕРєСѓ, СЂР°Р·РґРµР»С‘РЅРЅСѓСЋ С‚РѕС‡РєР°РјРё: "1.234.567"
 static inline char* show3 (uint64 n, char *buf)
 {
     char *p = buf + 27;
@@ -571,7 +571,7 @@ static inline char* show3 (uint64 n, char *buf)
     return p;
 }
 
-// Заменить символы из множества from на символ to
+// Р—Р°РјРµРЅРёС‚СЊ СЃРёРјРІРѕР»С‹ РёР· РјРЅРѕР¶РµСЃС‚РІР° from РЅР° СЃРёРјРІРѕР» to
 static inline char *replace (char *str, char* from, char to)
 {
   char *p;
@@ -581,7 +581,7 @@ static inline char *replace (char *str, char* from, char to)
   return str;
 }
 
-// Возращает числовое значение символа, рассматриваемого как шестнадцатеричная цифра
+// Р’РѕР·СЂР°С‰Р°РµС‚ С‡РёСЃР»РѕРІРѕРµ Р·РЅР°С‡РµРЅРёРµ СЃРёРјРІРѕР»Р°, СЂР°СЃСЃРјР°С‚СЂРёРІР°РµРјРѕРіРѕ РєР°Рє С€РµСЃС‚РЅР°РґС†Р°С‚РµСЂРёС‡РЅР°СЏ С†РёС„СЂР°
 static inline int char2int(char c) {return isdigit(c)? c-'0' : tolower(c)-'a';}
 
 #ifdef FREEARC_WIN
@@ -593,9 +593,9 @@ char  *oem_to_utf8   (const char  *oem,   char  *utf8);   // Converts OEM string
 #endif
 
 #ifndef FREEARC_NO_TIMING
-// Вывод заголовка окна
-void EnvSetConsoleTitle (CFILENAME title);  // Установить заголовок консольного окна
-void EnvResetConsoleTitle (void);  // Восстановить заголовок, который был в начале работы программы
+// Р’С‹РІРѕРґ Р·Р°РіРѕР»РѕРІРєР° РѕРєРЅР°
+void EnvSetConsoleTitle (CFILENAME title);  // РЈСЃС‚Р°РЅРѕРІРёС‚СЊ Р·Р°РіРѕР»РѕРІРѕРє РєРѕРЅСЃРѕР»СЊРЅРѕРіРѕ РѕРєРЅР°
+void EnvResetConsoleTitle (void);  // Р’РѕСЃСЃС‚Р°РЅРѕРІРёС‚СЊ Р·Р°РіРѕР»РѕРІРѕРє, РєРѕС‚РѕСЂС‹Р№ Р±С‹Р» РІ РЅР°С‡Р°Р»Рµ СЂР°Р±РѕС‚С‹ РїСЂРѕРіСЂР°РјРјС‹
 
 // Timing execution
 double GetGlobalTime     (void);   // Returns number of wall-clock seconds since some moment
