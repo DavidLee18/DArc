@@ -302,8 +302,8 @@ URL* url_open (char *_url)
     curl_easy_getinfo (url->curl_handle, CURLINFO_RESPONSE_CODE, &response);
     if (response!=200)   {url_close(url); return NULL;}
 
-    double size;
-    res = curl_easy_getinfo (url->curl_handle, CURLINFO_CONTENT_LENGTH_DOWNLOAD, &size);
+    curl_off_t size;
+    res = curl_easy_getinfo (url->curl_handle, CURLINFO_CONTENT_LENGTH_DOWNLOAD_T, &size);
     if (CURLE_OK != res)   {url_close(url); return NULL;}
     url->size = (int64)size;
 

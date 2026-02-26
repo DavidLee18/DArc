@@ -4,9 +4,9 @@ ALL: $(TEMPDIR)/C_PPMD.o
 
 CODE_FLAGS  = -fno-exceptions -fno-rtti -Wall \
               -Wno-unknown-pragmas -Wno-sign-compare -Wno-conversion
-OPT_FLAGS   = -O1 -march=i486 -mtune=pentiumpro \
+OPT_FLAGS   = -O1 \
               -fomit-frame-pointer -fstrict-aliasing \
-              -fforce-addr -funroll-all-loops -floop-optimize
+              -funroll-loops
 DEBUG_FLAGS = -g0
 CFLAGS = $(CODE_FLAGS) $(OPT_FLAGS) $(DEBUG_FLAGS) $(DEFINES)
 

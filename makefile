@@ -4,11 +4,11 @@ ALL: $(TEMPDIR)/Environment.o $(TEMPDIR)/GuiEnvironment.o $(TEMPDIR)/URL.o
 
 CODE_FLAGS = -fno-exceptions -fno-rtti -Wall \
                 -Wno-unknown-pragmas -Wno-sign-compare -Wno-conversion
-OPT_FLAGS   = -O3 -march=i486 -mtune=pentiumpro \
+OPT_FLAGS   = -O3 \
               -fomit-frame-pointer -fstrict-aliasing \
-              -ffast-math -fforce-addr
+              -ffast-math
 DEBUG_FLAGS = -g0
-CFLAGS = $(CODE_FLAGS) $(OPT_FLAGS) $(DEBUG_FLAGS) $(DEFINES)
+CFLAGS = $(CODE_FLAGS) $(OPT_FLAGS) $(DEBUG_FLAGS) $(DEFINES) $(EXTRA_CFLAGS)
 
 $(TEMPDIR)/Environment.o:  Environment.cpp Environment.h Compression/Common.h makefile
 	$(GCC) -c $(CFLAGS) -o $*.o $<

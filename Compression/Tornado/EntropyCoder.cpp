@@ -605,7 +605,7 @@ struct TCounter
     UINT n, remainder;
     UINT cnt[NUM], cum[NUM], livecnt[NUM], index[INDEXES];
 
-    TCounter (unsigned _n);
+    TCounter (unsigned _n = NUM);
 
     // Count one more occurence of symbol s
     // and recalculate encoding tables if enough symbols was counted since last recalculation
@@ -633,7 +633,7 @@ struct TCounter
 };
 
 template <CodecDirection type>
-TCounter<type> :: TCounter (unsigned _n = NUM)
+TCounter<type> :: TCounter (unsigned _n)
 {
     n = _n;
     // Initially, allot RANGE points equally to n symbols
