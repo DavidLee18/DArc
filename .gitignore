@@ -24,3 +24,4 @@ cabal.project.local~
 Tests/arc
 Tests/freearc
 common.mak
+*_stub.h

@@ -1,6 +1,6 @@
 #For Unix:
 DEFINES  = -DFREEARC_UNIX -DFREEARC_INTEL_BYTE_ORDER
-ifeq ($(shell uname -m),x86_64)
+ifeq ($(shell getconf LONG_BIT 2>/dev/null),64)
 DEFINES  += -DFREEARC_64BIT
 endif
 TEMPDIR  = /tmp/out/FreeArc
