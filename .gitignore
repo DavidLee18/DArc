@@ -21,3 +21,7 @@ cabal.project.local
 cabal.project.local~
 .HTF/
 .ghc.environment.*
+Tests/arc
+Tests/freearc
+common.mak
+*_stub.h
