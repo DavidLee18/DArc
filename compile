@@ -12,7 +12,7 @@ chmod +x compile
 ./compile
 cd ..
 make
-gcc -c HsLua/src/ntrljmp.c -IHsLua/src -I/usr/include/lua5.1 -o $ctempdir/ntrljmp.o
+gcc -c HsLua/src/ntrljmp.c -IHsLua/src $(pkg-config --cflags lua5.1 2>/dev/null) -o $ctempdir/ntrljmp.o
 rm $exe
 c_modules="$ctempdir/Environment.o $ctempdir/URL.o $ctempdir/Common.o $ctempdir/CompressionLibrary.o $ctempdir/C_PPMD.o $ctempdir/C_LZP.o $ctempdir/C_LZMA.o $ctempdir/C_BCJ.o $ctempdir/C_GRZip.o $ctempdir/C_Dict.o $ctempdir/C_REP.o $ctempdir/C_MM.o $ctempdir/C_TTA.o $ctempdir/C_Tornado.o $ctempdir/C_Delta.o $ctempdir/C_External.o $ctempdir/C_Encryption.o $ctempdir/ntrljmp.o -optl-s -lstdc++ -lncurses -lcurl -llua5.1"
 for option; do if [[ $option == -DFREEARC_GUI ]]; then c_modules="$c_modules $ctempdir/GuiEnvironment.o"; fi; done
