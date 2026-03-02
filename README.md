@@ -39,27 +39,23 @@ The optional GUI binary is named `freearc` (Unix) or `FreeArc.exe` (Windows).
    make
    ```
 
-### On Unix (tested on Fedora 7)
+### On Unix
 
-1. Install GHC 6.6.1 or 6.8.2, GCC, `make`, and [Gtk2Hs](http://darcs.haskell.org/gtk2hs/download).
+1. Install [MicroHs](https://github.com/augustss/MicroHs), clang, and `make`.
 2. Make compile scripts executable:
    ```
    chmod +x compile*
    ```
-3. Install HsLua:
-   ```
-   cd HsLua && ghc --make Setup.hs && ./Setup configure && ./Setup build && ./Setup install && cd ..
-   ```
-4. Compile the console version (`arc`):
+3. Compile the console version (`arc`):
    ```
    ./compile-O2
    ```
-5. Compile the GUI version (`freearc`):
+4. Compile the GUI version (`freearc`):
    ```
    ./compile-GUI-O2
    ```
-6. The compiled binaries are placed in the `Tests/` subdirectory.
-7. To compile SFX modules and Unarc:
+5. The compiled binaries are placed in the `Tests/` subdirectory.
+6. To compile SFX modules and Unarc:
    ```
    cd Unarc
    make linux
