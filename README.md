@@ -41,7 +41,7 @@ The optional GUI binary is named `freearc` (Unix) or `FreeArc.exe` (Windows).
 
 ### On Unix
 
-1. Install [MicroHs](https://github.com/augustss/MicroHs), clang, and `make`.
+1. Install [MicroHs](https://github.com/augustss/MicroHs), clang, `make`, and the following development libraries: `liblua5.1-dev`, `libcurl-dev`, `libncurses-dev`.
 2. Make compile scripts executable:
    ```
    chmod +x compile*
