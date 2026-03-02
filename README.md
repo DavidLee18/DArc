@@ -42,24 +42,36 @@ The optional GUI binary is named `freearc` (Unix) or `FreeArc.exe` (Windows).
 ### On Unix
 
 1. Install [MicroHs](https://github.com/augustss/MicroHs), clang, `make`, and the following development libraries: `liblua5.1-dev`, `libcurl-dev`, `libncurses-dev`.
-2. Make compile scripts executable:
+2. Install the required MicroHs packages using `mcabal`:
+   ```
+   mcabal install ghc-compat array-mhs old-locale time
+   ```
+3. Make compile scripts executable:
    ```
    chmod +x compile*
    ```
-3. Compile the console version (`arc`):
+4. Compile the console version (`arc`):
    ```
    ./compile-O2
    ```
-4. Compile the GUI version (`freearc`):
+5. Compile the GUI version (`freearc`):
    ```
    ./compile-GUI-O2
    ```
-5. The compiled binaries are placed in the `Tests/` subdirectory.
-6. To compile SFX modules and Unarc:
+6. The compiled binaries are placed in the `Tests/` subdirectory.
+7. To compile SFX modules and Unarc:
    ```
    cd Unarc
    make linux
    ```
+
+> **Note (Work in Progress):** The MicroHs build is not yet fully complete. Two known blockers remain:
+>
+> - **`foreign import ccall "wrapper"`** — MicroHs does not yet implement FFI callback wrappers (`ImpWrapper`). This is used in `Compression/CompressionLib.hs` to pass Haskell read/write callbacks into the C compression library. Until MicroHs gains this feature, compression operations will fail at runtime with "Unimplemented FFI feature".
+>
+> - **`System.Posix.Files` / `System.Posix.Internals`** — The `unix` Haskell package (which provides these modules) requires a `configure`-based build not yet supported by `mcabal`. Until a compatible package or compat shim is available, compilation of `Files.hs` will fail with "Module not found: System.Posix.Files".
+>
+> All C++ and `make` build steps succeed. The Haskell compilation step (run by `mhs`) is blocked by the above two issues.
 
 ---
 
