@@ -30,5 +30,5 @@ for option; do
         *) mhs_args+=("$option") ;;
     esac
 done
-MHSCC=clang MHSEXTRACCFLAGS="$c_modules" mhs "${mhs_args[@]}" -icompat -iCompression -iHsLua/src -XCPP $defines -o $exe Arc.hs
+MHSCC=clang MHSEXTRACCFLAGS="$c_modules" MHSCPPHS=mhscpphs mhs "${mhs_args[@]}" -icompat -iCompression -iHsLua/src -XCPP $defines -o $exe Arc.hs
 rm -f Compression/CompressionLib_stub.?
