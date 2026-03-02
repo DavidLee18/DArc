@@ -19,8 +19,9 @@ cd ..
 make
 lua_libs=$(pkg-config --libs lua5.1 2>/dev/null || echo "-llua5.1")
 clang -c HsLua/src/ntrljmp.c -IHsLua/src $(pkg-config --cflags lua5.1 2>/dev/null) -o $ctempdir/ntrljmp.o
+clang -c compat/posix_compat.c -o $ctempdir/posix_compat.o
 rm $exe
-c_modules="$ctempdir/Environment.o $ctempdir/URL.o $ctempdir/Common.o $ctempdir/CompressionLibrary.o $ctempdir/C_PPMD.o $ctempdir/C_LZP.o $ctempdir/C_LZMA.o $ctempdir/C_BCJ.o $ctempdir/C_GRZip.o $ctempdir/C_Dict.o $ctempdir/C_REP.o $ctempdir/C_MM.o $ctempdir/C_TTA.o $ctempdir/C_Tornado.o $ctempdir/C_Delta.o $ctempdir/C_External.o $ctempdir/C_Encryption.o $ctempdir/ntrljmp.o -lstdc++ -lncurses -lcurl $lua_libs"
+c_modules="$ctempdir/Environment.o $ctempdir/URL.o $ctempdir/Common.o $ctempdir/CompressionLibrary.o $ctempdir/C_PPMD.o $ctempdir/C_LZP.o $ctempdir/C_LZMA.o $ctempdir/C_BCJ.o $ctempdir/C_GRZip.o $ctempdir/C_Dict.o $ctempdir/C_REP.o $ctempdir/C_MM.o $ctempdir/C_TTA.o $ctempdir/C_Tornado.o $ctempdir/C_Delta.o $ctempdir/C_External.o $ctempdir/C_Encryption.o $ctempdir/ntrljmp.o $ctempdir/posix_compat.o -lstdc++ -lncurses -lcurl $lua_libs"
 for option; do if [[ $option == -DFREEARC_GUI ]]; then c_modules="$c_modules $ctempdir/GuiEnvironment.o"; fi; done
 mhs_args=()
 for option; do

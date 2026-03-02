@@ -1,0 +1,9 @@
+import Foreign.Marshal.Utils
+import Foreign.Storable
+import System.IO  hiding (openFile)
+#if defined(__MHS__)
+import Data.Char (chr)
+#define unsafeChr chr
+#else
+import GHC.Base (unsafeChr)
+#endif
