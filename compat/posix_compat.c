@@ -4,6 +4,7 @@
 #include <unistd.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <termios.h>
 
 /* stat helpers */
 int mhs_sizeof_stat(void) { return (int)sizeof(struct stat); }
@@ -57,3 +58,7 @@ int mhs_hSeek(MHS_BFILE *bp, long long offset) {
   fflush(f);
   return (int)fseeko(f, (off_t)offset, SEEK_SET);
 }
+
+/* Terminal attribute helpers for System.Posix.Terminal shim */
+int mhs_tcgetattr(int fd, struct termios *t) { return tcgetattr(fd, t); }
+int mhs_tcsetattr(int fd, int action, struct termios *t) { return tcsetattr(fd, action, t); }
