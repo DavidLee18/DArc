@@ -41,8 +41,25 @@ The optional GUI binary is named `freearc` (Unix) or `FreeArc.exe` (Windows).
 
 ### On Unix
 
-1. Install [MicroHs](https://github.com/augustss/MicroHs), clang, `make`, and the following development libraries: `liblua5.1-dev`, `libcurl-dev`, `libncurses-dev`.
-2. Install the required MicroHs packages using `mcabal`:
+1. Install clang, `make`, and the following development libraries: `liblua5.1-dev`, `libcurl-dev`, `libncurses-dev`.
+2. Build and install [MicroHs](https://github.com/augustss/MicroHs) from source using clang (no GHC required):
+   ```
+   git clone https://github.com/augustss/MicroHs
+   cd MicroHs
+   make bin/mhs bin/mcabal CC=clang
+   make install CC=clang
+   cd ..
+   ```
+   Or for a faster bootstrap using the pre-generated C file:
+   ```
+   git clone https://github.com/augustss/MicroHs
+   cd MicroHs
+   clang -O3 generated/mhs.c -o bin/mhs
+   clang -O3 generated/mcabal.c -o bin/mcabal
+   make install CC=clang
+   cd ..
+   ```
+3. Install the required MicroHs packages using `mcabal`:
    ```
    mcabal install ghc-compat array-mhs old-locale time
    ```
