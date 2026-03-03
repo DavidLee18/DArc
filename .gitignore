@@ -27,3 +27,4 @@ common.mak
 *_stub.h
 *.comb
 .mhscache
+*.tar.gz
