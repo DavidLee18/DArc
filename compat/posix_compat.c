@@ -62,3 +62,30 @@ int mhs_hSeek(MHS_BFILE *bp, long long offset) {
 /* Terminal attribute helpers for System.Posix.Terminal shim */
 int mhs_tcgetattr(int fd, struct termios *t) { return tcgetattr(fd, t); }
 int mhs_tcsetattr(int fd, int action, struct termios *t) { return tcsetattr(fd, action, t); }
+
+/* Stub compression callback for MicroHs (replaces foreign import ccall "wrapper").
+ * Returns FREEARC_ERRCODE_NOT_IMPLEMENTED (-8) for any call.
+ * Used when MicroHs cannot create Haskell-to-C callback trampolines. */
+int mhs_stub_callback(const char *what, char *buf, int size, void *auxdata) {
+  (void)what; (void)buf; (void)size; (void)auxdata;
+  return -8; /* FREEARC_ERRCODE_NOT_IMPLEMENTED */
+}
+
+/* Stub Lua callbacks for MicroHs (replace foreign import ccall "wrapper").
+ * Used when MicroHs cannot create Haskell-to-C callback trampolines. */
+/* LuaWriter stub: signals no bytes written (returns non-zero = error) */
+int mhs_stub_lua_writer(void *L, const char *p, size_t sz, void *ud) {
+  (void)L; (void)p; (void)sz; (void)ud;
+  return 1; /* non-zero = error */
+}
+/* LuaReader stub: signals end of input */
+const char *mhs_stub_lua_reader(void *L, void *ud, size_t *sz) {
+  (void)L; (void)ud;
+  if (sz) *sz = 0;
+  return (const char *)0;
+}
+/* LuaCFunction stub: returns 0 results */
+int mhs_stub_lua_cfunction(void *L) {
+  (void)L;
+  return 0;
+}

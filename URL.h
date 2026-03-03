@@ -18,7 +18,16 @@ typedef struct
     char *file;
 } URL;
 
-#else // Unix
+#elif defined(FREEARC_NOURL)
+
+typedef struct
+{
+    char *url;
+    int64 size;
+    int64 curpos;
+} URL;
+
+#else // Unix with curl
 
 #include <curl/curl.h>
 typedef struct
