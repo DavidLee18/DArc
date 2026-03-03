@@ -18,7 +18,12 @@ chmod +x compile
 cd ..
 make
 lua_libs=$(pkg-config --libs lua5.1 2>/dev/null || echo "-llua5.1")
-curl_libs=$(pkg-config --libs libcurl 2>/dev/null || echo "")
+if pkg-config --exists libcurl 2>/dev/null; then
+  curl_libs=$(pkg-config --libs libcurl)
+else
+  curl_libs=""
+  defines="$defines -DFREEARC_NOURL"
+fi
 clang -c HsLua/src/ntrljmp.c -IHsLua/src $(pkg-config --cflags lua5.1 2>/dev/null) -o $ctempdir/ntrljmp.o
 clang -c compat/posix_compat.c -o $ctempdir/posix_compat.o
 rm $exe
@@ -36,6 +41,8 @@ done
 mhs_link_args=()
 for obj in $c_objs; do mhs_link_args+=("$obj"); done
 for lib in $c_libs; do mhs_link_args+=("-optl" "$lib"); done
-mhs_inc_args=("-optc" "-IHsLua/src" "-optc" "$(pkg-config --cflags lua5.1 2>/dev/null || echo '-I/usr/include/lua5.1')")
+mhs_inc_args=("-optc" "-IHsLua/src" "-optc" "-I." "-optc" "-ICompression" \
+              "-optc" "-Dmhs_to_Int64=mhs_to_Int" "-optc" "-Dmhs_from_Int64=mhs_from_Int" \
+              "-optc" "$(pkg-config --cflags lua5.1 2>/dev/null || echo '-I/usr/include/lua5.1')")
 MHSCPPHS=./mhscpphs mhs "${mhs_args[@]}" -icompat -iCompression -iHsLua/src -XCPP $defines "${mhs_link_args[@]}" "${mhs_inc_args[@]}" -o $exe Arc.hs
 rm -f Compression/CompressionLib_stub.?

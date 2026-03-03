@@ -16,6 +16,14 @@ int          mhs_s_isdir(unsigned int m)  { return S_ISDIR(m); }
 int          mhs_s_isreg(unsigned int m)  { return S_ISREG(m); }
 int          mhs_chmod(const char *path, unsigned int mode) { return chmod(path, (mode_t)mode); }
 
+/* GHC-compat __hscore_* aliases: the ghc-compat package's System.Posix.Internals
+ * uses these GHC-specific names; we provide them here so linking succeeds. */
+int          __hscore_sizeof_stat(void)              { return (int)sizeof(struct stat); }
+int          __hscore_stat(const char *p, struct stat *b) { return stat(p, b); }
+unsigned int __hscore_st_mode(struct stat *b)        { return (unsigned int)b->st_mode; }
+long         __hscore_st_size(struct stat *b)        { return (long)b->st_size; }
+long         __hscore_st_mtime(struct stat *b)       { return (long)b->st_mtime; }
+
 /* MicroHs BFILE layout - must match bfile.c */
 typedef struct MHS_BFILE {
   int    (*getb)(struct MHS_BFILE*);
