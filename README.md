@@ -39,16 +39,33 @@ The optional GUI binary is named `freearc` (Unix) or `FreeArc.exe` (Windows).
    make
    ```
 
-### On Unix (tested on Fedora 7)
+### On Unix
 
-1. Install GHC 6.6.1 or 6.8.2, GCC, `make`, and [Gtk2Hs](http://darcs.haskell.org/gtk2hs/download).
-2. Make compile scripts executable:
+1. Install clang, `make`, and the following development libraries: `liblua5.1-dev`, `libcurl-dev`, `libncurses-dev`.
+2. Build and install [MicroHs](https://github.com/augustss/MicroHs) from source using clang (no GHC required):
+   ```
+   git clone https://github.com/augustss/MicroHs
+   cd MicroHs
+   make bin/mhs bin/mcabal CC=clang
+   make install CC=clang
+   cd ..
+   ```
+   Or for a faster bootstrap using the pre-generated C file:
+   ```
+   git clone https://github.com/augustss/MicroHs
+   cd MicroHs
+   clang -O3 generated/mhs.c -o bin/mhs
+   clang -O3 generated/mcabal.c -o bin/mcabal
+   make install CC=clang
+   cd ..
+   ```
+3. Install the required MicroHs packages using `mcabal`:
+   ```
+   mcabal install ghc-compat array-mhs old-locale time
+   ```
+3. Make compile scripts executable:
    ```
    chmod +x compile*
-   ```
-3. Install HsLua:
-   ```
-   cd HsLua && ghc --make Setup.hs && ./Setup configure && ./Setup build && ./Setup install && cd ..
    ```
 4. Compile the console version (`arc`):
    ```
@@ -64,6 +81,14 @@ The optional GUI binary is named `freearc` (Unix) or `FreeArc.exe` (Windows).
    cd Unarc
    make linux
    ```
+
+> **Note (Work in Progress):** The MicroHs build is not yet fully complete. Two known blockers remain:
+>
+> - **`foreign import ccall "wrapper"`** — MicroHs does not yet implement FFI callback wrappers (`ImpWrapper`). This is used in `Compression/CompressionLib.hs` to pass Haskell read/write callbacks into the C compression library. Until MicroHs gains this feature, compression operations will fail at runtime with "Unimplemented FFI feature".
+>
+> - **`System.Posix.Files` / `System.Posix.Internals`** — The `unix` Haskell package (which provides these modules) requires a `configure`-based build not yet supported by `mcabal`. Until a compatible package or compat shim is available, compilation of `Files.hs` will fail with "Module not found: System.Posix.Files".
+>
+> All C++ and `make` build steps succeed. The Haskell compilation step (run by `mhs`) is blocked by the above two issues.
 
 ---
 

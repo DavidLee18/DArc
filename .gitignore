@@ -25,3 +25,6 @@ Tests/arc
 Tests/freearc
 common.mak
 *_stub.h
+*.comb
+.mhscache
+*.tar.gz

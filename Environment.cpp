@@ -361,13 +361,13 @@ void memxor (char *dest, char *src, uint size)
 }
 
 // Вернуть имя файла без имени каталога
-FILENAME basename (FILENAME fullname)
+FILENAME arc_basename (FILENAME fullname)
 {
-  char *basename = fullname;
-  for (char* p=fullname; *p; p++)
-    if (in_set (*p, ALL_PATH_DELIMITERS))
-      basename = p+1;
-  return basename;
+  char *p = fullname;
+  for (char* q=fullname; *q; q++)
+    if (in_set (*q, ALL_PATH_DELIMITERS))
+      p = q+1;
+  return p;
 }
 
 // Создать каталоги на пути к name
