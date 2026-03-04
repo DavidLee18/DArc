@@ -65,6 +65,56 @@ int  mhs_detect_mm_bytes  (int mode, int filesize);
 int  mhs_detect_mm        (int mode, const char *buf, int bufsize);
 int  mhs_detect_mm_header (int mode, const char *buf, int bufsize);
 
+/* =========================================================================
+ * CompressionLib stubs
+ * ========================================================================= */
+/* Global flag for buffer-to-buffer compression mode */
+extern int compress_all_at_once;
+
+int  mhs_GetCompressionThreads(void);
+void mhs_SetCompressionThreads(int threads);
+void mhs_ClearExternalCompressorsTable(void);
+int  mhs_AddExternalCompressor(const char *description);
+int  mhs_CanonizeCompressionMethod(const char *method, char *canonical_method);
+int  mhs_CompressionService(const char *method, const char *what, int param, void *data, void *callback);
+void mhs_compressionLib_cleanup(void);
+
+unsigned int mhs_GetCompressionMem  (const char *method);
+unsigned int mhs_GetDecompressionMem(const char *method);
+unsigned int mhs_GetDictionary      (const char *method);
+unsigned int mhs_GetBlockSize       (const char *method);
+
+int mhs_SetCompressionMem  (const char *in_method, unsigned int bytes, char *out_method);
+int mhs_SetDecompressionMem(const char *in_method, unsigned int bytes, char *out_method);
+int mhs_SetDictionary      (const char *in_method, unsigned int bytes, char *out_method);
+int mhs_SetBlockSize       (const char *in_method, unsigned int bytes, char *out_method);
+int mhs_LimitCompressionMem  (const char *in_method, unsigned int bytes, char *out_method);
+int mhs_LimitDecompressionMem(const char *in_method, unsigned int bytes, char *out_method);
+int mhs_LimitDictionary      (const char *in_method, unsigned int bytes, char *out_method);
+int mhs_LimitBlockSize       (const char *in_method, unsigned int bytes, char *out_method);
+
+int mhs_Compress            (const char *method, void *read_cb, void *write_cb);
+int mhs_Decompress          (const char *method, void *read_cb, void *write_cb);
+int mhs_CompressWithHeader  (const char *method, void *read_cb, void *write_cb);
+int mhs_DecompressWithHeader(void *read_cb, void *write_cb);
+int mhs_CompressMem            (const char *method, void *input, int inputSize, void *output, int outputSize);
+int mhs_DecompressMem          (const char *method, void *input, int inputSize, void *output, int outputSize);
+int mhs_CompressMemWithHeader  (const char *method, void *input, int inputSize, void *output, int outputSize);
+int mhs_DecompressMemWithHeader(void *input, int inputSize, void *output, int outputSize);
+
+/* =========================================================================
+ * EncryptionLib stubs
+ * ========================================================================= */
+extern int mhs_fortuna_size;
+int           mhs_fortuna_start      (void *prng);
+int           mhs_fortuna_add_entropy(const void *in, unsigned long inlen, void *prng);
+int           mhs_fortuna_ready      (void *prng);
+unsigned long mhs_fortuna_read       (void *out, unsigned long outlen, void *prng);
+void          mhs_Pbkdf2Hmac         (const char *password, int pwdlen,
+                                      const char *salt,     int saltlen,
+                                      int iterations,
+                                      char *key,            int keylen);
+
 #ifdef __cplusplus
 }
 #endif

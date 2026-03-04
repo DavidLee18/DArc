@@ -255,3 +255,127 @@ int mhs_detect_mm_header(int mode, const char *buf, int bufsize) {
   (void)mode; (void)buf; (void)bufsize;
   return 0;
 }
+
+/* =========================================================================
+ * CompressionLib stubs for MicroHs
+ * These replace the C++ functions from Compression/CompressionLibrary.cpp
+ * when building without the full compression library.
+ * All compression/decompression operations return FREEARC_ERRCODE_NOT_IMPLEMENTED.
+ * ========================================================================= */
+#define FREEARC_OK                       0
+#define FREEARC_ERRCODE_NOT_IMPLEMENTED (-8)
+#define FREEARC_ERRCODE_INVALID_COMPRESSOR (-2)
+
+/* Global flag: whether to use fastest buffer-to-buffer compression */
+int compress_all_at_once = 0;
+
+/* Thread count */
+static int mhs_CompressionThreads = 1;
+int  mhs_GetCompressionThreads(void)          { return mhs_CompressionThreads; }
+void mhs_SetCompressionThreads(int threads)   { mhs_CompressionThreads = (threads <= 0) ? 1 : threads; }
+
+/* External compressors table */
+void mhs_ClearExternalCompressorsTable(void)  { /* no-op */ }
+int  mhs_AddExternalCompressor(const char *d) { (void)d; return FREEARC_ERRCODE_NOT_IMPLEMENTED; }
+
+/* aMAX_METHOD_STRLEN from CompressionLib.hs — keep in sync */
+#define MHS_MAX_METHOD_STRLEN 2048
+
+/* Canonize: just copy the method string as-is */
+int mhs_CanonizeCompressionMethod(const char *method, char *canonical) {
+  if (!method || !canonical) return FREEARC_ERRCODE_INVALID_COMPRESSOR;
+  size_t n = 0;
+  /* Leave one byte for the NUL terminator */
+  while (method[n] && n < MHS_MAX_METHOD_STRLEN - 1) { canonical[n] = method[n]; n++; }
+  canonical[n] = '\0';
+  return FREEARC_OK;
+}
+
+/* CompressionService: return NOT_IMPLEMENTED for everything */
+int mhs_CompressionService(const char *method, const char *what,
+                            int param, void *data, void *callback) {
+  (void)method; (void)what; (void)param; (void)data; (void)callback;
+  return FREEARC_ERRCODE_NOT_IMPLEMENTED;
+}
+
+/* Cleanup: no-op */
+void mhs_compressionLib_cleanup(void) { /* no-op */ }
+
+/* Memory/dict/block size getters: return 0 (unknown) */
+unsigned int mhs_GetCompressionMem  (const char *m) { (void)m; return 0; }
+unsigned int mhs_GetDecompressionMem(const char *m) { (void)m; return 0; }
+unsigned int mhs_GetDictionary      (const char *m) { (void)m; return 0; }
+unsigned int mhs_GetBlockSize       (const char *m) { (void)m; return 0; }
+
+/* Setters/Limiters: copy method unchanged, return OK */
+int mhs_SetCompressionMem  (const char *in, unsigned int bytes, char *out) {
+  (void)bytes; return mhs_CanonizeCompressionMethod(in, out);
+}
+int mhs_SetDecompressionMem(const char *in, unsigned int bytes, char *out) {
+  (void)bytes; return mhs_CanonizeCompressionMethod(in, out);
+}
+int mhs_SetDictionary      (const char *in, unsigned int bytes, char *out) {
+  (void)bytes; return mhs_CanonizeCompressionMethod(in, out);
+}
+int mhs_SetBlockSize       (const char *in, unsigned int bytes, char *out) {
+  (void)bytes; return mhs_CanonizeCompressionMethod(in, out);
+}
+int mhs_LimitCompressionMem  (const char *in, unsigned int bytes, char *out) {
+  (void)bytes; return mhs_CanonizeCompressionMethod(in, out);
+}
+int mhs_LimitDecompressionMem(const char *in, unsigned int bytes, char *out) {
+  (void)bytes; return mhs_CanonizeCompressionMethod(in, out);
+}
+int mhs_LimitDictionary      (const char *in, unsigned int bytes, char *out) {
+  (void)bytes; return mhs_CanonizeCompressionMethod(in, out);
+}
+int mhs_LimitBlockSize       (const char *in, unsigned int bytes, char *out) {
+  (void)bytes; return mhs_CanonizeCompressionMethod(in, out);
+}
+
+/* Compress/Decompress: return NOT_IMPLEMENTED */
+int mhs_Compress            (const char *m, void *rc, void *wc) { (void)m;(void)rc;(void)wc; return FREEARC_ERRCODE_NOT_IMPLEMENTED; }
+int mhs_Decompress          (const char *m, void *rc, void *wc) { (void)m;(void)rc;(void)wc; return FREEARC_ERRCODE_NOT_IMPLEMENTED; }
+int mhs_CompressWithHeader  (const char *m, void *rc, void *wc) { (void)m;(void)rc;(void)wc; return FREEARC_ERRCODE_NOT_IMPLEMENTED; }
+int mhs_DecompressWithHeader(         void *rc, void *wc)       {          (void)rc;(void)wc; return FREEARC_ERRCODE_NOT_IMPLEMENTED; }
+int mhs_CompressMem            (const char *m, void *i, int is, void *o, int os) { (void)m;(void)i;(void)is;(void)o;(void)os; return FREEARC_ERRCODE_NOT_IMPLEMENTED; }
+int mhs_DecompressMem          (const char *m, void *i, int is, void *o, int os) { (void)m;(void)i;(void)is;(void)o;(void)os; return FREEARC_ERRCODE_NOT_IMPLEMENTED; }
+int mhs_CompressMemWithHeader  (const char *m, void *i, int is, void *o, int os) { (void)m;(void)i;(void)is;(void)o;(void)os; return FREEARC_ERRCODE_NOT_IMPLEMENTED; }
+int mhs_DecompressMemWithHeader(              void *i, int is, void *o, int os)  {          (void)i;(void)is;(void)o;(void)os; return FREEARC_ERRCODE_NOT_IMPLEMENTED; }
+
+/* =========================================================================
+ * EncryptionLib stubs for MicroHs
+ * Fortuna PRNG: redirect prng_read to /dev/urandom so random data still works.
+ * Pbkdf2Hmac: stub that returns empty key (encryption will fail gracefully).
+ * ========================================================================= */
+#include <string.h>
+
+/* Fortuna PRNG state size: 1 byte (minimal, we use /dev/urandom directly) */
+int mhs_fortuna_size = 1;
+
+int  mhs_fortuna_start      (void *prng)                            { (void)prng; return FREEARC_OK; }
+int  mhs_fortuna_add_entropy(const void *in, unsigned long inlen, void *prng) {
+  (void)in; (void)inlen; (void)prng; return FREEARC_OK;
+}
+int  mhs_fortuna_ready      (void *prng)                            { (void)prng; return FREEARC_OK; }
+unsigned long mhs_fortuna_read(void *out, unsigned long outlen, void *prng) {
+  /* Redirect to /dev/urandom for actual randomness.
+   * Opening /dev/urandom each call is intentional: this is a stub for MicroHs
+   * where the Fortuna PRNG C library is not linked; using a persistent fd would
+   * add state that complicates fork/exec scenarios in this minimal build. */
+  (void)prng;
+  FILE *f = fopen("/dev/urandom", "rb");
+  if (!f) { memset(out, 0, outlen); return 0; }
+  unsigned long n = (unsigned long)fread(out, 1, outlen, f);
+  fclose(f);
+  return n;
+}
+
+/* PBKDF2-HMAC stub: fills key with zeros (encryption disabled under MicroHs) */
+void mhs_Pbkdf2Hmac(const char *password, int pwdlen,
+                    const char *salt,     int saltlen,
+                    int iterations,
+                    char *key,            int keylen) {
+  (void)password; (void)pwdlen; (void)salt; (void)saltlen; (void)iterations;
+  memset(key, 0, (size_t)keylen);
+}
