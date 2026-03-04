@@ -5,4 +5,9 @@ DEFINES  += -DFREEARC_64BIT
 endif
 TEMPDIR  = /tmp/out/FreeArc
 GCC      = clang++ -std=c++23
+ifeq ($(shell pkg-config --exists libcurl 2>/dev/null && echo yes),yes)
 EXTRA_CFLAGS = $(shell pkg-config --cflags libcurl 2>/dev/null)
+else
+DEFINES  += -DFREEARC_NOURL
+EXTRA_CFLAGS =
+endif

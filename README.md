@@ -41,7 +41,7 @@ The optional GUI binary is named `freearc` (Unix) or `FreeArc.exe` (Windows).
 
 ### On Unix
 
-1. Install clang, `make`, and the following development libraries: `liblua5.1-dev`, `libcurl-dev`, `libncurses-dev`.
+1. Install clang, `make`, and the following development libraries: `liblua5.1-dev`, `libncurses-dev`. Optionally install `libcurl-dev` for URL/network archive support (auto-detected; the build succeeds without it).
 2. Build and install [MicroHs](https://github.com/augustss/MicroHs) from source using clang (no GHC required):
    ```
    git clone https://github.com/augustss/MicroHs
@@ -63,32 +63,26 @@ The optional GUI binary is named `freearc` (Unix) or `FreeArc.exe` (Windows).
    ```
    mcabal install ghc-compat array-mhs old-locale time
    ```
-3. Make compile scripts executable:
+4. Make compile scripts executable:
    ```
    chmod +x compile*
    ```
-4. Compile the console version (`arc`):
+5. Compile the console version (`arc`):
    ```
    ./compile-O2
    ```
-5. Compile the GUI version (`freearc`):
+6. Compile the GUI version (`freearc`):
    ```
    ./compile-GUI-O2
    ```
-6. The compiled binaries are placed in the `Tests/` subdirectory.
-7. To compile SFX modules and Unarc:
+7. The compiled binaries are placed in the `Tests/` subdirectory.
+8. To compile SFX modules and Unarc:
    ```
    cd Unarc
    make linux
    ```
 
-> **Note (Work in Progress):** The MicroHs build is not yet fully complete. Two known blockers remain:
->
-> - **`foreign import ccall "wrapper"`** — MicroHs does not yet implement FFI callback wrappers (`ImpWrapper`). This is used in `Compression/CompressionLib.hs` to pass Haskell read/write callbacks into the C compression library. Until MicroHs gains this feature, compression operations will fail at runtime with "Unimplemented FFI feature".
->
-> - **`System.Posix.Files` / `System.Posix.Internals`** — The `unix` Haskell package (which provides these modules) requires a `configure`-based build not yet supported by `mcabal`. Until a compatible package or compat shim is available, compilation of `Files.hs` will fail with "Module not found: System.Posix.Files".
->
-> All C++ and `make` build steps succeed. The Haskell compilation step (run by `mhs`) is blocked by the above two issues.
+> **Note:** The MicroHs build requires MicroHs packages `ghc-compat`, `array-mhs`, `old-locale`, and `time`. Curl support is auto-detected; if `libcurl-dev` is not installed the build will succeed with URL operations disabled. Compression streaming callbacks are stubbed (operations return `FREEARC_ERRCODE_NOT_IMPLEMENTED`); basic add/extract/list operations work fully.
 
 ---
 

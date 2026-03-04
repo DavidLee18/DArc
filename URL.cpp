@@ -12,6 +12,10 @@ void  url_setup_bypass_list (char *_bypass_list)               {}
 URL*  url_open  (char *_url)                                   {return NULL;}
 int   url_readp (URL *url, int64 offset, char *buf, int size)  {return -1;}
 void  url_close (URL *url)                                     {}
+int64 url_size  (URL *url)                                     {return 0;}
+int64 url_pos   (URL *url)                                     {return 0;}
+void  url_seek  (URL *url, int64 newpos)                       {}
+int   url_read  (URL *url, char *buf, int size)                {return -1;}
 
 
 #elif defined(FREEARC_WIN)
@@ -346,9 +350,10 @@ void url_close (URL *url)
 
 #endif // Windows/Unix
 
-
+#ifndef FREEARC_NOURL
 int64 url_size (URL *url)                      {return url? url->size   : 0;}
 int64 url_pos  (URL *url)                      {return url? url->curpos : 0;}
 void  url_seek (URL *url, int64 newpos)        {if (url)  url->curpos = newpos;}
 int   url_read (URL *url, char *buf, int size) {return url? url_readp (url, url->curpos, buf, size) : -1;}
+#endif
 
