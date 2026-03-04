@@ -362,12 +362,21 @@ unsigned long mhs_fortuna_read(void *out, unsigned long outlen, void *prng) {
   /* Redirect to /dev/urandom for actual randomness.
    * Opening /dev/urandom each call is intentional: this is a stub for MicroHs
    * where the Fortuna PRNG C library is not linked; using a persistent fd would
-   * add state that complicates fork/exec scenarios in this minimal build. */
+   * add state that complicates fork/exec scenarios in this minimal build.
+   * On failure, we abort rather than silently provide zeroed "random" data that
+   * could lead to predictable cryptographic keys. */
   (void)prng;
   FILE *f = fopen("/dev/urandom", "rb");
-  if (!f) { memset(out, 0, outlen); return 0; }
+  if (!f) {
+    fprintf(stderr, "mhs_fortuna_read: cannot open /dev/urandom\n");
+    abort();
+  }
   unsigned long n = (unsigned long)fread(out, 1, outlen, f);
   fclose(f);
+  if (n != outlen) {
+    fprintf(stderr, "mhs_fortuna_read: short read from /dev/urandom\n");
+    abort();
+  }
   return n;
 }
 
