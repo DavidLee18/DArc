@@ -44,6 +44,14 @@
 
 #ifndef FREEARC_DECOMPRESS_ONLY
 
+/* Securely zero memory to prevent the compiler from optimizing the clear away. */
+static void secure_memzero(void *v, size_t n)
+{
+  volatile unsigned char *p = (volatile unsigned char *)v;
+  while (n--)
+    *p++ = 0;
+}
+
 sint32 GRZip_ST4_Encode(uint8 * Input, sint32 Size, uint8 * Output)
 {
   sint32    FBP,i;
@@ -128,7 +136,7 @@ sint32 GRZip_ST4_Decode(uint8 * Input, sint32 Size, sint32 FBP)
       T[c]++;
     }
 
-  memset(LastSeen,0,ST_MaxByte*sizeof(sint32));
+  secure_memzero(LastSeen, ST_MaxByte*sizeof(sint32));
 
   for (CStart=0,i=0;i<Size;i++)
   {
