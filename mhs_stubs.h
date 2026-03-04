@@ -17,6 +17,11 @@ int         mhs_stub_lua_writer    (void *L, const char *p, size_t sz, void *ud)
 const char *mhs_stub_lua_reader    (void *L, void *ud, size_t *sz);
 int         mhs_stub_lua_cfunction (void *L);
 
+/* Direct BFILE buffer read/write — bypasses broken hGetBuf FFI under MicroHs */
+#include <stddef.h>
+size_t mhs_file_readbuf  (void *bfile, void *buf, int size);
+size_t mhs_file_writebuf (void *bfile, const void *buf, int size);
+
 #ifdef __cplusplus
 }
 #endif

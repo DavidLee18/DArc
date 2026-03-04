@@ -67,6 +67,37 @@ int mhs_hSeek(MHS_BFILE *bp, long long offset) {
   return (int)fseeko(f, (off_t)offset, SEEK_SET);
 }
 
+/* Direct buffer read/write via BFILE methods — bypasses the broken hGetBuf FFI path
+ * under MicroHs where the IO monad CPS encoding scrambles the readb argument order.
+ * Called from Files.hs fReadBufSimple / fWriteBufSimple under __MHS__. */
+size_t mhs_file_readbuf(MHS_BFILE *bp, void *buf, int size) {
+  if (!bp || size <= 0) return 0;
+  if (bp->readb)
+    return bp->readb((uint8_t *)buf, (size_t)size, bp);
+  /* fall back to byte-by-byte if no bulk read method */
+  size_t n = 0;
+  unsigned char *p = (unsigned char *)buf;
+  while (n < (size_t)size) {
+    int c = bp->getb(bp);
+    if (c < 0) break;
+    p[n++] = (unsigned char)c;
+  }
+  return n;
+}
+
+size_t mhs_file_writebuf(MHS_BFILE *bp, const void *buf, int size) {
+  if (!bp || size <= 0) return 0;
+  if (bp->writeb)
+    return bp->writeb((const uint8_t *)buf, (size_t)size, bp);
+  size_t n = 0;
+  const unsigned char *p = (const unsigned char *)buf;
+  while (n < (size_t)size) {
+    bp->putb((int)p[n], bp);
+    n++;
+  }
+  return n;
+}
+
 /* Terminal attribute helpers for System.Posix.Terminal shim */
 int mhs_tcgetattr(int fd, struct termios *t) { return tcgetattr(fd, t); }
 int mhs_tcsetattr(int fd, int action, struct termios *t) { return tcsetattr(fd, action, t); }
