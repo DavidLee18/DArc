@@ -1,10 +1,13 @@
 /* Minimal POSIX stat + Handle seek compatibility helpers for MicroHs */
 #include <sys/types.h>
 #include <sys/stat.h>
+#include <utime.h>
 #include <unistd.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <termios.h>
+#include <time.h>
+#include <limits.h>
 
 /* stat helpers */
 int mhs_sizeof_stat(void) { return (int)sizeof(struct stat); }
@@ -127,4 +130,85 @@ const char *mhs_stub_lua_reader(void *L, void *ud, size_t *sz) {
 int mhs_stub_lua_cfunction(void *L) {
   (void)L;
   return 0;
+}
+
+/* SetFileDateTime: sets mtime of `path` to `mtime` (Unix time), preserving atime */
+int mhs_SetFileDateTime(const char *path, long long mtime) {
+  struct stat st;
+  struct utimbuf times;
+  if (stat(path, &st) != 0) return -1;
+  times.actime  = st.st_atime;
+  times.modtime = (time_t)mtime;
+  return utime(path, &times);
+}
+
+/* RunFile: execute `filename` in directory `curdir`; if wait_finish!=0, wait for exit.
+ * Note: mirrors the original Environment.cpp RunFile which also uses system(). */
+#include <stdlib.h>
+#include <string.h>
+int mhs_RunFile(const char *filename, const char *curdir, int wait_finish) {
+  size_t fname_len = strlen(filename);
+  size_t suffix_len = wait_finish ? 0 : 2; /* " &" */
+  size_t cmd_len = 2 + fname_len + suffix_len + 1; /* "./" + name + suffix + NUL */
+  char *cmd = (char*)malloc(cmd_len);
+  if (!cmd) return -1;
+  char *olddir = (char*)malloc(4096);
+  if (!olddir) { free(cmd); return -1; }
+  if (!getcwd(olddir, 4096)) { olddir[0] = '.'; olddir[1] = '\0'; }
+  chdir(curdir);
+  snprintf(cmd, cmd_len, "./%s%s", filename, wait_finish ? "" : " &");
+  int r = system(cmd);
+  chdir(olddir);
+  free(cmd);
+  free(olddir);
+  return r;
+}
+
+/* GetExeName: fill buf with path to current executable (reads /proc/self/exe).
+ * Returns 0 on success, -1 on error. */
+int mhs_GetExeName(char *buf, int bufsize) {
+  ssize_t n = readlink("/proc/self/exe", buf, (size_t)(bufsize - 1));
+  if (n < 0) return -1;
+  buf[n] = '\0';
+  return 0;
+}
+
+/* System information stubs using sysinfo(2) */
+#include <sys/sysinfo.h>
+unsigned int mhs_GetPhysicalMemory(void) {
+  struct sysinfo si;
+  if (sysinfo(&si) != 0) return 0;
+  return (unsigned int)(si.totalram * (unsigned long)si.mem_unit);
+}
+
+unsigned int mhs_GetAvailablePhysicalMemory(void) {
+  struct sysinfo si;
+  if (sysinfo(&si) != 0) return 0;
+  return (unsigned int)(si.freeram * (unsigned long)si.mem_unit);
+}
+
+unsigned int mhs_GetMaxMemToAlloc(void) {
+  return UINT_MAX;
+}
+
+int mhs_GetProcessorsCount(void) {
+  return get_nprocs();
+}
+
+/* Console title (Unix): ANSI escape sequence to set terminal title */
+void mhs_SetConsoleTitle(const char *title) {
+  fprintf(stderr, "\033]0;%s\a", title);
+}
+
+void mhs_ResetConsoleTitle(void) {
+  /* no-op: no saved title to restore */
+}
+
+/* Read random bytes from /dev/urandom; returns number of bytes read */
+int mhs_read_urandom(void *buf, int size) {
+  FILE *f = fopen("/dev/urandom", "rb");
+  if (!f) return 0;
+  int n = (int)fread(buf, 1, (size_t)size, f);
+  fclose(f);
+  return n;
 }

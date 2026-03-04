@@ -22,6 +22,28 @@ int         mhs_stub_lua_cfunction (void *L);
 size_t mhs_file_readbuf  (void *bfile, void *buf, int size);
 size_t mhs_file_writebuf (void *bfile, const void *buf, int size);
 
+/* File date/time: set mtime of path to the given Unix time */
+int mhs_SetFileDateTime(const char *path, long long mtime);
+
+/* Execute file in a directory, optionally waiting for completion */
+int mhs_RunFile(const char *filename, const char *curdir, int wait_finish);
+
+/* Get path of current executable into buf (NUL-terminated) */
+int mhs_GetExeName(char *buf, int bufsize);
+
+/* System information */
+unsigned int mhs_GetPhysicalMemory(void);
+unsigned int mhs_GetAvailablePhysicalMemory(void);
+unsigned int mhs_GetMaxMemToAlloc(void);
+int          mhs_GetProcessorsCount(void);
+
+/* Console title */
+void mhs_SetConsoleTitle(const char *title);
+void mhs_ResetConsoleTitle(void);
+
+/* Read random bytes from /dev/urandom */
+int mhs_read_urandom(void *buf, int size);
+
 #ifdef __cplusplus
 }
 #endif
