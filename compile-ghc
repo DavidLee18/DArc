@@ -23,7 +23,7 @@ cd Compression
 chmod +x compile
 ./compile
 cd ..
-make
+make ALL
 lua_libs=$(pkg-config --libs lua5.1 2>/dev/null || echo "-llua5.1")
 if pkg-config --exists libcurl 2>/dev/null; then
   curl_libs=$(pkg-config --libs libcurl)
@@ -47,11 +47,10 @@ ghc --make Arc.hs \
   -rtsopts \
   -with-rtsopts=-N \
   $ghc_opt \
-  -fglasgow-exts \
-  -fallow-undecidable-instances \
-  -fallow-overlapping-instances \
-  -fno-monomorphism-restriction \
-  -fbang-patterns \
+  -XGHC2024 \
+  -XUndecidableInstances \
+  -XOverlappingInstances \
+  -XNoMonomorphismRestriction \
   $defines $gui_flag \
   $optc_defines \
   -optc-IHsLua/src -optc-I. -optc-ICompression \

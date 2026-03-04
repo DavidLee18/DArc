@@ -16,7 +16,7 @@ cd Compression
 chmod +x compile
 ./compile
 cd ..
-make
+make ALL
 lua_libs=$(pkg-config --libs lua5.1 2>/dev/null || echo "-llua5.1")
 if pkg-config --exists libcurl 2>/dev/null; then
   curl_libs=$(pkg-config --libs libcurl)
