@@ -117,7 +117,7 @@ int LZPDecode(BYTE* In,UINT Size,BYTE* Out,int MinLen,int HashSize,int Barrier,i
         }
         k=lzpH(i=lzpC(Out),Out,HashMask);
     } while (In < InEnd);
-    delete HTable;                          return (Out-OutStart);
+    free(HTable);                           return (Out-OutStart);
 }
 
 
