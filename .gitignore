@@ -21,10 +21,10 @@ cabal.project.local
 cabal.project.local~
 .HTF/
 .ghc.environment.*
-Tests/arc
-Tests/freearc
+Tests/*arc
 common.mak
 *_stub.h
 *.comb
 .mhscache
 *.tar.gz
+.DS_Store
