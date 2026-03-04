@@ -23,8 +23,8 @@ int bcj_x86_de_compress( CALLBACK_FUNC *callback, void *auxdata)
     // Перенесём необработанный остаток данных в начало буфера
     if (RemainderSize>0)                memmove(Buf,Buf+OutSize,RemainderSize);
   }
-Error: delete Buf; return x;            // произошла ошибка при чтении/записи
-Ok:    delete Buf; return FREEARC_OK;   // всё в порядке
+Error: free(Buf); return x;            // произошла ошибка при чтении/записи
+Ok:    free(Buf); return FREEARC_OK;   // всё в порядке
 }
 
 
