@@ -90,7 +90,7 @@ MATCH_NOT_FOUND:
         }
         k=lzpH(i=lzpC(In),In,HashMask);
     } while (In<InEnd && Out<OutEnd);
-    delete HTable;
+    free(HTable);
     if (Out >= OutEnd)       return 0;
     memmove(Out,OutEnd,OutStart+Size-OutEnd);
     return Size-(OutEnd-Out);
