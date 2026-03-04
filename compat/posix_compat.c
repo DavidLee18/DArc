@@ -212,3 +212,46 @@ int mhs_read_urandom(void *buf, int size) {
   fclose(f);
   return n;
 }
+
+/* Thread ID: Linux-specific gettid() syscall (returns lightweight thread ID,
+ * different from pthread_self() which returns the pthread handle).
+ * Not portable beyond Linux; returns 0 on other systems. */
+#include <sys/syscall.h>
+int32_t mhs_gettid(void) {
+  return (int32_t)syscall(SYS_gettid);
+}
+
+/* URL stubs (FREEARC_NOURL equivalent for MicroHs) --------------------------------- */
+void  mhs_url_setup_proxy       (const char *proxy)   { (void)proxy; }
+void  mhs_url_setup_bypass_list (const char *bypass)  { (void)bypass; }
+void *mhs_url_open              (const char *url)     { (void)url; return (void*)0; }
+int64_t mhs_url_pos  (void *url) { (void)url; return 0; }
+int64_t mhs_url_size (void *url) { (void)url; return 0; }
+void    mhs_url_seek (void *url, int64_t pos) { (void)url; (void)pos; }
+int     mhs_url_read (void *url, char *buf, int size) { (void)url; (void)buf; (void)size; return -1; }
+void    mhs_url_close(void *url) { (void)url; }
+
+/* MM detection stubs for MicroHs: always report "not MM data" ------------------- */
+void mhs_detect_datatype(const char *buf, int bufsize, char *type) {
+  /* Return empty string: type unknown / not detected */
+  if (type) type[0] = '\0';
+  (void)buf; (void)bufsize;
+}
+
+int mhs_detect_mm_bytes(int mode, int filesize) {
+  /* 0 bytes to check — skip MM detection entirely */
+  (void)mode; (void)filesize;
+  return 0;
+}
+
+int mhs_detect_mm(int mode, const char *buf, int bufsize) {
+  /* Not MM data */
+  (void)mode; (void)buf; (void)bufsize;
+  return 0;
+}
+
+int mhs_detect_mm_header(int mode, const char *buf, int bufsize) {
+  /* No MM header */
+  (void)mode; (void)buf; (void)bufsize;
+  return 0;
+}

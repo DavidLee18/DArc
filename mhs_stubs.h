@@ -5,6 +5,9 @@
 #ifndef MHS_STUBS_H
 #define MHS_STUBS_H
 
+#include <stddef.h>
+#include <stdint.h>
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -18,7 +21,6 @@ const char *mhs_stub_lua_reader    (void *L, void *ud, size_t *sz);
 int         mhs_stub_lua_cfunction (void *L);
 
 /* Direct BFILE buffer read/write — bypasses broken hGetBuf FFI under MicroHs */
-#include <stddef.h>
 size_t mhs_file_readbuf  (void *bfile, void *buf, int size);
 size_t mhs_file_writebuf (void *bfile, const void *buf, int size);
 
@@ -43,6 +45,25 @@ void mhs_ResetConsoleTitle(void);
 
 /* Read random bytes from /dev/urandom */
 int mhs_read_urandom(void *buf, int size);
+
+/* Thread ID (Linux gettid) */
+int32_t mhs_gettid(void);
+
+/* URL stubs (FREEARC_NOURL equivalent for MicroHs) */
+void    mhs_url_setup_proxy       (const char *proxy);
+void    mhs_url_setup_bypass_list (const char *bypass);
+void   *mhs_url_open              (const char *url);
+int64_t mhs_url_pos  (void *url);
+int64_t mhs_url_size (void *url);
+void    mhs_url_seek (void *url, int64_t pos);
+int     mhs_url_read (void *url, char *buf, int size);
+void    mhs_url_close(void *url);
+
+/* MM detection stubs (always report "not MM data") */
+void mhs_detect_datatype  (const char *buf, int bufsize, char *type);
+int  mhs_detect_mm_bytes  (int mode, int filesize);
+int  mhs_detect_mm        (int mode, const char *buf, int bufsize);
+int  mhs_detect_mm_header (int mode, const char *buf, int bufsize);
 
 #ifdef __cplusplus
 }
