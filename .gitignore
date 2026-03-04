@@ -27,3 +27,5 @@ common.mak
 *.comb
 .mhscache
 *.tar.gz
+
+.DS_Store
