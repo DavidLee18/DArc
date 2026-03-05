@@ -50,7 +50,8 @@ ghc --make Arc.hs \
   "-with-rtsopts=-N -qg0 -A8m -H128m -I0" \
   $ghc_opt \
   -feager-blackholing \
-  -XGHC2024 \
+  -XGHC2021 \
+  -XLambdaCase \
   -XNondecreasingIndentation \
   -XUndecidableInstances \
   -XOverlappingInstances \
