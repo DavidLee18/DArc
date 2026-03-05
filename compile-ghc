@@ -1,0 +1,66 @@
+exe=Tests/arc
+gui_flag=""
+ghc_opt="-O2"
+for option; do
+  case $option in
+    -DFREEARC_GUI) exe=Tests/freearc; gui_flag="-DFREEARC_GUI" ;;
+    -O*) ghc_opt="$option" ;;
+  esac
+done
+ctempdir=/tmp/out/FreeArc
+ghctempdir=/tmp/out/FreeArc-ghc
+mkdir -p $ghctempdir
+mkdir -p $ctempdir
+if [ "$(getconf LONG_BIT 2>/dev/null)" = "64" ]; then
+  bit64="-DFREEARC_64BIT"
+else
+  bit64=""
+fi
+defines="-DFREEARC_UNIX -DFREEARC_INTEL_BYTE_ORDER $bit64"
+# ******** -DFREEARC_WIN -DFREEARC_MOTOROLA_BYTE_ORDER -DFREEARC_ONLY_ALIGNED_ACCESS *******
+cp unix-common.mak common.mak
+cd Compression
+chmod +x compile
+./compile
+cd ..
+make ALL
+lua_libs=$(pkg-config --libs lua5.1 2>/dev/null || echo "-llua5.1")
+if pkg-config --exists libcurl 2>/dev/null; then
+  curl_libs=$(pkg-config --libs libcurl)
+else
+  curl_libs=""
+  defines="$defines -DFREEARC_NOURL"
+fi
+clang -c HsLua/src/ntrljmp.c -IHsLua/src $(pkg-config --cflags lua5.1 2>/dev/null) -o $ctempdir/ntrljmp.o
+c_objs="$ctempdir/Environment.o $ctempdir/URL.o $ctempdir/Common.o $ctempdir/CompressionLibrary.o $ctempdir/C_PPMD.o $ctempdir/C_LZP.o $ctempdir/C_LZMA.o $ctempdir/C_BCJ.o $ctempdir/C_GRZip.o $ctempdir/C_Dict.o $ctempdir/C_REP.o $ctempdir/C_MM.o $ctempdir/C_TTA.o $ctempdir/C_Tornado.o $ctempdir/C_Delta.o $ctempdir/C_External.o $ctempdir/C_Encryption.o $ctempdir/ntrljmp.o"
+c_libs="-lstdc++ -lncurses $curl_libs $lua_libs"
+if [[ -n $gui_flag ]]; then c_objs="$c_objs $ctempdir/GuiEnvironment.o"; fi
+# Build -optc defines for C files compiled by GHC
+optc_defines=""
+for d in $defines $gui_flag; do optc_defines="$optc_defines -optc${d}"; done
+# Collect GHC optimization flag (-O2 by default) -- already parsed above
+lua_cflags=$(pkg-config --cflags lua5.1 2>/dev/null || echo "-I/usr/include/lua5.1")
+# Use all available CPU cores for GHC compilation itself
+ghc_jobs="-j$(nproc 2>/dev/null || echo 4)"
+rm -f $exe
+ghc --make Arc.hs \
+  -iCompression -icompat-ghc \
+  -threaded \
+  -rtsopts \
+  "-with-rtsopts=-N -qg0 -A8m -H128m -I0" \
+  $ghc_opt \
+  -feager-blackholing \
+  -XGHC2024 \
+  -XUndecidableInstances \
+  -XOverlappingInstances \
+  -XNoMonomorphismRestriction \
+  $ghc_jobs \
+  $defines $gui_flag \
+  $optc_defines \
+  -optc-IHsLua/src -optc-I. -optc-ICompression \
+  $(for f in $lua_cflags; do echo "-optc$f"; done) \
+  $c_objs \
+  $(for lib in $c_libs; do echo "-optl$lib"; done) \
+  -odir $ghctempdir -hidir $ghctempdir \
+  -o $exe
+rm -f Compression/CompressionLib_stub.?
