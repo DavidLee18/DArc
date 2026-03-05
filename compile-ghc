@@ -40,17 +40,21 @@ optc_defines=""
 for d in $defines $gui_flag; do optc_defines="$optc_defines -optc${d}"; done
 # Collect GHC optimization flag (-O2 by default) -- already parsed above
 lua_cflags=$(pkg-config --cflags lua5.1 2>/dev/null || echo "-I/usr/include/lua5.1")
+# Use all available CPU cores for GHC compilation itself
+ghc_jobs="-j$(nproc 2>/dev/null || echo 4)"
 rm -f $exe
 ghc --make Arc.hs \
   -iCompression -icompat-ghc \
   -threaded \
   -rtsopts \
-  -with-rtsopts=-N \
+  "-with-rtsopts=-N -qg0 -A8m -H128m -I0" \
   $ghc_opt \
+  -feager-blackholing \
   -XGHC2024 \
   -XUndecidableInstances \
   -XOverlappingInstances \
   -XNoMonomorphismRestriction \
+  $ghc_jobs \
   $defines $gui_flag \
   $optc_defines \
   -optc-IHsLua/src -optc-I. -optc-ICompression \
