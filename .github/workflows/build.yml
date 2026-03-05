@@ -11,7 +11,10 @@ permissions:
 
 jobs:
   build:
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
+    strategy:
+      matrix:
+        os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest]
     steps:
     - uses: actions/checkout@v6.0.2
       with:
@@ -20,20 +23,24 @@ jobs:
       uses: KyleMayes/install-llvm-action@v2
       with:
         version: "21.1.8"
-    - id: setup
-      uses: haskell-actions/setup@v2.7.0
-      with:
-        ghc-version: '9.8.4'
+    - name: Install packages
+      run: |
+        sudo apt update
+        sudo apt install -y liblua5.1-dev libncurses-dev libcurl-dev
     - name: Cache
+      id: cache
       uses: actions/cache@v5.0.3
-      env:
-        cache-name: cache-ghc
       with:
-        path: ${{ steps.setup.outputs.ghc-path }}
-        key: ${{ runner.os }}-build-${{ env.cache-name }}-${{ hashFiles('**/*') }}
+        path: ~/.ghcup/
+        key: ${{ runner.os }}-build-${{ hashFiles('**/*') }}
         restore-keys: |
-          ${{ runner.os }}-build-${{ env.cache-name }}-
           ${{ runner.os }}-build-
           ${{ runner.os }}-
+    - uses: haskell-actions/setup@v2.7.0
+      if: steps.cache.outputs.cache-hit != 'true'
+      with:
+        ghc-version: '9.8.4'
     - name: Build
-      run: make
+      run: |
+        chmod +x compile*
+        ./compile-O2
