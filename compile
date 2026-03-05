@@ -44,13 +44,15 @@ lua_cflags=$(pkg-config --cflags lua5.1 2>/dev/null || echo "-I/usr/include/lua5
 ghc_jobs="-j$(nproc 2>/dev/null || echo 4)"
 rm -f $exe
 ghc --make Arc.hs \
-  -iCompression -icompat-ghc \
+  -iCompression -icompat-ghc -iHsLua/src \
   -threaded \
   -rtsopts \
   "-with-rtsopts=-N -qg0 -A8m -H128m -I0" \
   $ghc_opt \
   -feager-blackholing \
-  -XGHC2024 \
+  -XGHC2021 \
+  -XLambdaCase \
+  -XNondecreasingIndentation \
   -XUndecidableInstances \
   -XOverlappingInstances \
   -XNoMonomorphismRestriction \
