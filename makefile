@@ -26,10 +26,10 @@ $(TEMPDIR)/URL.o:  URL.cpp URL.h Compression/Common.h makefile
 ## GHC-compiled targets (Linux/Unix): use GHC threaded runtime with -N (all cores)
 .PHONY: ghc ghc-gui
 ghc:
-	./compile-ghc
+	./compile
 
 ghc-gui:
-	./compile-ghc -DFREEARC_GUI
+	./compile -DFREEARC_GUI
 
 clean:
 	rm -rf $(TEMPDIR)-unarc/*.o

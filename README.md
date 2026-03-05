@@ -41,48 +41,25 @@ The optional GUI binary is named `freearc` (Unix) or `FreeArc.exe` (Windows).
 
 ### On Unix
 
-1. Install clang, `make`, and the following development libraries: `liblua5.1-dev`, `libncurses-dev`. Optionally install `libcurl-dev` for URL/network archive support (auto-detected; the build succeeds without it).
-2. Build and install [MicroHs](https://github.com/augustss/MicroHs) from source using clang (no GHC required):
-   ```
-   git clone https://github.com/augustss/MicroHs
-   cd MicroHs
-   make bin/mhs bin/mcabal CC=clang
-   make install CC=clang
-   cd ..
-   ```
-   Or for a faster bootstrap using the pre-generated C file:
-   ```
-   git clone https://github.com/augustss/MicroHs
-   cd MicroHs
-   clang -O3 generated/mhs.c -o bin/mhs
-   clang -O3 generated/mcabal.c -o bin/mcabal
-   make install CC=clang
-   cd ..
-   ```
-3. Install the required MicroHs packages using `mcabal`:
-   ```
-   mcabal install ghc-compat array-mhs old-locale time
-   ```
-4. Make compile scripts executable:
+1. Install GHC, clang, `make`, and the following development libraries: `liblua5.1-dev`, `libncurses-dev`. Optionally install `libcurl-dev` for URL/network archive support (auto-detected; the build succeeds without it).
+2. Make compile scripts executable:
    ```
    chmod +x compile*
    ```
-5. Compile the console version (`arc`):
+3. Compile the console version (`arc`):
    ```
    ./compile-O2
    ```
-6. Compile the GUI version (`freearc`):
+4. Compile the GUI version (`freearc`):
    ```
    ./compile-GUI-O2
    ```
-7. The compiled binaries are placed in the `Tests/` subdirectory.
-8. To compile SFX modules and Unarc:
+5. The compiled binaries are placed in the `Tests/` subdirectory.
+6. To compile SFX modules and Unarc:
    ```
    cd Unarc
    make linux
    ```
-
-> **Note:** The MicroHs build requires MicroHs packages `ghc-compat`, `array-mhs`, `old-locale`, and `time`. Curl support is auto-detected; if `libcurl-dev` is not installed the build will succeed with URL operations disabled. Compression streaming callbacks are stubbed (operations return `FREEARC_ERRCODE_NOT_IMPLEMENTED`); basic add/extract/list operations work fully.
 
 ---
 
