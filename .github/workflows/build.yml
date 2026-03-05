@@ -1,0 +1,39 @@
+name: Build CI
+
+on:
+  push:
+    branches: [ "main" ]
+  pull_request:
+    branches: [ "main" ]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v6.0.2
+      with:
+        lfs: true
+    - name: Install LLVM and Clang
+      uses: KyleMayes/install-llvm-action@v2
+      with:
+        version: "21.1.8"
+    - id: setup
+      uses: haskell-actions/setup@v2.7.0
+      with:
+        ghc-version: '9.8.4'
+    - name: Cache
+      uses: actions/cache@v5.0.3
+      env:
+        cache-name: cache-ghc
+      with:
+        path: ${{ steps.setup.outputs.ghc-path }}
+        key: ${{ runner.os }}-build-${{ env.cache-name }}-${{ hashFiles('**/*') }}
+        restore-keys: |
+          ${{ runner.os }}-build-${{ env.cache-name }}-
+          ${{ runner.os }}-build-
+          ${{ runner.os }}-
+    - name: Build
+      run: make
