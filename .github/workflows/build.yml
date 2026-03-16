@@ -13,13 +13,14 @@ jobs:
   build:
     runs-on: ${{ matrix.os }}
     strategy:
+      fail-fast: false
       matrix:
         include:
           - os: ubuntu-latest
           - os: ubuntu-24.04-arm
           - os: windows-latest
-            msys2_sys: MINGW64
-            msys2_pkg_prefix: mingw-w64-x86_64
+            msys2_sys: UCRT64
+            msys2_pkg_prefix: mingw-w64-ucrt-x86_64
           - os: windows-11-arm
             msys2_sys: CLANGARM64
             msys2_pkg_prefix: mingw-w64-clang-aarch64
