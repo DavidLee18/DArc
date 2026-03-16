@@ -59,20 +59,18 @@ jobs:
 
     # ── Windows steps ──────────────────────────────────────────────────────────
     # GHC is not distributed as an MSYS2 pacman package; install via haskell-actions/setup
-    # On ARM64 Windows, ghcup is not pre-installed; bootstrap it via the official script
+    # On ARM64 Windows, ghcup is not pre-installed; download it directly (x64 binary runs
+    # under Windows on ARM x64 emulation) so haskell-actions/setup can find it in PATH.
     - name: Bootstrap ghcup (Windows ARM64)
       if: runner.os == 'Windows' && runner.arch == 'ARM64'
       shell: powershell
       run: |
-        $env:BOOTSTRAP_HASKELL_NONINTERACTIVE = 1
-        $env:BOOTSTRAP_HASKELL_INSTALL_NO_STACK = 1
-        $env:BOOTSTRAP_HASKELL_INSTALL_HLS = 0
-        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-        Set-ExecutionPolicy Bypass -Scope Process -Force
-        $script = (Invoke-WebRequest https://www.haskell.org/ghcup/sh/bootstrap-haskell.ps1 -UseBasicParsing).Content
-        Invoke-Expression $script
-        Add-Content $env:GITHUB_PATH "$env:LOCALAPPDATA\ghcup\bin"
-        Add-Content $env:GITHUB_PATH "$env:APPDATA\cabal\bin"
+        $ghcupVersion = "0.1.50.2"
+        $url = "https://downloads.haskell.org/~ghcup/$ghcupVersion/x86_64-mingw64-ghcup-$ghcupVersion.exe"
+        $dir = "$env:LOCALAPPDATA\ghcup\bin"
+        New-Item -ItemType Directory -Force -Path $dir | Out-Null
+        Invoke-WebRequest -Uri $url -OutFile "$dir\ghcup.exe"
+        Add-Content $env:GITHUB_PATH $dir
     - name: Install GHC (Windows)
       if: runner.os == 'Windows'
       uses: haskell-actions/setup@v2.7.0
