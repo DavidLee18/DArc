@@ -1,3 +1,4 @@
+Cabal-version: >= 1.10
 Name: hslua
 Version: 0.3
 Stability: alpha
