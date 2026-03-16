@@ -126,10 +126,20 @@ jobs:
 
         # Build HsLua helper.
         # HsLua ships its own headers under HsLua/src so no external include path is needed.
-        # Under MSYS2/UCRT64 the Lua 5.1 library is named lua51 (NOT lua5.1),
-        # so skip pkg-config entirely and hardcode the correct flag.
         clang -c HsLua/src/ntrljmp.c -IHsLua/src -o "$ctempdir/ntrljmp.o"
-        lua_libs="-llua51"
+
+        # Lua link flags.
+        # GHC on Windows uses lld and its default search path does NOT include the MSYS2 lib
+        # directory, so we must supply -L explicitly.  The library may be liblua51 or liblua5.1
+        # depending on the exact MSYS2 package version, so probe both.
+        lua_lib_dir="/ucrt64/lib"
+        if [ -f "$lua_lib_dir/liblua51.dll.a" ] || [ -f "$lua_lib_dir/liblua51.a" ]; then
+          lua_libs="-L$lua_lib_dir -llua51"
+        elif [ -f "$lua_lib_dir/liblua5.1.dll.a" ] || [ -f "$lua_lib_dir/liblua5.1.a" ]; then
+          lua_libs="-L$lua_lib_dir -llua5.1"
+        else
+          lua_libs="-L$lua_lib_dir -llua51"
+        fi
         c_objs="$ctempdir/Environment.o $ctempdir/URL.o $ctempdir/Common.o \
           $ctempdir/CompressionLibrary.o $ctempdir/C_PPMD.o $ctempdir/C_LZP.o \
           $ctempdir/C_LZMA.o $ctempdir/C_BCJ.o $ctempdir/C_GRZip.o $ctempdir/C_Dict.o \
