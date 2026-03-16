@@ -12,28 +12,32 @@ The optional GUI binary is named `freearc` (Unix) or `FreeArc.exe` (Windows).
 
 ## Building
 
+> **Note:** The main Haskell source files are stored in [Git LFS](https://git-lfs.github.com/).  
+> Install `git-lfs` before cloning, or run `git lfs pull` after cloning, otherwise source files will be empty LFS pointer stubs.
+
 ### On Windows
 
-1. Install GHC 6.6.1 or 6.8.2 bundled with a C++ compiler.
-2. Install it into `C:\Base\Compiler\ghc`.
-3. Make sure `make.exe` is available on your `PATH`.
-4. Install [Gtk2Hs](http://sourceforge.net/project/showfiles.php?group_id=49207&package_id=42440) (required for the GUI version only).
-5. Install HsLua:
+> **Note:** The Windows build (`compile-O2.cmd` / `compile-GUI-O2.cmd`) is a legacy path that uses older GHC compiler flags. It has not been updated to use the modern GHC extensions required by the Unix build path.
+
+1. Install GHC with a bundled MinGW/C++ compiler and install it into `C:\Base\Compiler\ghc` (this path is hardcoded in `win32-common.mak`).
+2. Make sure `make.exe` is available on your `PATH`.
+3. Install [gtk2hs](https://hackage.haskell.org/package/gtk) (required for the GUI version only).
+4. Install HsLua:
    ```
    cd HsLua
    make
    cd ..
    ```
-6. Compile the console version (`Arc.exe`):
+5. Compile the console version (`Arc.exe`):
    ```
    compile-O2.cmd
    ```
-7. Compile the GUI version (`FreeArc.exe`):
+6. Compile the GUI version (`FreeArc.exe`):
    ```
    compile-GUI-O2.cmd
    ```
-8. The compiled binaries are placed in the `Tests\` subdirectory.
-9. To compile SFX modules, Unarc, and the FAR plugin:
+7. The compiled binaries are placed in the `Tests\` subdirectory.
+8. To compile SFX modules, Unarc, and the FAR plugin:
    ```
    cd Unarc
    make
@@ -41,7 +45,7 @@ The optional GUI binary is named `freearc` (Unix) or `FreeArc.exe` (Windows).
 
 ### On Unix
 
-1. Install GHC, clang, `make`, and the following development libraries: `liblua5.1-dev`, `libncurses-dev`. Optionally install `libcurl-dev` for URL/network archive support (auto-detected; the build succeeds without it).
+1. Install GHC ≥ 9.2 (the build uses `-XGHC2021`), clang, `make`, and the following development libraries: `liblua5.1-dev`, `libncurses-dev`. Optionally install `libcurl-dev` for URL/network archive support (auto-detected; the build succeeds without it).
 2. Make compile scripts executable:
    ```
    chmod +x compile*
