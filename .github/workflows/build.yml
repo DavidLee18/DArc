@@ -124,13 +124,12 @@ jobs:
         # Build top-level C modules (Environment.o, URL.o)
         make ALL
 
-        # Build HsLua helper
-        lua_cflags=$(pkg-config --cflags lua5.1 2>/dev/null || pkg-config --cflags lua51 2>/dev/null || echo "")
-        clang -c HsLua/src/ntrljmp.c -IHsLua/src $lua_cflags -o "$ctempdir/ntrljmp.o"
-
-        # Lua link flags; Windows uses wininet instead of libcurl.
-        # MSYS2/UCRT64 names the library lua51 (not lua5.1).
-        lua_libs=$(pkg-config --libs lua5.1 2>/dev/null || pkg-config --libs lua51 2>/dev/null || echo "-llua51")
+        # Build HsLua helper.
+        # HsLua ships its own headers under HsLua/src so no external include path is needed.
+        # Under MSYS2/UCRT64 the Lua 5.1 library is named lua51 (NOT lua5.1),
+        # so skip pkg-config entirely and hardcode the correct flag.
+        clang -c HsLua/src/ntrljmp.c -IHsLua/src -o "$ctempdir/ntrljmp.o"
+        lua_libs="-llua51"
         c_objs="$ctempdir/Environment.o $ctempdir/URL.o $ctempdir/Common.o \
           $ctempdir/CompressionLibrary.o $ctempdir/C_PPMD.o $ctempdir/C_LZP.o \
           $ctempdir/C_LZMA.o $ctempdir/C_BCJ.o $ctempdir/C_GRZip.o $ctempdir/C_Dict.o \
