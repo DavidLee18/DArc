@@ -34,7 +34,7 @@ jobs:
     steps:
     - uses: actions/checkout@v6.0.2
       with:
-        lfs: true
+        lfs: false
 
     # ── Linux steps ────────────────────────────────────────────────────────────
     - name: Install LLVM and Clang
