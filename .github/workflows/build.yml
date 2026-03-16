@@ -40,16 +40,13 @@ jobs:
       run: |
         sudo apt-get update
         sudo apt-get install -y liblua5.1-dev libncurses-dev libcurl4-openssl-dev
-    - name: Cache (Linux)
+    - name: Cache GHCup (Linux)
       if: runner.os == 'Linux'
       id: cache
       uses: actions/cache@v5.0.3
       with:
         path: ~/.ghcup/
-        key: ${{ runner.os }}-build-${{ hashFiles('**/*') }}
-        restore-keys: |
-          ${{ runner.os }}-build-
-          ${{ runner.os }}-
+        key: ${{ runner.os }}-${{ runner.arch }}-ghcup-9.8.4
     - uses: haskell-actions/setup@v2.7.0
       if: runner.os == 'Linux' && steps.cache.outputs.cache-hit != 'true'
       with:
@@ -61,14 +58,20 @@ jobs:
         ./compile-O2
 
     # ── Windows steps ──────────────────────────────────────────────────────────
+    # GHC is not distributed as an MSYS2 pacman package; install via haskell-actions/setup
+    - name: Install GHC (Windows)
+      if: runner.os == 'Windows'
+      uses: haskell-actions/setup@v2.7.0
+      with:
+        ghc-version: '9.8.4'
     - name: Set up MSYS2 (Windows)
       if: runner.os == 'Windows'
       uses: msys2/setup-msys2@v2
       with:
         msystem: ${{ matrix.msys2_sys }}
         update: true
+        path-type: inherit
         install: >-
-          ${{ matrix.msys2_pkg_prefix }}-ghc
           ${{ matrix.msys2_pkg_prefix }}-clang
           ${{ matrix.msys2_pkg_prefix }}-lua51
           make
