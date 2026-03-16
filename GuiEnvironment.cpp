@@ -24,7 +24,7 @@ int BrowseForFolder(TCHAR *prompt, TCHAR *in_filename, TCHAR *out_filename)
 {
   BROWSEINFO bi;
   bi.hwndOwner = GetActiveWindow();
-  bi.lParam = (LONG)in_filename;
+  bi.lParam = (LPARAM)in_filename;
   bi.lpszTitle = prompt;
   bi.lpfn = BrowseCallbackProc;
   bi.pidlRoot = NULL;
