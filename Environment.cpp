@@ -151,7 +151,7 @@ void SetDateTimeAttr(const char* Filename, time_t t)
 
 CFILENAME GetExeName (CFILENAME buf, int bufsize)
 {
-  GetModuleFileNameW (NULL, buf, bufsize);
+  GetModuleFileNameA (NULL, buf, bufsize);
   return buf;
 }
 
@@ -185,11 +185,11 @@ int GetProcessorsCount (void)
 void SetFileDateTime (const CFILENAME Filename, time_t mtime)
 {
   struct _stat st;
-    _wstat (Filename, &st);
+    _stat (Filename, &st);
   struct _utimbuf times;
     times.actime  = st.st_atime;
     times.modtime = mtime;
-  _wutime (Filename, &times);
+  _utime (Filename, &times);
 }
 
 // Execute program `filename` in the directory `curdir` optionally waiting until it finished
@@ -200,7 +200,7 @@ void RunProgram (const CFILENAME filename, const CFILENAME curdir, int wait_fini
   ZeroMemory (&si, sizeof(si));
   si.cb = sizeof(si);
   ZeroMemory (&pi, sizeof(pi));
-  BOOL process_created = CreateProcessW (filename, NULL, NULL, NULL, FALSE, 0, NULL, curdir, &si, &pi);
+  BOOL process_created = CreateProcessA (filename, NULL, NULL, NULL, FALSE, 0, NULL, curdir, &si, &pi);
 
   if (process_created && wait_finish)
       WaitForSingleObject (pi.hProcess, INFINITE);
@@ -410,7 +410,7 @@ void BuildPathTo (CFILENAME name)
 
 
 /* Map a value that may be 32 or 64 bits depending on the platform to a long */
-#if defined( _MSC_VER ) && ( _MSC_VER >= 1400 )
+#if defined( _WIN64 ) || ( defined( _MSC_VER ) && ( _MSC_VER >= 1400 ) )
   #define addRandomHandle( handle ) \
 		  addRandomLong( PtrToUlong( handle ) )
 #else
@@ -425,7 +425,7 @@ int systemRandomData (char *rand_buf, int rand_size)
 #ifdef FREEARC_WIN
 
 	FILETIME  creationTime, exitTime, kernelTime, userTime;
-	DWORD minimumWorkingSetSize, maximumWorkingSetSize;
+	SIZE_T minimumWorkingSetSize, maximumWorkingSetSize;
 	LARGE_INTEGER performanceCount;
 	MEMORYSTATUS memoryStatus;
 	HANDLE handle;
