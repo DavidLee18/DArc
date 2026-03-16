@@ -59,6 +59,20 @@ jobs:
 
     # ── Windows steps ──────────────────────────────────────────────────────────
     # GHC is not distributed as an MSYS2 pacman package; install via haskell-actions/setup
+    # On ARM64 Windows, ghcup is not pre-installed; bootstrap it via the official script
+    - name: Bootstrap ghcup (Windows ARM64)
+      if: runner.os == 'Windows' && runner.arch == 'ARM64'
+      shell: powershell
+      run: |
+        $env:BOOTSTRAP_HASKELL_NONINTERACTIVE = 1
+        $env:BOOTSTRAP_HASKELL_INSTALL_NO_STACK = 1
+        $env:BOOTSTRAP_HASKELL_INSTALL_HLS = 0
+        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+        Set-ExecutionPolicy Bypass -Scope Process -Force
+        $script = (Invoke-WebRequest https://www.haskell.org/ghcup/sh/bootstrap-haskell.ps1 -UseBasicParsing).Content
+        Invoke-Expression $script
+        Add-Content $env:GITHUB_PATH "$env:LOCALAPPDATA\ghcup\bin"
+        Add-Content $env:GITHUB_PATH "$env:APPDATA\cabal\bin"
     - name: Install GHC (Windows)
       if: runner.os == 'Windows'
       uses: haskell-actions/setup@v2.7.0
