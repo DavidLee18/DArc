@@ -21,9 +21,16 @@ jobs:
           - os: windows-latest
             msys2_sys: UCRT64
             msys2_pkg_prefix: mingw-w64-ucrt-x86_64
+            ghc_opt_level: "-O2"
+            ghc_parallelism: "-j$( nproc 2>/dev/null || echo 4 )"
           - os: windows-11-arm
-            msys2_sys: CLANGARM64
-            msys2_pkg_prefix: mingw-w64-clang-aarch64
+            # No native aarch64-windows GHC is available yet; build as x64 under
+            # ARM64 x64-emulation using UCRT64 so C objects and GHC output share
+            # the same x86-64 ABI.  Use -O0/-j1 to avoid GHC crashes under emulation.
+            msys2_sys: UCRT64
+            msys2_pkg_prefix: mingw-w64-ucrt-x86_64
+            ghc_opt_level: "-O0"
+            ghc_parallelism: "-j1"
     steps:
     - uses: actions/checkout@v6.0.2
       with:
@@ -135,7 +142,8 @@ jobs:
         optc_defines=""
         for d in $defines; do optc_defines="$optc_defines -optc${d}"; done
 
-        ghc_jobs="-j$(nproc 2>/dev/null || echo 4)"
+        ghc_jobs="${{ matrix.ghc_parallelism }}"
+        ghc_opt="${{ matrix.ghc_opt_level }}"
         mkdir -p Tests
 
         ghc --make Arc.hs \
@@ -143,7 +151,7 @@ jobs:
           -threaded \
           -rtsopts \
           "-with-rtsopts=-N -qg0 -A8m -H128m -I0" \
-          -O2 \
+          $ghc_opt \
           -feager-blackholing \
           -XGHC2021 \
           -XLambdaCase \
