@@ -46,6 +46,7 @@ The optional GUI binary is named `freearc` (Unix) or `FreeArc.exe` (Windows).
 ### On Unix
 
 1. Install MicroHs (`mhs`) for the default architecture path. If `mhs` is unavailable, the build script falls back to GHC (using `-XGHC2021`). Also install clang, `make`, and the following development libraries: `liblua5.1-dev`, `libncurses-dev`. Optionally install `libcurl-dev` for URL/network archive support (auto-detected; the build succeeds without it).
+   - Current limitation: the `mhs` path is a compiler-path switch and does not yet mirror all GHC C/object/link flags, so for full feature parity use the fallback GHC path.
 2. Make compile scripts executable:
    ```
    chmod +x compile*
