@@ -1,15 +1,15 @@
 exe=Tests/arc
 gui_flag=""
-ghc_opt="-O2"
+hs_opt="-O2"
 for option; do
   case $option in
     -DFREEARC_GUI) exe=Tests/freearc; gui_flag="-DFREEARC_GUI" ;;
-    -O*) ghc_opt="$option" ;;
+    -O*) hs_opt="$option" ;;
   esac
 done
 ctempdir=/tmp/out/FreeArc
-ghctempdir=/tmp/out/FreeArc-ghc
-mkdir -p $ghctempdir
+hstempdir=/tmp/out/FreeArc-hs
+mkdir -p $hstempdir
 mkdir -p $ctempdir
 if [ "$(getconf LONG_BIT 2>/dev/null)" = "64" ]; then
   bit64="-DFREEARC_64BIT"
@@ -35,20 +35,25 @@ clang -c HsLua/src/ntrljmp.c -IHsLua/src $(pkg-config --cflags lua5.1 2>/dev/nul
 c_objs="$ctempdir/Environment.o $ctempdir/URL.o $ctempdir/Common.o $ctempdir/CompressionLibrary.o $ctempdir/C_PPMD.o $ctempdir/C_LZP.o $ctempdir/C_LZMA.o $ctempdir/C_BCJ.o $ctempdir/C_GRZip.o $ctempdir/C_Dict.o $ctempdir/C_REP.o $ctempdir/C_MM.o $ctempdir/C_TTA.o $ctempdir/C_Tornado.o $ctempdir/C_Delta.o $ctempdir/C_External.o $ctempdir/C_Encryption.o $ctempdir/ntrljmp.o"
 c_libs="-lstdc++ -lncurses $curl_libs $lua_libs"
 if [[ -n $gui_flag ]]; then c_objs="$c_objs $ctempdir/GuiEnvironment.o"; fi
-# Build -optc defines for C files compiled by GHC
+# Build -optc defines for C files compiled by the Haskell compiler
 optc_defines=""
 for d in $defines $gui_flag; do optc_defines="$optc_defines -optc${d}"; done
-# Collect GHC optimization flag (-O2 by default) -- already parsed above
+# Collect optimization flag (-O2 by default) -- already parsed above
 lua_cflags=$(pkg-config --cflags lua5.1 2>/dev/null || echo "-I/usr/include/lua5.1")
 # Use all available CPU cores for GHC compilation itself
 ghc_jobs="-j$(nproc 2>/dev/null || echo 4)"
 rm -f $exe
-ghc --make Arc.hs \
+if command -v mhs >/dev/null 2>&1; then
+  hs_compiler=mhs
+else
+  hs_compiler=ghc
+fi
+$hs_compiler --make Arc.hs \
   -iCompression -icompat-ghc -iHsLua/src \
   -threaded \
   -rtsopts \
   "-with-rtsopts=-N -qg0 -A8m -H128m -I0" \
-  $ghc_opt \
+  $hs_opt \
   -feager-blackholing \
   -XGHC2021 \
   -XLambdaCase \
@@ -63,6 +68,6 @@ ghc --make Arc.hs \
   $(for f in $lua_cflags; do echo "-optc$f"; done) \
   $c_objs \
   $(for lib in $c_libs; do echo "-optl$lib"; done) \
-  -odir $ghctempdir -hidir $ghctempdir \
+  -odir $hstempdir -hidir $hstempdir \
   -o $exe
 rm -f Compression/CompressionLib_stub.?

@@ -1,8 +1,8 @@
 include common.mak
 
-## Default target: build with GHC (full-featured binary with parallel RTS)
+## Default target: build with MicroHs architecture (falls back to GHC toolchain)
 .PHONY: all
-all: ghc
+all: microhs
 
 ALL: $(TEMPDIR)/Environment.o $(TEMPDIR)/GuiEnvironment.o $(TEMPDIR)/URL.o
 
@@ -23,13 +23,17 @@ $(TEMPDIR)/GuiEnvironment.o:  GuiEnvironment.cpp Environment.h Compression/Commo
 $(TEMPDIR)/URL.o:  URL.cpp URL.h Compression/Common.h makefile
 	$(GCC) -c $(CFLAGS) -o $*.o $<
 
-## GHC-compiled targets (Linux/Unix): use GHC threaded runtime with -N (all cores)
-.PHONY: ghc ghc-gui
-ghc:
+## MicroHs architecture targets (Linux/Unix)
+.PHONY: microhs microhs-gui ghc ghc-gui
+microhs:
 	./compile
 
-ghc-gui:
+microhs-gui:
 	./compile -DFREEARC_GUI
+
+# Backward-compatible aliases
+ghc: microhs
+ghc-gui: microhs-gui
 
 clean:
 	rm -rf $(TEMPDIR)-unarc/*.o

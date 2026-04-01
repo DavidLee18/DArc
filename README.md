@@ -17,7 +17,7 @@ The optional GUI binary is named `freearc` (Unix) or `FreeArc.exe` (Windows).
 
 ### On Windows
 
-> **Note:** The Windows build (`compile-O2.cmd` / `compile-GUI-O2.cmd`) is a legacy path that uses older GHC compiler flags. It has not been updated to use the modern GHC extensions required by the Unix build path.
+> **Note:** The Windows build (`compile-O2.cmd` / `compile-GUI-O2.cmd`) is a legacy path that still uses the GHC toolchain and older compiler flags.
 
 1. Install GHC with a bundled MinGW/C++ compiler and install it into `C:\Base\Compiler\ghc` (this path is hardcoded in `win32-common.mak`).
 2. Make sure `make.exe` is available on your `PATH`.
@@ -45,7 +45,7 @@ The optional GUI binary is named `freearc` (Unix) or `FreeArc.exe` (Windows).
 
 ### On Unix
 
-1. Install GHC ≥ 9.2 (the build uses `-XGHC2021`), clang, `make`, and the following development libraries: `liblua5.1-dev`, `libncurses-dev`. Optionally install `libcurl-dev` for URL/network archive support (auto-detected; the build succeeds without it).
+1. Install MicroHs (`mhs`) for the default architecture path. If `mhs` is unavailable, the build script falls back to GHC (using `-XGHC2021`). Also install clang, `make`, and the following development libraries: `liblua5.1-dev`, `libncurses-dev`. Optionally install `libcurl-dev` for URL/network archive support (auto-detected; the build succeeds without it).
 2. Make compile scripts executable:
    ```
    chmod +x compile*
