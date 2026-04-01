@@ -1,5 +1,4 @@
-*.hs filter=lfs diff=lfs merge=lfs -text
-/Cmdline.hs filter=lfs diff=lfs merge=lfs -text
-HsLua/Setup.hs !filter !diff !merge text
-HsLua/src/Scripting/Lua.hs !filter !diff !merge text
-HsLua/tests/HsLuaMain.hs !filter !diff !merge text
+*.hs text eol=lf
+HsLua/Setup.hs text eol=lf
+HsLua/src/Scripting/Lua.hs text eol=lf
+HsLua/tests/HsLuaMain.hs text eol=lf
