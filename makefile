@@ -24,16 +24,12 @@ $(TEMPDIR)/URL.o:  URL.cpp URL.h Compression/Common.h makefile
 	$(GCC) -c $(CFLAGS) -o $*.o $<
 
 ## MicroHs architecture targets (Linux/Unix)
-.PHONY: microhs microhs-gui ghc ghc-gui
+.PHONY: microhs microhs-gui
 microhs:
 	./compile
 
 microhs-gui:
 	./compile -DFREEARC_GUI
-
-# Compatibility aliases (both use MicroHs)
-ghc: microhs
-ghc-gui: microhs-gui
 
 clean:
 	rm -rf $(TEMPDIR)-unarc/*.o
