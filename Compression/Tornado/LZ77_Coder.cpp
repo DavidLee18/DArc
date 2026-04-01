@@ -625,6 +625,7 @@ struct LZ77_DynamicCoder
         case 2: return coder2.encode (len, current, match, MINLEN);
         case 3: return coder3.encode (len, current, match, MINLEN);
         case 4: return coder4.encode (len, current, match, MINLEN);
+        default: return 0;
         }
     }
 
@@ -639,6 +640,7 @@ struct LZ77_DynamicCoder
         case 2: return coder2.error();
         case 3: return coder3.error();
         case 4: return coder4.error();
+        default: return 0;
         }
     }
 

@@ -62,10 +62,10 @@ extern "C" {
 typedef int CALLBACK_FUNC (const char *what, void *data, int size, void *auxdata);
 
 // Макросы для чтения/записи в(ы)ходных потоков с проверкой, что передано ровно столько данных, сколько было запрошено
-#define checked_read(ptr,size)         if ((x = callback("read" ,ptr,size,auxdata)) != size) { x>=0 && (x=FREEARC_ERRCODE_IO); goto finished; }
-#define checked_write(ptr,size)        if ((x = callback("write",ptr,size,auxdata)) != size) { x>=0 && (x=FREEARC_ERRCODE_IO); goto finished; }
+#define checked_read(ptr,size)         do { x = callback("read" ,ptr,size,auxdata); if (x != size) { if (x>=0) x=FREEARC_ERRCODE_IO; goto finished; } } while(0)
+#define checked_write(ptr,size)        do { x = callback("write",ptr,size,auxdata); if (x != size) { if (x>=0) x=FREEARC_ERRCODE_IO; goto finished; } } while(0)
 // Макрос для чтения входных потоков с проверкой на ошибки и конец входных данных
-#define checked_eof_read(ptr,size)     if ((x = callback("write",ptr,size,auxdata)) != size) { x>0  && (x=FREEARC_ERRCODE_IO); goto finished; }
+#define checked_eof_read(ptr,size)     do { x = callback("write",ptr,size,auxdata); if (x != size) { if (x>0)  x=FREEARC_ERRCODE_IO; goto finished; } } while(0)
 
 // Auxiliary code to read/write data blocks and 4-byte headers
 #define INIT() callback ("init", NULL, 0, auxdata)

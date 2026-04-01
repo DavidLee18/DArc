@@ -102,6 +102,7 @@ struct EncryptionMode
         switch (mode) {
         case 0: return "ctr";
         case 1: return "cfb";
+        default: return "";
         }
     }
 
@@ -110,6 +111,7 @@ struct EncryptionMode
         switch (mode) {
         case 0: return ctr_start (cipher, iv, key, keysize, rounds, CTR_COUNTER_LITTLE_ENDIAN, &ctr);
         case 1: return cfb_start (cipher, iv, key, keysize, rounds, &cfb);
+        default: return CRYPT_ERROR;
         }
     }
 
@@ -118,6 +120,7 @@ struct EncryptionMode
         switch (mode) {
         case 0: return ctr_encrypt(pt, ct, len, &ctr);
         case 1: return cfb_encrypt(pt, ct, len, &cfb);
+        default: return CRYPT_ERROR;
         }
     }
 
@@ -126,6 +129,7 @@ struct EncryptionMode
         switch (mode) {
         case 0: return ctr_decrypt(pt, ct, len, &ctr);
         case 1: return cfb_decrypt(pt, ct, len, &cfb);
+        default: return CRYPT_ERROR;
         }
     }
 
@@ -134,6 +138,7 @@ struct EncryptionMode
         switch (mode) {
         case 0: return ctr_done (&ctr);
         case 1: return cfb_done (&cfb);
+        default: return CRYPT_ERROR;
         }
     }
 };

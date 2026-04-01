@@ -17,6 +17,7 @@ protected:
   virtual void SubInit() {}
   virtual UInt32 SubFilter(Byte *data, UInt32 size) = 0;
 public:
+  virtual ~CBranchConverter() {}
   MY_UNKNOWN_IMP;
   STDMETHOD(Init)();
   STDMETHOD_(UInt32, Filter)(Byte *data, UInt32 size);

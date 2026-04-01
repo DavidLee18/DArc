@@ -52,6 +52,7 @@ inline uint hashx (int len, BYTE *p, UINT HashShift, UINT HashMask = ~0)
     case 5:  return ((value32(p)*123456791 + value32(p+1)*789567123) >> HashShift) & HashMask;
     case 6:  return ((value32(p)*123456791 + value32(p+2)*789567123) >> HashShift) & HashMask;
     case 7:  return ((value32(p)*123456791 + value32(p+3)*789567123) >> HashShift) & HashMask;
+    default: return 0;
     }
 }
 
@@ -66,6 +67,7 @@ inline int accept_match (int len, BYTE *p, BYTE *q, void *bufend)
     case 7:  return p-q<12*mb  && p<=bufend && val32equ(p, q) && val24equ(p+4, q+4)              ? 7 : 0;
     case 8:  return               p<=bufend && val32equ(p, q) && val32equ(p+4, q+4)              ? 8 : 0;
     case 9:  return               p<=bufend && val32equ(p, q) && val32equ(p+4, q+4) && p[8]==q[8]? 9 : 0;
+    default: return 0;
     }
 }
 
