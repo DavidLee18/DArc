@@ -42,7 +42,7 @@ if ! command -v mhs >/dev/null 2>&1; then
   echo "error: mhs (MicroHs) is required for Haskell compilation but was not found in PATH" >&2
   exit 1
 fi
-# Let mhs' C backend link the already-built C objects/libraries.
+# Let the mhs C backend link the already-built C objects/libraries.
 export MHSEXTRACCFLAGS="$c_objs $c_libs -I. -ICompression -IHsLua/src $lua_cflags"
 mhs Arc \
   -iCompression -icompat-ghc -iHsLua/src \

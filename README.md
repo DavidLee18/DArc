@@ -37,7 +37,7 @@ The optional GUI binary is named `freearc` (Unix) or `FreeArc.exe` (Windows).
 7. To compile SFX modules and Unarc:
    ```
    cd Unarc
-   make linux
+   make
    ```
 
 ### On Unix
