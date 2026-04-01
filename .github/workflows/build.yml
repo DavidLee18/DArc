@@ -51,6 +51,8 @@ jobs:
       if: runner.os == 'Linux'
       run: |
         mkdir -p "$HOME/.local/bin"
+        # Pin to a known-good commit used for this repository's MicroHs-only
+        # architecture migration to keep CI deterministic across reruns.
         microhs_sha="05a3fbd5d73ae6a37111a6ced5b57bb1717b8975"
         microhs_tar="/tmp/microhs.tar.gz"
         # SHA-256 computed from the pinned archive URL:
