@@ -47,17 +47,13 @@ jobs:
       run: |
         sudo apt-get update
         sudo apt-get install -y liblua5.1-dev libncurses-dev libcurl4-openssl-dev
-    - name: Cache GHCup (Linux)
+    - name: Install MicroHs (Linux)
       if: runner.os == 'Linux'
-      id: cache
-      uses: actions/cache@v5.0.3
-      with:
-        path: ~/.ghcup/
-        key: ${{ runner.os }}-${{ runner.arch }}-ghcup-9.8.4
-    - uses: haskell-actions/setup@v2.7.0
-      if: runner.os == 'Linux' && steps.cache.outputs.cache-hit != 'true'
-      with:
-        ghc-version: '9.8.4'
+      run: |
+        mkdir -p "$HOME/.local/bin"
+        curl -fsSL "https://raw.githubusercontent.com/augustss/MicroHs/master/install.sh" | sh
+        cp "$HOME/.mcabal/bin/mhs" "$HOME/.local/bin/mhs"
+        echo "$HOME/.local/bin" >> "$GITHUB_PATH"
     - name: Build (Linux)
       if: runner.os == 'Linux'
       run: |
@@ -65,9 +61,7 @@ jobs:
         ./compile-O2
 
     # ── Windows steps ──────────────────────────────────────────────────────────
-    # GHC is not distributed as an MSYS2 pacman package; install via haskell-actions/setup
-    # On ARM64 Windows, ghcup is not pre-installed; download it directly (x64 binary runs
-    # under Windows on ARM x64 emulation) so haskell-actions/setup can find it in PATH.
+    # Keep legacy Windows GHC setup for now until a native CI MicroHs path is available.
     - name: Bootstrap ghcup (Windows ARM64)
       if: runner.os == 'Windows' && runner.arch == 'ARM64'
       shell: powershell

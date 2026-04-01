@@ -1,10 +1,10 @@
 exe=Tests/arc
 gui_flag=""
-ghc_opt="-O2"
+hs_opt="-O2"
 for option; do
   case $option in
     -DFREEARC_GUI) exe=Tests/freearc; gui_flag="-DFREEARC_GUI" ;;
-    -O*) ghc_opt="$option" ;;
+    -O*) hs_opt="$option" ;;
   esac
 done
 ctempdir=/tmp/out/FreeArc
@@ -41,44 +41,16 @@ for d in $defines $gui_flag; do optc_defines="$optc_defines -optc${d}"; done
 # Collect optimization flag (-O2 by default) -- already parsed above
 lua_cflags=$(pkg-config --cflags lua5.1 2>/dev/null || echo "-I/usr/include/lua5.1")
 # Use all available CPU cores for Haskell compilation itself
-ghc_jobs="-j$(nproc 2>/dev/null || echo 4)"
+mhs_jobs="-j$(nproc 2>/dev/null || echo 4)"
 rm -f $exe
-if command -v mhs >/dev/null 2>&1; then
-  hs_compiler=mhs
-else
-  hs_compiler=ghc
+if ! command -v mhs >/dev/null 2>&1; then
+  echo "error: mhs (MicroHs) is required for Haskell compilation but was not found in PATH" >&2
+  exit 1
 fi
-if [ "$hs_compiler" = "mhs" ]; then
-  # NOTE: this MicroHs path currently switches compiler architecture only.
-  # It does not yet mirror the full GHC C/object/link flag pipeline below.
-  if [ -n "$ghc_opt" ]; then
-    echo "warning: ignoring GHC optimization flag '$ghc_opt' when using mhs" >&2
-  fi
-  mhs Arc \
-    -iCompression -icompat-ghc -iHsLua/src \
-    -o$exe
-else
-  ghc --make Arc.hs \
-    -iCompression -icompat-ghc -iHsLua/src \
-    -threaded \
-    -rtsopts \
-    "-with-rtsopts=-N -qg0 -A8m -H128m -I0" \
-    $ghc_opt \
-    -feager-blackholing \
-    -XGHC2021 \
-    -XLambdaCase \
-    -XNondecreasingIndentation \
-    -XUndecidableInstances \
-    -XOverlappingInstances \
-    -XNoMonomorphismRestriction \
-    $ghc_jobs \
-    $defines $gui_flag \
-    $optc_defines \
-    -optc-IHsLua/src -optc-I. -optc-ICompression \
-    $(for f in $lua_cflags; do echo "-optc$f"; done) \
-    $c_objs \
-    $(for lib in $c_libs; do echo "-optl$lib"; done) \
-    -odir $ghctempdir -hidir $ghctempdir \
-    -o $exe
-fi
+mhs Arc \
+  -iCompression -icompat-ghc -iHsLua/src \
+  $hs_opt \
+  $mhs_jobs \
+  $defines $gui_flag \
+  -o$exe
 rm -f Compression/CompressionLib_stub.?

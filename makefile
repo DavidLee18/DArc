@@ -1,6 +1,6 @@
 include common.mak
 
-## Default target: build with MicroHs architecture (falls back to GHC toolchain)
+## Default target: build with MicroHs architecture
 .PHONY: all
 all: microhs
 
@@ -31,7 +31,7 @@ microhs:
 microhs-gui:
 	./compile -DFREEARC_GUI
 
-# Backward-compatible aliases
+# Compatibility aliases (both use MicroHs)
 ghc: microhs
 ghc-gui: microhs-gui
 
