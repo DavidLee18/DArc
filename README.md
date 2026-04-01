@@ -24,7 +24,7 @@ The optional GUI binary is named `freearc` (Unix) or `FreeArc.exe` (Windows).
    make
    cd ..
    ```
-3. Install MicroHs (`mhs`) and add `%USERPROFILE%\\.mcabal\\bin` to `PATH`.
+3. Install MicroHs (`mhs`) and add `%USERPROFILE%\.mcabal\bin` to `PATH`.
 4. Compile the console version (`Arc.exe`):
    ```
    compile-O2
@@ -34,7 +34,7 @@ The optional GUI binary is named `freearc` (Unix) or `FreeArc.exe` (Windows).
    compile-GUI-O2
    ```
 6. The compiled binaries are placed in the `Tests/` subdirectory.
-7. To compile SFX modules, Unarc, and the FAR plugin:
+7. To compile SFX modules and Unarc:
    ```
    cd Unarc
    make linux
