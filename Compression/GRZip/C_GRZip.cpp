@@ -449,8 +449,10 @@ struct GRZipMTCompressor : MTCompressor<GRZipCompressionThread>
     {
         GRZipCompressionThread *job = FreeJobs.Get();   // Acquire first compression job
         char* RemainderPos; int RemainderSize=0;        // остаток данных с предыдущего раза - адрес и количество
-        while ( (job->InSize = callback ("read", job->InBuf + RemainderSize, BlockSize - RemainderSize, auxdata)) >= 0 )
+        for (;;)
         {
+          job->InSize = callback ("read", job->InBuf + RemainderSize, BlockSize - RemainderSize, auxdata);
+          if (job->InSize < 0)  break;
           if ((job->InSize+=RemainderSize)==0)     return 0;  // Данных больше нет
           if (errcode < 0)                         return 0;  // Error in other thread
           RemainderSize=0;

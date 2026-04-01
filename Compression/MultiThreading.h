@@ -120,7 +120,8 @@ struct WorkerThread
             ////int InSize = job->InSize;  - the same insize should be inside process()
             if (InSize <= 0)  break;                  // signal to finish thread execution and release resources
             task->LimitThreads.Lock();                // wait for compression slot
-            task->SetErrCode (OutSize = process());   // process data and save errcode/outsize
+            OutSize = process();                      // process data
+            task->SetErrCode (OutSize);               // save errcode/outsize
             task->LimitThreads.Release();             // release compression slot
             OperationFinished.Signal();               // signal to Writer thread
         }
