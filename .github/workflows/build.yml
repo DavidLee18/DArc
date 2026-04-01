@@ -21,16 +21,9 @@ jobs:
           - os: windows-latest
             msys2_sys: UCRT64
             msys2_pkg_prefix: mingw-w64-ucrt-x86_64
-            ghc_opt_level: "-O2"
-            ghc_parallelism: "-j$( nproc 2>/dev/null || echo 4 )"
           - os: windows-11-arm
-            # No native aarch64-windows GHC is available yet; build as x64 under
-            # ARM64 x64-emulation using UCRT64 so C objects and GHC output share
-            # the same x86-64 ABI.  Use -O0/-j1 to avoid GHC crashes under emulation.
             msys2_sys: UCRT64
             msys2_pkg_prefix: mingw-w64-ucrt-x86_64
-            ghc_opt_level: "-O0"
-            ghc_parallelism: "-j1"
     steps:
     - uses: actions/checkout@v6.0.2
       with:
@@ -47,17 +40,24 @@ jobs:
       run: |
         sudo apt-get update
         sudo apt-get install -y liblua5.1-dev libncurses-dev libcurl4-openssl-dev
-    - name: Cache GHCup (Linux)
+    - name: Install MicroHs (Linux)
       if: runner.os == 'Linux'
-      id: cache
-      uses: actions/cache@v5.0.3
-      with:
-        path: ~/.ghcup/
-        key: ${{ runner.os }}-${{ runner.arch }}-ghcup-9.8.4
-    - uses: haskell-actions/setup@v2.7.0
-      if: runner.os == 'Linux' && steps.cache.outputs.cache-hit != 'true'
-      with:
-        ghc-version: '9.8.4'
+      run: |
+        mkdir -p "$HOME/.local/bin"
+        # Pin to a known-good commit used for this repository's MicroHs-only
+        # architecture migration to keep CI deterministic across reruns.
+        microhs_sha="05a3fbd5d73ae6a37111a6ced5b57bb1717b8975"
+        microhs_tar="/tmp/microhs.tar.gz"
+        # SHA-256 computed from the pinned archive URL:
+        # https://github.com/augustss/MicroHs/archive/05a3fbd5d73ae6a37111a6ced5b57bb1717b8975.tar.gz
+        microhs_expected_sha256="a1f85821cbae877d0ea3e173235d45c833d9145b2ca9e92e77d284b6730c63b6"
+        curl -fsSL "https://github.com/augustss/MicroHs/archive/$microhs_sha.tar.gz" -o "$microhs_tar"
+        echo "$microhs_expected_sha256  $microhs_tar" | sha256sum -c -
+        tar -xzf "$microhs_tar" -C /tmp
+        cd "/tmp/MicroHs-$microhs_sha"
+        make minstall
+        cp "$HOME/.mcabal/bin/mhs" "$HOME/.local/bin/mhs"
+        echo "$HOME/.local/bin" >> "$GITHUB_PATH"
     - name: Build (Linux)
       if: runner.os == 'Linux'
       run: |
@@ -65,24 +65,6 @@ jobs:
         ./compile-O2
 
     # ── Windows steps ──────────────────────────────────────────────────────────
-    # GHC is not distributed as an MSYS2 pacman package; install via haskell-actions/setup
-    # On ARM64 Windows, ghcup is not pre-installed; download it directly (x64 binary runs
-    # under Windows on ARM x64 emulation) so haskell-actions/setup can find it in PATH.
-    - name: Bootstrap ghcup (Windows ARM64)
-      if: runner.os == 'Windows' && runner.arch == 'ARM64'
-      shell: powershell
-      run: |
-        $ghcupVersion = "0.1.50.2"
-        $url = "https://downloads.haskell.org/~ghcup/$ghcupVersion/x86_64-mingw64-ghcup-$ghcupVersion.exe"
-        $dir = "$env:LOCALAPPDATA\ghcup\bin"
-        New-Item -ItemType Directory -Force -Path $dir | Out-Null
-        Invoke-WebRequest -Uri $url -OutFile "$dir\ghcup.exe"
-        Add-Content $env:GITHUB_PATH $dir
-    - name: Install GHC (Windows)
-      if: runner.os == 'Windows'
-      uses: haskell-actions/setup@v2.7.0
-      with:
-        ghc-version: '9.8.4'
     - name: Set up MSYS2 (Windows)
       if: runner.os == 'Windows'
       uses: msys2/setup-msys2@v2
@@ -93,90 +75,21 @@ jobs:
         install: >-
           ${{ matrix.msys2_pkg_prefix }}-clang
           ${{ matrix.msys2_pkg_prefix }}-lua51
+          curl
           make
     - name: Build (Windows)
       if: runner.os == 'Windows'
       shell: msys2 {0}
       run: |
-        ctempdir=/tmp/out/FreeArc
-        ghctempdir=/tmp/out/FreeArc-ghc
-        mkdir -p "$ghctempdir"
-        mkdir -p "$ctempdir"
-
-        # Windows defines (always 64-bit on these runners)
-        defines="-DFREEARC_WIN -DFREEARC_INTEL_BYTE_ORDER -DFREEARC_64BIT -DWIN32 -D_WINDOWS"
-
-        # Create a CI-compatible common.mak for Windows (no hardcoded GHC paths)
-        cat > common.mak <<'EOF'
-        DEFINES  = -DFREEARC_WIN -DFREEARC_INTEL_BYTE_ORDER -DFREEARC_64BIT -DWIN32 -D_WINDOWS
-        TEMPDIR  = /tmp/out/FreeArc
-        GCC      = clang++ -std=c++23
-        EOF
-
-        # Build Compression C modules (Windows: includes CLS)
-        cd Compression
-        make
-        for dir in LZP REP Delta MM Tornado Dict PPMD GRZip LZMA External CLS _Encryption; do
-          (cd "$dir" && make)
-        done
-        cd ..
-
-        # Build top-level C modules (Environment.o, URL.o)
-        make ALL
-
-        # Build HsLua helper.
-        # HsLua ships its own headers under HsLua/src so no external include path is needed.
-        clang -c HsLua/src/ntrljmp.c -IHsLua/src -o "$ctempdir/ntrljmp.o"
-
-        # Lua link flags.
-        # GHC on Windows uses lld and its default search path does NOT include the MSYS2 lib
-        # directory, so we must supply -L explicitly.  The library may be liblua51 or liblua5.1
-        # depending on the exact MSYS2 package version, so probe both.
-        lua_lib_dir="/ucrt64/lib"
-        if [ -f "$lua_lib_dir/liblua51.dll.a" ] || [ -f "$lua_lib_dir/liblua51.a" ]; then
-          lua_libs="-L$lua_lib_dir -llua51"
-        elif [ -f "$lua_lib_dir/liblua5.1.dll.a" ] || [ -f "$lua_lib_dir/liblua5.1.a" ]; then
-          lua_libs="-L$lua_lib_dir -llua5.1"
-        else
-          lua_libs="-L$lua_lib_dir -llua51"
-        fi
-        c_objs="$ctempdir/Environment.o $ctempdir/URL.o $ctempdir/Common.o \
-          $ctempdir/CompressionLibrary.o $ctempdir/C_PPMD.o $ctempdir/C_LZP.o \
-          $ctempdir/C_LZMA.o $ctempdir/C_BCJ.o $ctempdir/C_GRZip.o $ctempdir/C_Dict.o \
-          $ctempdir/C_REP.o $ctempdir/C_MM.o $ctempdir/C_TTA.o $ctempdir/C_Tornado.o \
-          $ctempdir/C_Delta.o $ctempdir/C_External.o $ctempdir/C_CLS.o \
-          $ctempdir/C_Encryption.o $ctempdir/ntrljmp.o"
-        c_libs="-lstdc++ -lwininet $lua_libs"
-
-        # Build -optc defines for C files compiled by GHC
-        optc_defines=""
-        for d in $defines; do optc_defines="$optc_defines -optc${d}"; done
-
-        ghc_jobs="${{ matrix.ghc_parallelism }}"
-        ghc_opt="${{ matrix.ghc_opt_level }}"
-        mkdir -p Tests
-
-        ghc --make Arc.hs \
-          -iCompression -icompat-ghc -iHsLua/src \
-          -threaded \
-          -rtsopts \
-          "-with-rtsopts=-N -qg0 -A8m -H128m -I0" \
-          $ghc_opt \
-          -feager-blackholing \
-          -XGHC2021 \
-          -XLambdaCase \
-          -XNondecreasingIndentation \
-          -XUndecidableInstances \
-          -XOverlappingInstances \
-          -XNoMonomorphismRestriction \
-          $ghc_jobs \
-          $defines \
-          $optc_defines \
-          -optc-IHsLua/src -optc-I. -optc-ICompression \
-          $(for f in $lua_cflags; do echo "-optc$f"; done) \
-          $c_objs \
-          $(for lib in $c_libs; do echo "-optl$lib"; done) \
-          -odir "$ghctempdir" -hidir "$ghctempdir" \
-          -o Tests/arc.exe
-
-        rm -f Compression/CompressionLib_stub.?
+        microhs_sha="05a3fbd5d73ae6a37111a6ced5b57bb1717b8975"
+        microhs_tar="/tmp/microhs.tar.gz"
+        microhs_expected_sha256="a1f85821cbae877d0ea3e173235d45c833d9145b2ca9e92e77d284b6730c63b6"
+        curl -fsSL "https://github.com/augustss/MicroHs/archive/$microhs_sha.tar.gz" -o "$microhs_tar"
+        echo "$microhs_expected_sha256  $microhs_tar" | sha256sum -c -
+        tar -xzf "$microhs_tar" -C /tmp
+        cd "/tmp/MicroHs-$microhs_sha"
+        make minstall
+        export PATH="$HOME/.mcabal/bin:$PATH"
+        cd "$GITHUB_WORKSPACE"
+        chmod +x compile*
+        ./compile-O2

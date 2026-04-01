@@ -10,7 +10,6 @@
 -- Portability : portable, ffi
 --
 -- A Haskell wrapper library for a scripting language Lua.
-{-# LANGUAGE CPP #-}
 -- See <http://www.lua.org/> for more details.
 --
 -- This module is intended to be imported @qualified@, eg.
@@ -1145,5 +1144,4 @@ dostring l str = do
     if ret/=0
         then return ret
         else call l 0 multret
-
 

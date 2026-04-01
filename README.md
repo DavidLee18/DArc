@@ -17,27 +17,24 @@ The optional GUI binary is named `freearc` (Unix) or `FreeArc.exe` (Windows).
 
 ### On Windows
 
-> **Note:** The Windows build (`compile-O2.cmd` / `compile-GUI-O2.cmd`) is a legacy path that uses older GHC compiler flags. It has not been updated to use the modern GHC extensions required by the Unix build path.
-
-1. Install GHC with a bundled MinGW/C++ compiler and install it into `C:\Base\Compiler\ghc` (this path is hardcoded in `win32-common.mak`).
-2. Make sure `make.exe` is available on your `PATH`.
-3. Install [gtk2hs](https://hackage.haskell.org/package/gtk) (required for the GUI version only).
-4. Install HsLua:
+1. Install MSYS2 with the `UCRT64` environment and ensure `clang`, `make`, `curl`, and `tar` are available.
+2. Install HsLua:
    ```
    cd HsLua
    make
    cd ..
    ```
-5. Compile the console version (`Arc.exe`):
+3. Install MicroHs (`mhs`) and add `%USERPROFILE%\.mcabal\bin` to `PATH`.
+4. Compile the console version (`Arc.exe`):
    ```
-   compile-O2.cmd
+   compile-O2
    ```
-6. Compile the GUI version (`FreeArc.exe`):
+5. Compile the GUI version (`FreeArc.exe`):
    ```
-   compile-GUI-O2.cmd
+   compile-GUI-O2
    ```
-7. The compiled binaries are placed in the `Tests\` subdirectory.
-8. To compile SFX modules, Unarc, and the FAR plugin:
+6. The compiled binaries are placed in the `Tests/` subdirectory.
+7. To compile SFX modules and Unarc:
    ```
    cd Unarc
    make
@@ -45,7 +42,8 @@ The optional GUI binary is named `freearc` (Unix) or `FreeArc.exe` (Windows).
 
 ### On Unix
 
-1. Install GHC ≥ 9.2 (the build uses `-XGHC2021`), clang, `make`, and the following development libraries: `liblua5.1-dev`, `libncurses-dev`. Optionally install `libcurl-dev` for URL/network archive support (auto-detected; the build succeeds without it).
+1. Install MicroHs (`mhs`) for Haskell compilation. Also install clang, `make`, and the following development libraries: `liblua5.1-dev`, `libncurses-dev`. Optionally install `libcurl-dev` for URL/network archive support (auto-detected; the build succeeds without it).
+   - `mhs` is required by the build script; no GHC fallback path is used for Haskell compilation.
 2. Make compile scripts executable:
    ```
    chmod +x compile*

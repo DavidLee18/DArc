@@ -1,6 +1,4 @@
 
-{-# LANGUAGE GHC2021 #-}
-
 module Main where
 import qualified Scripting.Lua as Lua
 import Foreign.C.Types
@@ -160,4 +158,3 @@ main = do
 
 
     Lua.close l
-
