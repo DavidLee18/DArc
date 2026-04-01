@@ -51,7 +51,16 @@ jobs:
       if: runner.os == 'Linux'
       run: |
         mkdir -p "$HOME/.local/bin"
-        curl -fsSL "https://raw.githubusercontent.com/augustss/MicroHs/master/install.sh" | sh
+        microhs_sha="05a3fbd5d73ae6a37111a6ced5b57bb1717b8975"
+        microhs_tar="/tmp/microhs.tar.gz"
+        # SHA-256 computed from the pinned archive URL:
+        # https://github.com/augustss/MicroHs/archive/05a3fbd5d73ae6a37111a6ced5b57bb1717b8975.tar.gz
+        microhs_expected_sha256="a1f85821cbae877d0ea3e173235d45c833d9145b2ca9e92e77d284b6730c63b6"
+        curl -fsSL "https://github.com/augustss/MicroHs/archive/$microhs_sha.tar.gz" -o "$microhs_tar"
+        echo "$microhs_expected_sha256  $microhs_tar" | sha256sum -c -
+        tar -xzf "$microhs_tar" -C /tmp
+        cd "/tmp/MicroHs-$microhs_sha"
+        make minstall
         cp "$HOME/.mcabal/bin/mhs" "$HOME/.local/bin/mhs"
         echo "$HOME/.local/bin" >> "$GITHUB_PATH"
     - name: Build (Linux)

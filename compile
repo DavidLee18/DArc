@@ -1,10 +1,9 @@
 exe=Tests/arc
 gui_flag=""
-hs_opt="-O2"
 for option; do
   case $option in
     -DFREEARC_GUI) exe=Tests/freearc; gui_flag="-DFREEARC_GUI" ;;
-    -O*) hs_opt="$option" ;;
+    -O*) echo "warning: ignoring optimization flag '$option' for mhs build" >&2 ;;
   esac
 done
 ctempdir=/tmp/out/FreeArc
@@ -49,8 +48,7 @@ if ! command -v mhs >/dev/null 2>&1; then
 fi
 mhs Arc \
   -iCompression -icompat-ghc -iHsLua/src \
-  $hs_opt \
-  $mhs_jobs \
   $defines $gui_flag \
+  $mhs_jobs \
   -o$exe
 rm -f Compression/CompressionLib_stub.?
