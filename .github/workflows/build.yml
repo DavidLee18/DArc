@@ -77,10 +77,13 @@ jobs:
           ${{ matrix.msys2_pkg_prefix }}-lua51
           curl
           make
-    - name: Build (Windows)
+    - name: Install MicroHs (Windows)
       if: runner.os == 'Windows'
       shell: msys2 {0}
       run: |
+        # Install MSYS2 development tools needed for MicroHs compilation
+        pacman -S --noconfirm --needed msys2-devel
+
         microhs_sha="05a3fbd5d73ae6a37111a6ced5b57bb1717b8975"
         microhs_tar="/tmp/microhs.tar.gz"
         microhs_expected_sha256="a1f85821cbae877d0ea3e173235d45c833d9145b2ca9e92e77d284b6730c63b6"
@@ -88,7 +91,16 @@ jobs:
         echo "$microhs_expected_sha256  $microhs_tar" | sha256sum -c -
         tar -xzf "$microhs_tar" -C /tmp
         cd "/tmp/MicroHs-$microhs_sha"
+
+        # Build MicroHs in MSYS environment (has Unix compatibility headers)
+        export MSYSTEM=MSYS
         make minstall
+      env:
+        MSYSTEM: MSYS
+    - name: Build (Windows)
+      if: runner.os == 'Windows'
+      shell: msys2 {0}
+      run: |
         export PATH="$HOME/.mcabal/bin:$PATH"
         cd "$GITHUB_WORKSPACE"
         chmod +x compile*
