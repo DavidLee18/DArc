@@ -12,8 +12,11 @@ The optional GUI binary is named `freearc` (Unix) or `FreeArc.exe` (Windows).
 
 ## Building
 
-> **Note:** The main Haskell source files are stored in [Git LFS](https://git-lfs.github.com/).  
+> **Note:** The main Haskell source files are stored in [Git LFS](https://git-lfs.github.com/).
 > Install `git-lfs` before cloning, or run `git lfs pull` after cloning, otherwise source files will be empty LFS pointer stubs.
+
+> **Build System Overview:**
+> DArc uses MicroHs (a lightweight Haskell compiler) for the Haskell code and Clang for C/C++ components (compiled with C++17 standard). The build process automatically compiles all compression libraries, HsLua bindings, and links everything into the final executable.
 
 ### On Windows
 
@@ -64,6 +67,27 @@ The optional GUI binary is named `freearc` (Unix) or `FreeArc.exe` (Windows).
    make linux
    ```
    This creates `unarc` and various SFX modules (`arc.linux.sfx`, etc.).
+
+### Troubleshooting
+
+**Windows:**
+- **"sh.exe not found"**: Ensure MSYS2 is installed and its `bin` directory (e.g., `C:\msys64\usr\bin`) is in your system PATH.
+- **"mhs not found"**: Verify MicroHs is installed and `%USERPROFILE%\.mcabal\bin` is in your PATH. Run `mhs --version` to test.
+- **"clang not found"**: Install the UCRT64 toolchain in MSYS2: `pacman -S mingw-w64-ucrt-x86_64-clang mingw-w64-ucrt-x86_64-make`
+- **Compilation errors in C++ files**: Ensure you're using C++17 standard. The build scripts automatically set this via the makefiles.
+
+**Linux/macOS:**
+- **"mhs not found"**: Install MicroHs from [the official repository](https://github.com/augustss/MicroHs) and ensure it's in your PATH.
+- **"lua5.1 not found"**: Install Lua development libraries:
+  - Ubuntu/Debian: `sudo apt-get install liblua5.1-0-dev libncurses-dev`
+  - Fedora/RHEL: `sudo dnf install lua-devel ncurses-devel`
+  - macOS: `brew install lua@5.1 ncurses`
+- **"curl not found" (optional)**: Install libcurl development package or build without URL support (automatic).
+- **Permission errors**: Make sure compile scripts are executable: `chmod +x compile*`
+
+**All Platforms:**
+- **Empty Haskell source files**: The Haskell sources use Git LFS. Run `git lfs pull` to download them.
+- **"No such file or directory" during compilation**: Verify all git submodules are initialized: `git submodule update --init --recursive`
 
 ---
 
