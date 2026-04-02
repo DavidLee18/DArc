@@ -12,56 +12,82 @@ The optional GUI binary is named `freearc` (Unix) or `FreeArc.exe` (Windows).
 
 ## Building
 
-> **Note:** The main Haskell source files are stored in [Git LFS](https://git-lfs.github.com/).  
+> **Note:** The main Haskell source files are stored in [Git LFS](https://git-lfs.github.com/).
 > Install `git-lfs` before cloning, or run `git lfs pull` after cloning, otherwise source files will be empty LFS pointer stubs.
+
+> **Build System Overview:**
+> DArc uses MicroHs (a lightweight Haskell compiler) for the Haskell code and Clang for C/C++ components (compiled with C++17 standard). The build process automatically compiles all compression libraries, HsLua bindings, and links everything into the final executable.
 
 ### On Windows
 
-1. Install MSYS2 with the `UCRT64` environment and ensure `clang`, `make`, `curl`, and `tar` are available.
-2. Install HsLua:
-   ```
-   cd HsLua
-   make
-   cd ..
-   ```
-3. Install MicroHs (`mhs`) and add `%USERPROFILE%\.mcabal\bin` to `PATH`.
-4. Compile the console version (`Arc.exe`):
+1. Install [MSYS2](https://www.msys2.org/) with the `UCRT64` environment and ensure the MSYS2 binaries are in your `PATH` (specifically `sh.exe`, `clang`, `make`, `curl`, and `tar` should be available).
+   - The build scripts require `sh.exe` from MSYS2 or Git Bash to be accessible from the Windows command prompt.
+2. Install [MicroHs](https://github.com/augustss/MicroHs) (`mhs`) and add `%USERPROFILE%\.mcabal\bin` to your `PATH`.
+   - MicroHs is the Haskell compiler used for building DArc. No GHC installation is needed.
+3. Compile the console version (`Arc.exe`):
    ```
    compile-O2
    ```
-5. Compile the GUI version (`FreeArc.exe`):
+   This will automatically build all necessary C/C++ components, HsLua, and the main executable.
+4. Compile the GUI version (`FreeArc.exe`):
    ```
    compile-GUI-O2
    ```
-6. The compiled binaries are placed in the `Tests/` subdirectory.
-7. To compile SFX modules and Unarc:
+5. The compiled binaries are placed in the `Tests/` subdirectory.
+6. To compile SFX modules and Unarc (optional):
    ```
    cd Unarc
-   make
+   make windows
    ```
+   This creates `unarc.exe` and various SFX modules (`arc.sfx`, `freearc.sfx`, etc.).
 
-### On Unix
+### On Unix (Linux/macOS)
 
-1. Install MicroHs (`mhs`) for Haskell compilation. Also install clang, `make`, and the following development libraries: `liblua5.1-dev`, `libncurses-dev`. Optionally install `libcurl-dev` for URL/network archive support (auto-detected; the build succeeds without it).
-   - `mhs` is required by the build script; no GHC fallback path is used for Haskell compilation.
-2. Make compile scripts executable:
-   ```
+1. Install [MicroHs](https://github.com/augustss/MicroHs) (`mhs`) for Haskell compilation. Also install `clang`, `make`, and the following development libraries:
+   - **Required:** `liblua5.1-dev`, `libncurses-dev` (or `ncurses` on macOS via Homebrew)
+   - **Optional:** `libcurl-dev` (or `curl` on macOS) for URL/network archive support (auto-detected; the build succeeds without it)
+   - MicroHs is required by the build script; no GHC installation is needed.
+2. Make compile scripts executable (if needed):
+   ```bash
    chmod +x compile*
    ```
 3. Compile the console version (`arc`):
-   ```
+   ```bash
    ./compile-O2
    ```
+   This will automatically build all necessary C/C++ components, HsLua, and the main executable.
 4. Compile the GUI version (`freearc`):
-   ```
+   ```bash
    ./compile-GUI-O2
    ```
 5. The compiled binaries are placed in the `Tests/` subdirectory.
-6. To compile SFX modules and Unarc:
-   ```
+6. To compile SFX modules and Unarc (optional):
+   ```bash
    cd Unarc
    make linux
    ```
+   This creates `unarc` and various SFX modules (`arc.linux.sfx`, etc.).
+
+### Troubleshooting
+
+**Windows:**
+- **"sh.exe not found"**: Ensure MSYS2 is installed and its `bin` directory (e.g., `C:\msys64\usr\bin`) is in your system PATH.
+- **"mhs not found"**: Verify MicroHs is installed and `%USERPROFILE%\.mcabal\bin` is in your PATH. Run `mhs --version` to test.
+- **"clang not found"**: Install the UCRT64 toolchain in MSYS2: `pacman -S mingw-w64-ucrt-x86_64-clang mingw-w64-ucrt-x86_64-make`
+- **Compilation errors in C++ files**: Ensure you're using C++17 standard. The build scripts automatically set this via the makefiles.
+
+**Linux/macOS:**
+- **"mhs not found"**: Install MicroHs from [the official repository](https://github.com/augustss/MicroHs) and ensure it's in your PATH.
+- **"lua5.1 not found"**: Install Lua development libraries:
+  - Ubuntu/Debian: `sudo apt-get install liblua5.1-0-dev libncurses-dev`
+  - Fedora/RHEL: `sudo dnf install lua-devel ncurses-devel`
+  - macOS: `brew install lua@5.1 ncurses`
+- **"curl not found" (optional)**: Install libcurl development package or build without URL support (automatic).
+- **Permission errors**: Make sure compile scripts are executable: `chmod +x compile*`
+
+**All Platforms:**
+- **Empty Haskell source files**: The Haskell sources use Git LFS. Run `git lfs pull` to download them.
+- **"No such file or directory" during compilation**: Verify all git submodules are initialized: `git submodule update --init --recursive`
 
 ---
 
