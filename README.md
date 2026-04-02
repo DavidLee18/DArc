@@ -17,51 +17,53 @@ The optional GUI binary is named `freearc` (Unix) or `FreeArc.exe` (Windows).
 
 ### On Windows
 
-1. Install MSYS2 with the `UCRT64` environment and ensure `clang`, `make`, `curl`, and `tar` are available.
-2. Install HsLua:
-   ```
-   cd HsLua
-   make
-   cd ..
-   ```
-3. Install MicroHs (`mhs`) and add `%USERPROFILE%\.mcabal\bin` to `PATH`.
-4. Compile the console version (`Arc.exe`):
+1. Install [MSYS2](https://www.msys2.org/) with the `UCRT64` environment and ensure the MSYS2 binaries are in your `PATH` (specifically `sh.exe`, `clang`, `make`, `curl`, and `tar` should be available).
+   - The build scripts require `sh.exe` from MSYS2 or Git Bash to be accessible from the Windows command prompt.
+2. Install [MicroHs](https://github.com/augustss/MicroHs) (`mhs`) and add `%USERPROFILE%\.mcabal\bin` to your `PATH`.
+   - MicroHs is the Haskell compiler used for building DArc. No GHC installation is needed.
+3. Compile the console version (`Arc.exe`):
    ```
    compile-O2
    ```
-5. Compile the GUI version (`FreeArc.exe`):
+   This will automatically build all necessary C/C++ components, HsLua, and the main executable.
+4. Compile the GUI version (`FreeArc.exe`):
    ```
    compile-GUI-O2
    ```
-6. The compiled binaries are placed in the `Tests/` subdirectory.
-7. To compile SFX modules and Unarc:
+5. The compiled binaries are placed in the `Tests/` subdirectory.
+6. To compile SFX modules and Unarc (optional):
    ```
    cd Unarc
-   make
+   make windows
    ```
+   This creates `unarc.exe` and various SFX modules (`arc.sfx`, `freearc.sfx`, etc.).
 
-### On Unix
+### On Unix (Linux/macOS)
 
-1. Install MicroHs (`mhs`) for Haskell compilation. Also install clang, `make`, and the following development libraries: `liblua5.1-dev`, `libncurses-dev`. Optionally install `libcurl-dev` for URL/network archive support (auto-detected; the build succeeds without it).
-   - `mhs` is required by the build script; no GHC fallback path is used for Haskell compilation.
-2. Make compile scripts executable:
-   ```
+1. Install [MicroHs](https://github.com/augustss/MicroHs) (`mhs`) for Haskell compilation. Also install `clang`, `make`, and the following development libraries:
+   - **Required:** `liblua5.1-dev`, `libncurses-dev` (or `ncurses` on macOS via Homebrew)
+   - **Optional:** `libcurl-dev` (or `curl` on macOS) for URL/network archive support (auto-detected; the build succeeds without it)
+   - MicroHs is required by the build script; no GHC installation is needed.
+2. Make compile scripts executable (if needed):
+   ```bash
    chmod +x compile*
    ```
 3. Compile the console version (`arc`):
-   ```
+   ```bash
    ./compile-O2
    ```
+   This will automatically build all necessary C/C++ components, HsLua, and the main executable.
 4. Compile the GUI version (`freearc`):
-   ```
+   ```bash
    ./compile-GUI-O2
    ```
 5. The compiled binaries are placed in the `Tests/` subdirectory.
-6. To compile SFX modules and Unarc:
-   ```
+6. To compile SFX modules and Unarc (optional):
+   ```bash
    cd Unarc
    make linux
    ```
+   This creates `unarc` and various SFX modules (`arc.linux.sfx`, etc.).
 
 ---
 
