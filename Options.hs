@@ -348,9 +348,9 @@ data DelOptions = NO_DELETE | DEL_FILES | DEL_FILES_AND_DIRS  deriving (Eq)
 
 -- |Метод сжатия данных
 #ifdef __MHS__
--- MicroHs: use lzma directly; numeric presets like "4" expand to dict+lzp+ppmd
--- for text files, and the PPMD C implementation crashes with compressMem.
-aDEFAULT_COMPRESSOR = "lzma"
+-- MicroHs: all numeric presets (0-9) now work, including dict+lzp+ppmd chains.
+-- Default to "4" (same as GHC build) for best text compression.
+aDEFAULT_COMPRESSOR = "4"
 #else
 aDEFAULT_COMPRESSOR = "4"
 #endif
