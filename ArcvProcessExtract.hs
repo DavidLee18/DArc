@@ -11,11 +11,13 @@ import Prelude hiding (catch)
 import Control.Exception
 import Control.Concurrent (MVar, Chan)
 import Control.Monad
+import System.IO (hPutStrLn, stderr)
 import Data.Int
 import Data.IORef
 import Data.Maybe
 import Foreign.C.Types
 import Foreign.Ptr
+import Foreign.Marshal.Alloc (mallocBytes, free)
 import Foreign.Marshal.Utils
 import Foreign.Storable
 
@@ -24,7 +26,7 @@ import Errors
 import Process
 import FileInfo
 import Compression
-import CompressionLib (aFREEARC_OK, aFREEARC_ERRCODE_OPERATION_TERMINATED, aFREEARC_ERRCODE_GENERAL, aFREEARC_ERRCODE_NOT_IMPLEMENTED, aFREEARC_ERRCODE_NO_MORE_DATA_REQUIRED, compressionErrorMessage)
+import CompressionLib (aFREEARC_OK, aFREEARC_ERRCODE_OPERATION_TERMINATED, aFREEARC_ERRCODE_GENERAL, aFREEARC_ERRCODE_NOT_IMPLEMENTED, aFREEARC_ERRCODE_NO_MORE_DATA_REQUIRED, compressionErrorMessage, compressMem)
 import Encryption
 import Options
 import UI
@@ -71,12 +73,16 @@ decompressBlock command cfile state count_cbytes pipe = mdo
                 | otherwise                    =  0
   (state :: IORef (Integer, Integer, Integer)) =: (startPos, pos, size)
   archiveBlockSeek block startPos
-  bytesLeft <- ref (blCompSize block - startPos)
+  let compSize = blCompSize block - startPos
+  hPutStrLn stderr $ "[DBLK] compressor=" ++ show compressor ++ " startPos=" ++ show startPos ++ " compSize=" ++ show compSize ++ " fileSize=" ++ show size ++ " filePos=" ++ show pos
+  bytesLeft <- ref compSize
 
   let reader buf size  =  do aBytesLeft <- val bytesLeft
                              let bytes   = minI size aBytesLeft
+                             hPutStrLn stderr $ "[RDR] read req=" ++ show size ++ " bytesLeft=" ++ show aBytesLeft ++ " bytes=" ++ show bytes
                              len        <- archiveBlockReadBuf block buf bytes
                              bytesLeft  -= i len
+                             hPutStrLn stderr $ "[RDR] read got=" ++ show len
                              count_cbytes  len
                              return len
 
@@ -97,7 +103,25 @@ decompressBlock command cfile state count_cbytes pipe = mdo
   -- Only single-method decompression is supported; multi-method chains error at runtime.
   result <- ref 0
   let decompress1mhs :: CompressionMethod -> Pipe (PairFunc CompressionData) (PairFunc Int) (PairFunc CompressionData) (PairFunc Int) -> IO ()
-      decompress1mhs p pipe = deCompressProcess1 freearcDecompress reader times p 0 pipe
+      decompress1mhs p innerPipe
+        | p == aSTORING || isFakeMethod p =
+            deCompressProcess1 freearcDecompress reader times p 0 innerPipe
+        | otherwise = do
+            -- Buffer-to-buffer decompression: read all compressed bytes first (no ffe_eval),
+            -- then call decompressMem (no callbacks), then feed output directly to writer.
+            (inBuf, inSize) <- collectInputMHS reader
+            hPutStrLn stderr $ "[MHS-DECOMP] method=" ++ p ++ " inSize=" ++ show inSize ++ " origSize=" ++ show (blOrigSize block)
+            let origSz = i (blOrigSize block)
+            outBuf <- mallocBytes (max origSz 1)
+            ret <- decompressMem p inBuf inSize outBuf origSz
+            free inBuf
+            hPutStrLn stderr $ "[MHS-DECOMP] decompressMem ret=" ++ show ret
+            if ret >= aFREEARC_OK
+              then do r <- writer (DataBuf outBuf ret)
+                      writeIORef result r
+              else do registerThreadError$ COMPRESSION_ERROR [compressionErrorMessage ret, p]
+                      operationTerminated =: True
+            free outBuf
   case map fromJust keyed_compressor of
     [p]    -> runFuncP (decompress1mhs p) (fail "decompressBlock::runFuncP" :: IO CompressionData) doNothing ((writer :: CompressionData -> IO Int) .>>= writeIORef result) (val result)
     _      -> fail "decompressBlock: multi-method decompression not yet supported under MicroHs"
@@ -142,10 +166,13 @@ deCompressProcess de_compress times comprMethod num pipe = do
 
     -- �������� ��������� ���������� �� ������ ������� ������ � ���������� �
     processNextInstruction prevlen dstbuf dstlen = do
+      hPutStrLn stderr $ "[PNI] waiting for instr, prevlen=" ++ show prevlen ++ " dstlen=" ++ show dstlen
       instr <- receiveP pipe
       case instr of
-        DataBuf srcbuf srclen  ->  copyData prevlen dstbuf dstlen srcbuf srcbuf srclen
-        NoMoreData             ->  do remains =: Nothing;  return prevlen
+        DataBuf srcbuf srclen  ->  do hPutStrLn stderr $ "[PNI] got DataBuf srclen=" ++ show srclen
+                                      copyData prevlen dstbuf dstlen srcbuf srcbuf srclen
+        NoMoreData             ->  do hPutStrLn stderr "[PNI] got NoMoreData"
+                                      remains =: Nothing;  return prevlen
 
     -- ��������� "������" ������� ������. �����, ����� ������ ����� � dstlen=0 �� ��������� ���������� ���� �� �������� ���� �� ���� ���� ������ �� ����������� ��������
     read_data prevlen  -- ������� ������ ��� ���������
@@ -162,7 +189,39 @@ deCompressProcess de_compress times comprMethod num pipe = do
   -- ��������� ������ ������� ������ �������� ��������/���������� (���������� ���� �������, � ������� �� ����������� read_data)
   let reader dstbuf dstlen  =  read_data 0 dstbuf dstlen
 
+#ifdef __MHS__
+  -- MicroHs: for real compression methods (not storing/fake), use buffer-to-buffer
+  -- to avoid re-entrancy in ffe_eval when green threads block inside C callbacks.
+  if comprMethod == aSTORING || isFakeMethod comprMethod
+    then deCompressProcess1 de_compress reader times comprMethod num pipe
+    else do
+      (inBuf, inSize) <- collectInputMHS reader
+      hPutStrLn stderr $ "[MHS-COMPRESS] method=" ++ comprMethod ++ " inSize=" ++ show inSize
+      let tryCompress outSz = do
+            outBuf <- mallocBytes outSz
+            ret <- compressMem comprMethod inBuf inSize outBuf outSz
+            if ret == aFREEARC_ERRCODE_OUTBLOCK_TOO_SMALL
+              then do free outBuf; tryCompress (outSz * 2)
+              else return (outBuf, ret)
+      (outBuf, ret) <- tryCompress (max (inSize + 2*1024*1024) 65536)
+      free inBuf
+      hPutStrLn stderr $ "[MHS-COMPRESS] compressMem ret=" ++ show ret
+      uiDeCompressionTime times (comprMethod, (0.0 :: Double), i ret)
+      if ret >= aFREEARC_OK
+        then do
+          uiWriteData num (i ret)
+          -- Send compressed output to archive via the forward channel.
+          -- receive_backP is val result (non-blocking IORef read), so this is safe.
+          sendP pipe (DataBuf outBuf ret)
+          (_ :: Int) <- receive_backP pipe
+          return ()
+        else do
+          registerThreadError$ COMPRESSION_ERROR [compressionErrorMessage ret, comprMethod]
+          operationTerminated =: True
+      free outBuf
+#else
   deCompressProcess1 de_compress reader times comprMethod num pipe
+#endif
 
 
 {-# NOINLINE deCompressProcess1 #-}
@@ -189,14 +248,12 @@ deCompressProcess1 de_compress reader times comprMethod num pipe = do
       -- ������ (����������������) callbacks
       callback _ _ _ = return aFREEARC_ERRCODE_NOT_IMPLEMENTED
 
-{-
-      -- Debugging wrapper
-      debug f what buf size = inside (print (comprMethod,what,size))
-                                     (print (comprMethod,what,size,"done"))
-                                     (f what buf size)
--}
-      -- Non-debugging wrapper
-      debug f = f
+      -- Debugging wrapper (callback has type String -> Ptr CChar -> Int -> IO Int)
+      debug f what buf size = do
+        hPutStrLn stderr $ "[DCP] callback: " ++ what ++ " size=" ++ show size
+        r <- f what buf size
+        hPutStrLn stderr $ "[DCP] callback done: " ++ what ++ " -> " ++ show r
+        return r
 
   -- ���������� �������� ��� ����������
   result <- de_compress num comprMethod (debug callback)
@@ -242,8 +299,11 @@ decompressStep (cfile :: IORef FileToCompress) (state :: IORef (Integer, Integer
       data_size  = min size (i len-skip_bytes)   -- ���-�� ����, ������������� ���������������� �����
       block_end  = block_pos+i len               -- ������� � �����-�����, ��������������� ����� ����������� ������
   when (data_size>0) $ do    -- ���� � ������ ������� ������, ������������� ���������������� �����
+    hPutStrLn stderr $ "[DS] sendP pipe data_size=" ++ show data_size
     sendP pipe (data_start, i data_size)  -- �� ������� ��� ������ �� ������ ����� �����������
+    hPutStrLn stderr "[DS] waiting receive_backP"
     receive_backP pipe                    -- �������� ������������� ����, ��� ������ ���� ������������
+    hPutStrLn stderr "[DS] receive_backP done"
   state =: (block_end, pos+data_size, size-data_size)
   if data_size<size     -- ���� ���� ��� �� ���������� ���������
     then return len     -- �� ���������� ���������� �����
@@ -281,6 +341,35 @@ data CompressionData = DataBuf (Ptr CChar) Int
 -- |��������� �������� �������� ������ ����������/������������ ��������� ��������� � �������
 resendData pipe x@DataBuf{}   =  sendP pipe x  >>  receive_backP pipe  -- ���������� ���������� ����������� ����, ������������ �� ��������-�����������
 resendData pipe x@NoMoreData  =  sendP pipe x  >>  return 0
+
+
+#ifdef __MHS__
+{-# NOINLINE collectInputMHS #-}
+-- |Collect all input data into a single malloc'd buffer by calling reader repeatedly.
+-- Used for buffer-to-buffer compression/decompression to avoid ffe_eval re-entrancy in MicroHs.
+collectInputMHS :: (Ptr CChar -> Int -> IO Int) -> IO (Ptr CChar, Int)
+collectInputMHS reader = go [] 0
+  where
+    chunkSize = 65536
+    go chunks total = do
+      chunk <- mallocBytes chunkSize
+      n <- reader chunk chunkSize
+      if n <= 0
+        then do
+          free chunk
+          buf <- mallocBytes (max total 1)
+          fillBuf buf 0 (reverse chunks)
+          mapM_ (free . fst) chunks
+          return (buf, total)
+        else go ((chunk, n) : chunks) (total + n)
+    fillBuf _ _ [] = return ()
+    fillBuf buf off ((src, len) : rest) = do
+      copyBytes (buf `plusPtr` off) src len
+      fillBuf buf (off + len) rest
+
+aFREEARC_ERRCODE_OUTBLOCK_TOO_SMALL :: Int
+aFREEARC_ERRCODE_OUTBLOCK_TOO_SMALL = -4
+#endif
 
 
 -- Compatibility aliases (old underscore-style names)
