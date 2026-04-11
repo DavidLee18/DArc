@@ -30,6 +30,7 @@ uint UpdateCRC (void *Addr, uint Size, uint StartCRC);     // ������
 uint CalcCRC (void *Addr, uint Size);                      // ��������� CRC ����� ������
 void memxor (char *dest, char *src, uint size);            // ��-xor-��� ��� ����� ������
 int systemRandomData (char *rand_buf, int rand_size);
+long darc_urandom_read (void *buf, long size);
 void BuildPathTo (CFILENAME name);                         // ������� �������� �� ���� � name
 
 // GuiEnvironment.cpp

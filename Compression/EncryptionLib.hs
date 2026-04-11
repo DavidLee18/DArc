@@ -40,8 +40,12 @@ foreign import ccall unsafe  "Compression.h  Pbkdf2Hmac"
    c_Pbkdf2Hmac :: Ptr CChar -> CInt -> Ptr CChar -> CInt -> CInt -> Ptr CChar -> CInt -> IO ()
 
 -- PRNG
+-- Non-IO foreign value import; MHS needs the IO form + unsafePerformIO.
 foreign import ccall unsafe  "Compression.h  fortuna_size"
-   prng_size :: CInt
+   c_prng_size :: IO CInt
+{-# NOINLINE prng_size #-}
+prng_size :: CInt
+prng_size = unsafePerformIO c_prng_size
 foreign import ccall unsafe  "Compression.h  fortuna_start"
    prng_start :: Ptr CChar -> IO CInt
 foreign import ccall unsafe  "Compression.h  fortuna_add_entropy"

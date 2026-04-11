@@ -56,14 +56,14 @@ public:
 *****************************************************************************/
 
 static struct SUBRANGE {
-    DWORD LowCount, HighCount, scale;
+    unsigned int LowCount, HighCount, scale;
 } SubRange;
 enum { TOP=1 << 24, BOT=1 << 15 };
-static DWORD low, code, range;
+static unsigned int low, code, range;
 
 inline void ariInitEncoder()
 {
-    low=0;                                  range=DWORD(-1);
+    low=0;                                  range=(unsigned int)-1;
 }
 #define ARI_ENC_NORMALIZE(stream) {                                         \
     while ((low ^ (low+range)) < TOP || range < BOT &&                      \
@@ -88,7 +88,7 @@ inline void ariShiftEncodeSymbol(UINT SHIFT)
     }                                                                       \
 }
 #define ARI_INIT_DECODER(stream) {                                          \
-    low=code=0;                             range=DWORD(-1);                \
+    low=code=0;                             range=(unsigned int)-1;         \
     for (UINT i=0;i < 4;i++)                                                \
             code=(code << 8) | _PPMD_D_GETC(stream);                        \
 }

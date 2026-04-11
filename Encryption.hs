@@ -33,7 +33,8 @@ import Compression
 generateEncryption encryption password = do
     addRandomness
     result <- foreach (split_compressor encryption) $ \algorithm -> do
-        initVector <- generateRandomBytes (encryptionGet "ivSize"  algorithm)
+        let ivSz = encryptionGet "ivSize" algorithm
+        initVector <- generateRandomBytes ivSz
         salt       <- generateRandomBytes (encryptionGet "keySize" algorithm)
         let numIterations = encryptionGet "numIterations" algorithm
             checkCodeSize = 2
@@ -110,6 +111,7 @@ check test msg action = do
   unless (test res) (fail$ "Error in "++msg)
 
 -- |OK return code for LibTomCrypt library
+aCRYPT_OK :: CInt
 aCRYPT_OK = 0
 
 
@@ -151,6 +153,12 @@ systemRandomData buf size = c_systemRandomData buf size
 
 foreign import ccall unsafe "Environment.h systemRandomData"
   c_systemRandomData :: Ptr CChar -> CInt -> IO CInt
+#elif defined(__MHS__)
+-- MicroHs: hGetBuf crashes (withHandleRd bug); use a direct C helper instead.
+systemRandomData buf size = fmap fromIntegral (darc_urandom_read (castPtr buf) (fromIntegral size))
+
+foreign import ccall unsafe "Environment.h darc_urandom_read"
+  darc_urandom_read :: Ptr () -> CLong -> IO CLong
 #else
 systemRandomData buf size = do
   withFile "/dev/urandom" ReadMode $ \h -> do

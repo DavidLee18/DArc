@@ -699,6 +699,15 @@ extern "C" int darc_get_nprocs(void) {
     return (n > 0) ? (int)n : 1;
 }
 
+/* Read random bytes from /dev/urandom directly (bypasses MHS hGetBuf). */
+extern "C" long darc_urandom_read(void *buf, long size) {
+    FILE *f = fopen("/dev/urandom", "rb");
+    if (!f) return -1;
+    long n = (long)fread(buf, 1, (size_t)size, f);
+    fclose(f);
+    return n;
+}
+
 /****************************************************************************
 *  System.Time helpers for the MicroHs shim                                *
 *  Uses a flat int[10] layout: sec,min,hour,mday,mon,year,wday,yday,isdst,gmtoff_min
