@@ -1,35 +1,39 @@
--- Compatibility shim: System.Time for GHC
--- Wraps Data.Time to provide the old-time API
-module System.Time (
-  ClockTime(TOD),
-  CalendarTime(..),
-  TimeDiff(..),
-  Month(..),
-  Day(..),
-  noTimeDiff,
-  getClockTime,
-  toCalendarTime,
-  toUTCTime,
-  toClockTime,
-  addToClockTime,
-  diffClockTimes,
-  formatCalendarTime,
-) where
+-- MicroHs-compatible System.Time shim.
+-- Implements the old-time API via C FFI (time.h / struct tm).
+{-# LANGUAGE CPP #-}
+module System.Time
+  ( ClockTime(..)
+  , CalendarTime(..)
+  , TimeDiff(..)
+  , Month(..)
+  , Day(..)
+  , noTimeDiff
+  , getClockTime
+  , toCalendarTime
+  , toUTCTime
+  , toClockTime
+  , addToClockTime
+  , diffClockTimes
+  , formatCalendarTime
+  ) where
 
-import Data.Time.Clock
-import Data.Time.Clock.POSIX
-import qualified Data.Time.Calendar as Cal
-import Data.Time.Calendar.OrdinalDate (toOrdinalDate)
-import Data.Time.LocalTime
-import Data.Time.Format (formatTime, TimeLocale)
-import System.IO.Unsafe (unsafePerformIO)
+import Foreign.C.Types   (CInt(..), CLong(..), CSize(..))
+import Foreign.C.String  (CString, withCString, peekCString)
+import Foreign.Marshal.Alloc (allocaBytes)
+import Foreign.Ptr       (Ptr, castPtr, nullPtr)
+import Foreign.Storable  (peekByteOff)
+import System.IO.Unsafe  (unsafePerformIO)
+import System.Locale     (TimeLocale(..))
 
--- | ClockTime is a POSIX time: seconds + picoseconds
-data ClockTime = TOD !Integer !Integer deriving (Eq, Ord)
-instance Show ClockTime where
-  show (TOD s ps) = "TOD " ++ show s ++ " " ++ show ps
+data ClockTime = TOD !Integer !Integer deriving (Eq, Ord, Show)
 
--- | Calendar time broken down into components
+data Month = January | February | March | April | May | June
+           | July | August | September | October | November | December
+           deriving (Eq, Ord, Enum, Bounded, Show, Read)
+
+data Day = Sunday | Monday | Tuesday | Wednesday | Thursday | Friday | Saturday
+         deriving (Eq, Ord, Enum, Bounded, Show, Read)
+
 data CalendarTime = CalendarTime
   { ctYear    :: Int
   , ctMonth   :: Month
@@ -41,124 +45,126 @@ data CalendarTime = CalendarTime
   , ctWDay    :: Day
   , ctYDay    :: Int
   , ctTZName  :: String
-  , ctTZ      :: Int       -- offset in seconds from UTC
+  , ctTZ      :: Int
   , ctIsDST   :: Bool
   } deriving (Eq, Ord, Show)
 
--- | Month enumeration (January = 0 in old-time API)
-data Month = January | February | March | April | May | June
-           | July | August | September | October | November | December
-           deriving (Eq, Ord, Enum, Bounded, Show, Read)
-
--- | Day of week (Sunday = 0 in old-time API)
-data Day = Sunday | Monday | Tuesday | Wednesday | Thursday | Friday | Saturday
-         deriving (Eq, Ord, Enum, Bounded, Show, Read)
-
--- | Time difference
 data TimeDiff = TimeDiff
-  { tdYear    :: Int
-  , tdMonth   :: Int
-  , tdDay     :: Int
-  , tdHour    :: Int
-  , tdMin     :: Int
-  , tdSec     :: Int
+  { tdYear    :: Int, tdMonth   :: Int, tdDay     :: Int
+  , tdHour    :: Int, tdMin     :: Int, tdSec     :: Int
   , tdPicosec :: Integer
   } deriving (Eq, Ord, Show)
 
 noTimeDiff :: TimeDiff
 noTimeDiff = TimeDiff 0 0 0 0 0 0 0
 
+-- C helpers (defined in Environment.cpp)
+foreign import ccall "darc_time"       darc_time       :: IO CLong
+foreign import ccall "darc_localtime"  darc_localtime  :: CLong -> Ptr CInt -> IO ()
+foreign import ccall "darc_gmtime"     darc_gmtime     :: CLong -> Ptr CInt -> IO ()
+foreign import ccall "darc_mktime_tz"  darc_mktime_tz  :: CInt -> CInt -> CInt -> CInt -> CInt -> CInt -> CInt -> IO CLong
+foreign import ccall "darc_strftime"   darc_strftime   :: Ptr () -> CSize -> CString -> Ptr CInt -> IO CInt
+
+-- struct tm layout as array of CInt (indices 0-9: sec,min,hour,mday,mon,year,wday,yday,isdst,gmtoff_min)
+-- This is a simplified flat layout used by our C helpers (not actual struct tm).
+sizeof_tm_ints :: Int
+sizeof_tm_ints = 10 * 4  -- 10 CInt values
+
+readTm :: Ptr CInt -> IO CalendarTime
+readTm p = do
+  sec   <- fmap fromIntegral (peekByteOff p  0 :: IO CInt)
+  min_  <- fmap fromIntegral (peekByteOff p  4 :: IO CInt)
+  hour  <- fmap fromIntegral (peekByteOff p  8 :: IO CInt)
+  mday  <- fmap fromIntegral (peekByteOff p 12 :: IO CInt)
+  mon   <- fmap fromIntegral (peekByteOff p 16 :: IO CInt)
+  year  <- fmap fromIntegral (peekByteOff p 20 :: IO CInt)
+  wday  <- fmap fromIntegral (peekByteOff p 24 :: IO CInt)
+  yday  <- fmap fromIntegral (peekByteOff p 28 :: IO CInt)
+  isdst <- fmap fromIntegral (peekByteOff p 32 :: IO CInt)
+  gmtoffMin <- fmap fromIntegral (peekByteOff p 36 :: IO CInt)
+  return CalendarTime
+    { ctYear    = 1900 + year
+    , ctMonth   = toEnum (mon `mod` 12)
+    , ctDay     = mday
+    , ctHour    = hour
+    , ctMin     = min_
+    , ctSec     = sec
+    , ctPicosec = 0
+    , ctWDay    = toEnum (wday `mod` 7)
+    , ctYDay    = yday
+    , ctTZName  = ""
+    , ctTZ      = gmtoffMin * 60
+    , ctIsDST   = isdst /= 0
+    }
+
 getClockTime :: IO ClockTime
-getClockTime = do
-  t <- getPOSIXTime
-  let secs = floor t :: Integer
-      ps   = round ((t - fromIntegral secs) * 1e12) :: Integer
-  return (TOD secs ps)
+getClockTime = fmap (\t -> TOD (fromIntegral t) 0) darc_time
 
 toCalendarTime :: ClockTime -> IO CalendarTime
-toCalendarTime (TOD secs _ps) = do  -- sub-second (_ps) precision is not preserved
-  tz <- getCurrentTimeZone
-  let utct = posixSecondsToUTCTime (fromIntegral secs)
-      lt   = utcToLocalTime tz utct
-      (y, m, d) = Cal.toGregorian (localDay lt)
-      tod  = localTimeOfDay lt
-      wday = toEnum $ (fromEnum (Cal.dayOfWeek (localDay lt)) `mod` 7) :: Day
-      yday = snd (toOrdinalDate (localDay lt)) - 1
-      tzOffset = timeZoneMinutes tz * 60
-  return CalendarTime
-    { ctYear    = fromIntegral y
-    , ctMonth   = toEnum (m - 1)
-    , ctDay     = d
-    , ctHour    = todHour tod
-    , ctMin     = todMin tod
-    , ctSec     = floor (todSec tod)
-    , ctPicosec = 0
-    , ctWDay    = wday
-    , ctYDay    = yday
-    , ctTZName  = timeZoneName tz
-    , ctTZ      = tzOffset
-    , ctIsDST   = timeZoneSummerOnly tz
-    }
+toCalendarTime (TOD secs _) = allocaBytes sizeof_tm_ints $ \p -> do
+  darc_localtime (fromIntegral secs) p
+  readTm p
 
 toUTCTime :: ClockTime -> CalendarTime
-toUTCTime (TOD secs _ps) =
-  let utct = posixSecondsToUTCTime (fromIntegral secs)
-      lt   = utcToLocalTime utc utct
-      (y, m, d) = Cal.toGregorian (localDay lt)
-      tod  = localTimeOfDay lt
-      wday = toEnum $ (fromEnum (Cal.dayOfWeek (localDay lt)) `mod` 7) :: Day
-      yday = snd (toOrdinalDate (localDay lt)) - 1
-  in CalendarTime
-    { ctYear    = fromIntegral y
-    , ctMonth   = toEnum (m - 1)
-    , ctDay     = d
-    , ctHour    = todHour tod
-    , ctMin     = todMin tod
-    , ctSec     = floor (todSec tod)
-    , ctPicosec = 0
-    , ctWDay    = wday
-    , ctYDay    = yday
-    , ctTZName  = "UTC"
-    , ctTZ      = 0
-    , ctIsDST   = False
-    }
+toUTCTime (TOD secs _) = unsafePerformIO $ allocaBytes sizeof_tm_ints $ \p -> do
+  darc_gmtime (fromIntegral secs) p
+  readTm p
 
 toClockTime :: CalendarTime -> ClockTime
-toClockTime ct =
-  let day  = Cal.fromGregorian (fromIntegral (ctYear ct)) (fromEnum (ctMonth ct) + 1) (ctDay ct)
-      tod  = TimeOfDay (ctHour ct) (ctMin ct) (fromIntegral (ctSec ct))
-      lt   = LocalTime day tod
-      tz   = minutesToTimeZone (ctTZ ct `div` 60)
-      utct = localTimeToUTC tz lt
-      secs = floor (utcTimeToPOSIXSeconds utct) :: Integer
-  in TOD secs 0
+toClockTime ct = unsafePerformIO $ do
+  t <- darc_mktime_tz
+         (fromIntegral (ctYear ct - 1900))
+         (fromIntegral (fromEnum (ctMonth ct)))
+         (fromIntegral (ctDay  ct))
+         (fromIntegral (ctHour ct))
+         (fromIntegral (ctMin  ct))
+         (fromIntegral (ctSec  ct))
+         (fromIntegral (ctTZ   ct `div` 60))
+  return (TOD (fromIntegral t) 0)
 
 addToClockTime :: TimeDiff -> ClockTime -> ClockTime
 addToClockTime td (TOD secs ps) =
-  let deltaSecs = fromIntegral (tdDay td) * 86400
-                + fromIntegral (tdHour td) * 3600
-                + fromIntegral (tdMin td) * 60
-                + fromIntegral (tdSec td)
-  in TOD (secs + deltaSecs) ps
+  let delta = fromIntegral (tdDay td) * 86400
+            + fromIntegral (tdHour td) * 3600
+            + fromIntegral (tdMin td) * 60
+            + fromIntegral (tdSec td)
+  in TOD (secs + delta) ps
 
 diffClockTimes :: ClockTime -> ClockTime -> TimeDiff
 diffClockTimes (TOD s1 _) (TOD s2 _) =
-  let diff = s1 - s2
-      days = diff `div` 86400
-      rest = diff `mod` 86400
-      hrs  = rest `div` 3600
+  let diff  = s1 - s2
+      days  = diff `div` 86400
+      rest  = diff `mod` 86400
+      hrs   = rest `div` 3600
       rest2 = rest `mod` 3600
-      mins = rest2 `div` 60
-      secs = rest2 `mod` 60
+      mins  = rest2 `div` 60
+      secs  = rest2 `mod` 60
   in noTimeDiff { tdDay = fromIntegral days, tdHour = fromIntegral hrs
-                , tdMin = fromIntegral mins, tdSec = fromIntegral secs }
+                , tdMin = fromIntegral mins,  tdSec  = fromIntegral secs }
 
--- | Format a calendar time using a format string.
--- Uses Data.Time.Format's formatTime under the hood.
+-- | Format a CalendarTime using strftime-style format string.
 formatCalendarTime :: TimeLocale -> String -> CalendarTime -> String
-formatCalendarTime locale fmt ct =
-  let day  = Cal.fromGregorian (fromIntegral (ctYear ct)) (fromEnum (ctMonth ct) + 1) (ctDay ct)
-      tod  = TimeOfDay (ctHour ct) (ctMin ct) (fromIntegral (ctSec ct))
-      tz   = minutesToTimeZone (ctTZ ct `div` 60)
-      zt   = ZonedTime (LocalTime day tod) tz
-  in formatTime locale fmt zt
+formatCalendarTime _ fmt ct = unsafePerformIO $
+  allocaBytes sizeof_tm_ints $ \p -> do
+    -- Fill our flat tm layout from CalendarTime
+    let w off v = (peekByteOff p off :: IO CInt) >> return ()
+    -- Use darc_fill_tm to populate
+    darc_fill_tm p
+      (fromIntegral (ctSec  ct)) (fromIntegral (ctMin  ct)) (fromIntegral (ctHour ct))
+      (fromIntegral (ctDay  ct)) (fromIntegral (fromEnum (ctMonth ct)))
+      (fromIntegral (ctYear ct - 1900)) (fromIntegral (fromEnum (ctWDay ct)))
+      (fromIntegral (ctYDay ct)) (fromIntegral (if ctIsDST ct then 1 else 0 :: Int))
+      (fromIntegral (ctTZ ct `div` 60))
+    let bufSize = 512
+    allocaBytes bufSize $ \buf ->
+      withCString fmt $ \cfmt -> do
+        _ <- darc_strftime (castPtr buf) (fromIntegral bufSize) cfmt p
+        peekCString (castPtr buf)
+
+foreign import ccall "darc_fill_tm" darc_fill_tm
+  :: Ptr CInt
+  -> CInt -> CInt -> CInt  -- sec, min, hour
+  -> CInt -> CInt -> CInt  -- mday, mon, year
+  -> CInt -> CInt -> CInt  -- wday, yday, isdst
+  -> CInt                  -- gmtoff_min
+  -> IO ()

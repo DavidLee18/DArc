@@ -28,19 +28,23 @@ static struct SEE2_CONTEXT { // SEE-contexts for PPM-contexts with masked symbol
         }
     }
 } _PACK_ATTR SEE2Cont[24][32], DummySEE2Cont;
+/* PPM_CONTEXT uses 32-bit heap offsets (CTX_REF/STATE_REF) instead of raw
+   pointers so the struct stays at UNIT_SIZE=12 bytes on both 32 and 64-bit.
+   Use PPCTX/RPCTX/PPSTAT/RPSTAT helpers defined below to convert.         */
 static struct PPM_CONTEXT {                 // Notes:
     BYTE NumStats, Flags;                   // 1. NumStats & NumMasked contain
     WORD SummFreq;                          //  number of symbols minus 1
     struct STATE {                          // 2. sizeof(WORD) > sizeof(BYTE)
         BYTE Symbol, Freq;                  // 3. contexts example:
-        PPM_CONTEXT* Successor;             // MaxOrder:
-    } _PACK_ATTR * Stats;                   //  ABCD    context
-    PPM_CONTEXT* Suffix;                    //   BCD    suffix
-    inline void encodeBinSymbol(int symbol);//   BCDE   successor
-    inline void   encodeSymbol1(int symbol);// other orders:
-    inline void   encodeSymbol2(int symbol);//   BCD    context
-    inline void           decodeBinSymbol();//    CD    suffix
-    inline void             decodeSymbol1();//   BCDE   successor
+        CTX_REF Successor;                  // MaxOrder:  (was PPM_CONTEXT*)
+    } _PACK_ATTR;                           //  ABCD    context
+    STATE_REF Stats;                        //   BCD    suffix (was STATE*)
+    CTX_REF   Suffix;                       //   BCDE   successor (was PPM_CONTEXT*)
+    inline void encodeBinSymbol(int symbol);// other orders:
+    inline void   encodeSymbol1(int symbol);//   BCD    context
+    inline void   encodeSymbol2(int symbol);//    CD    suffix
+    inline void           decodeBinSymbol();//   BCDE   successor
+    inline void             decodeSymbol1();
     inline void             decodeSymbol2();
     inline void           update1(STATE* p);
     inline void           update2(STATE* p);
@@ -53,6 +57,24 @@ static struct PPM_CONTEXT {                 // Notes:
 } _PACK_ATTR* MaxContext;
 #pragma pack()
 
+/* Ref <-> pointer converters for the 32-bit intra-heap offset scheme.
+   Refs are 1-based (r = byte_offset_from_HeapStart + 1).
+   CTX_REF=0 / STATE_REF=0 are the NULL sentinels.
+   This means HeapStart itself maps to ref=1 (not 0), allowing PPMD to store
+   pText=HeapStart in Successor without confusing it with NULL.             */
+inline PPM_CONTEXT*
+    PPCTX(CTX_REF r) { return r?(PPM_CONTEXT*)(HeapStart+r-1):(PPM_CONTEXT*)0; }
+inline CTX_REF
+    RPCTX(const PPM_CONTEXT* p) { return p?(CTX_REF)((BYTE*)p-HeapStart+1):0; }
+inline CTX_REF
+    BREF(const void* p) { return p?(CTX_REF)((BYTE*)p-HeapStart+1):0; }
+inline PPM_CONTEXT::STATE*
+    PPSTAT(STATE_REF r) { return r?(PPM_CONTEXT::STATE*)(HeapStart+r-1):(PPM_CONTEXT::STATE*)0; }
+inline STATE_REF
+    RPSTAT(const PPM_CONTEXT::STATE* p) { return p?(STATE_REF)((BYTE*)p-HeapStart+1):0; }
+/* True when ref falls inside the unit-storage region (>= UnitsStart). */
+inline bool GE_UNITS(CTX_REF r) { return r && HeapStart+r-1 >= UnitsStart; }
+
 static BYTE NS2BSIndx[256], QTable[260];    // constants
 static PPM_CONTEXT::STATE* FoundState;      // found next state transition
 static int  InitEsc, OrderFall, RunLength, InitRL, MaxOrder;
@@ -62,7 +84,7 @@ static MR_METHOD MRMethod;
 
 inline void SWAP(PPM_CONTEXT::STATE& s1,PPM_CONTEXT::STATE& s2)
 {
-    WORD t1=(WORD&) s1;                     PPM_CONTEXT* t2=s1.Successor;
+    WORD t1=(WORD&) s1;                     CTX_REF t2=s1.Successor;
     (WORD&) s1 = (WORD&) s2;                s1.Successor=s2.Successor;
     (WORD&) s2 = t1;                        s2.Successor=t2;
 }
@@ -88,7 +110,7 @@ inline PPMD_STARTUP::PPMD_STARTUP()         // constants initialization
         QTable[i]=m;
         if ( !--k ) { k = ++Step;           m++; }
     }
-    (DWORD&) DummySEE2Cont=PPMdSignature;
+    (unsigned int&) DummySEE2Cont=(unsigned int)PPMdSignature;
 }
 static void _STDCALL StartModelRare(int _MaxOrder,MR_METHOD _MRMethod)
 {
@@ -96,7 +118,7 @@ static void _STDCALL StartModelRare(int _MaxOrder,MR_METHOD _MRMethod)
     memset(CharMask,0,sizeof(CharMask));    EscCount=PrintCount=1;
     if (_MaxOrder < 2) {                    // we are in solid mode
         OrderFall=MaxOrder;
-        for (PPM_CONTEXT* pc=MaxContext;pc->Suffix != NULL;pc=pc->Suffix)
+        for (PPM_CONTEXT* pc=MaxContext;pc->Suffix != 0;pc=PPCTX(pc->Suffix))
                 OrderFall--;
         return;
     }
@@ -104,13 +126,14 @@ static void _STDCALL StartModelRare(int _MaxOrder,MR_METHOD _MRMethod)
     InitSubAllocator();
     RunLength=InitRL=-((MaxOrder < 12)?MaxOrder:12)-1;
     MaxContext = (PPM_CONTEXT*) AllocContext();
-    MaxContext->Suffix=NULL;
+    MaxContext->Suffix=0;
     MaxContext->SummFreq=(MaxContext->NumStats=255)+2;
-    MaxContext->Stats = (PPM_CONTEXT::STATE*) AllocUnits(256/2);
+    MaxContext->Stats = RPSTAT((PPM_CONTEXT::STATE*) AllocUnits(256/2));
+    { PPM_CONTEXT::STATE* p=PPSTAT(MaxContext->Stats);
     for (PrevSuccess=i=0;i < 256;i++) {
-        MaxContext->Stats[i].Symbol=i;      MaxContext->Stats[i].Freq=1;
-        MaxContext->Stats[i].Successor=NULL;
-    }
+        p[i].Symbol=i;                      p[i].Freq=1;
+        p[i].Successor=0;
+    }}
 static const WORD InitBinEsc[]={0x3CDD,0x1F3F,0x59BF,0x48F3,0x64A1,0x5ABC,0x6632,0x6051};
     for (i=m=0;m < 25;m++) {
         while (QTable[i] == m)              i++;
@@ -128,7 +151,7 @@ static const WORD InitBinEsc[]={0x3CDD,0x1F3F,0x59BF,0x48F3,0x64A1,0x5ABC,0x6632
 void PPM_CONTEXT::refresh(int OldNU,BOOL Scale)
 {
     int i=NumStats, EscFreq;
-    STATE* p = Stats = (STATE*) ShrinkUnits(Stats,OldNU,(i+2) >> 1);
+    STATE* p; Stats=RPSTAT(p=(STATE*)ShrinkUnits(PPSTAT(Stats),OldNU,(i+2)>>1));
     Flags=(Flags & (0x10+0x04*Scale))+0x08*(p->Symbol >= 0x40);
     EscFreq=SummFreq-p->Freq;
     SummFreq = (p->Freq=(p->Freq+Scale) >> Scale);
@@ -139,16 +162,16 @@ void PPM_CONTEXT::refresh(int OldNU,BOOL Scale)
     } while ( --i );
     SummFreq += (EscFreq=(EscFreq+Scale) >> Scale);
 }
-#define P_CALL(F) ( PrefetchData(p->Successor), \
-                    p->Successor=p->Successor->F(Order+1))
+#define P_CALL(F) do { PPM_CONTEXT* _ps=PPCTX(p->Successor); \
+    PrefetchData(_ps); p->Successor=RPCTX(_ps->F(Order+1)); } while(0)
 PPM_CONTEXT* PPM_CONTEXT::cutOff(int Order)
 {
     int i, tmp;
     STATE* p;
     if ( !NumStats ) {
-        if ((BYTE*) (p=&oneState())->Successor >= UnitsStart) {
+        if (GE_UNITS((p=&oneState())->Successor)) {
             if (Order < MaxOrder)           P_CALL(cutOff);
-            else                            p->Successor=NULL;
+            else                            p->Successor=0;
             if (!p->Successor && Order > O_BOUND)
                     goto REMOVE;
             return this;
@@ -156,22 +179,23 @@ PPM_CONTEXT* PPM_CONTEXT::cutOff(int Order)
 REMOVE:     SpecialFreeUnit(this);          return NULL;
         }
     }
-    PrefetchData(Stats);
-    Stats = (STATE*) MoveUnitsUp(Stats,tmp=(NumStats+2) >> 1);
-    for (p=Stats+(i=NumStats);p >= Stats;p--)
-            if ((BYTE*) p->Successor < UnitsStart) {
-                p->Successor=NULL;          SWAP(*p,Stats[i--]);
+    { STATE* sBase;
+    PrefetchData(PPSTAT(Stats));
+    Stats=RPSTAT(sBase=(STATE*)MoveUnitsUp(PPSTAT(Stats),tmp=(NumStats+2)>>1));
+    for (p=sBase+(i=NumStats);p >= sBase;p--)
+            if (!GE_UNITS(p->Successor)) {
+                p->Successor=0;             SWAP(*p,sBase[i--]);
             } else if (Order < MaxOrder)    P_CALL(cutOff);
-            else                            p->Successor=NULL;
+            else                            p->Successor=0;
     if (i != NumStats && Order) {
-        NumStats=i;                         p=Stats;
+        NumStats=i;                         p=sBase;
         if (i < 0) { FreeUnits(p,tmp);      goto REMOVE; }
         else if (i == 0) {
             Flags=(Flags & 0x10)+0x08*(p->Symbol >= 0x40);
             StateCpy(oneState(),*p);        FreeUnits(p,tmp);
             oneState().Freq=(oneState().Freq+11) >> 3;
         } else                              refresh(tmp,SummFreq > 16*i);
-    }
+    }}
     return this;
 }
 PPM_CONTEXT* PPM_CONTEXT::removeBinConts(int Order)
@@ -179,18 +203,19 @@ PPM_CONTEXT* PPM_CONTEXT::removeBinConts(int Order)
     STATE* p;
     if ( !NumStats ) {
         p=&oneState();
-        if ((BYTE*) p->Successor >= UnitsStart && Order < MaxOrder)
+        if (GE_UNITS(p->Successor) && Order < MaxOrder)
                 P_CALL(removeBinConts);
-        else                                p->Successor=NULL;
-        if (!p->Successor && (!Suffix->NumStats || Suffix->Flags == 0xFF)) {
+        else                                p->Successor=0;
+        if (!p->Successor && (!PPCTX(Suffix)->NumStats || PPCTX(Suffix)->Flags == 0xFF)) {
             FreeUnits(this,1);              return NULL;
         } else                              return this;
     }
-    PrefetchData(Stats);
-    for (p=Stats+NumStats;p >= Stats;p--)
-            if ((BYTE*) p->Successor >= UnitsStart && Order < MaxOrder)
+    { STATE* sBase=PPSTAT(Stats);
+    PrefetchData(sBase);
+    for (p=sBase+NumStats;p >= sBase;p--)
+            if (GE_UNITS(p->Successor) && Order < MaxOrder)
                     P_CALL(removeBinConts);
-            else                            p->Successor=NULL;
+            else                            p->Successor=0;}
     return this;
 }
 static void RestoreModelRare(PPM_CONTEXT* pc1,PPM_CONTEXT* MinContext,
@@ -198,15 +223,15 @@ static void RestoreModelRare(PPM_CONTEXT* pc1,PPM_CONTEXT* MinContext,
 {
     PPM_CONTEXT* pc;
     PPM_CONTEXT::STATE* p;
-    for (pc=MaxContext, pText=HeapStart;pc != pc1;pc=pc->Suffix)
+    for (pc=MaxContext, pText=HeapStart;pc != pc1;pc=PPCTX(pc->Suffix))
             if (--(pc->NumStats) == 0) {
-                pc->Flags=(pc->Flags & 0x10)+0x08*(pc->Stats->Symbol >= 0x40);
-                p=pc->Stats;                StateCpy(pc->oneState(),*p);
+                pc->Flags=(pc->Flags & 0x10)+0x08*(PPSTAT(pc->Stats)->Symbol >= 0x40);
+                p=PPSTAT(pc->Stats);        StateCpy(pc->oneState(),*p);
                 SpecialFreeUnit(p);
                 pc->oneState().Freq=(pc->oneState().Freq+11) >> 3;
             } else
                     pc->refresh((pc->NumStats+3) >> 1,FALSE);
-    for ( ;pc != MinContext;pc=pc->Suffix)
+    for ( ;pc != MinContext;pc=PPCTX(pc->Suffix))
             if ( !pc->NumStats )
                     pc->oneState().Freq -= pc->oneState().Freq >> 1;
             else if ((pc->SummFreq += 4) > 128+4*pc->NumStats)
@@ -214,14 +239,14 @@ static void RestoreModelRare(PPM_CONTEXT* pc1,PPM_CONTEXT* MinContext,
     if (MRMethod > MRM_FREEZE) {
         MaxContext=FSuccessor;              GlueCount += !(BList[1].Stamp & 1);
     } else if (MRMethod == MRM_FREEZE) {
-        while ( MaxContext->Suffix )        MaxContext=MaxContext->Suffix;
+        while ( MaxContext->Suffix )        MaxContext=PPCTX(MaxContext->Suffix);
         MaxContext->removeBinConts(0);      MRMethod=MR_METHOD(MRMethod+1);
         GlueCount=0;                        OrderFall=MaxOrder;
     } else if (MRMethod == MRM_RESTART || GetUsedMemory() < (SubAllocatorSize >> 1)) {
         StartModelRare(MaxOrder,MRMethod);
         EscCount=0;                         PrintCount=0xFF;
     } else {
-        while ( MaxContext->Suffix )        MaxContext=MaxContext->Suffix;
+        while ( MaxContext->Suffix )        MaxContext=PPCTX(MaxContext->Suffix);
         do {
             MaxContext->cutOff(0);          ExpandTextArea();
         } while (GetUsedMemory() > 3*(SubAllocatorSize >> 2));
@@ -233,22 +258,23 @@ static PPM_CONTEXT* _FASTCALL CreateSuccessors(BOOL Skip,PPM_CONTEXT::STATE* p,
 static PPM_CONTEXT* _FASTCALL ReduceOrder(PPM_CONTEXT::STATE* p,PPM_CONTEXT* pc)
 {
     PPM_CONTEXT::STATE* p1,  * ps[MAX_O], ** pps=ps;
-    PPM_CONTEXT* pc1=pc, * UpBranch = (PPM_CONTEXT*) pText;
+    PPM_CONTEXT* pc1=pc;
+    CTX_REF UpBranch = BREF(pText);
     BYTE tmp, sym=FoundState->Symbol;
     *pps++ = FoundState;                    FoundState->Successor=UpBranch;
     OrderFall++;
-    if ( p ) { pc=pc->Suffix;               goto LOOP_ENTRY; }
+    if ( p ) { pc=PPCTX(pc->Suffix);        goto LOOP_ENTRY; }
     for ( ; ; ) {
         if ( !pc->Suffix ) {
             if (MRMethod > MRM_FREEZE) {
-FROZEN:         do { (*--pps)->Successor = pc; } while (pps != ps);
+FROZEN:         do { (*--pps)->Successor = RPCTX(pc); } while (pps != ps);
                 pText=HeapStart+1;          OrderFall=1;
             }
             return pc;
         }
-        pc=pc->Suffix;
+        pc=PPCTX(pc->Suffix);
         if ( pc->NumStats ) {
-            if ((p=pc->Stats)->Symbol != sym)
+            if ((p=PPSTAT(pc->Stats))->Symbol != sym)
                     do { tmp=p[1].Symbol;   p++; } while (tmp != sym);
             tmp=2*(p->Freq < MAX_FREQ-9);
             p->Freq += tmp;                 pc->SummFreq += tmp;
@@ -259,22 +285,23 @@ LOOP_ENTRY:
         OrderFall++;
     }
     if (MRMethod > MRM_FREEZE) {
-        pc = p->Successor;                  goto FROZEN;
+        pc = PPCTX(p->Successor);           goto FROZEN;
     } else if (p->Successor <= UpBranch) {
         p1=FoundState;                      FoundState=p;
-        p->Successor=CreateSuccessors(FALSE,NULL,pc);
+        p->Successor=RPCTX(CreateSuccessors(FALSE,NULL,pc));
         FoundState=p1;
     }
     if (OrderFall == 1 && pc1 == MaxContext) {
         FoundState->Successor=p->Successor; pText--;
     }
-    return p->Successor;
+    return PPCTX(p->Successor);
 }
 void PPM_CONTEXT::rescale()
 {
     UINT OldNU, Adder, EscFreq, i=NumStats;
     STATE tmp, * p1, * p;
-    for (p=FoundState;p != Stats;p--)       SWAP(p[0],p[-1]);
+    STATE* sBase=PPSTAT(Stats);
+    for (p=FoundState;p != sBase;p--)       SWAP(p[0],p[-1]);
     p->Freq += 4;                           SummFreq += 4;
     EscFreq=SummFreq-p->Freq;
     Adder=(OrderFall != 0 || MRMethod > MRM_FREEZE);
@@ -292,25 +319,26 @@ void PPM_CONTEXT::rescale()
         do { i++; } while ((--p)->Freq == 0);
         EscFreq += i;                       OldNU=(NumStats+2) >> 1;
         if ((NumStats -= i) == 0) {
-            StateCpy(tmp,*Stats);
+            StateCpy(tmp,*sBase);
             tmp.Freq=(2*tmp.Freq+EscFreq-1)/EscFreq;
             if (tmp.Freq > MAX_FREQ/3)      tmp.Freq=MAX_FREQ/3;
-            FreeUnits(Stats,OldNU);         StateCpy(oneState(),tmp);
+            FreeUnits(sBase,OldNU);         StateCpy(oneState(),tmp);
             Flags=(Flags & 0x10)+0x08*(tmp.Symbol >= 0x40);
             FoundState=&oneState();         return;
         }
-        Stats = (STATE*) ShrinkUnits(Stats,OldNU,(NumStats+2) >> 1);
+        Stats=RPSTAT(sBase=(STATE*)ShrinkUnits(sBase,OldNU,(NumStats+2)>>1));
         Flags &= ~0x08;                     i=NumStats;
-        Flags |= 0x08*((p=Stats)->Symbol >= 0x40);
+        Flags |= 0x08*((p=sBase)->Symbol >= 0x40);
         do { Flags |= 0x08*((++p)->Symbol >= 0x40); } while ( --i );
     }
     SummFreq += (EscFreq -= (EscFreq >> 1));
-    Flags |= 0x04;                          FoundState=Stats;
+    Flags |= 0x04;                          FoundState=sBase;
 }
 static PPM_CONTEXT* _FASTCALL CreateSuccessors(BOOL Skip,PPM_CONTEXT::STATE* p,
         PPM_CONTEXT* pc)
 {
-    PPM_CONTEXT ct, * UpBranch=FoundState->Successor;
+    PPM_CONTEXT ct;
+    CTX_REF UpBranch=FoundState->Successor;
     PPM_CONTEXT::STATE* ps[MAX_O], ** pps=ps;
     UINT cf, s0;
     BYTE tmp, sym=FoundState->Symbol;
@@ -318,32 +346,32 @@ static PPM_CONTEXT* _FASTCALL CreateSuccessors(BOOL Skip,PPM_CONTEXT::STATE* p,
         *pps++ = FoundState;
         if ( !pc->Suffix )                  goto NO_LOOP;
     }
-    if ( p ) { pc=pc->Suffix;               goto LOOP_ENTRY; }
+    if ( p ) { pc=PPCTX(pc->Suffix);        goto LOOP_ENTRY; }
     do {
-        pc=pc->Suffix;
+        pc=PPCTX(pc->Suffix);
         if ( pc->NumStats ) {
-            if ((p=pc->Stats)->Symbol != sym)
+            if ((p=PPSTAT(pc->Stats))->Symbol != sym)
                     do { tmp=p[1].Symbol;   p++; } while (tmp != sym);
             tmp=(p->Freq < MAX_FREQ-9);
             p->Freq += tmp;                 pc->SummFreq += tmp;
         } else {
             p=&(pc->oneState());
-            p->Freq += (!pc->Suffix->NumStats & (p->Freq < 24));
+            p->Freq += (!PPCTX(pc->Suffix)->NumStats & (p->Freq < 24));
         }
 LOOP_ENTRY:
         if (p->Successor != UpBranch) {
-            pc=p->Successor;                break;
+            pc=PPCTX(p->Successor);         break;
         }
         *pps++ = p;
     } while ( pc->Suffix );
 NO_LOOP:
     if (pps == ps)                          return pc;
     ct.NumStats=0;                          ct.Flags=0x10*(sym >= 0x40);
-    ct.oneState().Symbol=sym=*(BYTE*) UpBranch;
-    ct.oneState().Successor=(PPM_CONTEXT*) (((BYTE*) UpBranch)+1);
+    ct.oneState().Symbol=sym=*(HeapStart+UpBranch-1);
+    ct.oneState().Successor=UpBranch+1;
     ct.Flags |= 0x08*(sym >= 0x40);
     if ( pc->NumStats ) {
-        if ((p=pc->Stats)->Symbol != sym)
+        if ((p=PPSTAT(pc->Stats))->Symbol != sym)
                 do { tmp=p[1].Symbol;       p++; } while (tmp != sym);
         s0=pc->SummFreq-pc->NumStats-(cf=p->Freq-1);
         ct.oneState().Freq=1+((2*cf <= s0)?(5*cf > s0):((cf+2*s0-3)/s0));
@@ -352,9 +380,11 @@ NO_LOOP:
     do {
         PPM_CONTEXT* pc1 = (PPM_CONTEXT*) AllocContext();
         if ( !pc1 )                         return NULL;
-        ((DWORD*) pc1)[0] = ((DWORD*) &ct)[0];
-        ((DWORD*) pc1)[1] = ((DWORD*) &ct)[1];
-        pc1->Suffix=pc;                     (*--pps)->Successor=pc=pc1;
+        ((unsigned int*) pc1)[0] = ((unsigned int*) &ct)[0];
+        ((unsigned int*) pc1)[1] = ((unsigned int*) &ct)[1];
+        ((unsigned int*) pc1)[2] = ((unsigned int*) &ct)[2];
+        pc1->Suffix=RPCTX(pc);
+        (*--pps)->Successor=RPCTX(pc=pc1);
     } while (pps != ps);
     return pc;
 }
@@ -364,10 +394,10 @@ static inline void UpdateModel(PPM_CONTEXT* MinContext)
     PPM_CONTEXT* Successor, * FSuccessor, * pc, * pc1=MaxContext;
     UINT ns1, ns, cf, sf, s0, FFreq=FoundState->Freq;
     BYTE Flag, sym, FSymbol=FoundState->Symbol;
-    FSuccessor=FoundState->Successor;       pc=MinContext->Suffix;
+    FSuccessor=PPCTX(FoundState->Successor); pc=PPCTX(MinContext->Suffix);
     if (FFreq < MAX_FREQ/4 && pc) {
         if ( pc->NumStats ) {
-            if ((p=pc->Stats)->Symbol != FSymbol) {
+            if ((p=PPSTAT(pc->Stats))->Symbol != FSymbol) {
                 do { sym=p[1].Symbol;       p++; } while (sym != FSymbol);
                 if (p[0].Freq >= p[-1].Freq) {
                     SWAP(p[0],p[-1]);       p--;
@@ -378,9 +408,9 @@ static inline void UpdateModel(PPM_CONTEXT* MinContext)
         } else { p=&(pc->oneState());       p->Freq += (p->Freq < 32); }
     }
     if (!OrderFall && FSuccessor) {
-        FoundState->Successor=CreateSuccessors(TRUE,p,MinContext);
+        FoundState->Successor=RPCTX(CreateSuccessors(TRUE,p,MinContext));
         if ( !FoundState->Successor )       goto RESTART_MODEL;
-        MaxContext=FoundState->Successor;   return;
+        MaxContext=PPCTX(FoundState->Successor); return;
     }
     *pText++ = FSymbol;                     Successor = (PPM_CONTEXT*) pText;
     if (pText >= UnitsStart)                goto RESTART_MODEL;
@@ -397,18 +427,18 @@ static inline void UpdateModel(PPM_CONTEXT* MinContext)
         OrderFall=0;
     }
     s0=MinContext->SummFreq-(ns=MinContext->NumStats)-FFreq;
-    for (Flag=0x08*(FSymbol >= 0x40);pc1 != MinContext;pc1=pc1->Suffix) {
+    for (Flag=0x08*(FSymbol >= 0x40);pc1 != MinContext;pc1=PPCTX(pc1->Suffix)) {
         if ((ns1=pc1->NumStats) != 0) {
             if ((ns1 & 1) != 0) {
-                p=(PPM_CONTEXT::STATE*) ExpandUnits(pc1->Stats,(ns1+1) >> 1);
+                p=(PPM_CONTEXT::STATE*) ExpandUnits(PPSTAT(pc1->Stats),(ns1+1) >> 1);
                 if ( !p )                   goto RESTART_MODEL;
-                pc1->Stats=p;
+                pc1->Stats=RPSTAT(p);
             }
             pc1->SummFreq += (3*ns1+1 < ns);
         } else {
             p=(PPM_CONTEXT::STATE*) AllocUnits(1);
             if ( !p )                       goto RESTART_MODEL;
-            StateCpy(*p,pc1->oneState());   pc1->Stats=p;
+            StateCpy(*p,pc1->oneState());   pc1->Stats=RPSTAT(p);
             if (p->Freq < MAX_FREQ/4-1)     p->Freq += p->Freq;
             else                            p->Freq  = MAX_FREQ-4;
             pc1->SummFreq=p->Freq+InitEsc+(ns > 2);
@@ -421,7 +451,7 @@ static inline void UpdateModel(PPM_CONTEXT* MinContext)
             cf=4+(cf > 9*sf)+(cf > 12*sf)+(cf > 15*sf);
             pc1->SummFreq += cf;
         }
-        p=pc1->Stats+(++pc1->NumStats);     p->Successor=Successor;
+        p=PPSTAT(pc1->Stats)+(++pc1->NumStats); p->Successor=RPCTX(Successor);
         p->Symbol = FSymbol;                p->Freq = cf;
         pc1->Flags |= Flag;
     }
@@ -434,7 +464,7 @@ static const BYTE ExpEscape[16]={ 25,14, 9, 7, 5, 5, 4, 4, 4, 3, 3, 3, 2, 2, 2, 
 #define GET_MEAN(SUMM,SHIFT,ROUND) ((SUMM+(1 << (SHIFT-ROUND))) >> (SHIFT))
 inline void PPM_CONTEXT::encodeBinSymbol(int symbol)
 {
-    BYTE indx=NS2BSIndx[Suffix->NumStats]+PrevSuccess+Flags;
+    BYTE indx=NS2BSIndx[PPCTX(Suffix)->NumStats]+PrevSuccess+Flags;
     STATE& rs=oneState();
     WORD& bs=BinSumm[QTable[rs.Freq-1]][indx+((RunLength >> 26) & 0x20)];
     if (rs.Symbol == symbol) {
@@ -451,7 +481,7 @@ inline void PPM_CONTEXT::encodeBinSymbol(int symbol)
 }
 inline void PPM_CONTEXT::decodeBinSymbol()
 {
-    BYTE indx=NS2BSIndx[Suffix->NumStats]+PrevSuccess+Flags;
+    BYTE indx=NS2BSIndx[PPCTX(Suffix)->NumStats]+PrevSuccess+Flags;
     STATE& rs=oneState();
     WORD& bs=BinSumm[QTable[rs.Freq-1]][indx+((RunLength >> 26) & 0x20)];
     if (ariGetCurrentShiftCount(TOT_BITS) < bs) {
@@ -476,8 +506,8 @@ inline void PPM_CONTEXT::update1(STATE* p)
 }
 inline void PPM_CONTEXT::encodeSymbol1(int symbol)
 {
-    UINT LoCnt, i=Stats->Symbol;
-    STATE* p=Stats;                         SubRange.scale=SummFreq;
+    STATE* p=PPSTAT(Stats);
+    UINT LoCnt, i=p->Symbol;               SubRange.scale=SummFreq;
     if (i == symbol) {
         PrevSuccess=(2*(SubRange.HighCount=p->Freq) >= SubRange.scale);
         (FoundState=p)->Freq += 4;          SummFreq += 4;
@@ -490,7 +520,7 @@ inline void PPM_CONTEXT::encodeSymbol1(int symbol)
     while ((++p)->Symbol != symbol) {
         LoCnt += p->Freq;
         if (--i == 0) {
-            if ( Suffix )                   PrefetchData(Suffix);
+            if ( Suffix )                   PrefetchData(PPCTX(Suffix));
             SubRange.LowCount=LoCnt;        CharMask[p->Symbol]=EscCount;
             i=NumMasked=NumStats;           FoundState=NULL;
             do { CharMask[(--p)->Symbol]=EscCount; } while ( --i );
@@ -503,8 +533,8 @@ inline void PPM_CONTEXT::encodeSymbol1(int symbol)
 }
 inline void PPM_CONTEXT::decodeSymbol1()
 {
-    UINT i, count, HiCnt=Stats->Freq;
-    STATE* p=Stats;                         SubRange.scale=SummFreq;
+    STATE* p=PPSTAT(Stats);
+    UINT i, count, HiCnt=p->Freq;          SubRange.scale=SummFreq;
     if ((count=ariGetCurrentCount()) < HiCnt) {
         PrevSuccess=(2*(SubRange.HighCount=HiCnt) >= SubRange.scale);
         (FoundState=p)->Freq=(HiCnt += 4);  SummFreq += 4;
@@ -515,7 +545,7 @@ inline void PPM_CONTEXT::decodeSymbol1()
     i=NumStats;                             PrevSuccess=0;
     while ((HiCnt += (++p)->Freq) <= count)
         if (--i == 0) {
-            if ( Suffix )                   PrefetchData(Suffix);
+            if ( Suffix )                   PrefetchData(PPCTX(Suffix));
             SubRange.LowCount=HiCnt;        CharMask[p->Symbol]=EscCount;
             i=NumMasked=NumStats;           FoundState=NULL;
             do { CharMask[(--p)->Symbol]=EscCount; } while ( --i );
@@ -533,12 +563,12 @@ inline void PPM_CONTEXT::update2(STATE* p)
 }
 inline SEE2_CONTEXT* PPM_CONTEXT::makeEscFreq2()
 {
-    BYTE* pb=(BYTE*) Stats;                 UINT t=2*NumStats;
+    BYTE* pb=(BYTE*)PPSTAT(Stats);          UINT t=2*NumStats;
     PrefetchData(pb);                       PrefetchData(pb+t);
     PrefetchData(pb += 2*t);                PrefetchData(pb+t);
     SEE2_CONTEXT* psee2c;
     if (NumStats != 0xFF) {
-        t=Suffix->NumStats;
+        t=PPCTX(Suffix)->NumStats;
         psee2c=SEE2Cont[QTable[NumStats+2]-3]+(SummFreq > 11*(NumStats+1));
         psee2c += 2*(2*NumStats < t+NumMasked)+Flags;
         SubRange.scale=psee2c->getMean();
@@ -551,7 +581,7 @@ inline void PPM_CONTEXT::encodeSymbol2(int symbol)
 {
     SEE2_CONTEXT* psee2c=makeEscFreq2();
     UINT Sym, LoCnt=0, i=NumStats-NumMasked;
-    STATE* p1, * p=Stats-1;
+    STATE* p1, * p=PPSTAT(Stats)-1;
     do {
         do { Sym=p[1].Symbol;   p++; } while (CharMask[Sym] == EscCount);
         CharMask[Sym]=EscCount;
@@ -574,7 +604,7 @@ inline void PPM_CONTEXT::decodeSymbol2()
 {
     SEE2_CONTEXT* psee2c=makeEscFreq2();
     UINT Sym, count, HiCnt=0, i=NumStats-NumMasked;
-    STATE* ps[256], ** pps=ps, * p=Stats-1;
+    STATE* ps[256], ** pps=ps, * p=PPSTAT(Stats)-1;
     do {
         do { Sym=p[1].Symbol;   p++; } while (CharMask[Sym] == EscCount);
         HiCnt += p->Freq;                   *pps++ = p;
@@ -613,13 +643,13 @@ void _STDCALL EncodeFile(_PPMD_FILE* EncodedFile,_PPMD_FILE* DecodedFile,
         while ( !FoundState ) {
             ARI_ENC_NORMALIZE(EncodedFile);
             do {
-                OrderFall++;                MinContext=MinContext->Suffix;
+                OrderFall++;                MinContext=PPCTX(MinContext->Suffix);
                 if ( !MinContext )          goto STOP_ENCODING;
             } while (MinContext->NumStats == NumMasked);
             MinContext->encodeSymbol2(c);   ariEncodeSymbol();
         }
-        if (!OrderFall && (BYTE*) FoundState->Successor >= UnitsStart)
-                PrefetchData(MaxContext=FoundState->Successor);
+        if (!OrderFall && GE_UNITS(FoundState->Successor))
+                PrefetchData(MaxContext=PPCTX(FoundState->Successor));
         else {
             UpdateModel(MinContext);        PrefetchData(MaxContext);
             if (EscCount == 0)              ClearMask(EncodedFile,DecodedFile);
@@ -641,14 +671,14 @@ void _STDCALL DecodeFile(_PPMD_FILE* DecodedFile,_PPMD_FILE* EncodedFile,
         while ( !FoundState ) {
             ARI_DEC_NORMALIZE(EncodedFile);
             do {
-                OrderFall++;                MinContext=MinContext->Suffix;
+                OrderFall++;                MinContext=PPCTX(MinContext->Suffix);
                 if ( !MinContext )          goto STOP_DECODING;
             } while (MinContext->NumStats == NumMasked);
             MinContext->decodeSymbol2();    ariRemoveSubrange();
         }
         _PPMD_D_PUTC(FoundState->Symbol,DecodedFile);
-        if (!OrderFall && (BYTE*) FoundState->Successor >= UnitsStart)
-                PrefetchData(MaxContext=FoundState->Successor);
+        if (!OrderFall && GE_UNITS(FoundState->Successor))
+                PrefetchData(MaxContext=PPCTX(FoundState->Successor));
         else {
             UpdateModel(MinContext);        PrefetchData(MaxContext);
             if (EscCount == 0)              ClearMask(EncodedFile,DecodedFile);

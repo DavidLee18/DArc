@@ -18,7 +18,7 @@ typedef int   BOOL;
 #define TRUE  1
 typedef unsigned char  BYTE;
 typedef unsigned short WORD;
-typedef unsigned long  DWORD;
+typedef unsigned int   DWORD;  /* must be 32-bit (was unsigned long, broken on LP64) */
 typedef unsigned int   UINT;
 #endif
 

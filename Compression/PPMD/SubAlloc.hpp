@@ -8,25 +8,42 @@
 enum { UNIT_SIZE=12, N1=4, N2=4, N3=4, N4=(128+3-1*N1-2*N2-3*N3)/4,
         N_INDEXES=N1+N2+N3+N4 };
 
+/* 64-bit portability: BLK_NODE.next is a 4-byte heap ref (1-based byte
+   offset from HeapStart, 0=NULL) so sizeof(BLK_NODE)=8, sizeof(MEM_BLK)=12
+   =UNIT_SIZE.  PP_BLK/RP_BLK convert between refs and pointers.            */
+static BYTE* HeapStart, * pText, * UnitsStart, * LoUnit, * HiUnit;
+typedef unsigned int BLKREF;
+
+struct BLK_NODE;
+inline BLK_NODE* PP_BLK(BLKREF r);
+inline BLKREF    RP_BLK(void* p) { return p?(BLKREF)((BYTE*)p-HeapStart+1):0; }
+
 #pragma pack(1)
 struct BLK_NODE {
-    DWORD Stamp;
-    BLK_NODE* next;
-    BOOL   avail()      const { return (next != NULL); }
-    void    link(BLK_NODE* p) { p->next=next; next=p; }
-    void  unlink()            { next=next->next; }
+    unsigned int Stamp;
+    BLKREF next;
+    BOOL   avail()      const { return (next != 0); }
+    void    link(BLK_NODE* p) { p->next=next; next=RP_BLK(p); }
+    void  unlink()            { next=PP_BLK(next)->next; }
     void* remove()            {
-        BLK_NODE* p=next;                   unlink();
+        BLK_NODE* p=PP_BLK(next);           unlink();
         Stamp--;                            return p;
     }
     inline void insert(void* pv,int NU);
 } BList[N_INDEXES];
-struct MEM_BLK: public BLK_NODE { DWORD NU; } _PACK_ATTR;
+struct MEM_BLK: public BLK_NODE { unsigned int NU; } _PACK_ATTR;
 #pragma pack()
+inline BLK_NODE* PP_BLK(BLKREF r) { return r?(BLK_NODE*)(HeapStart+r-1):(BLK_NODE*)0; }
 
 static BYTE Indx2Units[N_INDEXES], Units2Indx[128]; // constants
 static DWORD GlueCount, SubAllocatorSize=0;
-static BYTE* HeapStart, * pText, * UnitsStart, * LoUnit, * HiUnit;
+
+/* 64-bit portability: store intra-heap pointers as 32-bit byte offsets from
+   HeapStart so that PPM_CONTEXT stays at UNIT_SIZE=12 bytes on both 32 and
+   64-bit systems.  CTX_REF=0 is the NULL sentinel (HeapStart+0 is in the
+   pText text area, never used for a context or state allocation).           */
+typedef unsigned int CTX_REF;   /* 4-byte heap offset; 0 = NULL */
+typedef unsigned int STATE_REF; /* 4-byte heap offset; 0 = NULL */
 
 inline void PrefetchData(void* Addr)
 {
@@ -36,7 +53,7 @@ inline void PrefetchData(void* Addr)
 }
 inline void BLK_NODE::insert(void* pv,int NU) {
     MEM_BLK* p=(MEM_BLK*) pv;               link(p);
-    p->Stamp=~0UL;                          p->NU=NU;
+    p->Stamp=~0U;                           p->NU=NU;
     Stamp++;
 }
 inline UINT U2B(UINT NU) { return 8*NU+4*NU; }
@@ -82,11 +99,11 @@ static void GlueFreeBlocks()
     UINT i, k, sz;
     MEM_BLK s0, * p, * p0, * p1;
     if (LoUnit != HiUnit)                   *LoUnit=0;
-    for (i=0, (p0=&s0)->next=NULL;i < N_INDEXES;i++)
+    for (i=0, (p0=&s0)->next=0;i < N_INDEXES;i++)
             while ( BList[i].avail() ) {
                 p=(MEM_BLK*) BList[i].remove();
                 if ( !p->NU )               continue;
-                while ((p1=p+p->NU)->Stamp == ~0UL) {
+                while ((p1=p+p->NU)->Stamp == ~0U) {
                     p->NU += p1->NU;        p1->NU=0;
                 }
                 p0->link(p);                p0=p;
@@ -135,7 +152,7 @@ inline void* AllocContext()
 }
 inline void UnitsCpy(void* Dest,void* Src,UINT NU)
 {
-    DWORD* p1=(DWORD*) Dest, * p2=(DWORD*) Src;
+    unsigned int* p1=(unsigned int*) Dest, * p2=(unsigned int*) Src;
     do {
         p1[0]=p2[0];                        p1[1]=p2[1];
         p1[2]=p2[2];
@@ -171,12 +188,12 @@ inline void FreeUnits(void* ptr,UINT NU) {
 inline void SpecialFreeUnit(void* ptr)
 {
     if ((BYTE*) ptr != UnitsStart)          BList->insert(ptr,1);
-    else { *(DWORD*) ptr=~0UL;              UnitsStart += UNIT_SIZE; }
+    else { *(unsigned int*) ptr=~0U;        UnitsStart += UNIT_SIZE; }
 }
 inline void* MoveUnitsUp(void* OldPtr,UINT NU)
 {
     UINT indx=Units2Indx[NU-1];
-    if ((BYTE*) OldPtr > UnitsStart+16*1024 || (BLK_NODE*) OldPtr > BList[indx].next)
+    if ((BYTE*) OldPtr > UnitsStart+16*1024 || (BLK_NODE*) OldPtr > PP_BLK(BList[indx].next))
             return OldPtr;
     void* ptr=BList[indx].remove();
     UnitsCpy(ptr,OldPtr,NU);                NU=Indx2Units[indx];
@@ -188,13 +205,13 @@ static inline void ExpandTextArea()
 {
     BLK_NODE* p;
     UINT Count[N_INDEXES];                  memset(Count,0,sizeof(Count));
-    while ((p=(BLK_NODE*) UnitsStart)->Stamp == ~0UL) {
+    while ((p=(BLK_NODE*) UnitsStart)->Stamp == ~0U) {
         MEM_BLK* pm=(MEM_BLK*) p;           UnitsStart=(BYTE*) (pm+pm->NU);
         Count[Units2Indx[pm->NU-1]]++;      pm->Stamp=0;
     }
     for (UINT i=0;i < N_INDEXES;i++)
-        for (p=BList+i;Count[i] != 0;p=p->next)
-            while ( !p->next->Stamp ) {
+        for (p=BList+i;Count[i] != 0;p=PP_BLK(p->next))
+            while ( !PP_BLK(p->next)->Stamp ) {
                 p->unlink();                BList[i].Stamp--;
                 if ( !--Count[i] )          break;
             }

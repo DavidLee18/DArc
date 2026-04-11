@@ -2,6 +2,7 @@
 ---- Процесс упаковки данных и служебной информации архива, и записи упакованных данных в архив.----
 ---- Вызывается из ArcCreate.hs                                                                 ----
 ----------------------------------------------------------------------------------------------------
+{-# LANGUAGE CPP #-}
 {-# LANGUAGE RecursiveDo #-}
 
 module ArcvProcessCompress where
@@ -12,6 +13,9 @@ import Control.Monad
 import Data.IORef
 import Foreign.C.Types
 import Foreign.Ptr
+import Foreign.Marshal.Alloc (mallocBytes, free)
+import Foreign.Marshal.Utils (copyBytes)
+import CompressionLib (compressMem, aFREEARC_OK, compressionErrorMessage)
 
 import Utils
 import Files
@@ -91,12 +95,63 @@ compressAndWriteToArchiveProcess archive command backdoor pipe = do
                                                          else return (id,id)
 
         -- Bind `times` before let so compressa is not in the same mdo rec-group
-        times <- uiStartDeCompression "compression"              -- создать структуру для учёта времени упаковки
+        (times :: MVar (Integer, String, [(String, Double, Int)])) <- uiStartDeCompression "compression"              -- создать структуру для учёта времени упаковки
 
         -- Процесс упаковки одним алгоритмом
         -- Последовательность процессов упаковки, соответствующая последовательности алгоритмов `real_compressor`
         let real_crypted_compressor = add_real_encryption real_compressor
-            compressa :: Pipe (PairFunc Instruction) (PairFunc (Ptr CChar, Int)) (PairFunc CompressionData) (PairFunc Int) -> IO ()
+#ifdef __MHS__
+        -- MicroHs: buffer-to-buffer compression, bypassing callback-based pipeline.
+        -- Collects all input DataChunks, then applies the method chain using compressMem.
+        let mhs_compress_block = do
+              (inBuf, (inSize :: Int)) <- mhsCollectFromPipe
+              let tryCompSz p inB (inS :: Int) (outSz :: Int) = do
+                    (outB :: Ptr CChar) <- mallocBytes (max outSz (1 :: Int))
+                    r <- compressMem p inB inS outB outSz
+                    if r == aFREEARC_ERRCODE_OUTBLOCK_TOO_SMALL
+                      then do free outB; tryCompSz p inB inS (outSz * 2)
+                      else return (outB, r)
+                  goChain [] inB (inS :: Int) = return (inB, inS)
+                  goChain (p:ps) inB (inS :: Int) = do
+                    let outSz = max (inS + inS) (65536 :: Int)
+                    (outB, (r :: Int)) <- tryCompSz p inB inS outSz
+                    free inB
+                    if r >= (aFREEARC_OK :: Int)
+                      then goChain ps outB r
+                      else do registerThreadError$ COMPRESSION_ERROR [compressionErrorMessage r, p]
+                              operationTerminated =: True
+                              return (outB, r)
+              (outBuf, (outSize :: Int)) <- goChain real_crypted_compressor inBuf inSize
+              when (outSize >= (aFREEARC_OK :: Int)) $ do
+                r <- write_to_archive (DataBuf outBuf outSize)
+                writeIORef result r
+              free outBuf
+            -- Reads DataChunk messages from pipe, copying data and acking each buffer.
+            mhsCollectFromPipe = mhsGo [] (0 :: Int)
+            mhsGo chunks total = do
+              x <- receiveP pipe
+              display x
+              update_crc x
+              case x of
+                DataChunk buf len -> do
+                  (chunk :: Ptr CChar) <- mallocBytes (max len (1 :: Int))
+                  copyBytes chunk buf len
+                  send_backP pipe (buf, len)  -- return producer's buffer to the pool
+                  mhsGo ((chunk, len) : chunks) (total + len)
+                DataEnd -> mhsPack chunks total
+                _ -> mhsGo chunks total
+            mhsPack chunks total = do
+              buf <- mallocBytes (max total (1 :: Int))
+              mhsFill buf (0 :: Int) (reverse chunks)
+              return (buf, total)
+            mhsFill _ _ [] = return ()
+            mhsFill buf off ((chunk, n) : rest) = do
+              copyBytes (buf `plusPtr` off) chunk n
+              free chunk
+              mhsFill buf (off + n) rest
+        let compress_f = if just_copy then copy_block else mhs_compress_block
+#else
+        let compressa :: Pipe (PairFunc Instruction) (PairFunc (Ptr CChar, Int)) (PairFunc CompressionData) (PairFunc Int) -> IO ()
             compressa = case real_crypted_compressor of
                           [m]  -> storingProcess |> de_compress_PROCESS freearcCompress times m 1
                           ms   -> storingProcess
@@ -110,6 +165,7 @@ compressAndWriteToArchiveProcess archive command backdoor pipe = do
                                                   (val result)
         -- Выбрать между процедурой упаковки и процедурой копирования целиком солид-блока из входного архива
         let compress_f  =  if just_copy  then copy_block  else compress_block
+#endif
 
         -- Упаковать один солид-блок
         pos_begin <- archiveGetPos archive
@@ -143,7 +199,7 @@ storingProcess pipe = do
                                       resend_data pipe (DataBuf buf len)
                                       send_backP pipe (buf,len)
       send  DataEnd             =  void (resend_data pipe NoMoreData)
-      send _                    =  return ()
+      send x                   =  return ()
 
   -- По окончании сообщим следующему процессу, что данных больше нет
   ensureCtrlBreak "send DataEnd" (send DataEnd)$ do

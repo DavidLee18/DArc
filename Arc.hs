@@ -25,7 +25,7 @@
 ----   Process          - для разделения алгоритма на параллельные взаимодействующие процессы   ----
 ----   Utils            - для всех остальных вспомогательных функций                            ----
 ----------------------------------------------------------------------------------------------------
-module Main where
+module Arc where
 
 import Prelude hiding (catch)
 import Control.Concurrent
@@ -91,9 +91,7 @@ doMain args  = do
 #else
     registerError$ GENERAL_ERROR$
 #endif
-      maybe (maybe [show ex] (\(ErrorCall s) -> [s]) (fromException ex))
-            (\Deadlock -> ["0011 No threads to run: infinite loop or deadlock?"])
-            (fromException ex :: Maybe Deadlock)
+      maybe (show ex) (\(ErrorCall s) -> s) (fromException ex) : []
 
 
 -- |Диспетчеризует команду и организует её повторение для каждого подходящего архива

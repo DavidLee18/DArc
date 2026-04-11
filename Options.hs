@@ -347,11 +347,16 @@ data DelOptions = NO_DELETE | DEL_FILES | DEL_FILES_AND_DIRS  deriving (Eq)
 ---------------------------------------------------------------------------------------------------
 
 -- |Метод сжатия данных
+#ifdef __MHS__
+-- MicroHs: use lzma directly; numeric presets like "4" expand to dict+lzp+ppmd
+-- for text files, and the PPMD C implementation crashes with compressMem.
+aDEFAULT_COMPRESSOR = "lzma"
+#else
 aDEFAULT_COMPRESSOR = "4"
+#endif
 
 -- |Метод сжатия каталога архива
--- Note: MicroHs mkCALL_BACK returns nullFunPtr so C-based compressors (lzma etc.) can't be used yet
-aDEFAULT_DIR_COMPRESSION = "storing"
+aDEFAULT_DIR_COMPRESSION = "lzma:bt4:1m"
 
 -- |Размер солид-блоков (один солид-блок на всех)
 aDEFAULT_DATA_GROUPING  =  ""
