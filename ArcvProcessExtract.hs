@@ -11,7 +11,6 @@ import Prelude hiding (catch)
 import Control.Exception
 import Control.Concurrent (MVar, Chan)
 import Control.Monad
-import System.IO (hPutStrLn, stderr)
 import Data.Int
 import Data.IORef
 import Data.Maybe
@@ -70,24 +69,21 @@ decompressBlock command cfile state count_cbytes pipe = mdo
       block       =  cfArcBlock   cfile'
       compressor  =  blCompressor block .$ limitDecompressionMemoryUsage (opt_limit_decompression_memory command)
       startPos  | compressor==aNO_COMPRESSION  =  pos  -- ��� -m0 �������� ������ �������� � ������ ������� � �����
-                | otherwise                    =  0
+                | otherwise                    =  (0 :: Integer)
   (state :: IORef (Integer, Integer, Integer)) =: (startPos, pos, size)
   archiveBlockSeek block startPos
   let compSize = blCompSize block - startPos
-  hPutStrLn stderr $ "[DBLK] compressor=" ++ show compressor ++ " startPos=" ++ show startPos ++ " compSize=" ++ show compSize ++ " fileSize=" ++ show size ++ " filePos=" ++ show pos
   bytesLeft <- ref compSize
 
   let reader buf size  =  do aBytesLeft <- val bytesLeft
-                             let bytes   = minI size aBytesLeft
-                             hPutStrLn stderr $ "[RDR] read req=" ++ show size ++ " bytesLeft=" ++ show aBytesLeft ++ " bytes=" ++ show bytes
+                             let bytes   = min size (fromIntegral aBytesLeft :: Int)
                              len        <- archiveBlockReadBuf block buf bytes
                              bytesLeft  -= i len
-                             hPutStrLn stderr $ "[RDR] read got=" ++ show len
                              count_cbytes  len
                              return len
 
   let writer (DataBuf buf len)  =  decompressStep cfile state pipe buf len
-      writer  NoMoreData        =  return 0
+      writer  NoMoreData        =  return (0 :: Int)
 
   -- �������� ���� � ������ ��������� ������������
   keyed_compressor <- generateDecryption compressor (opt_decryption_info command)
@@ -97,34 +93,37 @@ decompressBlock command cfile state count_cbytes pipe = mdo
   -- Создадим конвейер декомпрессии: последний метод цепочки читает первым, первый декодирует последним
   -- Bind `times` before let so decompressa is not in the same mdo rec-group,
   -- allowing GHC to generalise the Pipe element type over PipeElement.
-  times <- uiStartDeCompression "decompression"  -- ������� ��������� ��� ����� ������� ����������
+  (times :: MVar (Integer, String, [(String, Double, Int)])) <- uiStartDeCompression "decompression"  -- ������� ��������� ��� ����� ������� ����������
 #ifdef __MHS__
-  -- MicroHs: polymorphic let bindings with PipeElement not supported.
-  -- Only single-method decompression is supported; multi-method chains error at runtime.
-  result <- ref 0
-  let decompress1mhs :: CompressionMethod -> Pipe (PairFunc CompressionData) (PairFunc Int) (PairFunc CompressionData) (PairFunc Int) -> IO ()
-      decompress1mhs p innerPipe
-        | p == aSTORING || isFakeMethod p =
-            deCompressProcess1 freearcDecompress reader times p 0 innerPipe
-        | otherwise = do
-            -- Buffer-to-buffer decompression: read all compressed bytes first (no ffe_eval),
-            -- then call decompressMem (no callbacks), then feed output directly to writer.
-            (inBuf, inSize) <- collectInputMHS reader
-            hPutStrLn stderr $ "[MHS-DECOMP] method=" ++ p ++ " inSize=" ++ show inSize ++ " origSize=" ++ show (blOrigSize block)
-            let origSz = i (blOrigSize block)
-            outBuf <- mallocBytes (max origSz 1)
-            ret <- decompressMem p inBuf inSize outBuf origSz
-            free inBuf
-            hPutStrLn stderr $ "[MHS-DECOMP] decompressMem ret=" ++ show ret
-            if ret >= aFREEARC_OK
-              then do r <- writer (DataBuf outBuf ret)
-                      writeIORef result r
-              else do registerThreadError$ COMPRESSION_ERROR [compressionErrorMessage ret, p]
-                      operationTerminated =: True
-            free outBuf
-  case map fromJust keyed_compressor of
-    [p]    -> runFuncP (decompress1mhs p) (fail "decompressBlock::runFuncP" :: IO CompressionData) doNothing ((writer :: CompressionData -> IO Int) .>>= writeIORef result) (val result)
-    _      -> fail "decompressBlock: multi-method decompression not yet supported under MicroHs"
+  -- MicroHs: buffer-to-buffer decompression avoids ffe_eval re-entrancy.
+  -- Supports single and multi-method chains by chaining decompressMem calls.
+  result <- ref (0 :: Int)
+  let tryDecSz p inBuf (inSize :: Int) (outSz :: Int) = do
+        (outBuf :: Ptr CChar) <- mallocBytes (max outSz (1 :: Int))
+        ret <- decompressMem p inBuf inSize outBuf outSz
+        if ret == aFREEARC_ERRCODE_OUTBLOCK_TOO_SMALL
+          then do free outBuf; tryDecSz p inBuf inSize (outSz * 2)
+          else return (outBuf, ret)
+      -- Decompress a chain of methods; frees each intermediate inBuf.
+      go [] inBuf (inSize :: Int) = return (inBuf, inSize)
+      go (p:ps) inBuf (inSize :: Int) = do
+        let outSz = max (i (blOrigSize block)) (max (inSize * 2) (65536 :: Int))
+        (outBuf, ret) <- tryDecSz p inBuf inSize outSz
+        free inBuf
+        if ret >= (aFREEARC_OK :: Int)
+          then go ps outBuf ret
+          else do registerThreadError$ COMPRESSION_ERROR [compressionErrorMessage ret, p]
+                  operationTerminated =: True
+                  return (outBuf, ret)
+  let methods    = map fromJust keyed_compressor
+      -- Compression: [p1..pN] means p1 applied first; decompression reverses this.
+      decompOrder = reverse methods
+  (inBuf, inSize) <- collectInputMHS reader
+  (outBuf, (ret :: Int)) <- go decompOrder inBuf inSize
+  when (ret >= (aFREEARC_OK :: Int)) $ do
+    r <- writer (DataBuf outBuf ret)
+    writeIORef result r
+  free outBuf
 #else
   let
       decompress1 p = deCompressProcess1 freearcDecompress reader times p 0
@@ -137,7 +136,7 @@ decompressBlock command cfile state count_cbytes pipe = mdo
       decompressa [p1,p2] = decompress1 p2 |> decompressN p1
       decompressa (p1:ps) = decompress1 (last ps) |> foldl1 (|>) (map decompressN (tail (reverse ps))) |> decompressN p1
 
-  result <- ref 0   -- ���������� ����, ���������� � ��������� ������ writer
+  result <- ref (0 :: Int)   -- ���������� ����, ���������� � ��������� ������ writer
   runFuncP (decompressa (map fromJust keyed_compressor)) (fail "decompressBlock::runFuncP" :: IO CompressionData) doNothing ((writer :: CompressionData -> IO Int) .>>= writeIORef result) (val result)
 #endif
   uiFinishDeCompression times                    -- ������ � UI ������ ����� ��������
@@ -150,10 +149,10 @@ decompressBlock command cfile state count_cbytes pipe = mdo
 --   num - ����� �������� � ������� ��������� ��������
 deCompressProcess de_compress times comprMethod num pipe = do
   -- ���������� �� ������� ������, ���������� �� ����������� ��������, �� ��� �� ������������ �� ��������/����������
-  remains <- ref$ Just (error "undefined remains:buf0", error "undefined remains:srcbuf", 0)
+  remains <- ref$ Just (error "undefined remains:buf0", error "undefined remains:srcbuf", (0 :: Int))
   let
     -- ����������� ������ �� srcbuf � dstbuf � ���������� ������ ������������� ������
-    copyData prevlen dstbuf dstlen buf0 srcbuf srclen = do
+    copyData (prevlen :: Int) dstbuf (dstlen :: Int) buf0 srcbuf (srclen :: Int) = do
       let len = srclen `min` dstlen    -- ���������� - ������� ������ �� ����� ���������
       copyBytes dstbuf srcbuf len
       uiReadData num (i len)
@@ -165,29 +164,26 @@ deCompressProcess de_compress times comprMethod num pipe = do
          | otherwise   -> read_data (prevlen+len) (dstbuf+:len) (dstlen-len)    -- �������� ������� ������ ���������� ��������� ������
 
     -- �������� ��������� ���������� �� ������ ������� ������ � ���������� �
-    processNextInstruction prevlen dstbuf dstlen = do
-      hPutStrLn stderr $ "[PNI] waiting for instr, prevlen=" ++ show prevlen ++ " dstlen=" ++ show dstlen
+    processNextInstruction (prevlen :: Int) (dstbuf :: Ptr CChar) (dstlen :: Int) = do
       instr <- receiveP pipe
       case instr of
-        DataBuf srcbuf srclen  ->  do hPutStrLn stderr $ "[PNI] got DataBuf srclen=" ++ show srclen
-                                      copyData prevlen dstbuf dstlen srcbuf srcbuf srclen
-        NoMoreData             ->  do hPutStrLn stderr "[PNI] got NoMoreData"
-                                      remains =: Nothing;  return prevlen
+        DataBuf srcbuf srclen  ->  copyData prevlen dstbuf dstlen srcbuf srcbuf srclen
+        NoMoreData             ->  do remains =: Nothing;  return prevlen
 
     -- ��������� "������" ������� ������. �����, ����� ������ ����� � dstlen=0 �� ��������� ���������� ���� �� �������� ���� �� ���� ���� ������ �� ����������� ��������
-    read_data prevlen  -- ������� ������ ��� ���������
-              dstbuf   -- �����, ���� ����� ��������� ������� ������
-              dstlen   -- ������ ������
+    read_data (prevlen :: Int)  -- ������� ������ ��� ���������
+              (dstbuf :: Ptr CChar)   -- �����, ���� ����� ��������� ������� ������
+              (dstlen :: Int)   -- ������ ������
               = do     -- -> ��������� ������ ���������� ���������� ����������� ���� ��� 0, ���� ������ �����������
       remains' <- val remains
       case remains' of
         Just (buf0, srcbuf, srclen)                                       -- ���� ��� ���� ������, ���������� �� ����������� ��������
-         | srclen>0  ->  copyData prevlen dstbuf dstlen buf0 srcbuf srclen --  �� �������� �� ����������/������������
+         | srclen>(0 :: Int)  ->  copyData prevlen dstbuf dstlen buf0 srcbuf srclen --  �� �������� �� ����������/������������
          | otherwise ->  processNextInstruction prevlen dstbuf dstlen      --  ����� �������� �����
         Nothing      ->  return prevlen                                    -- ���� solid-���� ����������, ������ ������ ���
 
   -- ��������� ������ ������� ������ �������� ��������/���������� (���������� ���� �������, � ������� �� ����������� read_data)
-  let reader dstbuf dstlen  =  read_data 0 dstbuf dstlen
+  let reader dstbuf dstlen  =  read_data (0 :: Int) dstbuf dstlen
 
 #ifdef __MHS__
   -- MicroHs: for real compression methods (not storing/fake), use buffer-to-buffer
@@ -196,18 +192,16 @@ deCompressProcess de_compress times comprMethod num pipe = do
     then deCompressProcess1 de_compress reader times comprMethod num pipe
     else do
       (inBuf, inSize) <- collectInputMHS reader
-      hPutStrLn stderr $ "[MHS-COMPRESS] method=" ++ comprMethod ++ " inSize=" ++ show inSize
-      let tryCompress outSz = do
-            outBuf <- mallocBytes outSz
+      let tryCompress (outSz :: Int) = do
+            (outBuf :: Ptr CChar) <- mallocBytes outSz
             ret <- compressMem comprMethod inBuf inSize outBuf outSz
             if ret == aFREEARC_ERRCODE_OUTBLOCK_TOO_SMALL
               then do free outBuf; tryCompress (outSz * 2)
               else return (outBuf, ret)
-      (outBuf, ret) <- tryCompress (max (inSize + 2*1024*1024) 65536)
+      (outBuf, ret) <- tryCompress (max (inSize + 2*1024*1024) (65536 :: Int))
       free inBuf
-      hPutStrLn stderr $ "[MHS-COMPRESS] compressMem ret=" ++ show ret
       uiDeCompressionTime times (comprMethod, (0.0 :: Double), i ret)
-      if ret >= aFREEARC_OK
+      if ret >= (aFREEARC_OK :: Int)
         then do
           uiWriteData num (i ret)
           -- Send compressed output to archive via the forward channel.
@@ -240,24 +234,16 @@ deCompressProcess1 de_compress reader times comprMethod num pipe = do
       -- ��� ����������� ������. �������� ��������� ����� int64* ptr
       callback "quasiwrite" ptr size = do bytes <- peek (castPtr ptr::Ptr Int64) >>==i
                                           uiQuasiWriteData num bytes
-                                          return aFREEARC_OK
+                                          return (aFREEARC_OK :: Int)
       -- ���������� � ������ ������� ���������� ��������/����������
-      callback "time" ptr 0 = do t <- peek (castPtr ptr::Ptr CDouble) >>==realToFrac
-                                 time' =: t
-                                 return aFREEARC_OK
+      callback "time" ptr (0 :: Int) = do t <- peek (castPtr ptr::Ptr CDouble) >>==realToFrac
+                                          time' =: t
+                                          return (aFREEARC_OK :: Int)
       -- ������ (����������������) callbacks
-      callback _ _ _ = return aFREEARC_ERRCODE_NOT_IMPLEMENTED
-
-      -- Debugging wrapper (callback has type String -> Ptr CChar -> Int -> IO Int)
-      debug f what buf size = do
-        hPutStrLn stderr $ "[DCP] callback: " ++ what ++ " size=" ++ show size
-        r <- f what buf size
-        hPutStrLn stderr $ "[DCP] callback done: " ++ what ++ " -> " ++ show r
-        return r
+      callback _ _ _ = return (aFREEARC_ERRCODE_NOT_IMPLEMENTED :: Int)
 
   -- ���������� �������� ��� ����������
-  result <- de_compress num comprMethod (debug callback)
-  debug callback "finished" nullPtr result
+  result <- de_compress num comprMethod callback
   -- ����������
   total <- val total'
   time  <- val time'
@@ -268,7 +254,7 @@ deCompressProcess1 de_compress reader times comprMethod num pipe = do
       registerThreadError$ COMPRESSION_ERROR [compressionErrorMessage result, comprMethod]
       operationTerminated =: True
   -- ������� ����������� ��������, ��� ������ ������ �� �����, � ���������� - ��� ������ ������ ���
-  send_backP  pipe aFREEARC_ERRCODE_NO_MORE_DATA_REQUIRED
+  send_backP  pipe (aFREEARC_ERRCODE_NO_MORE_DATA_REQUIRED :: Int)
   resendData pipe NoMoreData
   return ()
 
@@ -291,31 +277,28 @@ deCompressProcess1 de_compress reader times comprMethod num pipe = do
 --
 decompressStep (cfile :: IORef FileToCompress) (state :: IORef (Integer, Integer, Integer)) pipe buf len = do
   (block_pos, pos, size) <- (val state :: IO (Integer, Integer, Integer))
-  if block_pos<0   -- ������, ��� ����������� �� ������� ��������, ��� �� ����� ������� � ������� ����� ������
-    then return aFREEARC_ERRCODE_NO_MORE_DATA_REQUIRED   -- ������, ��������, ���� �� �����������. ������������: fail$ "Block isn't changed!!!"
+  if block_pos<(0 :: Integer)   -- ������, ��� ����������� �� ������� ��������, ��� �� ����� ������� � ������� ����� ������
+    then return (aFREEARC_ERRCODE_NO_MORE_DATA_REQUIRED :: Int)   -- ������, ��������, ���� �� �����������. ������������: fail$ "Block isn't changed!!!"
     else do
   let skip_bytes = min (pos-block_pos) (i len)   -- ���������� ������ ���������� ������ � ������ ������
       data_start = buf +: skip_bytes             -- ������ ������, ������������� ���������������� �����
       data_size  = min size (i len-skip_bytes)   -- ���-�� ����, ������������� ���������������� �����
       block_end  = block_pos+i len               -- ������� � �����-�����, ��������������� ����� ����������� ������
-  when (data_size>0) $ do    -- ���� � ������ ������� ������, ������������� ���������������� �����
-    hPutStrLn stderr $ "[DS] sendP pipe data_size=" ++ show data_size
+  when (data_size>(0 :: Integer)) $ do    -- ���� � ������ ������� ������, ������������� ���������������� �����
     sendP pipe (data_start, i data_size)  -- �� ������� ��� ������ �� ������ ����� �����������
-    hPutStrLn stderr "[DS] waiting receive_backP"
     receive_backP pipe                    -- �������� ������������� ����, ��� ������ ���� ������������
-    hPutStrLn stderr "[DS] receive_backP done"
   state =: (block_end, pos+data_size, size-data_size)
   if data_size<size     -- ���� ���� ��� �� ���������� ���������
     then return len     -- �� ���������� ���������� �����
     else do             -- ����� ��������� � ���������� ������� �� ����������
-  sendP pipe (error "End of decompressed data", aFREEARC_ERRCODE_NO_MORE_DATA_REQUIRED)
+  sendP pipe (error "End of decompressed data", (aFREEARC_ERRCODE_NO_MORE_DATA_REQUIRED :: Int))
   old_block  <-  cfArcBlock ==<< val cfile
   cmd <- receiveP pipe
   case cmd of
     Nothing -> do  -- ��� ��������� ��������, ��� ������ ������� ������ �� ����� ���������� �� ��������� � �� ������ ���� ��������
       state =: (aStopDecompressThread, error "undefined state.pos", error "undefined state.size")
       cfile =: error "undefined cfile"
-      return aFREEARC_ERRCODE_NO_MORE_DATA_REQUIRED
+      return (aFREEARC_ERRCODE_NO_MORE_DATA_REQUIRED :: Int)
 
     Just cfile' -> do
       cfile =: cfile'
@@ -324,8 +307,8 @@ decompressStep (cfile :: IORef FileToCompress) (state :: IORef (Integer, Integer
           block  =  cfArcBlock cfile'
       if block/=old_block || pos<block_pos  -- ���� ����� ���� ��������� � ������ ����� ��� � ����, �� ������
            || (pos>block_end && blCompressor block==aNO_COMPRESSION)   -- ��� �� ������������� ����, ������ � -m0, � � ��� ���� ����������� ���������� ����� ������
-        then do state =: (-1, error "undefined state.pos", error "undefined state.size")
-                return aFREEARC_ERRCODE_NO_MORE_DATA_REQUIRED   -- ������� ����, ��� ����� ��������� ���������� ����� �����
+        then do state =: (-1 :: Integer, error "undefined state.pos", error "undefined state.size")
+                return (aFREEARC_ERRCODE_NO_MORE_DATA_REQUIRED :: Int)   -- ������� ����, ��� ����� ��������� ���������� ����� �����
         else do state =: (block_pos, pos, size)            -- ����� ���������� ���������� �����,
                 decompressStep cfile state pipe buf len   -- ��� � ��������� ���������� ������ �����
 
@@ -348,17 +331,17 @@ resendData pipe x@NoMoreData  =  sendP pipe x  >>  return 0
 -- |Collect all input data into a single malloc'd buffer by calling reader repeatedly.
 -- Used for buffer-to-buffer compression/decompression to avoid ffe_eval re-entrancy in MicroHs.
 collectInputMHS :: (Ptr CChar -> Int -> IO Int) -> IO (Ptr CChar, Int)
-collectInputMHS reader = go [] 0
+collectInputMHS reader = go [] (0 :: Int)
   where
-    chunkSize = 65536
+    chunkSize = 65536 :: Int
     go chunks total = do
       chunk <- mallocBytes chunkSize
       n <- reader chunk chunkSize
-      if n <= 0
+      if n <= (0 :: Int)
         then do
           free chunk
-          buf <- mallocBytes (max total 1)
-          fillBuf buf 0 (reverse chunks)
+          buf <- mallocBytes (max total (1 :: Int))
+          fillBuf buf (0 :: Int) (reverse chunks)
           mapM_ (free . fst) chunks
           return (buf, total)
         else go ((chunk, n) : chunks) (total + n)

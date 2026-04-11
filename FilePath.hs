@@ -1,4 +1,4 @@
-{-# OPTIONS_GHC -cpp #-}
+{-# LANGUAGE CPP #-}
 {- |
 Module      :  System.FilePath
 Copyright   :  (c) Neil Mitchell 2005-2007

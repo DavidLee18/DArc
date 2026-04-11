@@ -15,8 +15,9 @@ import Foreign.C.Types
 import Foreign.C.String
 import Foreign.Marshal.Alloc
 import Numeric
+import System.IO
 import System.IO.Unsafe
-import System.Posix.Internals
+import System.Posix.Internals hiding (stat_mode)
 
 import Process
 import Utils

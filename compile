@@ -1,3 +1,4 @@
+#!/usr/bin/env bash
 exe=Tests/arc
 gui_flag=""
 for option; do
@@ -20,7 +21,7 @@ cd Compression
 chmod +x compile
 ./compile
 cd ..
-make ALL
+make ALL DEFINES="-DFREEARC_UNIX -DFREEARC_INTEL_BYTE_ORDER $bit64 -D__MHS__"
 lua_libs=$(pkg-config --libs lua5.1 2>/dev/null || echo "-llua5.1")
 if pkg-config --exists libcurl 2>/dev/null; then
   curl_libs=$(pkg-config --libs libcurl)
@@ -42,10 +43,16 @@ if ! command -v mhs >/dev/null 2>&1; then
   echo "error: mhs (MicroHs) is required for Haskell compilation but was not found in PATH" >&2
   exit 1
 fi
-# Let the mhs C backend link the already-built C objects/libraries.
-export MHSEXTRACCFLAGS="$c_objs $c_libs -I. -ICompression -IHsLua/src $lua_cflags"
+# Build -optc and -optl flags for the mhs C backend
+optc_args="-optc -I. -optc -ICompression -optc -IHsLua/src"
+for f in $lua_cflags; do optc_args="$optc_args -optc $f"; done
+optl_args=""
+for o in $c_objs; do optl_args="$optl_args -optl $o"; done
+for l in $c_libs; do optl_args="$optl_args -optl $l"; done
 mhs Arc \
   -iCompression -icompat-ghc -iHsLua/src \
   $defines $gui_flag \
+  $optc_args \
+  $optl_args \
   -o$exe
 rm -f Compression/CompressionLib_stub.?

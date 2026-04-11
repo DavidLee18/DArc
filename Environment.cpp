@@ -7,6 +7,7 @@
 #include "Environment.h"
 #include "Compression/Compression.h"
 
+
 // Изменим настройки RTS, включив compacting GC начиная с 40 mb:
 char *ghc_rts_opts = "-c1 -M4000m";
 
@@ -574,3 +575,263 @@ int systemRandomData (char *rand_buf, int rand_size)
 *
 ****************************************************************************/
 
+/****************************************************************************
+*  SIGINT helpers for the System.Posix.Signals MicroHs shim                *
+*  darc_install_sigint / darc_check_sigint / darc_clear_sigint             *
+****************************************************************************/
+#ifndef FREEARC_WIN
+#include <signal.h>
+#include <stdint.h>
+
+static volatile int darc_sigint_fired = 0;
+
+static void darc_sigint_handler(int) {
+    darc_sigint_fired = 1;
+    /* Reinstall so the next Ctrl-C also fires (mirrors CatchOnce behaviour
+       managed from the Haskell side). */
+    signal(SIGINT, darc_sigint_handler);
+}
+
+extern "C" void darc_install_sigint(void) {
+    signal(SIGINT, darc_sigint_handler);
+}
+
+extern "C" int darc_check_sigint(void) {
+    return darc_sigint_fired;
+}
+
+extern "C" void darc_clear_sigint(void) {
+    darc_sigint_fired = 0;
+}
+#endif // !FREEARC_WIN
+
+/****************************************************************************
+*  MicroHs compat helpers: stat accessors and processor count              *
+****************************************************************************/
+#ifndef FREEARC_WIN
+#include <sys/stat.h>
+#include <unistd.h>
+
+extern "C" int darc_sizeof_stat(void) {
+    return (int)sizeof(struct stat);
+}
+
+extern "C" unsigned int darc_st_mode(struct stat *p) {
+    return (unsigned int)p->st_mode;
+}
+
+// realpath wrapper: returns 0 on success, -1 on failure
+extern "C" int darc_realpath(const char *path, char *out) {
+    char *r = realpath(path, out);
+    return r ? 0 : -1;
+}
+
+extern "C" int darc_utimes(const char *path, long atime, long mtime) {
+    struct utimbuf ut;
+    ut.actime  = (time_t)atime;
+    ut.modtime = (time_t)mtime;
+    return utime(path, &ut);
+}
+
+extern "C" long darc_st_size(struct stat *p) {
+    return (long)p->st_size;
+}
+
+extern "C" long darc_st_mtime(struct stat *p) {
+    return (long)p->st_mtime;
+}
+
+/****************************************************************************
+*  Handle IO helpers for MicroHs (hSeek, hTell, hFileSize, hSetFileSize)   *
+*  BFILE_file layout: BFILE (7 fn ptrs = 56 bytes) + FILE* at offset 56    *
+****************************************************************************/
+#include <stdio.h>
+
+static FILE* bfile_to_file(void *bf) {
+    /* The FILE* is at offset 56 (sizeof(BFILE) = 7 * sizeof(void*)) */
+    return *(FILE**)((char*)bf + 7 * sizeof(void*));
+}
+
+extern "C" int darc_bfile_seek(void *bf, long offset, int whence) {
+    FILE *f = bfile_to_file(bf);
+    if (!f) return -1;
+    return fseek(f, offset, whence);
+}
+
+extern "C" long darc_bfile_tell(void *bf) {
+    FILE *f = bfile_to_file(bf);
+    if (!f) return -1;
+    return ftell(f);
+}
+
+extern "C" long darc_bfile_size(void *bf) {
+    FILE *f = bfile_to_file(bf);
+    if (!f) return -1;
+    long pos = ftell(f);
+    fseek(f, 0, SEEK_END);
+    long size = ftell(f);
+    fseek(f, pos, SEEK_SET);
+    return size;
+}
+
+extern "C" int darc_bfile_truncate(void *bf, long size) {
+    FILE *f = bfile_to_file(bf);
+    if (!f) return -1;
+    fflush(f);
+    int fd = fileno(f);
+    return ftruncate(fd, (off_t)size);
+}
+
+extern "C" long darc_bfile_read(void *bf, void *buf, long size) {
+    FILE *f = bfile_to_file(bf);
+    if (!f) return -1;
+    return (long)fread(buf, 1, (size_t)size, f);
+}
+
+extern "C" long darc_bfile_write(void *bf, const void *buf, long size) {
+    FILE *f = bfile_to_file(bf);
+    if (!f) return -1;
+    return (long)fwrite(buf, 1, (size_t)size, f);
+}
+
+extern "C" int darc_get_nprocs(void) {
+    long n = sysconf(_SC_NPROCESSORS_ONLN);
+    return (n > 0) ? (int)n : 1;
+}
+
+/****************************************************************************
+*  System.Time helpers for the MicroHs shim                                *
+*  Uses a flat int[10] layout: sec,min,hour,mday,mon,year,wday,yday,isdst,gmtoff_min
+****************************************************************************/
+#include <time.h>
+
+static void tm_to_flat(struct tm *t, int *out) {
+    out[0] = t->tm_sec;
+    out[1] = t->tm_min;
+    out[2] = t->tm_hour;
+    out[3] = t->tm_mday;
+    out[4] = t->tm_mon;
+    out[5] = t->tm_year;
+    out[6] = t->tm_wday;
+    out[7] = t->tm_yday;
+    out[8] = t->tm_isdst;
+#ifdef __linux__
+    out[9] = (int)(t->tm_gmtoff / 60);
+#else
+    out[9] = 0;
+#endif
+}
+
+static void flat_to_tm(int *in, struct tm *t) {
+    t->tm_sec   = in[0];
+    t->tm_min   = in[1];
+    t->tm_hour  = in[2];
+    t->tm_mday  = in[3];
+    t->tm_mon   = in[4];
+    t->tm_year  = in[5];
+    t->tm_wday  = in[6];
+    t->tm_yday  = in[7];
+    t->tm_isdst = in[8];
+}
+
+extern "C" long darc_time(void) {
+    return (long)time(NULL);
+}
+
+extern "C" void darc_localtime(long secs, int *out) {
+    time_t t = (time_t)secs;
+    struct tm buf;
+    struct tm *r = localtime_r(&t, &buf);
+    if (r) tm_to_flat(r, out);
+}
+
+extern "C" void darc_gmtime(long secs, int *out) {
+    time_t t = (time_t)secs;
+    struct tm buf;
+    struct tm *r = gmtime_r(&t, &buf);
+    if (r) tm_to_flat(r, out);
+}
+
+extern "C" long darc_mktime_tz(int year, int mon, int mday, int hour, int min, int sec, int gmtoff_min) {
+    struct tm t = {};
+    t.tm_year  = year;
+    t.tm_mon   = mon;
+    t.tm_mday  = mday;
+    t.tm_hour  = hour;
+    t.tm_min   = min;
+    t.tm_sec   = sec;
+    t.tm_isdst = -1;
+    /* Adjust for timezone offset */
+    time_t r = mktime(&t);
+    r -= (time_t)(gmtoff_min * 60);
+    /* Add local UTC offset back */
+    struct tm local_check;
+    localtime_r(&r, &local_check);
+#ifdef __linux__
+    r += local_check.tm_gmtoff;
+#endif
+    return (long)r;
+}
+
+extern "C" void darc_fill_tm(int *out, int sec, int min_, int hour, int mday, int mon,
+                              int year, int wday, int yday, int isdst, int gmtoff_min) {
+    out[0] = sec; out[1] = min_; out[2] = hour; out[3] = mday;
+    out[4] = mon; out[5] = year; out[6] = wday; out[7] = yday;
+    out[8] = isdst; out[9] = gmtoff_min;
+}
+
+extern "C" int darc_strftime(char *buf, size_t size, const char *fmt, int *flat_tm) {
+    struct tm t = {};
+    flat_to_tm(flat_tm, &t);
+    return (int)strftime(buf, size, fmt, &t);
+}
+#endif // !FREEARC_WIN
+
+
+// ============================================================
+// MicroHs callback-wrapper support
+// Since MicroHs cannot create C function pointers from Haskell
+// closures, we use a global slot mechanism. The Haskell side
+// stores a "packed" read/write pair in these globals before
+// calling the C compression function, which uses
+// darc_cb_read / darc_cb_write as its callback functions.
+// ============================================================
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+// Slot-0 callback: stores a C function pointer + opaque data
+// These are set by darc_set_callback and called by darc_invoke_callback.
+typedef int (*DarcCallback)(const char *what, char *buf, int size, void *auxdata);
+static DarcCallback g_darc_cb[16] = {};
+static void        *g_darc_cb_data[16] = {};
+
+void darc_set_callback(int slot, void *fn, void *data) {
+    if (slot >= 0 && slot < 16) {
+        g_darc_cb[slot]      = (DarcCallback)fn;
+        g_darc_cb_data[slot] = data;
+    }
+}
+
+int darc_invoke_callback(int slot, const char *what, char *buf, int size) {
+    if (slot >= 0 && slot < 16 && g_darc_cb[slot])
+        return g_darc_cb[slot](what, buf, size, g_darc_cb_data[slot]);
+    return -1;
+}
+
+#ifdef __MHS__
+// MicroHs: forward-declare the Haskell-exported callback function so that
+// darc_get_haskell_callback_ptr can return its address at link time.
+// darc_haskell_callback is generated by MicroHs from the 'foreign export ccall' declaration
+// in CompressionLib.hs.  The exact C signature uses intptr_t because MicroHs maps CInt -> Int.
+#include <stdint.h>
+extern intptr_t darc_haskell_callback(void *cwhat, void *buf, intptr_t size, void *auxdata);
+
+void *darc_get_haskell_callback_ptr(void) {
+    return (void *)&darc_haskell_callback;
+}
+#endif
+
+#ifdef __cplusplus
+}
+#endif

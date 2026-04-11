@@ -1,4 +1,4 @@
-{-# OPTIONS_GHC -cpp #-}
+{-# LANGUAGE CPP #-}
 ----------------------------------------------------------------------------------------------------
 ---- Получение и хранение информации о файлах, поиск файлов на диске.                           ----
 ----------------------------------------------------------------------------------------------------
@@ -17,7 +17,7 @@ import Data.Maybe
 import Data.Word
 import Foreign.C
 import System.IO.Unsafe
-import System.Posix.Internals
+import System.Posix.Internals hiding (stat_mode)
 
 import Utils
 import Process

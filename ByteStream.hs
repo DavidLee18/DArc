@@ -98,8 +98,9 @@ createFile filename size = do
 -- Данные, накапливаемые в буфере, сплавлять наружу функцией `writer`
 createBuffered size writer closer = do
   buf <- mallocBytes size
-  let sendBuf buf size = writer buf
-  create (return (buf,size)) sendBuf (free buf >> closer)
+  let buf' = castPtr buf
+      sendBuf b sz = writer b
+  create (return (buf',size)) sendBuf (free buf >> closer)
 
 -- |Создать выходной поток, выделив для него буфер размером `size` байт.
 -- Данные, накапливаемые в буфере, сплавлять наружу функцией `writer`
@@ -195,7 +196,7 @@ openFile filename _size = do
   filesize <- fileGetSize file   -- temporary solution
   let size  = 8 + i filesize     -- ditto
   buf      <- mallocBytes size
-  let receiveBuf = do len <- fileReadBuf file buf size;  return (buf, len)
+  let receiveBuf = do len <- fileReadBuf file buf size;  return (castPtr buf, len)
       sendBuf buf size len  =  return ()
   open receiveBuf sendBuf (free buf >> fileClose file)
 
@@ -301,11 +302,13 @@ class BufferData a where
 
 
 -- Утвердить на должности процедуры класса FastBufferData, выполняющие функции процедур класса BufferData :)
-instance (FastBufferData a) => BufferData a where
+#ifndef __MHS__
+instance {-# OVERLAPPABLE #-} (FastBufferData a) => BufferData a where
   write     = writeFast
   writeList = writeListFast
   read      = readFast
   readList  = readListFast
+#endif
 
 
 -- |Элементы этого класса могут ОЧЕНЬ БЫСТРО записываться в выходной буфер и читаться из входного
@@ -387,6 +390,7 @@ class FastBufferData a where
 
 -- Любая инстанция класса Storable автоматически становится инстанцией класса FastBufferData:
 -- мы знаем, сколько данные такого типа занимают байт, и как записать их в память/прочитать из памяти
+#ifndef __MHS__
 instance (Storable a) => FastBufferData a where
   maxSizeOf = sizeOf
   writeUnchecked buf x pos = do
@@ -395,10 +399,40 @@ instance (Storable a) => FastBufferData a where
   readUnchecked buf pos = do
     x <- peekByteOff buf pos
     return (x, pos + sizeOf x)
-
+#else
+-- MicroHs: explicit FastBufferData instances for storable types
+instance FastBufferData Word8 where
+  maxSizeOf _ = 1
+  writeUnchecked buf x pos = do { pokeByteOff buf pos x; return (pos + 1) }
+  readUnchecked  buf pos   = do { x <- peekByteOff buf pos; return (x, pos + 1) }
+instance FastBufferData Word16 where
+  maxSizeOf _ = 2
+  writeUnchecked buf x pos = do { pokeByteOff buf pos x; return (pos + 2) }
+  readUnchecked  buf pos   = do { x <- peekByteOff buf pos; return (x, pos + 2) }
+instance FastBufferData Word32 where
+  maxSizeOf _ = 4
+  writeUnchecked buf x pos = do { pokeByteOff buf pos x; return (pos + 4) }
+  readUnchecked  buf pos   = do { x <- peekByteOff buf pos; return (x, pos + 4) }
+instance FastBufferData Word64 where
+  maxSizeOf _ = 8
+  writeUnchecked buf x pos = do { pokeByteOff buf pos x; return (pos + 8) }
+  readUnchecked  buf pos   = do { x <- peekByteOff buf pos; return (x, pos + 8) }
+instance FastBufferData Int where
+  maxSizeOf _ = 8
+  writeUnchecked buf x pos = do { pokeByteOff buf pos x; return (pos + 8) }
+  readUnchecked  buf pos   = do { x <- peekByteOff buf pos; return (x, pos + 8) }
+instance FastBufferData Int32 where
+  maxSizeOf _ = 4
+  writeUnchecked buf x pos = do { pokeByteOff buf pos x; return (pos + 4) }
+  readUnchecked  buf pos   = do { x <- peekByteOff buf pos; return (x, pos + 4) }
+instance FastBufferData Int64 where
+  maxSizeOf _ = 8
+  writeUnchecked buf x pos = do { pokeByteOff buf pos x; return (pos + 8) }
+  readUnchecked  buf pos   = do { x <- peekByteOff buf pos; return (x, pos + 8) }
+#endif
 
 -- Символы записываются в UTF-8
-instance BufferData Char where
+instance {-# OVERLAPPING #-} BufferData Char where
   write buf c  =  writeList buf (toUTF8List [c])
   read  buffer@(InStream buf _ pos _) = do
     buf' <- val buf
@@ -407,7 +441,7 @@ instance BufferData Char where
 
 
 -- Строка записывается как обычный список символов, но с нулевым символом в конце (в стиле Си)
-instance BufferData String where
+instance {-# OVERLAPPING #-} BufferData String where
   write buf str  =  writeList buf (toUTF8List str)  >>  write buf (0::Word8)
   read  buffer@(InStream buf _ pos _) = do
     buf' <- val buf
@@ -489,6 +523,67 @@ instance FastBufferData Bool where
 ---- Реализации для составных типов данных ---------------------------------------------------------
 ----------------------------------------------------------------------------------------------------
 
+#ifdef __MHS__
+-- MicroHs doesn't support overlapping instances, so we provide explicit BufferData
+-- instances for the concrete types that GHC handles via (FastBufferData a) => BufferData a.
+instance BufferData Word8 where
+  write     = writeFast; writeList = writeListFast
+  read      = readFast;  readList  = readListFast
+instance BufferData Word16 where
+  write     = writeFast; writeList = writeListFast
+  read      = readFast;  readList  = readListFast
+instance BufferData Word32 where
+  write     = writeFast; writeList = writeListFast
+  read      = readFast;  readList  = readListFast
+instance BufferData Word64 where
+  write     = writeFast; writeList = writeListFast
+  read      = readFast;  readList  = readListFast
+instance BufferData Int where
+  write     = writeFast; writeList = writeListFast
+  read      = readFast;  readList  = readListFast
+instance BufferData Int32 where
+  write     = writeFast; writeList = writeListFast
+  read      = readFast;  readList  = readListFast
+instance BufferData Int64 where
+  write     = writeFast; writeList = writeListFast
+  read      = readFast;  readList  = readListFast
+instance BufferData Bool where
+  write     = writeFast; writeList = writeListFast
+  read      = readFast;  readList  = readListFast
+instance BufferData Integer where
+  write     = writeFast; writeList = writeListFast
+  read      = readFast;  readList  = readListFast
+-- C numeric types (via FastBufferData):
+instance FastBufferData CUInt where
+  maxSizeOf _ = 4
+  writeUnchecked buf (CUInt x) pos = do { pokeByteOff buf pos (fromIntegral x :: Word32); return (pos + 4) }
+  readUnchecked  buf pos   = do { (x :: Word32) <- peekByteOff buf pos; return (CUInt (fromIntegral x), pos + 4) }
+instance BufferData CUInt where
+  write     = writeFast; writeList = writeListFast
+  read      = readFast;  readList  = readListFast
+instance FastBufferData CInt where
+  maxSizeOf _ = 4
+  writeUnchecked buf (CInt x) pos = do { pokeByteOff buf pos (fromIntegral x :: Int32); return (pos + 4) }
+  readUnchecked  buf pos   = do { (x :: Int32) <- peekByteOff buf pos; return (CInt (fromIntegral x), pos + 4) }
+instance BufferData CInt where
+  write     = writeFast; writeList = writeListFast
+  read      = readFast;  readList  = readListFast
+instance FastBufferData CSize where
+  maxSizeOf _ = 8
+  writeUnchecked buf (CSize x) pos = do { pokeByteOff buf pos (fromIntegral x :: Word64); return (pos + 8) }
+  readUnchecked  buf pos   = do { (x :: Word64) <- peekByteOff buf pos; return (CSize (fromIntegral x), pos + 8) }
+instance BufferData CSize where
+  write     = writeFast; writeList = writeListFast
+  read      = readFast;  readList  = readListFast
+instance FastBufferData CTime where
+  maxSizeOf _ = 8
+  writeUnchecked buf (CTime x) pos = do { pokeByteOff buf pos x; return (pos + 8) }
+  readUnchecked  buf pos   = do { (x :: Int) <- peekByteOff buf pos; return (CTime x, pos + 8) }
+instance BufferData CTime where
+  write     = writeFast; writeList = writeListFast
+  read      = readFast;  readList  = readListFast
+#endif
+
 -- |Функции, позволяющие записывать значения любых целочисленных типов в формате с переменной длиной
 writeInteger buf  =  write buf . toInteger
 readInteger  buf  =  fromInteger <$> read buf
@@ -517,7 +612,7 @@ readBoundList buf max n =
       | otherwise                                      ->  readList buf n
 -}
 
-instance (BufferData a) => BufferData [a]  where
+instance {-# OVERLAPPABLE #-} (BufferData a) => BufferData [a]  where
   write buf list  =  writeInteger buf (length list)  >>  mapM_ (write buf) list
   read  buf       =  readInteger  buf                >>=  readList  buf
 
