@@ -834,6 +834,24 @@ extern "C" void darc_urandom_read_w(void *buf, long size, long *out) {
     *out = darc_urandom_read(buf, size);
 }
 
+/* FreeArc 0.67 --shutdown / -ioff: power off the machine. */
+extern "C" void PowerOffComputer(void) {
+#ifdef FREEARC_WIN
+    HANDLE hToken;
+    TOKEN_PRIVILEGES tkp;
+    if (!OpenProcessToken(GetCurrentProcess(),
+            TOKEN_ADJUST_PRIVILEGES | TOKEN_QUERY, &hToken)) return;
+    LookupPrivilegeValue(NULL, SE_SHUTDOWN_NAME, &tkp.Privileges[0].Luid);
+    tkp.PrivilegeCount = 1;
+    tkp.Privileges[0].Attributes = SE_PRIVILEGE_ENABLED;
+    AdjustTokenPrivileges(hToken, FALSE, &tkp, 0, (PTOKEN_PRIVILEGES)NULL, 0);
+    ExitWindowsEx(EWX_POWEROFF | EWX_FORCE, 0);
+#else
+    int r = system("shutdown -h now");
+    (void)r;
+#endif
+}
+
 /****************************************************************************
 *  System.Time helpers for the MicroHs shim                                *
 *  Uses a flat int[10] layout: sec,min,hour,mday,mon,year,wday,yday,isdst,gmtoff_min

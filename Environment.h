@@ -63,6 +63,9 @@ void darc_extract_solid_block_w(
 void *darc_get_haskell_callback_ptr(void);
 #endif
 
+// FreeArc 0.67 --shutdown / -ioff: power off the machine after archive op.
+void PowerOffComputer(void);
+
 #ifdef  __cplusplus
 }
 #endif

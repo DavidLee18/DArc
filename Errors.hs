@@ -134,6 +134,9 @@ shutdown msg exitCode = do
     ignoreErrors$ hFlush stdout
     ignoreErrors$ hFlush stderr
 
+    -- FreeArc 0.67 --shutdown: turn off computer when done
+    whenM (val perform_shutdown) $ ignoreErrors powerOffComputer
+
   -- And finally - exit program!
   exit (exitCode  |||  (w &&& aEXIT_CODE_WARNINGS))
 #if 0
@@ -193,6 +196,13 @@ operationTerminated = unsafePerformIO (ref False)
 -- |Предотвращает повторное выполнение финализации после паузы
 programFinished = unsafePerformIO (ref False)
 {-# NOINLINE programFinished #-}
+
+-- |FreeArc 0.67 --shutdown: выключить компьютер после завершения операции
+perform_shutdown = unsafePerformIO (ref False)
+{-# NOINLINE perform_shutdown #-}
+
+foreign import ccall unsafe "PowerOffComputer"
+  powerOffComputer :: IO ()
 
 -- |Режим работы файл-менеджера: при этом registerError обрабатывается по-другому - мы дожидаемся завершения всех тредов упаковки и распаковки
 fileManagerMode = unsafePerformIO (ref False)
