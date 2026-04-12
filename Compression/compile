@@ -32,6 +32,9 @@ cd ..
 cd BSC
 make
 cd ..
+cd DisPack
+make
+cd ..
 cd LZMA
 make
 cd ..
