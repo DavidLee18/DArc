@@ -15,6 +15,7 @@ import Foreign.C.String
 import Foreign.C.Types
 import Foreign.Marshal.Alloc
 import Foreign.Ptr
+import Foreign.Storable (peek)
 import System.IO
 import System.IO.Unsafe
 
@@ -155,10 +156,13 @@ foreign import ccall unsafe "Environment.h systemRandomData"
   c_systemRandomData :: Ptr CChar -> CInt -> IO CInt
 #elif defined(__MHS__)
 -- MicroHs: hGetBuf crashes (withHandleRd bug); use a direct C helper instead.
-systemRandomData buf size = fmap fromIntegral (darc_urandom_read (castPtr buf) (fromIntegral size))
+-- MHS truncates FFI return values to 32 bits, so use _w variant with pointer.
+systemRandomData buf size = alloca $ \pOut -> do
+  darc_urandom_read_w (castPtr buf) (fromIntegral size) pOut
+  fmap fromIntegral (peek pOut)
 
-foreign import ccall unsafe "Environment.h darc_urandom_read"
-  darc_urandom_read :: Ptr () -> CLong -> IO CLong
+foreign import ccall unsafe "Environment.h darc_urandom_read_w"
+  darc_urandom_read_w :: Ptr () -> CLong -> Ptr CLong -> IO ()
 #else
 systemRandomData buf size = do
   withFile "/dev/urandom" ReadMode $ \h -> do

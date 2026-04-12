@@ -19,9 +19,9 @@ module System.Time
 
 import Foreign.C.Types   (CInt(..), CLong(..), CSize(..))
 import Foreign.C.String  (CString, withCString, peekCString)
-import Foreign.Marshal.Alloc (allocaBytes)
+import Foreign.Marshal.Alloc (allocaBytes, alloca)
 import Foreign.Ptr       (Ptr, castPtr, nullPtr)
-import Foreign.Storable  (peekByteOff)
+import Foreign.Storable  (peek, peekByteOff)
 import System.IO.Unsafe  (unsafePerformIO)
 import System.Locale     (TimeLocale(..))
 
@@ -59,11 +59,12 @@ noTimeDiff :: TimeDiff
 noTimeDiff = TimeDiff 0 0 0 0 0 0 0
 
 -- C helpers (defined in Environment.cpp)
-foreign import ccall "darc_time"       darc_time       :: IO CLong
-foreign import ccall "darc_localtime"  darc_localtime  :: CLong -> Ptr CInt -> IO ()
-foreign import ccall "darc_gmtime"     darc_gmtime     :: CLong -> Ptr CInt -> IO ()
-foreign import ccall "darc_mktime_tz"  darc_mktime_tz  :: CInt -> CInt -> CInt -> CInt -> CInt -> CInt -> CInt -> IO CLong
-foreign import ccall "darc_strftime"   darc_strftime   :: Ptr () -> CSize -> CString -> Ptr CInt -> IO CInt
+-- MicroHs truncates FFI return values to 32 bits; use _w variants with pointer.
+foreign import ccall "darc_time_w"       darc_time_w       :: Ptr CLong -> IO ()
+foreign import ccall "darc_localtime"    darc_localtime     :: CLong -> Ptr CInt -> IO ()
+foreign import ccall "darc_gmtime"       darc_gmtime        :: CLong -> Ptr CInt -> IO ()
+foreign import ccall "darc_mktime_tz_w"  darc_mktime_tz_w   :: CInt -> CInt -> CInt -> CInt -> CInt -> CInt -> CInt -> Ptr CLong -> IO ()
+foreign import ccall "darc_strftime"     darc_strftime       :: Ptr () -> CSize -> CString -> Ptr CInt -> IO CInt
 
 -- struct tm layout as array of CInt (indices 0-9: sec,min,hour,mday,mon,year,wday,yday,isdst,gmtoff_min)
 -- This is a simplified flat layout used by our C helpers (not actual struct tm).
@@ -98,7 +99,10 @@ readTm p = do
     }
 
 getClockTime :: IO ClockTime
-getClockTime = fmap (\t -> TOD (fromIntegral t) 0) darc_time
+getClockTime = alloca $ \pOut -> do
+  darc_time_w pOut
+  t <- peek pOut
+  return (TOD (fromIntegral t) 0)
 
 toCalendarTime :: ClockTime -> IO CalendarTime
 toCalendarTime (TOD secs _) = allocaBytes sizeof_tm_ints $ \p -> do
@@ -111,8 +115,8 @@ toUTCTime (TOD secs _) = unsafePerformIO $ allocaBytes sizeof_tm_ints $ \p -> do
   readTm p
 
 toClockTime :: CalendarTime -> ClockTime
-toClockTime ct = unsafePerformIO $ do
-  t <- darc_mktime_tz
+toClockTime ct = unsafePerformIO $ alloca $ \pOut -> do
+  darc_mktime_tz_w
          (fromIntegral (ctYear ct - 1900))
          (fromIntegral (fromEnum (ctMonth ct)))
          (fromIntegral (ctDay  ct))
@@ -120,6 +124,8 @@ toClockTime ct = unsafePerformIO $ do
          (fromIntegral (ctMin  ct))
          (fromIntegral (ctSec  ct))
          (fromIntegral (ctTZ   ct `div` 60))
+         pOut
+  t <- peek pOut
   return (TOD (fromIntegral t) 0)
 
 addToClockTime :: TimeDiff -> ClockTime -> ClockTime

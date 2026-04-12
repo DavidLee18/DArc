@@ -581,21 +581,26 @@ fileSetSize          = hSetFileSize
 fileStdin            = stdin
 
 #ifdef __MHS__
-foreign import ccall "darc_bfile_seek"     darc_bfile_seek     :: Ptr () -> CLong -> Int -> IO Int
-foreign import ccall "darc_bfile_tell"     darc_bfile_tell     :: Ptr () -> IO CLong
-foreign import ccall "darc_bfile_size"     darc_bfile_size     :: Ptr () -> IO CLong
-foreign import ccall "darc_bfile_truncate" darc_bfile_truncate :: Ptr () -> CLong -> IO Int
-foreign import ccall "darc_bfile_read"     darc_bfile_read     :: Ptr () -> Ptr () -> CLong -> IO CLong
-foreign import ccall "darc_bfile_write"    darc_bfile_write    :: Ptr () -> Ptr () -> CLong -> IO CLong
+foreign import ccall "darc_bfile_seek"      darc_bfile_seek      :: Ptr () -> CLong -> Int -> IO Int
+foreign import ccall "darc_bfile_truncate"  darc_bfile_truncate  :: Ptr () -> CLong -> IO Int
+-- MicroHs truncates FFI return values to 32 bits, so use _w variants
+-- that write 64-bit results via pointer instead of returning them.
+foreign import ccall "darc_bfile_tell_w"    darc_bfile_tell_w    :: Ptr () -> Ptr CLong -> IO ()
+foreign import ccall "darc_bfile_size_w"    darc_bfile_size_w    :: Ptr () -> Ptr CLong -> IO ()
+foreign import ccall "darc_bfile_read_w"    darc_bfile_read_w    :: Ptr () -> Ptr () -> CLong -> Ptr CLong -> IO ()
+foreign import ccall "darc_bfile_write_w"   darc_bfile_write_w   :: Ptr () -> Ptr () -> CLong -> Ptr CLong -> IO ()
 
 fReadBufSimple :: Handle -> Ptr a -> Int -> IO Int
 fReadBufSimple h buf size = withHandleAny h $ \bf ->
-  fmap fromIntegral (darc_bfile_read (castPtr bf) (castPtr buf) (fromIntegral size))
+  alloca $ \pOut -> do
+    darc_bfile_read_w (castPtr bf) (castPtr buf) (fromIntegral size) pOut
+    fmap fromIntegral (peek pOut)
 
 fWriteBufSimple :: Handle -> Ptr a -> Int -> IO ()
-fWriteBufSimple h buf size = withHandleAny h $ \bf -> do
-  _ <- darc_bfile_write (castPtr bf) (castPtr buf) (fromIntegral size)
-  return ()
+fWriteBufSimple h buf size = withHandleAny h $ \bf ->
+  alloca $ \pOut -> do
+    darc_bfile_write_w (castPtr bf) (castPtr buf) (fromIntegral size) pOut
+    return ()
 
 hSeek :: Handle -> SeekMode -> Integer -> IO ()
 hSeek h mode pos = withHandleAny h $ \bf -> do
@@ -608,11 +613,15 @@ hSeek h mode pos = withHandleAny h $ \bf -> do
 
 hTell :: Handle -> IO Integer
 hTell h = withHandleAny h $ \bf ->
-  fmap fromIntegral (darc_bfile_tell (castPtr bf))
+  alloca $ \pOut -> do
+    darc_bfile_tell_w (castPtr bf) pOut
+    fmap fromIntegral (peek pOut)
 
 hFileSize :: Handle -> IO Integer
 hFileSize h = withHandleAny h $ \bf ->
-  fmap fromIntegral (darc_bfile_size (castPtr bf))
+  alloca $ \pOut -> do
+    darc_bfile_size_w (castPtr bf) pOut
+    fmap fromIntegral (peek pOut)
 
 hSetFileSize :: Handle -> Integer -> IO ()
 hSetFileSize h sz = withHandleAny h $ \bf -> do

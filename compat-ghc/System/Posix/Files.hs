@@ -26,8 +26,9 @@ module System.Posix.Files
 import Data.Bits          ((.&.), (.|.), complement)
 import Foreign.C.String   (CString, withCString)
 import Foreign.C.Types    (CInt(..), CLong(..))
-import Foreign.Marshal.Alloc (allocaBytes)
+import Foreign.Marshal.Alloc (allocaBytes, alloca)
 import Foreign.Ptr        (Ptr)
+import Foreign.Storable   (peek)
 import System.IO.Unsafe   (unsafePerformIO)
 import Foreign.C.Types    (CTime(..))
 import System.Posix.Types (FileMode, EpochTime, FileOffset, Fd(..), CMode(..))
@@ -46,8 +47,8 @@ getFileStatus path = allocaBytes sizeof_stat $ \p -> do
       then ioError (userError ("getFileStatus: " ++ path))
       else do
         m <- st_mode p
-        sz <- darc_st_size p
-        mt <- darc_st_mtime p
+        sz <- alloca $ \pOut -> do { darc_st_size_w p pOut; peek pOut }
+        mt <- alloca $ \pOut -> do { darc_st_mtime_w p pOut; peek pOut }
         return (FileStatus [fromIntegral m, fromIntegral sz, fromIntegral mt])
 
 fileExist :: FilePath -> IO Bool
@@ -139,5 +140,6 @@ intersectFileModes (CMode a) (CMode b) = CMode (a .&. b)
 
 foreign import ccall "chmod"       c_chmod  :: CString -> CMode  -> IO CInt
 foreign import ccall "darc_utimes" c_utimes :: CString -> CLong -> CLong -> IO CInt
-foreign import ccall "darc_st_size"  darc_st_size  :: Ptr CStat -> IO CLong
-foreign import ccall "darc_st_mtime" darc_st_mtime :: Ptr CStat -> IO CLong
+-- MicroHs truncates FFI return values to 32 bits; use _w variants with pointer.
+foreign import ccall "darc_st_size_w"  darc_st_size_w  :: Ptr CStat -> Ptr CLong -> IO ()
+foreign import ccall "darc_st_mtime_w" darc_st_mtime_w :: Ptr CStat -> Ptr CLong -> IO ()

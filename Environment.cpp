@@ -641,6 +641,16 @@ extern "C" long darc_st_mtime(struct stat *p) {
     return (long)p->st_mtime;
 }
 
+/* MicroHs workaround: FFI return values are truncated to 32 bits.
+   These _w variants write 64-bit results via pointer instead. */
+extern "C" void darc_st_size_w(struct stat *p, long *out) {
+    *out = (long)p->st_size;
+}
+
+extern "C" void darc_st_mtime_w(struct stat *p, long *out) {
+    *out = (long)p->st_mtime;
+}
+
 /****************************************************************************
 *  Handle IO helpers for MicroHs (hSeek, hTell, hFileSize, hSetFileSize)   *
 *  BFILE_file layout: BFILE (7 fn ptrs = 56 bytes) + FILE* at offset 56    *
@@ -672,6 +682,31 @@ extern "C" long darc_bfile_size(void *bf) {
     long size = ftell(f);
     fseek(f, pos, SEEK_SET);
     return size;
+}
+
+/* MicroHs workaround: write 64-bit results via pointer. */
+extern "C" void darc_bfile_tell_w(void *bf, long *out) {
+    FILE *f = bfile_to_file(bf);
+    *out = f ? ftell(f) : -1;
+}
+
+extern "C" void darc_bfile_size_w(void *bf, long *out) {
+    FILE *f = bfile_to_file(bf);
+    if (!f) { *out = -1; return; }
+    long pos = ftell(f);
+    fseek(f, 0, SEEK_END);
+    *out = ftell(f);
+    fseek(f, pos, SEEK_SET);
+}
+
+extern "C" void darc_bfile_read_w(void *bf, void *buf, long size, long *out) {
+    FILE *f = bfile_to_file(bf);
+    *out = f ? (long)fread(buf, 1, (size_t)size, f) : -1;
+}
+
+extern "C" void darc_bfile_write_w(void *bf, const void *buf, long size, long *out) {
+    FILE *f = bfile_to_file(bf);
+    *out = f ? (long)fwrite(buf, 1, (size_t)size, f) : -1;
 }
 
 extern "C" int darc_bfile_truncate(void *bf, long size) {
@@ -706,6 +741,14 @@ extern "C" long darc_urandom_read(void *buf, long size) {
     long n = (long)fread(buf, 1, (size_t)size, f);
     fclose(f);
     return n;
+}
+
+extern "C" void darc_urandom_read_w(void *buf, long size, long *out) {
+    FILE *f = fopen("/dev/urandom", "rb");
+    if (!f) { *out = -1; return; }
+    *out = (long)fread(buf, 1, (size_t)size, f);
+    fclose(f);
+    return;
 }
 
 /****************************************************************************
@@ -747,6 +790,10 @@ extern "C" long darc_time(void) {
     return (long)time(NULL);
 }
 
+extern "C" void darc_time_w(long *out) {
+    *out = (long)time(NULL);
+}
+
 extern "C" void darc_localtime(long secs, int *out) {
     time_t t = (time_t)secs;
     struct tm buf;
@@ -780,6 +827,10 @@ extern "C" long darc_mktime_tz(int year, int mon, int mday, int hour, int min, i
     r += local_check.tm_gmtoff;
 #endif
     return (long)r;
+}
+
+extern "C" void darc_mktime_tz_w(int year, int mon, int mday, int hour, int min, int sec, int gmtoff_min, long *out) {
+    *out = darc_mktime_tz(year, mon, mday, hour, min, sec, gmtoff_min);
 }
 
 extern "C" void darc_fill_tm(int *out, int sec, int min_, int hour, int mday, int mon,

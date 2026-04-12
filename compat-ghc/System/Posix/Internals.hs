@@ -28,7 +28,9 @@ module System.Posix.Internals
 import Data.Bits         ((.&.))
 import Foreign.C.String  (CString, withCString, peekCString)
 import Foreign.C.Types   (CInt(..), CSize(..), CLong(..), CTime(..))
+import Foreign.Marshal.Alloc (alloca)
 import Foreign.Ptr       (Ptr)
+import Foreign.Storable  (peek)
 import System.Posix.Types (Fd(..), FileMode, CMode(..))
 
 -- | Opaque C struct stat.
@@ -44,12 +46,15 @@ foreign import ccall "stat" c_stat :: CString -> Ptr CStat -> IO CInt
 foreign import ccall "darc_st_mode" st_mode :: Ptr CStat -> IO CMode
 
 -- | Read st_size field from a struct stat.
-foreign import ccall "darc_st_size"  st_size  :: Ptr CStat -> IO CLong
+-- MicroHs truncates FFI return values to 32 bits; use _w variant with pointer.
+foreign import ccall "darc_st_size_w"  darc_st_size_w  :: Ptr CStat -> Ptr CLong -> IO ()
+st_size :: Ptr CStat -> IO CLong
+st_size p = alloca $ \pOut -> do { darc_st_size_w p pOut; peek pOut }
 
 -- | Read st_mtime field from a struct stat.
-foreign import ccall "darc_st_mtime" st_mtime_raw :: Ptr CStat -> IO CLong
+foreign import ccall "darc_st_mtime_w" darc_st_mtime_w :: Ptr CStat -> Ptr CLong -> IO ()
 st_mtime :: Ptr CStat -> IO CTime
-st_mtime p = fmap (CTime . fromIntegral) (st_mtime_raw p)
+st_mtime p = alloca $ \pOut -> do { darc_st_mtime_w p pOut; r <- peek pOut; return (CTime (fromIntegral r)) }
 
 -- | Alias used in DArc source.
 stat_mode :: Ptr CStat -> IO CMode
