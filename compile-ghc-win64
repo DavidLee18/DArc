@@ -66,10 +66,10 @@ c_objs=(
 [[ -n $gui_flag && -f "$WINOUT/GuiEnvironment.o" ]] && c_objs+=("$WINOUT/GuiEnvironment.o")
 
 # Windows system libs (MinGW provides these under GHC's mingw dir)
-win_libs=(-L"$(winpath "$WINOUT")" -llua5.1 -lstdc++ -lpthread -lwinmm -lws2_32 -ladvapi32 -lshell32 -luser32 -lkernel32)
+win_libs=(-L"$(winpath "$WINOUT")" -llua5.1 -lstdc++ -lpthread -lwinmm -lws2_32 -ladvapi32 -lshell32 -luser32 -lkernel32 -lwininet)
 
 # Haskell CPP defines
-hs_defines=(-DFREEARC_WIN -DFREEARC_INTEL_BYTE_ORDER -DFREEARC_64BIT -DFREEARC_NOURL)
+hs_defines=(-DFREEARC_WIN -DFREEARC_INTEL_BYTE_ORDER -DFREEARC_64BIT)
 [[ -n $gui_flag ]] && hs_defines+=("$gui_flag")
 
 ghc_ext_flags=(

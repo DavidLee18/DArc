@@ -9,7 +9,6 @@ FLAGS=(
   -std=c++17 -c
   -DFREEARC_WIN -DFREEARC_INTEL_BYTE_ORDER -DFREEARC_64BIT
   -D_WIN32_WINNT=0x0601 -DWINVER=0x0601
-  -DFREEARC_NOURL
   -I. -ICompression -IHsLua/src
   -O2
   -Wno-unknown-pragmas -Wno-sign-compare -Wno-deprecated-declarations
