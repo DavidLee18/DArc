@@ -94,7 +94,7 @@ decompressBlock command cfile state count_cbytes pipe = mdo
   -- Создадим конвейер декомпрессии: последний метод цепочки читает первым, первый декодирует последним
   -- Bind `times` before let so decompressa is not in the same mdo rec-group,
   -- allowing GHC to generalise the Pipe element type over PipeElement.
-  (times :: MVar (Integer, String, [(String, Double, Int)])) <- uiStartDeCompression "decompression"  -- ������� ��������� ��� ����� ������� ����������
+  (times :: MVar (Integer, String, [(String, Double, Integer)])) <- uiStartDeCompression "decompression"  -- ������� ��������� ��� ����� ������� ����������
 #ifdef __MHS__
   -- MicroHs: C-side pipeline decompression.
   -- Collects compressed data into a C growing buffer, then decompresses

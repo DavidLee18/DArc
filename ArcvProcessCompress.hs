@@ -98,7 +98,7 @@ compressAndWriteToArchiveProcess archive command backdoor pipe = do
                                                          else return (id,id)
 
         -- Bind `times` before let so compressa is not in the same mdo rec-group
-        (times :: MVar (Integer, String, [(String, Double, Int)])) <- uiStartDeCompression "compression"              -- создать структуру для учёта времени упаковки
+        (times :: MVar (Integer, String, [(String, Double, Integer)])) <- uiStartDeCompression "compression"              -- создать структуру для учёта времени упаковки
 
         -- Процесс упаковки одним алгоритмом
         -- Последовательность процессов упаковки, соответствующая последовательности алгоритмов `real_compressor`

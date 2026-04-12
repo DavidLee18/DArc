@@ -1,0 +1,49 @@
+#!/usr/bin/env bash
+# Build all C/C++ objects for Windows x64 target using mingw-w64 cross toolchain.
+# Shared by both GHC and MHS Windows builds; DOES NOT define __MHS__.
+set -e
+WINOUT=${WINOUT:-/tmp/out/FreeArc-win64-ghc}
+mkdir -p "$WINOUT"
+CC="x86_64-w64-mingw32-g++-posix"
+FLAGS=(
+  -std=c++17 -c
+  -DFREEARC_WIN -DFREEARC_INTEL_BYTE_ORDER -DFREEARC_64BIT
+  -D_WIN32_WINNT=0x0601 -DWINVER=0x0601
+  -DFREEARC_NOURL
+  -I. -ICompression -IHsLua/src
+  -O2
+  -Wno-unknown-pragmas -Wno-sign-compare -Wno-deprecated-declarations
+)
+
+build() {
+  local src="$1" base extra=()
+  base=$(basename "$src" .cpp)
+  base=$(basename "$base" .c)
+  # Encryption module needs extra -I for tomcrypt headers
+  case "$src" in
+    */_Encryption/*) extra=(-IShared_src/_Encryption/headers -ICompression/_Encryption/headers) ;;
+  esac
+  # Skip the new CLS codec (not needed; host/plugin model, requires dlopen)
+  case "$src" in
+    */CLS/*) echo "  skip: $src (CLS host/plugin)"; return 0 ;;
+  esac
+  echo "  $src"
+  $CC "${FLAGS[@]}" "${extra[@]}" "$src" -o "$WINOUT/$base.o"
+}
+
+# Top-level
+for src in Environment.cpp URL.cpp GuiEnvironment.cpp; do
+  [[ -f $src ]] && build "$src"
+done
+
+# Compression top-level
+for src in Compression/Common.cpp Compression/CompressionLibrary.cpp; do
+  [[ -f $src ]] && build "$src"
+done
+
+# All C_*.cpp under Compression/*/
+for src in Compression/*/C_*.cpp; do
+  [[ -f $src ]] && build "$src"
+done
+
+echo "Built: $(ls "$WINOUT"/*.o | wc -l) objects in $WINOUT/"
