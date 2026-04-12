@@ -849,6 +849,159 @@ extern "C" int darc_strftime(char *buf, size_t size, const char *fmt, int *flat_
 
 
 // ============================================================
+// MHS C-side compression/decompression pipeline
+// Bypasses slow MHS Haskell pipe iteration for large data.
+// Data is accumulated in a C-managed growing buffer, then
+// compressed/decompressed using streaming Compress/Decompress.
+// ============================================================
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+// Growing buffer for pipeline input/output
+static char *g_pipeline_buf = NULL;
+static long  g_pipeline_size = 0;
+static long  g_pipeline_cap = 0;
+
+void darc_pipeline_init(long initial_cap) {
+    free(g_pipeline_buf);
+    if (initial_cap < 65536) initial_cap = 65536;
+    g_pipeline_buf = (char *)malloc(initial_cap);
+    g_pipeline_size = 0;
+    g_pipeline_cap = initial_cap;
+}
+
+void darc_pipeline_append(const void *data, long len) {
+    if (!g_pipeline_buf) return;
+    if (g_pipeline_size + len > g_pipeline_cap) {
+        while (g_pipeline_size + len > g_pipeline_cap)
+            g_pipeline_cap *= 2;
+        g_pipeline_buf = (char *)realloc(g_pipeline_buf, g_pipeline_cap);
+    }
+    memcpy(g_pipeline_buf + g_pipeline_size, data, len);
+    g_pipeline_size += len;
+}
+
+void darc_pipeline_get_buf_w(void **out_buf, long *out_size) {
+    *out_buf = g_pipeline_buf;
+    *out_size = g_pipeline_size;
+    g_pipeline_buf = NULL;
+    g_pipeline_size = 0;
+    g_pipeline_cap = 0;
+}
+
+void darc_pipeline_free(void) {
+    free(g_pipeline_buf);
+    g_pipeline_buf = NULL;
+    g_pipeline_size = 0;
+    g_pipeline_cap = 0;
+}
+
+// Streaming callback that reads from/writes to memory buffers.
+// Used by darc_pipeline_compress_step / darc_pipeline_decompress_step.
+typedef struct {
+    const char *in_buf;
+    long in_pos;
+    long in_size;
+    char *out_buf;
+    long out_pos;
+    long out_cap;
+} PipelineCtx;
+
+static int pipeline_callback(const char *what, void *buf, int size, void *auxdata) {
+    PipelineCtx *ctx = (PipelineCtx *)auxdata;
+    if (strequ(what, "read")) {
+        long avail = ctx->in_size - ctx->in_pos;
+        int to_read = (avail < (long)size) ? (int)avail : size;
+        memcpy(buf, ctx->in_buf + ctx->in_pos, to_read);
+        ctx->in_pos += to_read;
+        return to_read;
+    } else if (strequ(what, "write")) {
+        while (ctx->out_pos + size > ctx->out_cap) {
+            ctx->out_cap = ctx->out_cap * 2 + 65536;
+            ctx->out_buf = (char *)realloc(ctx->out_buf, ctx->out_cap);
+        }
+        memcpy(ctx->out_buf + ctx->out_pos, buf, size);
+        ctx->out_pos += size;
+        return size;
+    } else if (strequ(what, "time")) {
+        return 0;
+    }
+    return FREEARC_ERRCODE_NOT_IMPLEMENTED;
+}
+
+// Compress the pipeline buffer in-place with a single method using streaming Compress().
+// After success, pipeline buffer contains compressed data.
+// Writes compressed size (>=0) or negative error code to *out_result.
+void darc_pipeline_compress_step_w(const char *method, long *out_result) {
+    if (!g_pipeline_buf || g_pipeline_size == 0) {
+        *out_result = 0;
+        return;
+    }
+    PipelineCtx ctx;
+    ctx.in_buf = g_pipeline_buf;
+    ctx.in_pos = 0;
+    ctx.in_size = g_pipeline_size;
+    ctx.out_cap = g_pipeline_size / 2 + 65536;
+    ctx.out_buf = (char *)malloc(ctx.out_cap);
+    ctx.out_pos = 0;
+
+    int ret = Compress((char *)method, (CALLBACK_FUNC *)pipeline_callback, &ctx);
+
+    free(g_pipeline_buf);
+    if (ret >= 0) {
+        g_pipeline_buf = ctx.out_buf;
+        g_pipeline_size = ctx.out_pos;
+        g_pipeline_cap = ctx.out_cap;
+        *out_result = ctx.out_pos;
+    } else {
+        free(ctx.out_buf);
+        g_pipeline_buf = NULL;
+        g_pipeline_size = 0;
+        g_pipeline_cap = 0;
+        *out_result = (long)ret;
+    }
+}
+
+// Decompress the pipeline buffer in-place with a single method using streaming Decompress().
+// orig_size_hint is used as initial output buffer size (0 = auto-size).
+// Writes decompressed size (>=0) or negative error code to *out_result.
+void darc_pipeline_decompress_step_w(const char *method, long orig_size_hint, long *out_result) {
+    if (!g_pipeline_buf || g_pipeline_size == 0) {
+        *out_result = 0;
+        return;
+    }
+    PipelineCtx ctx;
+    ctx.in_buf = g_pipeline_buf;
+    ctx.in_pos = 0;
+    ctx.in_size = g_pipeline_size;
+    ctx.out_cap = (orig_size_hint > 0) ? orig_size_hint + 65536 : g_pipeline_size * 4 + 65536;
+    ctx.out_buf = (char *)malloc(ctx.out_cap);
+    ctx.out_pos = 0;
+
+    int ret = Decompress((char *)method, (CALLBACK_FUNC *)pipeline_callback, &ctx);
+
+    free(g_pipeline_buf);
+    if (ret >= 0) {
+        g_pipeline_buf = ctx.out_buf;
+        g_pipeline_size = ctx.out_pos;
+        g_pipeline_cap = ctx.out_cap;
+        *out_result = ctx.out_pos;
+    } else {
+        free(ctx.out_buf);
+        g_pipeline_buf = NULL;
+        g_pipeline_size = 0;
+        g_pipeline_cap = 0;
+        *out_result = (long)ret;
+    }
+}
+
+#ifdef __cplusplus
+}
+#endif
+
+
+// ============================================================
 // MicroHs callback-wrapper support
 // Since MicroHs cannot create C function pointers from Haskell
 // closures, we use a global slot mechanism. The Haskell side

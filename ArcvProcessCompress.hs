@@ -11,10 +11,12 @@ import Prelude hiding (catch)
 import Control.Concurrent (MVar, Chan)
 import Control.Monad
 import Data.IORef
+import Foreign.C.String
 import Foreign.C.Types
 import Foreign.Ptr
-import Foreign.Marshal.Alloc (mallocBytes, free)
+import Foreign.Marshal.Alloc (mallocBytes, free, alloca)
 import Foreign.Marshal.Utils (copyBytes)
+import Foreign.Storable (peek)
 import CompressionLib (compressMem, aFREEARC_OK, compressionErrorMessage)
 
 import Utils
@@ -101,54 +103,47 @@ compressAndWriteToArchiveProcess archive command backdoor pipe = do
         -- Последовательность процессов упаковки, соответствующая последовательности алгоритмов `real_compressor`
         let real_crypted_compressor = add_real_encryption real_compressor
 #ifdef __MHS__
-        -- MicroHs: buffer-to-buffer compression, bypassing callback-based pipeline.
-        -- Collects all input DataChunks, then applies the method chain using compressMem.
+        -- MicroHs: C-side pipeline compression.
+        -- Accumulates data in a C growing buffer (fast memcpy), then compresses
+        -- the entire chain using streaming Compress() in C — no Haskell iteration
+        -- for the actual compression, avoiding MHS combinator reduction overhead.
         let mhs_compress_block = do
-              (inBuf, (inSize :: Int)) <- mhsCollectFromPipe
-              let tryCompSz p inB (inS :: Int) (outSz :: Int) = do
-                    (outB :: Ptr CChar) <- mallocBytes (max outSz (1 :: Int))
-                    r <- compressMem p inB inS outB outSz
-                    if r == aFREEARC_ERRCODE_OUTBLOCK_TOO_SMALL
-                      then do free outB; tryCompSz p inB inS (outSz * 2)
-                      else return (outB, r)
-                  goChain [] inB (inS :: Int) = return (inB, inS)
-                  goChain (p:ps) inB (inS :: Int) = do
-                    let outSz = max (inS + inS) (65536 :: Int)
-                    (outB, (r :: Int)) <- tryCompSz p inB inS outSz
-                    free inB
-                    if r >= (aFREEARC_OK :: Int)
-                      then goChain ps outB r
-                      else do registerThreadError$ COMPRESSION_ERROR [compressionErrorMessage r, p]
+              -- Phase 1: Collect data into C-managed buffer
+              darc_pipeline_init (64 * 1024 * 1024)
+              let collectLoop = do
+                    x <- receiveP pipe
+                    display x
+                    update_crc x
+                    case x of
+                      DataChunk buf len -> do
+                        darc_pipeline_append (castPtr buf) (fromIntegral len)
+                        send_backP pipe (buf, len)
+                        collectLoop
+                      DataEnd -> return ()
+                      _ -> collectLoop
+              collectLoop
+              -- Phase 2: Compress through method chain entirely in C
+              let compressLoop [] = return True
+                  compressLoop (m:ms) = do
+                    r <- withCString m $ \cm -> alloca $ \pResult -> do
+                           darc_pipeline_compress_step_w cm pResult
+                           peek pResult
+                    if r >= (0 :: CLong)
+                      then compressLoop ms
+                      else do registerThreadError$ COMPRESSION_ERROR [compressionErrorMessage (fromIntegral r), m]
                               operationTerminated =: True
-                              return (outB, r)
-              (outBuf, (outSize :: Int)) <- goChain real_crypted_compressor inBuf inSize
-              when (outSize >= (aFREEARC_OK :: Int)) $ do
-                r <- write_to_archive (DataBuf outBuf outSize)
-                writeIORef result r
-              free outBuf
-            -- Reads DataChunk messages from pipe, copying data and acking each buffer.
-            mhsCollectFromPipe = mhsGo [] (0 :: Int)
-            mhsGo chunks total = do
-              x <- receiveP pipe
-              display x
-              update_crc x
-              case x of
-                DataChunk buf len -> do
-                  (chunk :: Ptr CChar) <- mallocBytes (max len (1 :: Int))
-                  copyBytes chunk buf len
-                  send_backP pipe (buf, len)  -- return producer's buffer to the pool
-                  mhsGo ((chunk, len) : chunks) (total + len)
-                DataEnd -> mhsPack chunks total
-                _ -> mhsGo chunks total
-            mhsPack chunks total = do
-              buf <- mallocBytes (max total (1 :: Int))
-              mhsFill buf (0 :: Int) (reverse chunks)
-              return (buf, total)
-            mhsFill _ _ [] = return ()
-            mhsFill buf off ((chunk, n) : rest) = do
-              copyBytes (buf `plusPtr` off) chunk n
-              free chunk
-              mhsFill buf (off + n) rest
+                              darc_pipeline_free
+                              return False
+              ok <- compressLoop real_crypted_compressor
+              -- Phase 3: Write result to archive
+              when ok $ alloca $ \pBuf -> alloca $ \pSize -> do
+                darc_pipeline_get_buf_w pBuf pSize
+                outBuf <- peek pBuf
+                outSize <- fmap fromIntegral (peek pSize :: IO CLong)
+                when (outSize > (0 :: Int)) $ do
+                  r <- write_to_archive (DataBuf (castPtr outBuf) outSize)
+                  writeIORef result r
+                free outBuf
         let compress_f = if just_copy then copy_block else mhs_compress_block
 #else
         let compressa :: Pipe (PairFunc Instruction) (PairFunc (Ptr CChar, Int)) (PairFunc CompressionData) (PairFunc Int) -> IO ()
@@ -209,3 +204,12 @@ storingProcess pipe = do
 
 -- Compatibility alias
 compress_AND_write_to_archive_PROCESS = compressAndWriteToArchiveProcess
+
+#ifdef __MHS__
+-- C-side pipeline FFI (Environment.cpp)
+foreign import ccall "darc_pipeline_init"              darc_pipeline_init :: CLong -> IO ()
+foreign import ccall "darc_pipeline_append"            darc_pipeline_append :: Ptr () -> CLong -> IO ()
+foreign import ccall "darc_pipeline_compress_step_w"   darc_pipeline_compress_step_w :: CString -> Ptr CLong -> IO ()
+foreign import ccall "darc_pipeline_get_buf_w"         darc_pipeline_get_buf_w :: Ptr (Ptr ()) -> Ptr CLong -> IO ()
+foreign import ccall "darc_pipeline_free"              darc_pipeline_free :: IO ()
+#endif

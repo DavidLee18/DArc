@@ -14,9 +14,10 @@ import Control.Monad
 import Data.Int
 import Data.IORef
 import Data.Maybe
+import Foreign.C.String
 import Foreign.C.Types
 import Foreign.Ptr
-import Foreign.Marshal.Alloc (mallocBytes, free)
+import Foreign.Marshal.Alloc (mallocBytes, free, alloca)
 import Foreign.Marshal.Utils
 import Foreign.Storable
 
@@ -95,35 +96,47 @@ decompressBlock command cfile state count_cbytes pipe = mdo
   -- allowing GHC to generalise the Pipe element type over PipeElement.
   (times :: MVar (Integer, String, [(String, Double, Int)])) <- uiStartDeCompression "decompression"  -- ������� ��������� ��� ����� ������� ����������
 #ifdef __MHS__
-  -- MicroHs: buffer-to-buffer decompression avoids ffe_eval re-entrancy.
-  -- Supports single and multi-method chains by chaining decompressMem calls.
+  -- MicroHs: C-side pipeline decompression.
+  -- Collects compressed data into a C growing buffer, then decompresses
+  -- the entire chain using streaming Decompress() in C.
   result <- ref (0 :: Int)
-  let tryDecSz p inBuf (inSize :: Int) (outSz :: Int) = do
-        (outBuf :: Ptr CChar) <- mallocBytes (max outSz (1 :: Int))
-        ret <- decompressMem p inBuf inSize outBuf outSz
-        if ret == aFREEARC_ERRCODE_OUTBLOCK_TOO_SMALL
-          then do free outBuf; tryDecSz p inBuf inSize (outSz * 2)
-          else return (outBuf, ret)
-      -- Decompress a chain of methods; frees each intermediate inBuf.
-      go [] inBuf (inSize :: Int) = return (inBuf, inSize)
-      go (p:ps) inBuf (inSize :: Int) = do
-        let outSz = max (i (blOrigSize block)) (max (inSize * 2) (65536 :: Int))
-        (outBuf, ret) <- tryDecSz p inBuf inSize outSz
-        free inBuf
-        if ret >= (aFREEARC_OK :: Int)
-          then go ps outBuf ret
-          else do registerThreadError$ COMPRESSION_ERROR [compressionErrorMessage ret, p]
-                  operationTerminated =: True
-                  return (outBuf, ret)
   let methods    = map fromJust keyed_compressor
-      -- Compression: [p1..pN] means p1 applied first; decompression reverses this.
       decompOrder = reverse methods
-  (inBuf, inSize) <- collectInputMHS reader
-  (outBuf, (ret :: Int)) <- go decompOrder inBuf inSize
-  when (ret >= (aFREEARC_OK :: Int)) $ do
-    r <- writer (DataBuf outBuf ret)
-    writeIORef result r
-  free outBuf
+      origHint = blOrigSize block
+  -- Phase 1: Collect compressed data into C buffer (use large reads to minimize MHS iterations)
+  darc_pipeline_init (64 * 1024 * 1024)
+  let readChunkSize = 8 * 1024 * 1024 :: Int  -- 8MB per read to reduce pipe overhead
+      collectLoop = do
+        chunk <- mallocBytes readChunkSize
+        n <- reader chunk readChunkSize
+        if n <= (0 :: Int)
+          then free chunk
+          else do darc_pipeline_append (castPtr chunk) (fromIntegral n)
+                  free chunk
+                  collectLoop
+  collectLoop
+  -- Phase 2: Decompress through method chain entirely in C
+  let decompLoop [] = return True
+      decompLoop (m:ms) = do
+        r <- withCString m $ \cm -> alloca $ \pResult -> do
+               darc_pipeline_decompress_step_w cm (fromIntegral origHint) pResult
+               peek pResult
+        if r >= (0 :: CLong)
+          then decompLoop ms
+          else do registerThreadError$ COMPRESSION_ERROR [compressionErrorMessage (fromIntegral r), m]
+                  operationTerminated =: True
+                  darc_pipeline_free
+                  return False
+  ok <- decompLoop decompOrder
+  -- Phase 3: Feed decompressed result to writer
+  when ok $ alloca $ \pBuf -> alloca $ \pSize -> do
+    darc_pipeline_get_buf_w pBuf pSize
+    outBuf <- peek pBuf
+    outSize <- fmap fromIntegral (peek pSize :: IO CLong)
+    when (outSize > (0 :: Int)) $ do
+      r <- writer (DataBuf (castPtr outBuf) outSize)
+      writeIORef result r
+    free outBuf
 #else
   let
       decompress1 p = deCompressProcess1 freearcDecompress reader times p 0
@@ -186,33 +199,42 @@ deCompressProcess de_compress times comprMethod num pipe = do
   let reader dstbuf dstlen  =  read_data (0 :: Int) dstbuf dstlen
 
 #ifdef __MHS__
-  -- MicroHs: for real compression methods (not storing/fake), use buffer-to-buffer
-  -- to avoid re-entrancy in ffe_eval when green threads block inside C callbacks.
+  -- MicroHs: for real compression methods (not storing/fake), use C-side pipeline
+  -- to avoid re-entrancy in ffe_eval and MHS combinator reduction overhead.
   if comprMethod == aSTORING || isFakeMethod comprMethod
     then deCompressProcess1 de_compress reader times comprMethod num pipe
     else do
-      (inBuf, inSize) <- collectInputMHS reader
-      let tryCompress (outSz :: Int) = do
-            (outBuf :: Ptr CChar) <- mallocBytes outSz
-            ret <- compressMem comprMethod inBuf inSize outBuf outSz
-            if ret == aFREEARC_ERRCODE_OUTBLOCK_TOO_SMALL
-              then do free outBuf; tryCompress (outSz * 2)
-              else return (outBuf, ret)
-      (outBuf, ret) <- tryCompress (max (inSize + 2*1024*1024) (65536 :: Int))
-      free inBuf
-      uiDeCompressionTime times (comprMethod, (0.0 :: Double), i ret)
-      if ret >= (aFREEARC_OK :: Int)
-        then do
-          uiWriteData num (i ret)
-          -- Send compressed output to archive via the forward channel.
-          -- receive_backP is val result (non-blocking IORef read), so this is safe.
-          sendP pipe (DataBuf outBuf ret)
+      -- Collect input into C buffer (use large reads to minimize MHS iterations)
+      darc_pipeline_init (64 * 1024 * 1024)
+      let readChunkSize = 8 * 1024 * 1024 :: Int  -- 8MB per read
+          collectLoop = do
+            chunk <- mallocBytes readChunkSize
+            n <- reader chunk readChunkSize
+            if n <= (0 :: Int)
+              then free chunk
+              else do darc_pipeline_append (castPtr chunk) (fromIntegral n)
+                      free chunk
+                      collectLoop
+      collectLoop
+      -- Decompress in C
+      ret <- withCString comprMethod $ \cm -> alloca $ \pResult -> do
+               darc_pipeline_decompress_step_w cm 0 pResult
+               peek pResult
+      let retI = fromIntegral (ret :: CLong) :: Int
+      uiDeCompressionTime times (comprMethod, (0.0 :: Double), i retI)
+      if ret >= (0 :: CLong)
+        then alloca $ \pBuf -> alloca $ \pSize -> do
+          darc_pipeline_get_buf_w pBuf pSize
+          outBuf <- peek pBuf
+          outSize <- fmap fromIntegral (peek pSize :: IO CLong)
+          uiWriteData num (i (outSize :: Int))
+          sendP pipe (DataBuf (castPtr outBuf) outSize)
           (_ :: Int) <- receive_backP pipe
-          return ()
+          free outBuf
         else do
-          registerThreadError$ COMPRESSION_ERROR [compressionErrorMessage ret, comprMethod]
+          darc_pipeline_free
+          registerThreadError$ COMPRESSION_ERROR [compressionErrorMessage retI, comprMethod]
           operationTerminated =: True
-      free outBuf
 #else
   deCompressProcess1 de_compress reader times comprMethod num pipe
 #endif
@@ -360,3 +382,12 @@ decompress_PROCESS = decompressProcess
 decompress_file    = decompressFile
 de_compress_PROCESS = deCompressProcess
 resend_data         = resendData
+
+#ifdef __MHS__
+-- C-side pipeline FFI (Environment.cpp)
+foreign import ccall "darc_pipeline_init"              darc_pipeline_init :: CLong -> IO ()
+foreign import ccall "darc_pipeline_append"            darc_pipeline_append :: Ptr () -> CLong -> IO ()
+foreign import ccall "darc_pipeline_decompress_step_w" darc_pipeline_decompress_step_w :: CString -> CLong -> Ptr CLong -> IO ()
+foreign import ccall "darc_pipeline_get_buf_w"         darc_pipeline_get_buf_w :: Ptr (Ptr ()) -> Ptr CLong -> IO ()
+foreign import ccall "darc_pipeline_free"              darc_pipeline_free :: IO ()
+#endif

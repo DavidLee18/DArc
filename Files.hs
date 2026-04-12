@@ -78,10 +78,21 @@ import System.Posix.Files hiding (fileExist)
 #endif
 
 -- |Размер одного буфера, используемый в различных операциях
+#ifdef __MHS__
+-- MicroHs: use much larger buffers to reduce pipe iteration count.
+-- Each pipe iteration costs ~0.45s in MHS combinator reduction,
+-- so minimizing chunk count is critical for large file performance.
+aBUFFER_SIZE = 8*mb
+#else
 aBUFFER_SIZE = 64*kb
+#endif
 
 -- |Количество байт, которые должны читаться/записываться за один раз в быстрых методах и при распаковке асимметричных алгоритмов
+#ifdef __MHS__
+aLARGE_BUFFER_SIZE = 64*mb
+#else
 aLARGE_BUFFER_SIZE = 256*kb
+#endif
 
 -- |Количество байт, которые должны читаться/записываться за один раз в очень быстрых методах (storing, tornado и тому подобное)
 -- Этот объём минимизирует потери на disk seek operations - при условии, что одновременно не происходит в/в в другом потоке ;)

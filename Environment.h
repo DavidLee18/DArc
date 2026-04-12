@@ -38,6 +38,14 @@ int BrowseForFolder(TCHAR *prompt, TCHAR *in_filename, TCHAR *out_filename);    
 int BrowseForFile(TCHAR *prompt, TCHAR *filters, TCHAR *in_filename, TCHAR *out_filename);        // ���� ������������ ������� ����
 void GuiFormatDateTime (time_t t, char *buf, int bufsize, char *date_format, char *time_format);  // ���������� �����/���� ����� � ������ � ������������ � ����������� locale ��� ��������� ��������� ������� � ����
 
+// MHS C-side compression/decompression pipeline
+void darc_pipeline_init(long initial_cap);
+void darc_pipeline_append(const void *data, long len);
+void darc_pipeline_get_buf_w(void **out_buf, long *out_size);
+void darc_pipeline_free(void);
+void darc_pipeline_compress_step_w(const char *method, long *out_result);
+void darc_pipeline_decompress_step_w(const char *method, long orig_size_hint, long *out_result);
+
 #ifdef __MHS__
 // MicroHs callback trampoline: returns address of darc_haskell_callback for use as FunPtr CALLBACK_FUNC.
 void *darc_get_haskell_callback_ptr(void);

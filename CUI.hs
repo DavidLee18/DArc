@@ -37,8 +37,14 @@ import UIBase
 
 -- |Запускает background thread для вывода индикатора прогресса
 guiStartProgram = do
-  -- Обновляем индикатор прогресса и заголовок окна раз в 0.5 секунды
+  -- Обновляем индикатор прогресса и заголовок окна раз в N секунд
+  -- MicroHs: green thread context switching is very expensive (~0.5s per tick),
+  -- so use a much longer interval to avoid dominating CPU time.
+#ifdef __MHS__
+  indicatorThread 10 $ \indicator indType title b bytes total processed p -> do
+#else
   indicatorThread 0.5 $ \indicator indType title b bytes total processed p -> do
+#endif
     myPutStr$ back_percents indicator ++ p
     myFlushStdout
     setConsoleTitle title
