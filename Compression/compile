@@ -29,7 +29,13 @@ cd ..
 cd GRZip
 make
 cd ..
+cd BSC
+make
+cd ..
 cd LZMA
+make
+cd ..
+cd LZ4
 make
 cd ..
 cd _Encryption
