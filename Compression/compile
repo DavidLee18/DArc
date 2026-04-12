@@ -35,6 +35,9 @@ cd ..
 cd DisPack
 make
 cd ..
+cd Zstd
+make
+cd ..
 cd LZMA
 make
 cd ..
