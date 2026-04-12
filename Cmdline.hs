@@ -658,6 +658,7 @@ parseCmdline cmdline  =  (`mapMaybeM` split ";" cmdline) $ \args -> do
     , opt_overwrite            = ref_overwrite
     , opt_keep_time            = findNoArg    o "keeptime"
     , opt_time_to_last         = findNoArg    o "timetolast"
+    , opt_nodates              = findNoArg    o "nodates"
     , opt_test                 = findNoArg    o "test"
     , opt_pretest              = readInt pretest
     , opt_keep_broken          = findNoArg    o "keepbroken"

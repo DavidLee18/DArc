@@ -70,6 +70,7 @@ data Command = Command {
   , opt_sfx                  :: !String             --   имя SFX-модуля, который надо присоединить к архиву ("-" - отсоединить, если уже есть, "--" - скопировать существующий)
   , opt_keep_time            :: !Bool               --   сохранить mtime архива после обновления содержимого?
   , opt_time_to_last         :: !Bool               --   установить mtime архива на mtime самого свежего файла в нём?
+  , opt_nodates              :: !Bool               --   не сохранять метки времени файлов в архиве (FreeArc 0.67, --nodates)
   , opt_keep_broken          :: !Bool               --   не удалять файлы, распакованные с ошибками?
   , opt_test                 :: !Bool               --   протестировать архив после упаковки?
   , opt_pretest              :: !Int                --   режим тестирования архивов _перед_ выполнением операции (0 - нет, 1 - только recovery info, 2 - recovery или full, 3 - full testing)
@@ -212,6 +213,7 @@ optionsList = sortOn (\(OPTION a b _) -> (a|||"zzz",b))
    ,OPTION ""      "recompress"         "recompress archive contents"
    ,OPTION ""      "dirs"               "add empty dirs to archive"
    ,OPTION "ed"    "nodirs"             "don't add empty dirs to archive"
+   ,OPTION ""      "nodates"            "don't store filetimes in archive"
    ,OPTION ""      "cache"              "use N mbytes for read-ahead cache"
    ,OPTION "lc"    "LimitCompMem"       "limit memory usage for compression to N mbytes"
    ,OPTION "ld"    "LimitDecompMem"     "limit memory usage for decompression to N mbytes"

@@ -64,6 +64,11 @@ isFastDecMethod          =  not . any_function [(=="ppmd"), (=="ppmm"), (=="pmm"
 isEXTERNAL_Method        =  CompressionLib.compressionIs "external?"
 -- |Метод шифрования.
 isEncryption             =  CompressionLib.compressionIs "encryption?"
+-- |Non-solid method — каждый блок сжимается независимо (0.67).
+isNonSolidMethod         =  CompressionLib.compressionIs "nosolid?"
+-- |Memory barrier для цепочки методов сжатия (0.67): метод разбивает учёт памяти на независимые кластеры.
+isMemoryBarrier_Compression    =  any_function [isEXTERNAL_Method, CompressionLib.compressionIs "MemoryBarrierCompression?"]
+isMemoryBarrier_Decompression  =  any_function [isEXTERNAL_Method, CompressionLib.compressionIs "MemoryBarrierDecompression?"]
 
 
 -- |Последовательность алгоритмов сжатия, используемых для обработки данных

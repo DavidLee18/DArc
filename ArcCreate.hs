@@ -53,6 +53,7 @@ runArchiveCreate pretestArchive
     , opt_arccmt_file     = arccmt_file          --   файл, из которого читается новый комментарий к архиву
     , opt_data_compressor = compressor           --   алгоритм сжатия
     } = do
+  nodates_ref =: opt_nodates command  -- FreeArc 0.67: --nodates propagado a archiveWriteDir
   opt_testMalloc command &&& testMalloc  -- напечатать карту памяти
   -- для суперэкономии памяти: find_files |> buffer 100_000 |> write_to_archive
 
