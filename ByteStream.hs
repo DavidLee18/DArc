@@ -418,9 +418,12 @@ instance FastBufferData Word64 where
   writeUnchecked buf x pos = do { pokeByteOff buf pos x; return (pos + 8) }
   readUnchecked  buf pos   = do { x <- peekByteOff buf pos; return (x, pos + 8) }
 instance FastBufferData Int where
+  -- Int is serialized as a 64-bit little-endian value for cross-platform
+  -- compatibility. Native Int width varies (4 on Win32, 8 on x64), so raw
+  -- poke/peek would produce different on-disk layouts.
   maxSizeOf _ = 8
-  writeUnchecked buf x pos = do { pokeByteOff buf pos x; return (pos + 8) }
-  readUnchecked  buf pos   = do { x <- peekByteOff buf pos; return (x, pos + 8) }
+  writeUnchecked buf x pos = do { pokeByteOff buf pos (fromIntegral x :: Int64); return (pos + 8) }
+  readUnchecked  buf pos   = do { (x :: Int64) <- peekByteOff buf pos; return (fromIntegral x, pos + 8) }
 instance FastBufferData Int32 where
   maxSizeOf _ = 4
   writeUnchecked buf x pos = do { pokeByteOff buf pos x; return (pos + 4) }
@@ -577,8 +580,8 @@ instance BufferData CSize where
   read      = readFast;  readList  = readListFast
 instance FastBufferData CTime where
   maxSizeOf _ = 8
-  writeUnchecked buf (CTime x) pos = do { pokeByteOff buf pos x; return (pos + 8) }
-  readUnchecked  buf pos   = do { (x :: Int) <- peekByteOff buf pos; return (CTime x, pos + 8) }
+  writeUnchecked buf (CTime x) pos = do { pokeByteOff buf pos (fromIntegral x :: Int64); return (pos + 8) }
+  readUnchecked  buf pos   = do { (x :: Int64) <- peekByteOff buf pos; return (CTime (fromIntegral x), pos + 8) }
 instance BufferData CTime where
   write     = writeFast; writeList = writeListFast
   read      = readFast;  readList  = readListFast
