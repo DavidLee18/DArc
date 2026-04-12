@@ -15,8 +15,9 @@ import Foreign.C.String
 import Foreign.C.Types
 import Foreign.Ptr
 import Foreign.Marshal.Alloc (mallocBytes, free, alloca)
+import Foreign.Marshal.Array (withArray, allocaArray)
 import Foreign.Marshal.Utils (copyBytes)
-import Foreign.Storable (peek)
+import Foreign.Storable (peek, peekElemOff)
 import CompressionLib (compressMem, aFREEARC_OK, compressionErrorMessage)
 
 import Utils
@@ -103,47 +104,101 @@ compressAndWriteToArchiveProcess archive command backdoor pipe = do
         -- Последовательность процессов упаковки, соответствующая последовательности алгоритмов `real_compressor`
         let real_crypted_compressor = add_real_encryption real_compressor
 #ifdef __MHS__
-        -- MicroHs: C-side pipeline compression.
-        -- Accumulates data in a C growing buffer (fast memcpy), then compresses
-        -- the entire chain using streaming Compress() in C — no Haskell iteration
-        -- for the actual compression, avoiding MHS combinator reduction overhead.
+        -- Per-file CRCs computed by C hot path, to patch into Directory entries
+        fileCRCs <- newIORef ([] :: [CRC])
+        -- MicroHs: C hot path for DATA_BLOCK with disk files.
+        -- Reads files, compresses, and writes to archive entirely in C,
+        -- bypassing ALL Haskell per-byte/per-chunk iteration overhead.
         let mhs_compress_block = do
-              -- Phase 1: Collect data into C-managed buffer
-              darc_pipeline_init (64 * 1024 * 1024)
-              let collectLoop = do
-                    x <- receiveP pipe
-                    display x
-                    update_crc x
-                    case x of
-                      DataChunk buf len -> do
-                        darc_pipeline_append (castPtr buf) (fromIntegral len)
-                        send_backP pipe (buf, len)
-                        collectLoop
-                      DataEnd -> return ()
-                      _ -> collectLoop
-              collectLoop
-              -- Phase 2: Compress through method chain entirely in C
-              let compressLoop [] = return True
-                  compressLoop (m:ms) = do
-                    r <- withCString m $ \cm -> alloca $ \pResult -> do
-                           darc_pipeline_compress_step_w cm pResult
-                           peek pResult
-                    if r >= (0 :: CLong)
-                      then compressLoop ms
-                      else do registerThreadError$ COMPRESSION_ERROR [compressionErrorMessage (fromIntegral r), m]
-                              operationTerminated =: True
-                              darc_pipeline_free
-                              return False
-              ok <- compressLoop real_crypted_compressor
-              -- Phase 3: Write result to archive
-              when ok $ alloca $ \pBuf -> alloca $ \pSize -> do
-                darc_pipeline_get_buf_w pBuf pSize
-                outBuf <- peek pBuf
-                outSize <- fmap fromIntegral (peek pSize :: IO CLong)
-                when (outSize > (0 :: Int)) $ do
-                  r <- write_to_archive (DataBuf (castPtr outBuf) outSize)
-                  writeIORef result r
-                free outBuf
+              x <- receiveP pipe
+              case x of
+                CompressFiles paths fis -> do
+                  -- Full C hot path: read+CRC+compress+write in one C call
+                  uiUnpackedBytes (i (sum (map fiSize fis)))
+                  let numFiles = length paths
+                  cstrPaths <- mapM newCString paths
+                  cstrMethods <- mapM newCString real_crypted_compressor
+                  withArray cstrPaths $ \pathArr ->
+                    withArray cstrMethods $ \methodArr ->
+                    alloca $ \pCompSize ->
+                    alloca $ \pOrigSize ->
+                    alloca $ \pBlockCrc ->
+                    alloca $ \pResult ->
+                    alloca $ \pFailedIdx ->
+                    allocaArray numFiles $ \crcArr -> do
+                      withArchiveBFILE archive $ \bfile -> do
+                        darc_compress_solid_block_w
+                          pathArr (fromIntegral numFiles)
+                          bfile
+                          methodArr (fromIntegral (length real_crypted_compressor))
+                          pCompSize crcArr pOrigSize pBlockCrc pResult pFailedIdx
+                      rc <- peek pResult
+                      if rc < (0 :: CInt)
+                        then do failedIdx <- peek pFailedIdx
+                                let idx = fromIntegral (failedIdx :: CInt)
+                                if idx >= 0 && idx < numFiles
+                                  then registerThreadError$ CANT_OPEN_FILE (paths !! idx)
+                                  else registerThreadError$ COMPRESSION_ERROR [compressionErrorMessage (fromIntegral rc), head real_crypted_compressor]
+                                operationTerminated =: True
+                        else do compSize <- peek pCompSize
+                                origSize' <- peek pOrigSize
+                                blockCrc <- peek pBlockCrc
+                                writeIORef result (fromIntegral (compSize :: CLong))
+                                origsize =: fromIntegral (origSize' :: CLong)
+                                uiCompressedBytes (fromIntegral (compSize :: CLong))
+                                when (block_type/=DATA_BLOCK) $ do
+                                  crc =: fromIntegral (blockCrc :: CUInt)
+                                -- Read per-file CRCs from C array
+                                crcs <- mapM (\j -> peekElemOff crcArr j) [0..numFiles-1]
+                                writeIORef fileCRCs crcs
+                  mapM_ free cstrPaths
+                  mapM_ free cstrMethods
+                  -- Drain DataEnd from pipe
+                  DataEnd <- receiveP pipe
+                  return ()
+                _ -> do
+                  -- Fallback: old pipeline path for non-CompressFiles instructions
+                  display x
+                  update_crc x
+                  darc_pipeline_init (64 * 1024 * 1024)
+                  let collectFirst = case x of
+                        DataChunk buf len -> do
+                          darc_pipeline_append (castPtr buf) (fromIntegral len)
+                          send_backP pipe (buf, len)
+                        _ -> return ()
+                  collectFirst
+                  let collectLoop = do
+                        y <- receiveP pipe
+                        display y
+                        update_crc y
+                        case y of
+                          DataChunk buf len -> do
+                            darc_pipeline_append (castPtr buf) (fromIntegral len)
+                            send_backP pipe (buf, len)
+                            collectLoop
+                          DataEnd -> return ()
+                          _ -> collectLoop
+                  collectLoop
+                  let compressLoop [] = return True
+                      compressLoop (m:ms) = do
+                        r <- withCString m $ \cm -> alloca $ \pResult -> do
+                               darc_pipeline_compress_step_w cm pResult
+                               peek pResult
+                        if r >= (0 :: CLong)
+                          then compressLoop ms
+                          else do registerThreadError$ COMPRESSION_ERROR [compressionErrorMessage (fromIntegral r), m]
+                                  operationTerminated =: True
+                                  darc_pipeline_free
+                                  return False
+                  ok <- compressLoop real_crypted_compressor
+                  when ok $ alloca $ \pBuf -> alloca $ \pSize -> do
+                    darc_pipeline_get_buf_w pBuf pSize
+                    outBuf <- peek pBuf
+                    outSize <- fmap fromIntegral (peek pSize :: IO CLong)
+                    when (outSize > (0 :: Int)) $ do
+                      r <- write_to_archive (DataBuf (castPtr outBuf) outSize)
+                      writeIORef result r
+                    free outBuf
         let compress_f = if just_copy then copy_block else mhs_compress_block
 #else
         let compressa :: Pipe (PairFunc Instruction) (PairFunc (Ptr CChar, Int)) (PairFunc CompressionData) (PairFunc Int) -> IO ()
@@ -171,7 +226,20 @@ compressAndWriteToArchiveProcess archive command backdoor pipe = do
 
         -- Возвратить в первый процесс информацию о только что созданном блоке
         -- вместе со списком содержащихся в нём файлов
-        (Directory dir)  <-  receiveP pipe   -- Получим от первого процесса список файлов в блоке
+        (Directory dir0)  <-  receiveP pipe   -- Получим от первого процесса список файлов в блоке
+#ifdef __MHS__
+        -- Patch per-file CRCs from C hot path into directory entries
+        crcs <- readIORef fileCRCs
+        let dir = if null crcs then dir0
+                  else patchDirCRCs dir0 crcs
+            patchDirCRCs [] _          = []
+            patchDirCRCs fws []        = fws
+            patchDirCRCs (fw:fws) ccs@(c:cs)
+              | fiIsDir (fwFileInfo fw)  = fw : patchDirCRCs fws ccs
+              | otherwise                = fw{fwCRC = c} : patchDirCRCs fws cs
+#else
+        let dir = dir0
+#endif
         crc'             <-  val crc >>== finishCRC     -- Вычислим окончательное значение CRC
         origsize'        <-  val origsize
         putP backdoor (ArchiveBlock {
@@ -212,4 +280,10 @@ foreign import ccall "darc_pipeline_append"            darc_pipeline_append :: P
 foreign import ccall "darc_pipeline_compress_step_w"   darc_pipeline_compress_step_w :: CString -> Ptr CLong -> IO ()
 foreign import ccall "darc_pipeline_get_buf_w"         darc_pipeline_get_buf_w :: Ptr (Ptr ()) -> Ptr CLong -> IO ()
 foreign import ccall "darc_pipeline_free"              darc_pipeline_free :: IO ()
+-- Full solid-block C hot path
+foreign import ccall "darc_compress_solid_block_w"     darc_compress_solid_block_w ::
+    Ptr CString -> CInt -> Ptr () ->
+    Ptr CString -> CInt ->
+    Ptr CLong -> Ptr CUInt -> Ptr CLong -> Ptr CUInt ->
+    Ptr CInt -> Ptr CInt -> IO ()
 #endif

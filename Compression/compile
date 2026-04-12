@@ -17,6 +17,9 @@ cd ..
 cd Tornado
 make
 cd ..
+cd 4x4
+make
+cd ..
 cd Dict
 make
 cd ..

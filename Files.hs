@@ -638,6 +638,12 @@ hSetFileSize :: Handle -> Integer -> IO ()
 hSetFileSize h sz = withHandleAny h $ \bf -> do
   _ <- darc_bfile_truncate (castPtr bf) (fromIntegral sz)
   return ()
+
+-- |Get raw BFILE* pointer from an Archive, holding the MVar lock during the action
+withArchiveBFILE :: Archive -> (Ptr () -> IO a) -> IO a
+withArchiveBFILE arc action = withMVar (archiveFile arc) $ \file -> case file of
+    FileOnDisk h -> withHandleAny h $ \bf -> action (castPtr bf)
+    _            -> error "withArchiveBFILE: not a disk file"
 #endif
 stat_mode            = st_mode
 stat_size            = st_size  .>>== i

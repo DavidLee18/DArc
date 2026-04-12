@@ -2,6 +2,7 @@
 ---- Process that builds the archive structure and reads the data to be packed.                    ----
 ---- Called from ArcCreate.hs                                                                    ----
 ----------------------------------------------------------------------------------------------------
+{-# LANGUAGE CPP #-}
 module ArcvProcessRead where
 
 import Prelude hiding (catch, readFile)
@@ -38,6 +39,7 @@ data Instruction
   |   CorrectTotals FileCount FileSize        --   Adjust Total Files/Bytes shown in the UI
   |   FakeFiles [FileToCompress]              --   Adjust the list of already-packed files for the UI
   |   CopySolidBlock [CompressedFile]         --   Copy an entire solid block from an existing archive
+  |   CompressFiles [FilePath] [FileInfo]     --   MHS C hot path: read+compress files entirely in C
   |   DataEnd                                 --   End of the archive block
   |   Directory [FileWithCRC]                 --   Request for administrative data about the last created archive block
   |   TheEnd                                  --   Archive creation complete
@@ -138,11 +140,25 @@ createSolidBlock command processDir bufOps pipe decompress_pipe (orig_compressor
              else if isReallyFakeCompressor compressor then do
                sendP pipe (FakeFiles files)
                return$ map fileWithCRC files
+#ifdef __MHS__
+             -- MHS C hot path: if all files are on disk (not from archive),
+             -- send paths to compress process to read+compress entirely in C
+             else if allDiskFiles then do
+               let paths = map (diskName . cfFileInfo) dataFiles
+                   fis   = map cfFileInfo dataFiles
+               sendP pipe (CompressFiles paths fis)
+               -- The compress process returns CRCs via the pipe
+               return$ map fileWithCRC files  -- CRCs will be updated by the compress process
+#endif
              -- Normal file reading for all other (more typical) cases
              else do
                mapMaybeM (readFile command pipe bufOps decompress_pipe) files
       processDir dir   -- let the procedure passed from above inspect the list of archived files (used to implement options -tl, -ac, -d[f])
       return dir
+  where
+    -- Check if all files are DiskFiles (not compressed files from existing archives) and not directories
+    allDiskFiles = all (\f -> not (isCompressedFile f) && not (fiIsDir (cfFileInfo f))) files
+    dataFiles    = filter (\f -> not (fiIsDir (cfFileInfo f))) files
 
 
 -- |Print debug information

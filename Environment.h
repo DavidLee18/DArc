@@ -45,6 +45,18 @@ void darc_pipeline_get_buf_w(void **out_buf, long *out_size);
 void darc_pipeline_free(void);
 void darc_pipeline_compress_step_w(const char *method, long *out_result);
 void darc_pipeline_decompress_step_w(const char *method, long orig_size_hint, long *out_result);
+// Full solid-block C hot path
+void darc_compress_solid_block_w(
+    const char **input_files, int num_files, void *archive_bfile,
+    const char **methods, int num_methods,
+    long *out_compressed_size, unsigned int *out_crcs,
+    long *out_orig_size, unsigned int *out_block_crc,
+    int *out_result, int *out_failed_file_idx);
+void darc_extract_solid_block_w(
+    void *archive_bfile, long block_comp_size,
+    const char **methods, int num_methods,
+    const char **output_files, const long *file_offsets, const long *file_sizes,
+    int num_files, unsigned int *out_crcs, int *out_result);
 
 #ifdef __MHS__
 // MicroHs callback trampoline: returns address of darc_haskell_callback for use as FunPtr CALLBACK_FUNC.
