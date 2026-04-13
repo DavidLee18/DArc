@@ -129,6 +129,16 @@ filenameLower = id
 -- |Return False for special filenames like "." and ".." - used to filtering results of getDirContents
 exclude_special_names s  =  (s/=".")  &&  (s/="..")
 
+-- |Remove "." and ".." components from the path. Prevents path traversal
+-- attacks (e.g. archive containing "../../etc/passwd") on extraction.
+remove_unsafe_dirs :: FilePath -> FilePath
+remove_unsafe_dirs path  =  path .$ splitDirectories .$ reverse .$ filter (/=".") .$ process .$ reverse .$ joinPath
+  where
+    process ("..":_:xs) = process xs
+    process [".."]      = []
+    process (x:xs)      = x : process xs
+    process []          = []
+
 -- Strip "drive:/" at the beginning of absolute filename
 stripRoot = dropDrive
 
@@ -257,7 +267,11 @@ registrySetStr root branch key val =
 -- |Прочитать из Registry значение типа REG_SZ
 registryGetStringValue :: HKEY -> String -> IO (Maybe String)
 registryGetStringValue hk key = do
+#if __GLASGOW_HASKELL__ >= 900
   (regQueryValue hk (Just key) >>== Just)
+#else
+  (regQueryValue hk key >>== Just)
+#endif
     `catch` (\(e::SomeException) -> return Nothing)
 
 -- |Записать в Registry значение типа REG_SZ
@@ -326,11 +340,11 @@ myCanonicalizePath fpath | isURL fpath = return fpath
   withCFilePath fpath $ \pInPath ->
   allocaBytes (long_path_size*4) $ \pOutPath ->
   alloca $ \ppFilePart ->
-    do c_GetFullPathName pInPath (fromIntegral long_path_size*2) pOutPath ppFilePart
+    do c_DArcGetFullPathName pInPath (fromIntegral long_path_size*2) pOutPath ppFilePart
        peekCFilePath pOutPath >>== dropTrailingPathSeparator
 
 foreign import stdcall unsafe "GetFullPathNameW"
-            c_GetFullPathName :: CWString
+            c_DArcGetFullPathName :: CWString
                               -> CInt
                               -> CWString
                               -> Ptr CWString
@@ -418,7 +432,21 @@ returnMVar action          =  action >>= newMVar
 data Archive = Archive { archiveName :: FilePath
                        , archiveFile :: MVar File
                        }
-archiveOpen     name = do file <- fileOpen name >>= newMVar; return (Archive name file)
+foreign import ccall unsafe "darc_volfile_open" c_volfile_open :: CString -> IO Int
+
+archiveOpen     name = do
+  let base | ".001" `isSuffixOf` name = take (length name - 4) name
+           | otherwise                = name
+  exists    <- fileExist base
+  vol1Ex    <- fileExist (base ++ ".001")
+  file <- if exists || not vol1Ex
+            then fileOpen name
+            else do slot <- withCString base c_volfile_open
+                    if slot < 0 then fileOpen name
+                                else return (VolFile slot)
+  mv <- newMVar file
+  let realname = if exists || not vol1Ex then name else base
+  return (Archive realname mv)
 archiveCreate   name = do file <- fileCreate name >>= newMVar; return (Archive name file)
 archiveCreateRW name = do file <- fileCreateRW name >>= newMVar; return (Archive name file)
 archiveGetPos        = liftMVar1 fileGetPos   . archiveFile
@@ -451,19 +479,20 @@ fileWriteBuf file buf size = withMVar oneIOAtTime $ \_ -> fileWriteBufSimple fil
 ---- URL access ------------------------------------------------------------------------------------
 ----------------------------------------------------------------------------------------------------
 
-data File = FileOnDisk FileOnDisk | URL URL
+type VolHandle = Int
+data File = FileOnDisk FileOnDisk | URL URL | VolFile VolHandle
 
 fileOpen           = choose0 fOpen           url_open
 fileCreate         = choose0 fCreate         (\_ -> err "url_create")
 fileCreateRW       = choose0 fCreateRW       (\_ -> err "url_create_rw")
 fileAppendText     = choose0 fAppendText     (\_ -> err "url_append_text")
-fileGetPos         = choose  fGetPos         (url_pos  .>>==i)
-fileGetSize        = choose  fGetSize        (url_size .>>==i)
-fileSeek           = choose  fSeek           (\f p -> url_seek f (i p))
-fileReadBufSimple  = choose  fReadBufSimple  url_read
-fileWriteBufSimple = choose  fWriteBufSimple (\_ _ _ -> err "url_write")
-fileFlush          = choose  fFlush          (\_     -> err "url_flush")
-fileClose          = choose  fClose          url_close
+fileGetPos         = choose3 fGetPos         (url_pos  .>>==i) (volfile_pos  .>>==i)
+fileGetSize        = choose3 fGetSize        (url_size .>>==i) (volfile_size .>>==i)
+fileSeek           = choose3 fSeek           (\f p -> url_seek f (i p)) (\f p -> volfile_seek f (i p))
+fileReadBufSimple  = choose3 fReadBufSimple  url_read volfile_read
+fileWriteBufSimple = choose3 fWriteBufSimple (\_ _ _ -> err "url_write")   (\_ _ _ -> err "volfile_write")
+fileFlush          = choose3 fFlush          (\_     -> err "url_flush")   (\_     -> return ())
+fileClose          = choose3 fClose          url_close volfile_close
 
 -- |Проверяет существование файла/URL
 fileExist name | isURL name = do url <- withCString name url_open
@@ -483,6 +512,23 @@ choose0 onfile onurl name | isURL name = do url <- withCString name onurl
 
 choose _ onurl  (URL        url)   = onurl  url
 choose onfile _ (FileOnDisk file)  = onfile file
+choose _ _      (VolFile    _)     = err "volfile op via choose"
+
+choose3 _ onurl _      (URL     url)    = onurl  url
+choose3 onfile _ _     (FileOnDisk f)   = onfile f
+choose3 _ _ onvol      (VolFile v)      = onvol  v
+
+foreign import ccall safe "darc_volfile_pos_out"  c_volfile_pos_out  :: VolHandle -> Ptr Int64 -> IO ()
+foreign import ccall safe "darc_volfile_size_out" c_volfile_size_out :: VolHandle -> Ptr Int64 -> IO ()
+foreign import ccall safe "darc_volfile_seek"     volfile_seek       :: VolHandle -> Int -> IO ()
+foreign import ccall safe "darc_volfile_read"     volfile_read_raw   :: VolHandle -> Ptr () -> Int -> IO Int
+foreign import ccall safe "darc_volfile_close"    volfile_close      :: VolHandle -> IO ()
+volfile_read :: VolHandle -> Ptr a -> Int -> IO Int
+volfile_read h buf n = volfile_read_raw h (castPtr buf) n
+volfile_size :: VolHandle -> IO Int
+volfile_size h = alloca $ \p -> c_volfile_size_out h p >> peek p >>= return . fromIntegral
+volfile_pos :: VolHandle -> IO Int
+volfile_pos h = alloca $ \p -> c_volfile_pos_out h p >> peek p >>= return . fromIntegral
 
 {-# NOINLINE err #-}
 err s  =  fail$ s++" isn't implemented"    --registerError$ GENERAL_ERROR ["0343 %1 isn't implemented", s]

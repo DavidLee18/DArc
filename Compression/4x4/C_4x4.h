@@ -26,11 +26,13 @@ public:
   virtual void ShowCompressionMethod (char *buf);
   virtual MemSize GetCompressionMem   (void);
   virtual MemSize GetDecompressionMem (void);
-  virtual MemSize GetDictionary       (void)         {return BlockSize;}
+  // GetDictionary/SetDictionary forward to the inner method (like FreeArc 0.67),
+  // so that a global -md doesn't clobber our BlockSize. BlockSize has its own Get/Set.
+  virtual MemSize GetDictionary       (void)         {return ::GetDictionary(Method);}
   virtual MemSize GetBlockSize        (void)         {return BlockSize;}
   virtual void    SetCompressionMem   (MemSize mem);
   virtual void    SetDecompressionMem (MemSize)      {}
-  virtual void    SetDictionary       (MemSize dict) {BlockSize = dict;}
+  virtual void    SetDictionary       (MemSize dict) {if (dict) ::SetDictionary(Method, dict, Method);}
   virtual void    SetBlockSize        (MemSize bs)   {BlockSize = bs;}
 #endif
   virtual int     doit (char *what, int param, void *data, CALLBACK_FUNC *callback);

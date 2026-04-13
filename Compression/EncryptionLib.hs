@@ -6,9 +6,12 @@
 module EncryptionLib where
 
 import Control.Monad
+import Data.Char (chr, ord)
+import Data.Word (Word8)
 import Foreign.C.String
 import Foreign.C.Types
 import Foreign.Marshal.Alloc
+import Foreign.Marshal.Array (peekArray, withArrayLen)
 import Foreign.Ptr
 import System.IO.Unsafe
 
@@ -24,11 +27,15 @@ encryptionGet = compressionGet
 -- |Generate key based on password and salt using given number of hashing iterations
 pbkdf2Hmac :: String -> String -> Int -> Int -> String
 pbkdf2Hmac password salt iterations keySize = unsafePerformIO $
-  withCStringLen   password $ \(c_password, c_password_len) ->
-    withCStringLen salt     $ \(c_salt,     c_salt_len) ->
-    allocaBytes    keySize  $ \c_key -> do
-      c_Pbkdf2Hmac c_password (ii c_password_len) c_salt (ii c_salt_len) (ii iterations) c_key (ii keySize)
-      peekCStringLen (c_key, keySize)
+  -- Marshal as raw bytes (ord-low-8), not via locale encoding, since password/salt
+  -- can contain binary bytes and the key is binary. peekCStringLen/withCStringLen
+  -- would UTF-8-reinterpret them under GHC and corrupt the data.
+  withArrayLen (map (fromIntegral . ord) password :: [Word8]) $ \pw_len pw_buf ->
+    withArrayLen (map (fromIntegral . ord) salt :: [Word8]) $ \sa_len sa_buf ->
+    allocaBytes keySize $ \c_key -> do
+      c_Pbkdf2Hmac (castPtr pw_buf) (ii pw_len) (castPtr sa_buf) (ii sa_len) (ii iterations) c_key (ii keySize)
+      ws <- peekArray keySize (castPtr c_key :: Ptr Word8)
+      return (map (chr . fromIntegral) ws)
 
 
 ----------------------------------------------------------------------------------------------------

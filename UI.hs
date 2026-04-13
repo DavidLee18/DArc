@@ -68,6 +68,7 @@ uiStartArchive command@Command {
   ref_command =: command
   display_option' =: opt_display command
   perform_shutdown =: opt_shutdown command  -- FreeArc 0.67 --shutdown/-ioff
+  pause_before_exit_mode =: opt_pause_before_exit command  -- FreeArc 0.67 --pause-before-exit
   ByteStream.legacy32bitRead =: opt_arc_32bit_legacy command  -- --arc-32bit-legacy: read 32-bit FreeArc archives
   uiMessage =: ""
 

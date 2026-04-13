@@ -38,6 +38,9 @@ cd ..
 cd Zstd
 make
 cd ..
+cd 7z
+make
+cd ..
 cd LZMA
 make
 cd ..

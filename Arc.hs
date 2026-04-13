@@ -50,9 +50,16 @@ import UI
 import ArcCreate
 import ArcExtract
 import ArcRecover
+import Arc7z
 #ifdef FREEARC_GUI
 import FileManager
 #endif
+
+import Foreign.C.String (CString, withCString)
+import Foreign.C.Types  (CInt(..))
+
+foreign import ccall unsafe "darc_queue_acquire" c_queue_acquire :: CString -> IO CInt
+foreign import ccall unsafe "darc_queue_release" c_queue_release :: CInt   -> IO ()
 
 
 -- |Главная функция программы
@@ -81,7 +88,12 @@ doMain args  = do
 #endif
   uiStartProgram                    -- Открыть UI
   commands <- parseCmdline args     -- Превратить командную строку в список команд на выполнение
+  -- FreeArc 0.67 --queue: serialize with other arc processes via advisory lockfile
+  queue_fd <- if any opt_queue commands
+                then withCString "/tmp/darc.queue.lock" c_queue_acquire
+                else return (-1)
   mapM_ run commands                -- Выполнить каждую полученную команду
+  when (queue_fd >= 0) $ c_queue_release queue_fd
   uiDoneProgram                     -- Закрыть UI
 
  where
@@ -103,30 +115,34 @@ run command@Command
   performGC       -- почистить мусор после обработки предыдущих команд
   setup_command   -- выполнить настройки, необходимые перед началом выполнения команды
   luaLevel "Command" [("command", cmd)] $ do
-  case cmd of
-    "create" -> findArchives  False           runAdd     command
-    "a"      -> findArchives  False           runAdd     command
-    "f"      -> findArchives  False           runAdd     command
-    "m"      -> findArchives  False           runAdd     command
-    "mf"     -> findArchives  False           runAdd     command
-    "u"      -> findArchives  False           runAdd     command
-    "j"      -> findArchives  False           runJoin    command
-    "cw"     -> findArchives  False           runCw      command
-    "ch"     -> findArchives  scan_subdirs    runCopy    command
-    's':_    -> findArchives  scan_subdirs    runCopy    command
-    "c"      -> findArchives  scan_subdirs    runCopy    command
-    "k"      -> findArchives  scan_subdirs    runCopy    command
-    'r':'r':_-> findArchives  scan_subdirs    runCopy    command
-    "r"      -> findArchives  scan_subdirs    runRecover command
-    "d"      -> findArchives  scan_subdirs    runDelete  command
-    "e"      -> findArchives  scan_subdirs    runExtract command
-    "x"      -> findArchives  scan_subdirs    runExtract command
-    "t"      -> findArchives  scan_subdirs    runTest    command
-    "l"      -> findArchives  scan_subdirs    runList    command
-    "lb"     -> findArchives  scan_subdirs    runList    command
-    "lt"     -> findArchives  scan_subdirs    runList    command
-    "v"      -> findArchives  scan_subdirs    runList    command
-    _ -> registerError$ UNKNOWN_CMD cmd aLL_COMMANDS
+  -- Route .7z archives to the system 7zz/7z binary.
+  if is7zArchive (cmd_arcspec command)
+    then run7z command
+    else case cmd of
+      "create" -> findArchives  False           runAdd     command
+      "a"      -> findArchives  False           runAdd     command
+      "f"      -> findArchives  False           runAdd     command
+      "m"      -> findArchives  False           runAdd     command
+      "mf"     -> findArchives  False           runAdd     command
+      "u"      -> findArchives  False           runAdd     command
+      "j"      -> findArchives  False           runJoin    command
+      "cw"     -> findArchives  False           runCw      command
+      "ch"     -> findArchives  scan_subdirs    runCopy    command
+      "modify" -> findArchives  scan_subdirs    runModify  command
+      's':_    -> findArchives  scan_subdirs    runCopy    command
+      "c"      -> findArchives  scan_subdirs    runCopy    command
+      "k"      -> findArchives  scan_subdirs    runCopy    command
+      'r':'r':_-> findArchives  scan_subdirs    runCopy    command
+      "r"      -> findArchives  scan_subdirs    runRecover command
+      "d"      -> findArchives  scan_subdirs    runDelete  command
+      "e"      -> findArchives  scan_subdirs    runExtract command
+      "x"      -> findArchives  scan_subdirs    runExtract command
+      "t"      -> findArchives  scan_subdirs    runTest    command
+      "l"      -> findArchives  scan_subdirs    runList    command
+      "lb"     -> findArchives  scan_subdirs    runList    command
+      "lt"     -> findArchives  scan_subdirs    runList    command
+      "v"      -> findArchives  scan_subdirs    runList    command
+      _ -> registerError$ UNKNOWN_CMD cmd aLL_COMMANDS
 
 
 -- |Ищет архивы, подходящие под маску arcspec, и выполняет заданную команду на каждом из них
@@ -185,6 +201,12 @@ runJoin cmd@Command { cmd_filespecs = filespecs
                    , cmd_archive_filter = const True }  -- фильтр отбора файлов из открываемых архивов
 
 
+-- |Команда модификации архива: принимает archivos de disco opcionales
+-- como `runAdd`, pero si no hay filespecs simplemente re-encode el archivo existente.
+runModify cmd | null (cmd_filespecs cmd) || cmd_filespecs cmd == aDEFAULT_FILESPECS
+              = runArchiveAdd cmd{cmd_archive_filter = const True}
+runModify cmd = runAdd cmd{cmd_archive_filter = const True}
+
 -- |Команды копирования архива с внесением изменений: ch, c, k. s, rr
 runCopy    = runArchiveAdd                    . setArcFilter fullFileFilter
 -- |Команда удаления из архива: d
@@ -205,6 +227,7 @@ runArchiveAdd  =  runArchiveCreate pretestArchive writeRecoveryBlocks
 
 {-# NOINLINE findArchives #-}
 {-# NOINLINE runAdd #-}
+{-# NOINLINE runModify #-}
 {-# NOINLINE runJoin #-}
 {-# NOINLINE runCopy #-}
 {-# NOINLINE runDelete #-}

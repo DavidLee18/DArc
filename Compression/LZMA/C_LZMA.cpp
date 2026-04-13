@@ -1,36 +1,21 @@
-// C_LZMA.cpp - интерфейс FreeArc к алгоритму сжатия LZMA
-
-#ifdef WIN32
-#include <windows.h>
-#include <initguid.h>
-#else
-#define INITGUID
-#endif
-
-// Enable multithreading support
-#define COMPRESS_MF_MT
+// C_LZMA.cpp - FreeArc/DArc interface to LZMA (7-Zip 24.09 C API)
+//
+// Wire format: raw LZMA1 stream WITHOUT 5-byte properties header.
+// Properties (dictSize, lc, lp, pb) are carried out-of-band in the method string,
+// preserving byte-level compatibility with FreeArc 0.51-era archives.
 
 extern "C" {
 #include "C_LZMA.h"
+#include "7z24/LzmaEnc.h"
+#include "7z24/LzmaDec.h"
 }
 
-enum
-{
-  kBT2,
-  kBT3,
-  kBT4,
-  kHC4,
-  kHT4
-};
+#include <string.h>
 
-static const char *kMatchFinderIDs[] =
-{
-  "BT2",
-  "BT3",
-  "BT4",
-  "HC4",
-  "HT4"
-};
+// Old FreeArc match-finder IDs (kept for CLI compatibility)
+enum { kBT2, kBT3, kBT4, kHC4, kHT4 };
+
+static const char *kMatchFinderIDs[] = { "BT2", "BT3", "BT4", "HC4", "HT4" };
 
 static int FindMatchFinder(const char *s)
 {
@@ -40,116 +25,124 @@ static int FindMatchFinder(const char *s)
   return -1;
 }
 
-// Включим в один .o файл все необходимые подпрограммы
-// #include "Common/Alloc.cpp"
-#include "7zip/Common/InBuffer.cpp"
-#include "7zip/Compress/LZ/LZOutWindow.cpp"
-#include "7zip/Compress/LZMA/LZMADecoder.cpp"
-#include "7zip/Common/OutBuffer.cpp"
-#ifndef FREEARC_DECOMPRESS_ONLY
-#include "Common/CRC.cpp"
-#include "7zip/Compress/LZ/LZInWindow.cpp"
-#ifdef COMPRESS_MF_MT
-// #include "Windows/Synchronization.cpp"  -- moved to CompressionLibrary.cpp which should be linked into every program that uses Compression Library
-#include "7zip/Compress/LZ/MT/MT.cpp"
-#endif
-#include "7zip/Compress/RangeCoder/RangeCoderBit.cpp"
-#include "7zip/Compress/LZMA/LZMAEncoder.cpp"
-#endif  // !defined (FREEARC_DECOMPRESS_ONLY)
+extern "C" {
 
-using namespace NCompress::NLZMA;
+// ---------- Allocator (malloc/free) ----------
+static void *SzAlloc (ISzAllocPtr, size_t size) { return size == 0 ? NULL : malloc(size); }
+static void  SzFree  (ISzAllocPtr, void *addr)  { free(addr); }
+static const ISzAlloc g_Alloc = { SzAlloc, SzFree };
 
-
-class CallbackInStream:
-  public ISequentialInStream,
-  public CMyUnknownImp
-{
+// ---------- Stream wrappers over CALLBACK_FUNC ----------
+struct CbInStream {
+  ISeqInStream vt;
   CALLBACK_FUNC *callback;
-  void     *auxdata;
-  bool          first_read;
-public:
+  void *auxdata;
   int errcode;
-  STDMETHOD_(ULONG, AddRef)()  { return 1; }
-  STDMETHOD_(ULONG, Release)() { return 1; }
-  STDMETHOD(QueryInterface)(REFGUID, void **) { return E_NOINTERFACE; }
-
-  CallbackInStream(CALLBACK_FUNC *_callback, void *_auxdata) : callback(_callback), auxdata(_auxdata), errcode(0) {first_read=TRUE;}
-  virtual ~CallbackInStream() {}
-  STDMETHOD(Read)(void *data, UInt32 size, UInt32 *processedSize);
-  STDMETHOD(ReadPart)(void *data, UInt32 size, UInt32 *processedSize);
 };
 
-STDMETHODIMP CallbackInStream::Read(void *data, UInt32 size, UInt32 *processedSize)
-{
-  if(processedSize != NULL)
-    *processedSize = 0;
-  SSIZE_T res;
-  if (compress_all_at_once) {
-    // Read whole buffer at the first call
-    res  =  first_read? callback ("read", data, (size_t) size, auxdata)
-                      : 0;
-  } else {
-    // Read data in the BUFFER_SIZE chunks
-    res  =  callback ("read", data, mymin((size_t) size, BUFFER_SIZE), auxdata);
-  }
-  first_read = FALSE;
-  if (res < 0) {
-    errcode = res;
-    return E_FAIL;
-  }
-  if(processedSize != NULL)
-    *processedSize = (UInt32)res;
-  return S_OK;
-}
-
-STDMETHODIMP CallbackInStream::ReadPart(void *data, UInt32 size, UInt32 *processedSize)
-{
-  return Read(data, size, processedSize);
-}
-
-
-
-class CallbackOutStream:
-  public ISequentialOutStream,
-  public CMyUnknownImp
-{
+struct CbOutStream {
+  ISeqOutStream vt;
   CALLBACK_FUNC *callback;
-  void     *auxdata;
-public:
+  void *auxdata;
   int errcode;
-  STDMETHOD_(ULONG, AddRef)()  { return 1; }
-  STDMETHOD_(ULONG, Release)() { return 1; }
-  STDMETHOD(QueryInterface)(REFGUID, void **) { return E_NOINTERFACE; }
-
-  CallbackOutStream(CALLBACK_FUNC *_callback, void *_auxdata) : callback(_callback), auxdata(_auxdata), errcode(0) {}
-  virtual ~CallbackOutStream() {}
-  STDMETHOD(Write)(const void *data, UInt32 size, UInt32 *processedSize);
-  STDMETHOD(WritePart)(const void *data, UInt32 size, UInt32 *processedSize);
 };
 
-STDMETHODIMP CallbackOutStream::Write(const void *data, UInt32 size, UInt32 *processedSize)
+static SRes CbIn_Read(ISeqInStreamPtr pp, void *buf, size_t *size)
 {
-  if(processedSize != NULL)
-    *processedSize = 0;
-  SSIZE_T res = callback ("write", (void*)data, (size_t)size, auxdata);
-  if (res < 0) {
-    errcode = res;
-    return E_FAIL;
-  }
-  if(processedSize != NULL)
-    *processedSize = (UInt32)size;
-  return S_OK;
+  CbInStream *p = (CbInStream*)pp;
+  size_t want = *size;
+  if (want == 0) return SZ_OK;
+  SSIZE_T res = p->callback("read", buf, want, p->auxdata);
+  if (res < 0) { p->errcode = (int)res; *size = 0; return SZ_ERROR_READ; }
+  *size = (size_t)res;
+  return SZ_OK;
 }
 
-STDMETHODIMP CallbackOutStream::WritePart(const void *data, UInt32 size, UInt32 *processedSize)
+static size_t CbOut_Write(ISeqOutStreamPtr pp, const void *buf, size_t size)
 {
-  return Write(data, size, processedSize);
+  CbOutStream *p = (CbOutStream*)pp;
+  if (size == 0) return 0;
+  SSIZE_T res = p->callback("write", (void*)buf, size, p->auxdata);
+  if (res < 0) { p->errcode = (int)res; return 0; }
+  return (size_t)res;
 }
 
+} // extern "C"
 
 #ifndef FREEARC_DECOMPRESS_ONLY
 
-int lzma_compress  ( int dictionarySize,
+int lzma_compress (int dictionarySize,
+                   int hashSize,
+                   int algorithm,
+                   int numFastBytes,
+                   int matchFinder,
+                   int matchFinderCycles,
+                   int posStateBits,
+                   int litContextBits,
+                   int litPosBits,
+                   CALLBACK_FUNC *callback,
+                   void *auxdata)
+{
+  CbInStream  inS;  inS.vt.Read  = CbIn_Read;  inS.callback = callback; inS.auxdata = auxdata; inS.errcode = 0;
+  CbOutStream outS; outS.vt.Write = CbOut_Write; outS.callback = callback; outS.auxdata = auxdata; outS.errcode = 0;
+
+  CLzmaEncHandle enc = LzmaEnc_Create(&g_Alloc);
+  if (!enc) return FREEARC_ERRCODE_NOT_ENOUGH_MEMORY;
+
+  CLzmaEncProps props;
+  LzmaEncProps_Init(&props);
+  props.dictSize     = dictionarySize;
+  props.lc           = litContextBits;
+  props.lp           = litPosBits;
+  props.pb           = posStateBits;
+  props.algo         = algorithm;      // 0 = fast, 1 = normal
+  props.fb           = numFastBytes;
+  // Old FreeArc match-finder id -> 7zip (btMode, numHashBytes)
+  switch (matchFinder) {
+    case kBT2: props.btMode = 1; props.numHashBytes = 2; break;
+    case kBT3: props.btMode = 1; props.numHashBytes = 3; break;
+    case kBT4: props.btMode = 1; props.numHashBytes = 4; break;
+    case kHC4: props.btMode = 0; props.numHashBytes = 4; break;
+    case kHT4: props.btMode = 0; props.numHashBytes = 5; break;  // map to 5-byte hash
+    default:   props.btMode = 1; props.numHashBytes = 4; break;
+  }
+  props.mc           = matchFinderCycles;  // 0 = auto
+  props.writeEndMark = 1;                  // FreeArc streams with EOPM (unknown size)
+  props.numThreads   = GetCompressionThreads() > 1 ? 2 : 1;
+
+  SRes r = LzmaEnc_SetProps(enc, &props);
+  if (r != SZ_OK) {
+    LzmaEnc_Destroy(enc, &g_Alloc, &g_Alloc);
+    return r == SZ_ERROR_MEM ? FREEARC_ERRCODE_NOT_ENOUGH_MEMORY
+                             : FREEARC_ERRCODE_INVALID_COMPRESSOR;
+  }
+
+  r = LzmaEnc_Encode(enc, &outS.vt, &inS.vt, NULL, &g_Alloc, &g_Alloc);
+  LzmaEnc_Destroy(enc, &g_Alloc, &g_Alloc);
+
+  if (inS.errcode)  return inS.errcode;
+  if (outS.errcode) return outS.errcode;
+  if (r == SZ_ERROR_MEM) return FREEARC_ERRCODE_NOT_ENOUGH_MEMORY;
+  if (r != SZ_OK) return FREEARC_ERRCODE_GENERAL;
+  return FREEARC_OK;
+}
+
+#endif // !FREEARC_DECOMPRESS_ONLY
+
+// Encode 5-byte LZMA properties blob from FreeArc params.
+//   byte 0 = (pb*5 + lp)*9 + lc
+//   bytes 1..4 = dictSize (little-endian UInt32)
+static void encode_props(Byte *props, int dictSize, int pb, int lc, int lp)
+{
+  props[0] = (Byte)((pb * 5 + lp) * 9 + lc);
+  UInt32 d = (UInt32)dictSize;
+  props[1] = (Byte)(d);
+  props[2] = (Byte)(d >> 8);
+  props[3] = (Byte)(d >> 16);
+  props[4] = (Byte)(d >> 24);
+}
+
+int lzma_decompress (int dictionarySize,
                      int hashSize,
                      int algorithm,
                      int numFastBytes,
@@ -159,106 +152,98 @@ int lzma_compress  ( int dictionarySize,
                      int litContextBits,
                      int litPosBits,
                      CALLBACK_FUNC *callback,
-                     void *auxdata )
+                     void *auxdata)
 {
-  CallbackInStream  inStream  (callback, auxdata);
-  CallbackOutStream outStream (callback, auxdata);
-  NCompress::NLZMA::CEncoder* encoder = new NCompress::NLZMA::CEncoder;
+  Byte propsBuf[LZMA_PROPS_SIZE];
+  encode_props(propsBuf, dictionarySize, posStateBits, litContextBits, litPosBits);
 
-  bool eos = (1==1);  // use End-Of-Stream marker because we don't know filesize apriori
-
-  if (encoder->SetupProperties (dictionarySize,
-                                hashSize,
-                                posStateBits,
-                                litContextBits,
-                                litPosBits,
-                                algorithm,
-                                numFastBytes,
-                                matchFinder,
-                                matchFinderCycles,
-                                GetCompressionThreads() > 1,
-                                eos) != S_OK)
-  {
-    delete encoder;
-    return FREEARC_ERRCODE_INVALID_COMPRESSOR;
+  CLzmaDec dec;
+  LzmaDec_Construct(&dec);
+  SRes r = LzmaDec_Allocate(&dec, propsBuf, LZMA_PROPS_SIZE, &g_Alloc);
+  if (r != SZ_OK) {
+    return r == SZ_ERROR_MEM ? FREEARC_ERRCODE_NOT_ENOUGH_MEMORY
+                             : FREEARC_ERRCODE_INVALID_COMPRESSOR;
   }
+  LzmaDec_Init(&dec);
 
-  HRESULT result = encoder->Code (&inStream, &outStream, 0, 0, 0);
-  delete encoder;
-  if (inStream.errcode)
-    return inStream.errcode;
-  if (outStream.errcode)
-    return outStream.errcode;
-  if (result == E_OUTOFMEMORY)
-  {
+  const size_t IN_BUF  = 1 << 16;
+  const size_t OUT_BUF = 1 << 16;
+  Byte *inBuf  = (Byte*)malloc(IN_BUF);
+  Byte *outBuf = (Byte*)malloc(OUT_BUF);
+  if (!inBuf || !outBuf) {
+    free(inBuf); free(outBuf);
+    LzmaDec_Free(&dec, &g_Alloc);
     return FREEARC_ERRCODE_NOT_ENOUGH_MEMORY;
   }
-  else if (result != S_OK)
+
+  size_t inAvail = 0;
+  size_t inPos   = 0;
+  int rc = FREEARC_OK;
+  int finished = 0;
+
+  for (;;)
   {
-    //fprintf(stderr, "\nEncoder error = %X\n", (unsigned int)result);
-    return FREEARC_ERRCODE_GENERAL;
+    if (inPos == inAvail) {
+      SSIZE_T got = callback("read", inBuf, IN_BUF, auxdata);
+      if (got < 0) { rc = (int)got; break; }
+      inAvail = (size_t)got;
+      inPos   = 0;
+    }
+
+    SizeT outLen = OUT_BUF;
+    SizeT srcLen = inAvail - inPos;
+    ELzmaStatus status;
+    r = LzmaDec_DecodeToBuf(&dec, outBuf, &outLen,
+                            inBuf + inPos, &srcLen,
+                            LZMA_FINISH_ANY, &status);
+    inPos += srcLen;
+
+    if (r != SZ_OK) {
+      rc = (r == SZ_ERROR_MEM) ? FREEARC_ERRCODE_NOT_ENOUGH_MEMORY
+                               : FREEARC_ERRCODE_BAD_COMPRESSED_DATA;
+      break;
+    }
+
+    if (outLen > 0) {
+      SSIZE_T wrote = callback("write", outBuf, outLen, auxdata);
+      if (wrote < 0) { rc = (int)wrote; break; }
+    }
+
+    if (status == LZMA_STATUS_FINISHED_WITH_MARK ||
+        status == LZMA_STATUS_MAYBE_FINISHED_WITHOUT_MARK) {
+      finished = 1;
+      break;
+    }
+    if (status == LZMA_STATUS_NEEDS_MORE_INPUT && inAvail == 0) {
+      // EOF without end marker and without indicating finished — error.
+      rc = FREEARC_ERRCODE_BAD_COMPRESSED_DATA;
+      break;
+    }
+    if (outLen == 0 && srcLen == 0) {
+      // No progress: avoid infinite loop.
+      rc = FREEARC_ERRCODE_BAD_COMPRESSED_DATA;
+      break;
+    }
   }
-  return 0;
-}
 
-#endif  // !defined (FREEARC_DECOMPRESS_ONLY)
-
-int lzma_decompress( int dictionarySize,
-                     int hashSize,
-                     int algorithm,
-                     int numFastBytes,
-                     int matchFinder,
-                     int matchFinderCycles,
-                     int posStateBits,
-                     int litContextBits,
-                     int litPosBits,
-                     CALLBACK_FUNC *callback,
-                     void *auxdata )
-{
-  CallbackInStream  inStream  (callback, auxdata);
-  CallbackOutStream outStream (callback, auxdata);
-  NCompress::NLZMA::CDecoder* decoder = new NCompress::NLZMA::CDecoder;
-
-  if (decoder->SetupProperties(dictionarySize, posStateBits, litContextBits, litPosBits) != S_OK)
-  {
-    delete decoder;
-    return 1;
-  }
-
-  UInt64 fileSize = (UInt64)-1;
-
-  HRESULT result = decoder->Code(&inStream, &outStream, 0, &fileSize, 0);
-  delete decoder;
-  if (inStream.errcode)
-    return inStream.errcode;
-  if (outStream.errcode)
-    return outStream.errcode;
-  if (result == E_OUTOFMEMORY)
-  {
-    return FREEARC_ERRCODE_NOT_ENOUGH_MEMORY;
-  }
-  if (result != S_OK)
-  {
-    //fprintf(stderr, "\nDecoder error = %X\n", (unsigned int)result);
-    return FREEARC_ERRCODE_GENERAL;
-  }
-  return 0;
+  (void)finished;
+  free(inBuf);
+  free(outBuf);
+  LzmaDec_Free(&dec, &g_Alloc);
+  return rc;
 }
 
 
-
 /*-------------------------------------------------*/
-/* Реализация класса LZMA_METHOD                  */
+/*  LZMA_METHOD class implementation               */
 /*-------------------------------------------------*/
 
-// Если строка str начинается со start, то возвратить адрес остатка, иначе - NULL
-char* start_from (char* str, char* start)
+static char* start_from (char* str, const char* start)
 {
   while (*start && *str==*start)  str++, start++;
   return *start? NULL : str;
 }
 
-// Конструктор, присваивающий параметрам метода сжатия значения по умолчанию
 LZMA_METHOD::LZMA_METHOD()
 {
   dictionarySize    = 64*mb;
@@ -266,220 +251,164 @@ LZMA_METHOD::LZMA_METHOD()
   algorithm         = 1;
   numFastBytes      = 32;
   matchFinder       = kHT4;
-  matchFinderCycles = 0;    // библиотека LZMA определит количество циклов автоматически, исходя из matchFinder и numFastBytes
+  matchFinderCycles = 0;
   posStateBits      = 2;
   litContextBits    = 3;
   litPosBits        = 0;
 }
 
-// Функция распаковки
 int LZMA_METHOD::decompress (CALLBACK_FUNC *callback, void *auxdata)
 {
-  // Use faster function from DLL if possible
   static FARPROC f = LoadFromDLL ("lzma_decompress");
   if (!f) f = (FARPROC) lzma_decompress;
-
-  return ((int (*)(int, int, int, int, int, int, int, int, int, CALLBACK_FUNC*, void*)) f)
-                         (dictionarySize,
-                          hashSize,
-                          algorithm,
-                          numFastBytes,
-                          matchFinder,
-                          matchFinderCycles,
-                          posStateBits,
-                          litContextBits,
-                          litPosBits,
-                          callback,
-                          auxdata);
+  return ((int (*)(int,int,int,int,int,int,int,int,int, CALLBACK_FUNC*, void*)) f)
+           (dictionarySize, hashSize, algorithm, numFastBytes, matchFinder,
+            matchFinderCycles, posStateBits, litContextBits, litPosBits,
+            callback, auxdata);
 }
 
 #ifndef FREEARC_DECOMPRESS_ONLY
 
-// Функция упаковки
 int LZMA_METHOD::compress (CALLBACK_FUNC *callback, void *auxdata)
 {
-  // Use faster function from DLL if possible
   static FARPROC f = LoadFromDLL ("lzma_compress");
   if (!f) f = (FARPROC) lzma_compress;
-
-  SetDictionary (dictionarySize);   // Ограничим размер словаря чтобы сжатие влезало в 4гб памяти :)
-  // Если LZMA будет использовать multithreading matchfinder,
-  // то нет смысла считать время работы по основному треду - вместо этого
-  // следует использовать wall clock time всего процесса упаковки
-  if ((algorithm || matchFinder!=kHC4) && GetCompressionThreads()>1)
-      addtime = -1;   // это сигнал на использование wall clock time
-  return ((int (*)(int, int, int, int, int, int, int, int, int, CALLBACK_FUNC*, void*)) f)
-                         (dictionarySize,
-                          hashSize,
-                          algorithm,
-                          numFastBytes,
-                          matchFinder,
-                          matchFinderCycles,
-                          posStateBits,
-                          litContextBits,
-                          litPosBits,
-                          callback,
-                          auxdata);
+  return ((int (*)(int,int,int,int,int,int,int,int,int, CALLBACK_FUNC*, void*)) f)
+           (dictionarySize, hashSize, algorithm, numFastBytes, matchFinder,
+            matchFinderCycles, posStateBits, litContextBits, litPosBits,
+            callback, auxdata);
 }
 
-
-// Записать в buf[MAX_METHOD_STRLEN] строку, описывающую метод сжатия и его параметры (функция, обратная к parse_LZMA)
-void LZMA_METHOD::ShowCompressionMethod (char *buf)
-{
-  char DictionaryStr[100], HashStr[100], fcStr[100], pbStr[100], lcStr[100], lpStr[100], algStr[100];
-  showMem (dictionarySize, DictionaryStr);
-  showMem (hashSize, HashStr);
-  LZMA_METHOD defaults;
-  sprintf (fcStr, matchFinderCycles!=defaults.matchFinderCycles? ":mc%d" : "", matchFinderCycles);
-  sprintf (pbStr, posStateBits     !=defaults.posStateBits     ? ":pb%d" : "", posStateBits);
-  sprintf (lcStr, litContextBits   !=defaults.litContextBits   ? ":lc%d" : "", litContextBits);
-  sprintf (lpStr, litPosBits       !=defaults.litPosBits       ? ":lp%d" : "", litPosBits);
-  matchFinder==kHT4? (algorithm==2? sprintf (algStr, "a%d", algorithm)
-                                  : sprintf (algStr, algorithm==0? "fast" : "normal"))
-                   : sprintf (algStr, "%s:%s", algorithm==0? "fast": algorithm==1? "normal": "max", kMatchFinderIDs [matchFinder]);
-  for (char *p=algStr; *p; p++)   *p = tolower(*p);  // strlwr(algStr);
-  sprintf (buf, "lzma:%s%s%s:%s:%d%s%s%s%s",
-                      DictionaryStr,
-                      hashSize? ":h" : "",
-                      hashSize? HashStr : "",
-                      algStr,
-                      numFastBytes,
-                      fcStr,
-                      pbStr,
-                      lcStr,
-                      lpStr);
-  //printf("\n%s\n",buf);
-}
-
-// Посчитать, сколько памяти требуется для упаковки заданным методом
+// Memory usage formulas (approximate, mirror of 7-Zip docs):
+//   dictSize + (numHashBytes < 4 ? 0 : 2^20) + approx
+// We use simple safe upper bounds.
 MemSize LZMA_METHOD::GetCompressionMem (void)
 {
-  SetDictionary (dictionarySize);   // Ограничим размер словаря чтобы сжатие влезало в 4гб памяти :)
+  MemSize dict = dictionarySize;
+  MemSize mfMem;
   switch (matchFinder) {
-    case kBT2:    return NBT2::CalcHashSize(dictionarySize,hashSize)*sizeof(NBT2::CIndex) + dictionarySize*9 + NBT2::ReservedAreaSize(dictionarySize) + 256*kb + RangeEncoderBufferSize(dictionarySize);
-    case kBT3:    return NBT3::CalcHashSize(dictionarySize,hashSize)*sizeof(NBT3::CIndex) + dictionarySize*9 + NBT3::ReservedAreaSize(dictionarySize) + 256*kb + RangeEncoderBufferSize(dictionarySize);
-    case kBT4:    return NBT4::CalcHashSize(dictionarySize,hashSize)*sizeof(NBT4::CIndex) + dictionarySize*9 + NBT4::ReservedAreaSize(dictionarySize) + 256*kb + RangeEncoderBufferSize(dictionarySize);
-    case kHC4:    return NHC4::CalcHashSize(dictionarySize,hashSize)*sizeof(NHC4::CIndex) + dictionarySize*5 + NHC4::ReservedAreaSize(dictionarySize) + 256*kb + RangeEncoderBufferSize(dictionarySize);
-    case kHT4:    return NHT4::CalcHashSize(dictionarySize,hashSize)*sizeof(NHT4::CIndex) + dictionarySize   + NHT4::ReservedAreaSize(dictionarySize) + 256*kb + RangeEncoderBufferSize(dictionarySize);
-    default:      CHECK (FALSE, (s,"lzma::GetCompressionMem - unknown matchFinder %d", matchFinder));
+    case kBT2: mfMem = dict * 10; break;
+    case kBT3: mfMem = dict * 11; break;
+    case kBT4: mfMem = dict * 11; break;
+    case kHC4: mfMem = dict * 7;  break;
+    case kHT4: mfMem = dict * 6;  break;
+    default:   mfMem = dict * 11; break;
   }
+  return mfMem + 6*mb;
 }
 
 MemSize LZMA_METHOD::GetDecompressionMem (void)
 {
-  return dictionarySize + RangeDecoderBufferSize(dictionarySize);
+  return dictionarySize + 2*mb;
 }
 
-MemSize calcDictSize (LZMA_METHOD *p, MemSize mem)
-{
-  double mem4 = mymax (double(mem)-256*kb, 0);
-  switch (p->matchFinder) {
-    case kBT2:    return (MemSize)floor(mem4/9.5);
-    case kBT3:    return (MemSize)floor(mem4/11.5);
-    case kBT4:    return (MemSize)floor(mem4/11.5);
-    case kHC4:    return (MemSize)floor(mem4/7.5);
-    case kHT4:    return (MemSize)floor(mem4/1.75);
-    default:      CHECK (FALSE, (s,"lzma::calcDictSize - unknown matchFinder %d", p->matchFinder));
-  }
-}
-
-// Ограничить использование памяти при упаковке
 void LZMA_METHOD::SetCompressionMem (MemSize mem)
 {
-  if (mem<=0)  return;
-  hashSize       = 0;
-  dictionarySize = calcDictSize (this, mem);
-
-  if (dictionarySize<32*kb) {
-
-  // Если словарь получился слишком маленьким - переключимся на самый простой алгоритм сжатия.
-  //   (на настоящий момент, при одинаковых минимимальных требованиях к памяти
-  //     у всех оставшихся алгоритмов, это не имеет никакого смысла):
-  //  if (matchFinder!=HC4)
-  //    matchFinder = HC4,  SetCompressionMem (mem);
-  //  else
-      dictionarySize = 32*kb;
+  if (mem < 2*mb) mem = 2*mb;
+  MemSize base = 6*mb;
+  MemSize avail = mem > base ? mem - base : mem;
+  MemSize divisor;
+  switch (matchFinder) {
+    case kBT2: divisor = 10; break;
+    case kBT3: divisor = 11; break;
+    case kBT4: divisor = 11; break;
+    case kHC4: divisor = 7;  break;
+    case kHT4: divisor = 6;  break;
+    default:   divisor = 11; break;
   }
-  // Округлим словарь вниз до 32 kb, 48 kb, 64 kb...
-  uint t = 1 << lb(dictionarySize);
-  if (t/2*3 <= dictionarySize)
-        dictionarySize = t/2*3;
-  else  dictionarySize = t;
+  dictionarySize = avail / divisor;
+  if (dictionarySize < 4*kb) dictionarySize = 4*kb;
 }
 
-// Ограничить использование памяти при распаковке
 void LZMA_METHOD::SetDecompressionMem (MemSize mem)
 {
-  if (mem<=0)  return;
-  dictionarySize = mem;
-  // Округлим словарь вниз до 32 kb, 48 kb, 64 kb...
-  uint t = 1 << lb(dictionarySize);
-  if (t/2*3 <= dictionarySize)
-        dictionarySize = t/2*3;
-  else  dictionarySize = t;
+  if (mem > 2*mb) dictionarySize = mem - 2*mb;
 }
 
-// Установить размер словаря.
-void LZMA_METHOD::SetDictionary (MemSize mem)
+void LZMA_METHOD::SetDictionary (MemSize dict)
 {
-  if (mem<=0)  return;
-  dictionarySize = mymin (mem, roundDown (calcDictSize (this, UINT_MAX), mb));
+  if (dict) dictionarySize = dict;
 }
 
-#endif  // !defined (FREEARC_DECOMPRESS_ONLY)
+void LZMA_METHOD::ShowCompressionMethod (char *buf)
+{
+  LZMA_METHOD defaults;
+  char DictionaryStr[100];
+  showMem (dictionarySize, DictionaryStr);
+  char params[400]; params[0]='\0';
+  if (algorithm       != defaults.algorithm)       sprintf(params+strlen(params), ":a%d", algorithm);
+  if (numFastBytes    != defaults.numFastBytes)    sprintf(params+strlen(params), ":fb%d", numFastBytes);
+  if (matchFinder     != defaults.matchFinder)     sprintf(params+strlen(params), ":mf=%s", kMatchFinderIDs[matchFinder]);
+  if (matchFinderCycles!=defaults.matchFinderCycles) sprintf(params+strlen(params), ":mc%d", matchFinderCycles);
+  if (posStateBits    != defaults.posStateBits)    sprintf(params+strlen(params), ":pb%d", posStateBits);
+  if (litContextBits  != defaults.litContextBits)  sprintf(params+strlen(params), ":lc%d", litContextBits);
+  if (litPosBits      != defaults.litPosBits)      sprintf(params+strlen(params), ":lp%d", litPosBits);
+  sprintf (buf, "lzma:%s%s", DictionaryStr, params);
+}
 
-// Конструирует объект типа LZMA_METHOD с заданными параметрами упаковки
-// или возвращает NULL, если это другой метод сжатия или допущена ошибка в параметрах
+#endif // !FREEARC_DECOMPRESS_ONLY
+
 COMPRESSION_METHOD* parse_LZMA (char** parameters)
 {
   if (strcmp (parameters[0], "lzma") == 0) {
-    // Если название метода (нулевой параметр) - "lzma", то разберём остальные параметры
-
     LZMA_METHOD *p = new LZMA_METHOD;
-    p->matchFinder = INT_MAX;
-    int error = 0;  // Признак того, что при разборе параметров произошла ошибка
-
-    // Переберём все параметры метода (или выйдем раньше при возникновении ошибки при разборе очередного параметра)
-    while (*++parameters) {
-      char *param = *parameters;  bool optional = param[0]=='*';  optional && param++;
-           if (start_from (param, "d"))    p->dictionarySize    = parseMem (param+1, &error);
-      else if (start_from (param, "h"))   {MemSize h            = parseMem (param+1, &error);
-                                           if (error)  goto unnamed;  else p->hashSize = h;}
-      else if (start_from (param, "a"))    p->algorithm         = parseInt (param+1, &error);
-      else if (start_from (param, "fb"))   p->numFastBytes      = parseInt (param+2, &error);
-      else if (start_from (param, "mc"))   p->matchFinderCycles = parseInt (param+2, &error);
-      else if (start_from (param, "lc"))   p->litContextBits    = parseInt (param+2, &error);
-      else if (start_from (param, "lp"))   p->litPosBits        = parseInt (param+2, &error);
-      else if (start_from (param, "pb"))   p->posStateBits      = parseInt (param+2, &error);
-      else if (start_from (param, "mf"))   p->matchFinder       = FindMatchFinder (param[2]=='='? param+3 : param+2);
-      else if (strequ (param, "fastest"))  p->algorithm = 0,  p->matchFinder==INT_MAX && (p->matchFinder = kHT4),  p->numFastBytes = 32,   p->matchFinderCycles = 1;
-      else if (strequ (param, "fast"))     p->algorithm = 0,  p->matchFinder==INT_MAX && (p->matchFinder = kHT4),  p->numFastBytes = 32,   p->matchFinderCycles = 0;
-      else if (strequ (param, "normal"))   p->algorithm = 1,  p->matchFinder==INT_MAX && (p->matchFinder = kHT4),  p->numFastBytes = 32,   p->matchFinderCycles = 0;
-      else if (strequ (param, "max"))      p->algorithm = 2,  p->matchFinder==INT_MAX && (p->matchFinder = kBT4),  p->numFastBytes = 128,  p->matchFinderCycles = 0;
-      else if (strequ (param, "ultra"))    p->algorithm = 2,  p->matchFinder==INT_MAX && (p->matchFinder = kBT4),  p->numFastBytes = 128,  p->matchFinderCycles = 128;
-      else {
-unnamed:// Сюда мы попадаем, если в параметре опущено его наименование
-        // Это может быть строка - имя MatchFinder'а, целое число - значение numFastBytes,
-        // или обозначение памяти - значение dictionarySize
-        error = 0;
-        int n = FindMatchFinder (param);
-        if (n>=0)
-          p->matchFinder = n;
-        else {
-          n = parseInt (param, &error);
-          if (!error)  p->numFastBytes = n;
-          else         {error=0; MemSize n = parseMem (param, &error);
-                        if (!error)  p->dictionarySize = n;}
-        }
+    int error = 0;
+    char *rest;
+    while (*++parameters && !error) {
+      char* param = *parameters;
+      if (strequ(param,"max"))      { p->algorithm = 1; continue; }
+      if (strequ(param,"normal"))   { p->algorithm = 1; continue; }
+      if (strequ(param,"fast"))     { p->algorithm = 0; continue; }
+      if (strequ(param,"fastest"))  { p->algorithm = 0; continue; }
+      if (strequ(param,"eos"))      { continue; }        // ignored: always write EOS
+      { int mf = FindMatchFinder(param);
+        if (mf >= 0) { p->matchFinder = mf; continue; } }
+      if ((rest = start_from(param, "mf=")) != NULL) {
+        int mf = FindMatchFinder(rest);
+        if (mf < 0) { error=1; break; }
+        p->matchFinder = mf; continue;
       }
-      if (!optional)
-        if (error || p->matchFinder<0)  {delete p; return NULL;}  // Ошибка при парсинге параметров метода
+      if ((rest = start_from(param, "mf")) != NULL) {  // e.g. mfbt4
+        int mf = FindMatchFinder(rest);
+        if (mf < 0) { error=1; break; }
+        p->matchFinder = mf; continue;
+      }
+      switch (*param) {
+        case 'd': p->dictionarySize = parseMem(param+1, &error); continue;
+        case 'h': p->hashSize       = parseMem(param+1, &error); continue;
+        case 'a': p->algorithm      = parseInt(param+1, &error); continue;
+        case 'p':
+          if (param[1]=='b') { p->posStateBits = parseInt(param+2, &error); continue; }
+          break;
+        case 'l':
+          if (param[1]=='c') { p->litContextBits = parseInt(param+2, &error); continue; }
+          if (param[1]=='p') { p->litPosBits     = parseInt(param+2, &error); continue; }
+          break;
+        case 'f':
+          if (param[1]=='b') { p->numFastBytes = parseInt(param+2, &error); continue; }
+          break;
+        case 'm':
+          if (param[1]=='c') { p->matchFinderCycles = parseInt(param+2, &error); continue; }
+          break;
+      }
+      // Arg starts with digit: treat as dictionary size if has mem suffix, else fb.
+      if (*param >= '0' && *param <= '9') {
+        const char *s = param;
+        while (*s >= '0' && *s <= '9') s++;
+        if (*s == 'b' || *s == 'k' || *s == 'm' || *s == 'g') {
+          MemSize m = parseMem(param, &error);
+          if (!error) { p->dictionarySize = m; continue; }
+          error = 0;
+        }
+        int n = parseInt(param, &error);
+        if (!error) { p->numFastBytes = n; continue; }
+      }
+      error = 1;
     }
-    if (p->matchFinder == INT_MAX)
-      p->matchFinder = kHT4;   // default match finder
+    if (error) { delete p; return NULL; }
     return p;
   } else
-    return NULL;   // Это не метод lzma
+    return NULL;
 }
 
-static int LZMA_x = AddCompressionMethod (parse_LZMA);   // Зарегистрируем парсер метода LZMA
+static int LZMA_x = AddCompressionMethod (parse_LZMA);

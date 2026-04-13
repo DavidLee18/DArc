@@ -38,10 +38,14 @@ int __hscore_seek_cur(void) { return SEEK_CUR; }
 int __hscore_seek_set(void) { return SEEK_SET; }
 int __hscore_seek_end(void) { return SEEK_END; }
 
-/* Group 3: Aliases under the legacy names Win32Files.hs imports.
- * Modern MinGW-w64 / UCRT export these as _wfindfirst64 / _wfindnext64 etc.;
- * Win32Files.hs still references the older i64-suffixed forms. We define
- * those names explicitly so the Haskell FFI resolves at link time. */
+/* Group 3: UCRT-only aliases under the legacy names Win32Files.hs imports.
+ *
+ * The msvcrt-targeting MinGW (GHC 8.6 / DArc86) already exports the legacy
+ * symbols _fstati64 / _wstati64 / _wfindfirsti64 / _wfindnexti64 directly,
+ * so no wrappers are needed there. UCRT (GHC 9.4+) renamed them, so we
+ * provide shims that forward to the UCRT names. */
+#ifdef _UCRT
+
 #undef _fstati64
 #undef _wstati64
 #undef _wfindfirsti64
@@ -85,3 +89,5 @@ HsInt _wfindnexti64(intptr_t h, struct _wfinddatai64_t* fd) {
   if (r == 0) copy_find64_to_i64(fd, &d64);
   return (HsInt)r;
 }
+
+#endif /* _UCRT */

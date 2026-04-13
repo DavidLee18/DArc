@@ -1,0 +1,61 @@
+#!/usr/bin/env bash
+# Build all C/C++ objects for Windows x86 (32-bit) target using GHC 8.6.5's
+# BUNDLED mingw (gcc 7.2.0, msvcrt-based) via Wine. We cannot use Ubuntu's
+# mingw-w64 because it targets UCRT exclusively, whereas GHC 8.6 expects
+# msvcrt — mismatched CRT causes link-time failures (__acrt_iob_func,
+# _utime32, etc.). Running the bundled gcc via Wine is slower but is the
+# only way to get matching msvcrt objects.
+# DOES NOT define __MHS__ or FREEARC_64BIT.
+set -e
+WINOUT=${WINOUT:-/tmp/out/FreeArc-win86-ghc}
+GHC_WIN_ROOT="${GHC_WIN_ROOT:-$HOME/.wine/drive_c/ghc865-i386}"
+mkdir -p "$WINOUT"
+
+CC="wine $GHC_WIN_ROOT/mingw/bin/g++.exe"
+export WINEDEBUG="${WINEDEBUG:-fixme-all}"
+export WINEPATH="C:\\ghc865-i386\\mingw\\bin"
+
+# Convert /abs/path → Z:\abs\path for wine
+winpath() { echo "Z:$(echo "$1" | sed 's|/|\\|g')"; }
+
+WINOUT_WIN="$(winpath "$WINOUT")"
+SRC_ROOT_WIN="$(winpath "$(pwd)")"
+
+FLAGS=(
+  -std=c++14 -c
+  -DFREEARC_WIN -DFREEARC_INTEL_BYTE_ORDER
+  -D_WIN32_WINNT=0x0601 -DWINVER=0x0601
+  "-I$SRC_ROOT_WIN" "-I$SRC_ROOT_WIN\\Compression" "-I$SRC_ROOT_WIN\\HsLua\\src"
+  -O2
+  -Wno-unknown-pragmas -Wno-sign-compare -Wno-deprecated-declarations
+)
+
+build() {
+  local src="$1" base extra=()
+  base=$(basename "$src" .cpp)
+  base=$(basename "$base" .c)
+  case "$src" in
+    */_Encryption/*) extra=("-I$SRC_ROOT_WIN\\Shared_src\\_Encryption\\headers" "-I$SRC_ROOT_WIN\\Compression\\_Encryption\\headers") ;;
+  esac
+  case "$src" in
+    */CLS/*) echo "  skip: $src (CLS host/plugin)"; return 0 ;;
+  esac
+  echo "  $src"
+  local src_win="$(winpath "$(readlink -f "$src")")"
+  $CC "${FLAGS[@]}" "${extra[@]}" "$src_win" -o "$WINOUT_WIN\\$base.o" 2>&1 | \
+    grep -vE "^[0-9a-f]+:fixme:|^[0-9a-f]+:stub|server_get_file_info" || true
+}
+
+for src in Environment.cpp URL.cpp GuiEnvironment.cpp; do
+  [[ -f $src ]] && build "$src"
+done
+
+for src in Compression/Common.cpp Compression/CompressionLibrary.cpp; do
+  [[ -f $src ]] && build "$src"
+done
+
+for src in Compression/*/C_*.cpp; do
+  [[ -f $src ]] && build "$src"
+done
+
+echo "Built: $(ls "$WINOUT"/*.o 2>/dev/null | wc -l) objects in $WINOUT/"

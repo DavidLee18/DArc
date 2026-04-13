@@ -14,8 +14,10 @@ import Data.Char
 import Foreign.C.String
 import Foreign.C.Types
 import Foreign.Marshal.Alloc
+import Foreign.Marshal.Array (peekArray)
 import Foreign.Ptr
 import Foreign.Storable (peek)
+import Data.Word (Word8)
 import System.IO
 import System.IO.Unsafe
 
@@ -135,7 +137,10 @@ generateRandomBytes bytes = do
     allocaBytes bytes $ \buf -> do
       check (==i bytes) "prng_read" $
         prng_read buf (i bytes) prng
-      peekCAStringLen (buf, bytes)
+      -- Read as raw bytes; peekCAStringLen under GHC decodes via locale (UTF-8),
+      -- which turns random bytes into multi-byte chars with ord >= 256.
+      ws <- peekArray bytes (castPtr buf :: Ptr Word8)
+      return (map (chr . fromIntegral) ws)
 
 -- |Переменная, хранящая состояние PRNG
 {-# NOINLINE prng_state #-}

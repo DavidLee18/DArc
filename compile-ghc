@@ -29,7 +29,14 @@ defines="-DFREEARC_UNIX -DFREEARC_INTEL_BYTE_ORDER $bit64"
 cp unix-common.mak common.mak
 (cd Compression && chmod +x compile && ./compile)
 # Copy Compression's objects into our tempdir (they are shared, built with no __MHS__)
-for o in /tmp/out/FreeArc/C_*.o /tmp/out/FreeArc/CompressionLibrary.o /tmp/out/FreeArc/Common.o; do
+for o in /tmp/out/FreeArc/C_*.o /tmp/out/FreeArc/CompressionLibrary.o /tmp/out/FreeArc/Common.o \
+         /tmp/out/FreeArc/LzmaEnc.o /tmp/out/FreeArc/LzmaDec.o \
+         /tmp/out/FreeArc/Lzma2Enc.o /tmp/out/FreeArc/Lzma2Dec.o \
+         /tmp/out/FreeArc/MtCoder.o /tmp/out/FreeArc/MtDec.o \
+         /tmp/out/FreeArc/7zStream.o \
+         /tmp/out/FreeArc/LzFind.o /tmp/out/FreeArc/LzFindMt.o \
+         /tmp/out/FreeArc/LzFindOpt.o /tmp/out/FreeArc/Threads.o \
+         /tmp/out/FreeArc/CpuArch.o; do
   [[ -f $o ]] && cp "$o" "$ctempdir/"
 done
 # Build Environment.cpp / URL.cpp / GuiEnvironment.cpp into our tempdir, no __MHS__
@@ -47,7 +54,13 @@ clang -std=c99 -c HsLua/src/ntrljmp.c -IHsLua/src $(pkg-config --cflags lua5.1 2
 c_objs=(
   "$ctempdir/Environment.o" "$ctempdir/URL.o" "$ctempdir/Common.o"
   "$ctempdir/CompressionLibrary.o" "$ctempdir/C_PPMD.o" "$ctempdir/C_LZP.o"
-  "$ctempdir/C_LZMA.o" "$ctempdir/C_BCJ.o" "$ctempdir/C_GRZip.o"
+  "$ctempdir/C_LZMA.o" "$ctempdir/C_LZMA2.o"
+  "$ctempdir/LzmaEnc.o" "$ctempdir/LzmaDec.o"
+  "$ctempdir/Lzma2Enc.o" "$ctempdir/Lzma2Dec.o"
+  "$ctempdir/MtCoder.o" "$ctempdir/MtDec.o" "$ctempdir/7zStream.o"
+  "$ctempdir/LzFind.o" "$ctempdir/LzFindMt.o" "$ctempdir/Threads.o"
+  "$ctempdir/LzFindOpt.o" "$ctempdir/CpuArch.o"
+  "$ctempdir/C_LZ4.o" "$ctempdir/C_BCJ.o" "$ctempdir/C_GRZip.o"
   "$ctempdir/C_Dict.o" "$ctempdir/C_REP.o" "$ctempdir/C_MM.o"
   "$ctempdir/C_TTA.o" "$ctempdir/C_Tornado.o" "$ctempdir/C_4x4.o"
   "$ctempdir/C_Delta.o" "$ctempdir/C_External.o" "$ctempdir/C_Encryption.o"

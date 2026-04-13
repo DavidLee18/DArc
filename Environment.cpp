@@ -1322,9 +1322,62 @@ static int pipeline2_storing(PipelineCtx2 *ctx) {
     }
 }
 
+// --- Per-method pipeline stage (intermediate Compress thread) -------------
+typedef struct {
+    const char  *method;
+    StreamQueue *in_q;
+    StreamQueue *out_q;
+    StreamBuf    in_cur;
+    int          in_cur_pos;
+    int          ret;
+} MethodCtx;
+
+static int method_pipeline_callback(const char *what, void *buf, int size, void *aux) {
+    MethodCtx *m = (MethodCtx *)aux;
+    if (strequ(what, "read")) {
+        int total = 0;
+        while (total < size) {
+            if (!m->in_cur.data || m->in_cur_pos >= m->in_cur.size) {
+                if (m->in_cur.data) { free(m->in_cur.data); m->in_cur.data = NULL; }
+                StreamBuf b = sq_pop(m->in_q);
+                if (!b.data) break;
+                m->in_cur = b;
+                m->in_cur_pos = 0;
+            }
+            int avail = m->in_cur.size - m->in_cur_pos;
+            int want  = size - total;
+            int take  = avail < want ? avail : want;
+            memcpy((char *)buf + total, m->in_cur.data + m->in_cur_pos, take);
+            m->in_cur_pos += take;
+            total         += take;
+        }
+        return total;
+    } else if (strequ(what, "write")) {
+        if (size <= 0) return size;
+        char *copy = (char *)malloc(size);
+        if (!copy) return FREEARC_ERRCODE_NOT_ENOUGH_MEMORY;
+        memcpy(copy, buf, size);
+        StreamBuf sb; sb.data = copy; sb.size = size;
+        sq_push(m->out_q, sb);
+        return size;
+    } else if (strequ(what, "time")) {
+        return 0;
+    }
+    return FREEARC_ERRCODE_NOT_IMPLEMENTED;
+}
+
+static void *method_pipeline_thread(void *arg) {
+    MethodCtx *m = (MethodCtx *)arg;
+    int ret = Compress((char *)m->method, (CALLBACK_FUNC *)method_pipeline_callback, m);
+    if (m->in_cur.data) { free(m->in_cur.data); m->in_cur.data = NULL; }
+    sq_close(m->out_q);
+    m->ret = ret;
+    return NULL;
+}
+
 // Compress a solid block: read files from disk, compress through method chain,
-// write result to archive BFILE. Streams when possible; falls back to the
-// buffered pipeline for multi-method chains.
+// write result to archive BFILE — all stages fully pipelined across threads.
+// Reader -> q[0] -> method[0] -> q[1] -> ... -> method[N-1] -> q[N] -> writer.
 void darc_compress_solid_block_w(
     const char **input_files,
     int          num_files,
@@ -1344,8 +1397,11 @@ void darc_compress_solid_block_w(
     *out_block_crc = 0;
     *out_failed_file_idx = -1;
 
-    // Pre-validate every file can be opened so the caller still gets a clean
-    // out_failed_file_idx on missing sources (same contract as the buffered path).
+    if (getenv("DARC_METHODS_DEBUG")) {
+        fprintf(stderr, "[DARC] num_methods=%d:\n", num_methods);
+        for (int i = 0; i < num_methods; i++) fprintf(stderr, "  [%d] %s\n", i, methods[i]);
+    }
+
     for (int i = 0; i < num_files; i++) {
         FILE *f = fopen(input_files[i], "rb");
         if (!f) {
@@ -1356,85 +1412,95 @@ void darc_compress_solid_block_w(
         fclose(f);
     }
 
-    // Pipelined fast path: 0 or 1 methods. Multi-method chains would require
-    // per-stage thread+pipe infrastructure; fall back to the buffered path.
-    if (num_methods <= 1) {
-        PipelineCtx2 ctx;
-        memset(&ctx, 0, sizeof(ctx));
-        ctx.input_files   = input_files;
-        ctx.num_files     = num_files;
-        ctx.out_crcs      = out_crcs;
-        ctx.archive_bfile = archive_bfile;
-        ctx.block_crc     = INIT_CRC;
-        sq_init(&ctx.in_q);
-        sq_init(&ctx.out_q);
+    PipelineCtx2 ctx;
+    memset(&ctx, 0, sizeof(ctx));
+    ctx.input_files   = input_files;
+    ctx.num_files     = num_files;
+    ctx.out_crcs      = out_crcs;
+    ctx.archive_bfile = archive_bfile;
+    ctx.block_crc     = INIT_CRC;
+    sq_init(&ctx.in_q);
+    sq_init(&ctx.out_q);
 
-        pthread_t r_tid, w_tid;
-        pthread_create(&r_tid, NULL, pipeline_reader_thread, &ctx);
-        pthread_create(&w_tid, NULL, pipeline_writer_thread, &ctx);
+    int n_extra = (num_methods > 1) ? (num_methods - 1) : 0;
+    StreamQueue *extra = NULL;
+    if (n_extra > 0) {
+        extra = (StreamQueue *)malloc(sizeof(StreamQueue) * n_extra);
+        for (int i = 0; i < n_extra; i++) sq_init(&extra[i]);
+    }
 
-        int ret;
-        if (num_methods == 0) {
-            ret = pipeline2_storing(&ctx);
-        } else {
-            ret = Compress((char *)methods[0],
-                           (CALLBACK_FUNC *)pipeline2_callback, &ctx);
-            if (ctx.in_cur.data) { free(ctx.in_cur.data); ctx.in_cur.data = NULL; }
+    // q_at(i) returns the i-th intermediate queue:
+    //   i == 0                  -> ctx.in_q  (reader output)
+    //   i == num_methods        -> ctx.out_q (writer input)
+    //   else                    -> extra[i-1]
+    #define Q_AT(i) ((i) == 0 ? &ctx.in_q : (i) == num_methods ? &ctx.out_q : &extra[(i)-1])
+
+    pthread_t r_tid, w_tid;
+    pthread_create(&r_tid, NULL, pipeline_reader_thread, &ctx);
+    pthread_create(&w_tid, NULL, pipeline_writer_thread, &ctx);
+
+    int ret = 0;
+    if (num_methods == 0) {
+        // Storing: forward reader->writer through ctx.in_q, then drain into ctx.out_q.
+        for (;;) {
+            StreamBuf b = sq_pop(&ctx.in_q);
+            if (!b.data) break;
+            sq_push(&ctx.out_q, b);
         }
         sq_close(&ctx.out_q);
-
-        pthread_join(r_tid, NULL);
-        pthread_join(w_tid, NULL);
-
-        // Drain any leftover input buffers (error path) to avoid leaks.
-        for (;;) {
-            pthread_mutex_lock(&ctx.in_q.mu);
-            if (ctx.in_q.count == 0) { pthread_mutex_unlock(&ctx.in_q.mu); break; }
-            StreamBuf b = ctx.in_q.slots[ctx.in_q.head];
-            ctx.in_q.head = (ctx.in_q.head + 1) % STREAM_RING_SLOTS;
-            ctx.in_q.count--;
-            pthread_mutex_unlock(&ctx.in_q.mu);
-            free(b.data);
+    } else {
+        MethodCtx *mctxs = (MethodCtx *)calloc(num_methods, sizeof(MethodCtx));
+        pthread_t *mtids = (pthread_t *)malloc(sizeof(pthread_t) * num_methods);
+        for (int i = 0; i < num_methods; i++) {
+            mctxs[i].method = methods[i];
+            mctxs[i].in_q   = Q_AT(i);
+            mctxs[i].out_q  = Q_AT(i + 1);
+            pthread_create(&mtids[i], NULL, method_pipeline_thread, &mctxs[i]);
         }
-        sq_destroy(&ctx.in_q);
-        sq_destroy(&ctx.out_q);
-
-        *out_orig_size       = ctx.total_read;
-        *out_compressed_size = ctx.total_written;
-        *out_block_crc       = ctx.block_crc;  // always 0 on streaming path (DATA blocks only)
-        if (ret < 0)            *out_result = ret;
-        else if (ctx.reader_err) *out_result = ctx.reader_err;
-        else if (ctx.writer_err) *out_result = ctx.writer_err;
-        return;
-    }
-
-    // --- Buffered multi-method fallback (original path) -------------------
-    darc_pipeline_init(64 * 1024 * 1024);
-    int rc = pipeline_read_files(input_files, num_files,
-                                  out_crcs, out_orig_size,
-                                  out_failed_file_idx);
-    if (rc < 0) {
-        darc_pipeline_free();
-        *out_result = -1;
-        return;
-    }
-    if (g_pipeline_buf && g_pipeline_size > 0) {
-        *out_block_crc = UpdateCRC(g_pipeline_buf, (uint)g_pipeline_size, INIT_CRC) ^ INIT_CRC;
-    }
-    for (int i = 0; i < num_methods; i++) {
-        long step_result;
-        darc_pipeline_compress_step_w(methods[i], &step_result);
-        if (step_result < 0) {
-            darc_pipeline_free();
-            *out_result = (int)step_result;
-            return;
+        for (int i = 0; i < num_methods; i++) {
+            pthread_join(mtids[i], NULL);
+            if (mctxs[i].ret < 0 && ret == 0) ret = mctxs[i].ret;
         }
+        free(mctxs);
+        free(mtids);
     }
-    if (g_pipeline_buf && g_pipeline_size > 0) {
-        long written = darc_bfile_write(archive_bfile, g_pipeline_buf, g_pipeline_size);
-        *out_compressed_size = written;
+
+    pthread_join(r_tid, NULL);
+    pthread_join(w_tid, NULL);
+
+    // Drain any leftover buffers (error path) to avoid leaks.
+    StreamQueue *all_qs[3 + 32];
+    int nq = 0;
+    all_qs[nq++] = &ctx.in_q;
+    all_qs[nq++] = &ctx.out_q;
+    for (int i = 0; i < n_extra && nq < (int)(sizeof(all_qs)/sizeof(all_qs[0])); i++)
+        all_qs[nq++] = &extra[i];
+    for (int k = 0; k < nq; k++) {
+        StreamQueue *q = all_qs[k];
+        pthread_mutex_lock(&q->mu);
+        while (q->count > 0) {
+            StreamBuf b = q->slots[q->head];
+            q->head = (q->head + 1) % STREAM_RING_SLOTS;
+            q->count--;
+            if (b.data) free(b.data);
+        }
+        pthread_mutex_unlock(&q->mu);
     }
-    darc_pipeline_free();
+
+    sq_destroy(&ctx.in_q);
+    sq_destroy(&ctx.out_q);
+    if (extra) {
+        for (int i = 0; i < n_extra; i++) sq_destroy(&extra[i]);
+        free(extra);
+    }
+
+    *out_orig_size       = ctx.total_read;
+    *out_compressed_size = ctx.total_written;
+    *out_block_crc       = 0;  // DATA block; Haskell side ignores it
+    if (ret < 0)             *out_result = ret;
+    else if (ctx.reader_err) *out_result = ctx.reader_err;
+    else if (ctx.writer_err) *out_result = ctx.writer_err;
+    #undef Q_AT
 }
 
 // Extract a solid block: read from archive, decompress, write files to disk.
@@ -1556,6 +1622,215 @@ int darc_invoke_callback(int slot, const char *what, char *buf, int size) {
         return g_darc_cb[slot](what, buf, size, g_darc_cb_data[slot]);
     return -1;
 }
+
+// --volume: split finished archive into volumes named .001, .002, ...
+// Returns number of volumes written, or -1 on error.
+extern "C" int darc_split_file(const char *src_path, const char *dst_prefix, const char *volume_size_str) {
+    long long volume_size = strtoll(volume_size_str, NULL, 10);
+    if (volume_size <= 0) return -1;
+    FILE *in = fopen(src_path, "rb");
+    if (!in) return -1;
+    const size_t BUFSZ = 1 << 20;
+    char *buf = (char*)malloc(BUFSZ);
+    if (!buf) { fclose(in); return -1; }
+    int vol = 0;
+    long long written_this_vol = 0;
+    FILE *out = NULL;
+    char name[4096];
+    int err = 0;
+    while (!feof(in) && !err) {
+        if (!out) {
+            vol++;
+            snprintf(name, sizeof(name), "%s.%03d", dst_prefix, vol);
+            out = fopen(name, "wb");
+            if (!out) { err = 1; break; }
+            written_this_vol = 0;
+        }
+        long long room = volume_size - written_this_vol;
+        size_t want = (size_t)(room < (long long)BUFSZ ? room : (long long)BUFSZ);
+        if (want == 0) { fclose(out); out = NULL; continue; }
+        size_t got = fread(buf, 1, want, in);
+        if (got == 0) break;
+        if (fwrite(buf, 1, got, out) != got) { err = 1; break; }
+        written_this_vol += got;
+        if (written_this_vol >= volume_size) { fclose(out); out = NULL; }
+    }
+    if (out) fclose(out);
+    fclose(in);
+    free(buf);
+    if (err) return -1;
+    return vol;
+}
+
+// --volume read-side: join .001 .002 ... into dst if first volume exists.
+// Returns number of volumes joined, or -1 on error, or 0 if no .001 found.
+extern "C" int darc_join_volumes(const char *dst_prefix, const char *dst_path) {
+    char name[4096];
+    snprintf(name, sizeof(name), "%s.001", dst_prefix);
+    FILE *first = fopen(name, "rb");
+    if (!first) return 0;
+    fclose(first);
+    FILE *out = fopen(dst_path, "wb");
+    if (!out) return -1;
+    const size_t BUFSZ = 1 << 20;
+    char *buf = (char*)malloc(BUFSZ);
+    if (!buf) { fclose(out); return -1; }
+    int vol = 0, err = 0;
+    while (!err) {
+        vol++;
+        snprintf(name, sizeof(name), "%s.%03d", dst_prefix, vol);
+        FILE *in = fopen(name, "rb");
+        if (!in) { vol--; break; }
+        size_t got;
+        while ((got = fread(buf, 1, BUFSZ, in)) > 0)
+            if (fwrite(buf, 1, got, out) != got) { err = 1; break; }
+        fclose(in);
+    }
+    fclose(out);
+    free(buf);
+    return err ? -1 : vol;
+}
+
+// --volume read-side: virtual file over .001 .002 ... volumes (no physical join).
+// Presents the concatenated volumes as a single seekable read-only stream.
+struct darc_volfile {
+    FILE **fps;
+    long long *sizes;
+    long long *offs;   // cumulative: offs[i] = start of volume i in concat stream
+    int nvols;
+    long long total;
+    long long pos;
+    int cur;           // current volume index
+};
+
+// MHS truncates FFI pointer returns to 32 bits; keep handles in a C table
+// and expose them as small integer indices.
+#define DARC_VOLFILE_MAX 64
+static darc_volfile *g_volfile_slots[DARC_VOLFILE_MAX];
+
+static darc_volfile* volfile_get(int slot) {
+    if (slot < 0 || slot >= DARC_VOLFILE_MAX) return NULL;
+    return g_volfile_slots[slot];
+}
+
+extern "C" int darc_volfile_open(const char *prefix) {
+    char name[4096];
+    int n = 0;
+    for (;;) {
+        snprintf(name, sizeof(name), "%s.%03d", prefix, n + 1);
+        FILE *f = fopen(name, "rb");
+        if (!f) break;
+        fclose(f);
+        n++;
+    }
+    if (n == 0) return -1;
+    int slot = -1;
+    for (int i = 0; i < DARC_VOLFILE_MAX; i++) if (!g_volfile_slots[i]) { slot = i; break; }
+    if (slot < 0) return -1;
+    darc_volfile *h = (darc_volfile*)calloc(1, sizeof(darc_volfile));
+    if (!h) return -1;
+    h->fps   = (FILE**)calloc(n, sizeof(FILE*));
+    h->sizes = (long long*)calloc(n, sizeof(long long));
+    h->offs  = (long long*)calloc(n, sizeof(long long));
+    h->nvols = n;
+    long long acc = 0;
+    for (int i = 0; i < n; i++) {
+        snprintf(name, sizeof(name), "%s.%03d", prefix, i + 1);
+        h->fps[i] = fopen(name, "rb");
+        if (!h->fps[i]) { /* abort */
+            for (int j = 0; j < i; j++) fclose(h->fps[j]);
+            free(h->fps); free(h->sizes); free(h->offs); free(h);
+            return -1;
+        }
+        fseeko(h->fps[i], 0, SEEK_END);
+        h->sizes[i] = (long long)ftello(h->fps[i]);
+        fseeko(h->fps[i], 0, SEEK_SET);
+        h->offs[i] = acc;
+        acc += h->sizes[i];
+    }
+    h->total = acc;
+    h->pos = 0;
+    h->cur = 0;
+    g_volfile_slots[slot] = h;
+    return slot;
+}
+
+// Out-param variants avoid MHS FFI 32-bit return truncation for 64-bit values.
+extern "C" void darc_volfile_size_out(int slot, long long *out) {
+    darc_volfile *h = volfile_get(slot);
+    *out = h ? h->total : -1;
+}
+
+extern "C" void darc_volfile_pos_out(int slot, long long *out) {
+    darc_volfile *h = volfile_get(slot);
+    *out = h ? h->pos : -1;
+}
+
+extern "C" void darc_volfile_seek(int slot, long long pos) {
+    darc_volfile *h = volfile_get(slot);
+    if (!h) return;
+    if (pos < 0) pos = 0;
+    if (pos > h->total) pos = h->total;
+    h->pos = pos;
+    // Locate volume.
+    int lo = 0, hi = h->nvols - 1, v = 0;
+    while (lo <= hi) {
+        int m = (lo + hi) / 2;
+        if (pos < h->offs[m]) hi = m - 1;
+        else { v = m; lo = m + 1; }
+    }
+    h->cur = v;
+    long long local = pos - h->offs[v];
+    if (v < h->nvols) fseeko(h->fps[v], (off_t)local, SEEK_SET);
+}
+
+extern "C" int darc_volfile_read(int slot, void *buf, int n) {
+    darc_volfile *h = volfile_get(slot);
+    if (!h || n <= 0) return 0;
+    char *out = (char*)buf;
+    int total_read = 0;
+    while (n > 0 && h->pos < h->total) {
+        if (h->cur >= h->nvols) break;
+        long long vol_end = h->offs[h->cur] + h->sizes[h->cur];
+        long long in_vol = vol_end - h->pos;
+        if (in_vol <= 0) {
+            h->cur++;
+            if (h->cur < h->nvols) fseeko(h->fps[h->cur], 0, SEEK_SET);
+            continue;
+        }
+        int want = n < (int)in_vol ? n : (int)in_vol;
+        size_t got = fread(out, 1, want, h->fps[h->cur]);
+        if (got == 0) break;
+        out += got; n -= got; total_read += got; h->pos += got;
+    }
+    return total_read;
+}
+
+extern "C" void darc_volfile_close(int slot) {
+    darc_volfile *h = volfile_get(slot);
+    if (!h) return;
+    for (int i = 0; i < h->nvols; i++) if (h->fps[i]) fclose(h->fps[i]);
+    free(h->fps); free(h->sizes); free(h->offs); free(h);
+    g_volfile_slots[slot] = NULL;
+}
+
+// --queue: serialize operations across multiple arc processes via advisory lockfile
+#ifndef FREEARC_WIN
+#include <sys/file.h>
+#include <fcntl.h>
+extern "C" int darc_queue_acquire(const char *path) {
+    int fd = open(path, O_CREAT | O_RDWR, 0666);
+    if (fd < 0) return -1;
+    if (flock(fd, LOCK_EX) < 0) { close(fd); return -1; }
+    return fd;
+}
+extern "C" void darc_queue_release(int fd) {
+    if (fd >= 0) { flock(fd, LOCK_UN); close(fd); }
+}
+#else
+extern "C" int darc_queue_acquire(const char *path) { (void)path; return -1; }
+extern "C" void darc_queue_release(int fd) { (void)fd; }
+#endif
 
 #ifdef __MHS__
 // MicroHs: forward-declare the Haskell-exported callback function so that

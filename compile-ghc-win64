@@ -33,10 +33,14 @@ HSBASE_INC="$GHC_WIN_ROOT/lib/x86_64-windows-ghc-9.4.8/base-4.17.2.1/include"
 RTS_INC="$GHC_WIN_ROOT/lib/x86_64-windows-ghc-9.4.8/rts-1.0.2/include"
 BIGNUM_INC="$GHC_WIN_ROOT/lib/x86_64-windows-ghc-9.4.8/ghc-bignum-1.3/include"
 x86_64-w64-mingw32-gcc -c Win32Files.c \
-  -I"$HSBASE_INC" -I"$RTS_INC" -I"$BIGNUM_INC" -O2 \
+  -I"$HSBASE_INC" -I"$RTS_INC" -I"$BIGNUM_INC" -O2 -D_UCRT \
   -o "$WINOUT/Win32Files.o"
 
-# 2) Build ntrljmp.c for Win64 (Lua-related trampoline) — skip for now, not critical
+# 2) Build ntrljmp.c for Win64 (Lua longjmp trampoline) via host mingw gcc
+LUA_INC_WIN64="/tmp/out/FreeArc-win64-ghc-inc/lua5.1"
+x86_64-w64-mingw32-gcc -c HsLua/src/ntrljmp.c \
+  -IHsLua/src -I"$LUA_INC_WIN64" -O2 -D_UCRT \
+  -o "$WINOUT/ntrljmp.o"
 
 # 3) Run GHC Windows via Wine
 htempdir="/tmp/out/FreeArc-win64-ghc-hs"
@@ -54,7 +58,7 @@ winpath() {
 c_objs=(
   "$WINOUT/Environment.o" "$WINOUT/URL.o" "$WINOUT/Common.o"
   "$WINOUT/CompressionLibrary.o"
-  "$WINOUT/C_PPMD.o" "$WINOUT/C_LZP.o" "$WINOUT/C_LZMA.o"
+  "$WINOUT/C_PPMD.o" "$WINOUT/C_LZP.o" "$WINOUT/C_LZMA.o" "$WINOUT/C_LZ4.o"
   "$WINOUT/C_GRZip.o" "$WINOUT/C_Dict.o" "$WINOUT/C_REP.o"
   "$WINOUT/C_MM.o" "$WINOUT/C_TTA.o" "$WINOUT/C_Tornado.o"
   "$WINOUT/C_4x4.o" "$WINOUT/C_Delta.o" "$WINOUT/C_External.o"

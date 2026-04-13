@@ -171,7 +171,8 @@ archiveWriteDir dirdata     -- ������ ��� (block :: ArchiveBlo
   (n, dirnames, dir_numbers)  <-  enumDirectories filelist
   debugLog$ "  Found "++show n++" directory names"
   writeLength dirnames  -- ��������, ��� ������ �������� � Compressor==[String]
-  writeList   dirnames
+  -- Always write directory names with '/' separator for cross-OS interop (matches FA 0.67).
+  writeList   (map unixifyPath dirnames)
 
   -- 3. ���������� �������� ������ ���������� ���� � CompressedFile/FileInfo
     -- to do: �������� RLE-����������� �����?
@@ -257,7 +258,9 @@ archiveReadDir arc_basedir   -- ������� ������� � 
 
   -- 2. ��������� ����� ���������
   total_dirs    <-  readLength                    -- ������� ����� ��� ��������� ��������� � ���� ���������� ������
-  storedName    <-  readList total_dirs >>== toP  -- ������ ��� ���������
+  -- Sanitize directory names: strip ".."/"." (prevent path traversal on extraction),
+  -- and convert separators to the current OS convention. Matches FA 0.67.
+  storedName    <-  readList total_dirs >>== map (remove_unsafe_dirs . make_OS_native_path) >>== toP
 
   -- 3. ��������� ������ ������ ��� ������� ���� � CompressedFile/FileInfo
   let total_files = sum num_of_files              -- ��������� ���-�� ������ � ��������
