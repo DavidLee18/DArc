@@ -18,6 +18,13 @@
 #include <errno.h>
 #include <stdint.h>
 
+#if defined(_WIN32) || defined(FREEARC_WIN)
+#  include <direct.h>
+#  define darc_mkdir(p) _mkdir(p)
+#else
+#  define darc_mkdir(p) mkdir((p), 0755)
+#endif
+
 #include "sdk/7z.h"
 #include "sdk/7zAlloc.h"
 #include "sdk/7zBuf.h"
@@ -66,7 +73,7 @@ static void mkdir_p(char *path) {
   for (char *p = path + 1; *p; p++) {
     if (*p == '/') {
       *p = 0;
-      mkdir(path, 0755);
+      darc_mkdir(path);
       *p = '/';
     }
   }
@@ -175,7 +182,7 @@ static int extract_or_test(const char *path, const char *out_dir) {
       if (out_dir) {
         snprintf(fullPath, sizeof fullPath, "%s/%s", out_dir, name8);
         mkdir_p(fullPath);
-        mkdir(fullPath, 0755);
+        darc_mkdir(fullPath);
       }
       continue;
     }
