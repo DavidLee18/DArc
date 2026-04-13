@@ -8,6 +8,8 @@ DArc is a command-line (and optional GUI) archiver based on [FreeArc](http://fre
 The console binary is named `arc` (Unix) or `Arc.exe` (Windows).  
 The optional GUI binary is named `freearc` (Unix) or `FreeArc.exe` (Windows).
 
+Archives produced by DArc are format-compatible with [DArc86](https://github.com/YadeWira/DArc86).
+
 ---
 
 ## Building

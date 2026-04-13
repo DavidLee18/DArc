@@ -40,10 +40,10 @@ int __hscore_seek_end(void) { return SEEK_END; }
 
 /* Group 3: UCRT-only aliases under the legacy names Win32Files.hs imports.
  *
- * The msvcrt-targeting MinGW (GHC 8.6 / DArc86) already exports the legacy
- * symbols _fstati64 / _wstati64 / _wfindfirsti64 / _wfindnexti64 directly,
- * so no wrappers are needed there. UCRT (GHC 9.4+) renamed them, so we
- * provide shims that forward to the UCRT names. */
+ * msvcrt-targeting MinGW toolchains export the legacy symbols
+ * _fstati64 / _wstati64 / _wfindfirsti64 / _wfindnexti64 directly, so no
+ * wrappers are needed there. UCRT (GHC 9.4+) renamed them, so we provide
+ * shims that forward to the UCRT names. */
 #ifdef _UCRT
 
 #undef _fstati64
