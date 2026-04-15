@@ -22,6 +22,13 @@ build() {
   case "$src" in
     */_Encryption/*) extra=(-IShared_src/_Encryption/headers -ICompression/_Encryption/headers) ;;
   esac
+  # PPMD must match Linux makefile exactly (Compression/PPMD/makefile): -O1,
+  # -fstrict-aliasing, -fno-exceptions/-fno-rtti, -fomit-frame-pointer, -funroll-loops.
+  # Any mismatch on the WORD&-alias SWAP pattern in Model.cpp produces cross-
+  # incompatible PPMD streams (Linux↔Win64 archives differ and fail to decode).
+  case "$src" in
+    */PPMD/*) extra+=(-O1 -fstrict-aliasing -fno-exceptions -fno-rtti -fomit-frame-pointer -funroll-loops) ;;
+  esac
   # Skip the new CLS codec (not needed; host/plugin model, requires dlopen)
   case "$src" in
     */CLS/*) echo "  skip: $src (CLS host/plugin)"; return 0 ;;
