@@ -213,7 +213,7 @@ aLocalCharsets = [ ('o', TRANSLATION oem2unicode  unicode2oem)
                   ]
 
 -- |Default charsets for various domains
-#ifdef FREEARC_WIN
+#if defined(FREEARC_WIN) && !defined(__MHS__)
 aCharsetDefaults = [ ('f','u')  -- filenames in filesystem: UTF-16 (Windows uses wide-char API)
                     , ('d','8')  -- filenames in archive directory: UTF-8
                     , ('l','o')  -- filelists: OEM
@@ -240,7 +240,7 @@ aCharsetDefaults = [ ('f','8')  -- filenames in filesystem: UTF-8 (Linux/Unix us
 -- |Преобразовать виндовые коды символов \r и \n в человеческий вид
 iHateWindows = replace (chr 9834) '\r' . replace (chr 9689) '\n'
 
-#ifdef FREEARC_WIN
+#if defined(FREEARC_WIN) && !defined(__MHS__)
 -- |Translate string from Unicode to OEM encoding
 unicode2oem s =
   if all isAscii s

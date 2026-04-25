@@ -5,9 +5,14 @@ set -e
 WINOUT=${WINOUT:-/tmp/out/FreeArc-win64-ghc}
 mkdir -p "$WINOUT"
 CC="x86_64-w64-mingw32-g++-posix"
+MHS_DEF=""
+if [[ -n "${MHS:-}" ]]; then
+  MHS_DEF="-D__MHS__"
+fi
 FLAGS=(
   -std=c++17 -c
   -DFREEARC_WIN -DFREEARC_INTEL_BYTE_ORDER -DFREEARC_64BIT
+  $MHS_DEF
   -D_WIN32_WINNT=0x0601 -DWINVER=0x0601
   -I. -ICompression -IHsLua/src
   -O2
@@ -57,6 +62,7 @@ CC_C="x86_64-w64-mingw32-gcc-posix"
 C7Z_FLAGS=(
   -std=c11 -c -O2 -DNDEBUG -D_REENTRANT
   -DFREEARC_WIN -DFREEARC_INTEL_BYTE_ORDER -DFREEARC_64BIT
+  $MHS_DEF
   -D_WIN32_WINNT=0x0601 -DWINVER=0x0601
   -Wno-unknown-pragmas -Wno-sign-compare -Wno-deprecated-declarations
 )

@@ -14,7 +14,7 @@ import Data.IORef
 import System.Exit
 import System.IO
 import System.IO.Unsafe
-#if defined(FREEARC_WIN)
+#if defined(FREEARC_WIN) && !defined(__MHS__)
 import GHC.ConsoleHandler
 #else
 import System.Posix.Signals
@@ -85,7 +85,7 @@ throwSqlite = throwDyn
 setCtrlBreakHandler action = do
   --myThread <- myThreadId
   -- При выходе или возникновении исключения восстановим предыдущий обработчик событий
-#if defined(FREEARC_WIN)
+#if defined(FREEARC_WIN) && !defined(__MHS__)
   bracket (installHandler$ Catch onBreak) (installHandler) $  \oldHandler -> do
     action
 #else

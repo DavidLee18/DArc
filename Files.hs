@@ -64,15 +64,24 @@ import Utils
 import FilePath
 #ifdef __MHS__
 import System.Environment (lookupEnv)
+#if defined(FREEARC_WIN)
+import MhsBinaryOpen (openBinaryFileBin)
+#endif
 getAppUserDataDirectory :: String -> IO FilePath
 getAppUserDataDirectory appName = do
   mHome <- lookupEnv "HOME"
   let home = maybe "/root" id mHome
   return (home ++ "/." ++ appName)
 #endif
-#if defined(FREEARC_WIN)
+#if defined(FREEARC_WIN) && !defined(__MHS__)
 import Win32Files
 import System.Win32
+#elif defined(__MHS__)
+-- MHS lacks System.Win32 / Win32Files (the latter pulls HsBase.h GHC).
+-- Under FREEARC_WIN we use System.Posix.Files shim + direct kernel32 FFI.
+import System.Posix.Files hiding (fileExist)
+type DWORD = Word32
+type LPCSTR = CString
 #else
 import System.Posix.Files hiding (fileExist)
 #endif
@@ -193,7 +202,7 @@ findOrCreateFile possibleFilePlaces cfgfilename = do
     []   -> return (head variants)
 
 
-#if defined(FREEARC_WIN)
+#if defined(FREEARC_WIN) && !defined(__MHS__)
 -- Под Windows все дополнительные файлы по умолчанию лежат в одном каталоге с программой
 libraryFilePlaces = configFilePlaces
 configFilePlaces filename  =  do -- dir1 <- getAppUserDataDirectory "FreeArc"
@@ -208,6 +217,21 @@ getExeName = do
 
 foreign import ccall unsafe "Environment.h GetExeName"
   c_GetExeName :: CWFilePath -> CInt -> IO CWFilePath
+
+#elif defined(FREEARC_WIN) && defined(__MHS__)
+-- MHS-Win: GetModuleFileNameA returns ANSI path of running .exe
+libraryFilePlaces = configFilePlaces
+configFilePlaces filename  =  do exe <- getExeName
+                                 return [takeDirectory exe </> filename]
+
+getExeName :: IO FilePath
+getExeName = allocaBytes long_path_size $ \buf -> do
+  n <- c_GetModuleFileNameA nullPtr buf (fromIntegral long_path_size)
+  if n == 0 then return ""
+            else peekCString buf
+
+foreign import ccall unsafe "windows.h GetModuleFileNameA"
+  c_GetModuleFileNameA :: Ptr () -> CString -> Word32 -> IO Word32
 
 #else
 -- |Места для поиска конфиг-файлов
@@ -253,7 +277,7 @@ runFile filename curdir wait_finish = do
 #endif
 
 
-#if defined(FREEARC_WIN)
+#if defined(FREEARC_WIN) && !defined(__MHS__)
 -- |Создать HKEY и прочитать из Registry значение типа REG_SZ
 registryGetStr root branch key =
   bracket (regCreateKey root branch) regCloseKey
@@ -284,8 +308,13 @@ registrySetStringValue hk key val =
 
 #if defined(FREEARC_WIN)
 -- |OS-specific thread id
+#ifdef __MHS__
+foreign import ccall unsafe "windows.h GetCurrentThreadId"
+  getOsThreadId :: IO DWORD
+#else
 foreign import stdcall unsafe "windows.h GetCurrentThreadId"
   getOsThreadId :: IO DWORD
+#endif
 #else
 -- |OS-specific thread id
 foreign import ccall unsafe "pthread.h pthread_self"
@@ -297,7 +326,7 @@ foreign import ccall unsafe "pthread.h pthread_self"
 ---- Операции с неоткрытыми файлами и каталогами ---------------------------------------------------
 ----------------------------------------------------------------------------------------------------
 
-#if defined(FREEARC_WIN)
+#if defined(FREEARC_WIN) && !defined(__MHS__)
 -- |Список дисков в системе с их типами
 getDrives = getLogicalDrives >>== unfoldr (\n -> Just (n `mod` 2, n `div` 2))
                              >>== zipWith (\c n -> n>0 &&& [c:":"]) ['A'..'Z']
@@ -306,8 +335,13 @@ getDrives = getLogicalDrives >>== unfoldr (\n -> Just (n `mod` 2, n `div` 2))
 
 driveTypes = ["", ""]++split ',' "Removable,Fixed,Network,CD/DVD,Ramdisk"
 
+#ifdef __MHS__
+foreign import ccall unsafe "windows.h GetDriveTypeA"
+  c_GetDriveType :: LPCSTR -> IO CInt
+#else
 foreign import stdcall unsafe "windows.h GetDriveTypeA"
   c_GetDriveType :: LPCSTR -> IO CInt
+#endif
 #endif
 
 
@@ -336,19 +370,28 @@ getCurrentDirectory = myCanonicalizePath "."
 myCanonicalizePath :: FilePath -> IO FilePath
 myCanonicalizePath fpath | isURL fpath = return fpath
                          | otherwise   =
-#if defined(FREEARC_WIN)
+#if defined(FREEARC_WIN) && !defined(__MHS__)
   withCFilePath fpath $ \pInPath ->
   allocaBytes (long_path_size*4) $ \pOutPath ->
   alloca $ \ppFilePart ->
     do c_DArcGetFullPathName pInPath (fromIntegral long_path_size*2) pOutPath ppFilePart
        peekCFilePath pOutPath >>== dropTrailingPathSeparator
 
+#ifdef __MHS__
+foreign import ccall unsafe "GetFullPathNameW"
+            c_DArcGetFullPathName :: CWString
+                              -> CInt
+                              -> CWString
+                              -> Ptr CWString
+                              -> IO CInt
+#else
 foreign import stdcall unsafe "GetFullPathNameW"
             c_DArcGetFullPathName :: CWString
                               -> CInt
                               -> CWString
                               -> Ptr CWString
                               -> IO CInt
+#endif
 #elif defined(__MHS__)
   withCString fpath $ \cs ->
     allocaBytes long_path_size $ \out -> do
@@ -366,7 +409,7 @@ long_path_size :: Int
 long_path_size  =  4096
 
 
-#if defined(FREEARC_WIN)
+#if defined(FREEARC_WIN) && !defined(__MHS__)
 -- |Clear file's Archive bit
 clearArchiveBit filename = do
     attr <- getFileAttributes filename
@@ -561,7 +604,7 @@ foreign import ccall safe "URL.h url_close"  url_close  :: URL -> IO ()
 ----------------------------------------------------------------------------------------------------
 ---- Под Windows мне пришлось реализовать библиотеку в/в самому для поддержки файлов >4Gb и Unicode имён файлов
 ----------------------------------------------------------------------------------------------------
-#if defined(FREEARC_WIN)
+#if defined(FREEARC_WIN) && !defined(__MHS__)
 
 type FileOnDisk      = FD
 type CFilePath       = CWFilePath
@@ -603,9 +646,15 @@ type CFilePath       = CString
 type FileAttributes  = Int
 withCFilePath s a    = (`withCString` a) =<< str2filesystem s
 peekCFilePath ptr    = peekCString ptr >>= filesystem2str
+#if defined(__MHS__) && defined(FREEARC_WIN)
+fOpen                = (`openBinaryFileBin` ReadMode     ) =<<. str2filesystem
+fCreate              = (`openBinaryFileBin` WriteMode    ) =<<. str2filesystem
+fCreateRW            = (`openBinaryFileBin` ReadWriteMode) =<<. str2filesystem
+#else
 fOpen                = (`openBinaryFile` ReadMode     ) =<<. str2filesystem
 fCreate              = (`openBinaryFile` WriteMode    ) =<<. str2filesystem
 fCreateRW            = (`openBinaryFile` ReadWriteMode) =<<. str2filesystem
+#endif
 fAppendText          = (`openFile`       AppendMode   ) =<<. str2filesystem
 fGetPos              = hTell
 fGetSize             = hFileSize

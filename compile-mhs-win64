@@ -1,0 +1,92 @@
+#!/usr/bin/env bash
+# Cross-compile DArc to Windows x64 via MicroHs combinator-VM.
+# Uses mhs -tenvironment to redirect C codegen through x86_64-w64-mingw32 toolchain.
+# Output: Tests/arc-mhs-win64.exe (target ~2.7MB vs 22MB GHC build)
+set -e
+
+exe=Tests/arc-mhs-win64.exe
+gui_flag=""
+for option; do
+  case $option in
+    -DFREEARC_GUI) exe=Tests/freearc-mhs-win64.exe; gui_flag="-DFREEARC_GUI" ;;
+    -O*) echo "warning: ignoring optimization flag '$option' for mhs build" >&2 ;;
+  esac
+done
+
+WINOUT=${WINOUT:-/tmp/out/FreeArc-win64-mhs}
+mkdir -p "$WINOUT"
+
+# 1) Build C/C++ objects for Win64 with __MHS__ defined
+MHS=1 WINOUT="$WINOUT" ./compile-win64-c
+
+# 2) ntrljmp.c for Lua trampoline (Lua not used on MHS path — skip unless GUI/Lua needed)
+# We don't link Lua under MHS for now; HsLua bindings only used by GHC build.
+
+# 3) MHS cross-compile setup
+# mhs targets.conf has [environment] block that pulls cc/ccflags/cclibs/conf from env vars
+defines="-DFREEARC_WIN -DFREEARC_INTEL_BYTE_ORDER -DFREEARC_64BIT -DFREEARC_NOURL -DFREEARC_NO_LUA"
+
+c_objs=(
+  "$WINOUT/Environment.o" "$WINOUT/URL.o" "$WINOUT/Common.o"
+  "$WINOUT/CompressionLibrary.o"
+  "$WINOUT/C_PPMD.o" "$WINOUT/C_LZP.o" "$WINOUT/C_LZMA.o" "$WINOUT/C_LZMA2.o" "$WINOUT/C_LZ4.o"
+  "$WINOUT/C_GRZip.o" "$WINOUT/C_BSC.o" "$WINOUT/C_Zstd.o" "$WINOUT/C_DisPack.o"
+  "$WINOUT/C_Dict.o" "$WINOUT/C_REP.o"
+  "$WINOUT/C_MM.o" "$WINOUT/C_TTA.o" "$WINOUT/C_Tornado.o"
+  "$WINOUT/C_4x4.o" "$WINOUT/C_Delta.o" "$WINOUT/C_External.o"
+  "$WINOUT/C_Encryption.o"
+  "$WINOUT/LzmaEnc.o" "$WINOUT/LzmaDec.o" "$WINOUT/Lzma2Enc.o" "$WINOUT/Lzma2Dec.o"
+  "$WINOUT/LzFind.o" "$WINOUT/LzFindMt.o" "$WINOUT/LzFindOpt.o"
+  "$WINOUT/CpuArch.o" "$WINOUT/Alloc.o" "$WINOUT/Threads.o"
+  "$WINOUT/MtCoder.o" "$WINOUT/MtDec.o" "$WINOUT/7zStream.o"
+  "$WINOUT/C_7z.o"
+  "$WINOUT/sdk_7zArcIn.o" "$WINOUT/sdk_7zBuf.o" "$WINOUT/sdk_7zCrc.o"
+  "$WINOUT/sdk_7zCrcOpt.o" "$WINOUT/sdk_7zDec.o" "$WINOUT/sdk_7zFile.o"
+  "$WINOUT/sdk_7zStream.o" "$WINOUT/sdk_7zAlloc.o"
+  "$WINOUT/sdk_Bcj2.o" "$WINOUT/sdk_Bra.o" "$WINOUT/sdk_Bra86.o" "$WINOUT/sdk_BraIA64.o"
+  "$WINOUT/sdk_Delta.o" "$WINOUT/sdk_LzmaDec.o" "$WINOUT/sdk_Lzma2Dec.o"
+  "$WINOUT/sdk_Ppmd7.o" "$WINOUT/sdk_Ppmd7Dec.o"
+  "$WINOUT/sdk_CpuArch.o" "$WINOUT/sdk_Alloc.o"
+)
+[[ -f "$WINOUT/C_BCJ.o" ]] && c_objs+=("$WINOUT/C_BCJ.o")
+for zo in "$WINOUT"/zstd_*.o; do [[ -f "$zo" ]] && c_objs+=("$zo"); done
+
+# Windows system libs (mingw provides these)
+win_libs="-static -lstdc++ -lpthread -lwinpthread -lwinmm -lws2_32 -ladvapi32 -lshell32 -luser32 -lkernel32 -lwininet -Wl,--allow-multiple-definition"
+
+# Build MHSCCLIBS from C objects (one space-separated string)
+linker_inputs=""
+for o in "${c_objs[@]}"; do linker_inputs="$linker_inputs $o"; done
+
+export CC="x86_64-w64-mingw32-gcc-posix"
+export MHSCCFLAGS="-O2 -static-libgcc -static-libstdc++ -I. -ICompression -IHsLua/src $defines $gui_flag"
+export MHSCCLIBS="$linker_inputs $win_libs"
+export MHSCONF="mingw"
+
+# 4) Run mhs with -tenvironment
+rm -f "$exe"
+if ! command -v mhs >/dev/null 2>&1; then
+  echo "error: mhs (MicroHs) is required" >&2
+  exit 1
+fi
+
+# Build optc/optl args (mhs forwards these to the C compiler/linker too)
+optc_args="-optc -I. -optc -ICompression -optc -IHsLua/src"
+for d in $defines $gui_flag; do optc_args="$optc_args -optc $d"; done
+
+mhs Arc \
+  -tenvironment \
+  -iCompression -icompat-ghc -iHsLua/src \
+  $defines $gui_flag \
+  $optc_args \
+  -o "$exe"
+
+if [[ -f "$exe" ]]; then
+  echo ""
+  echo "Built: $exe"
+  ls -la "$exe"
+  file "$exe"
+else
+  echo "error: build did not produce $exe" >&2
+  exit 1
+fi

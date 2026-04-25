@@ -15,7 +15,7 @@ import Numeric           (showFFloat)
 import System.CPUTime    (getCPUTime)
 import System.IO
 import System.Time
-#ifdef FREEARC_WIN
+#if defined(FREEARC_WIN) && !defined(__MHS__)
 import System.Win32.Types
 #endif
 #ifdef FREEARC_UNIX
@@ -224,7 +224,7 @@ uiInputArcComment old_comment = syncUI $ pauseTiming $ do
 ----- External functions ---------------------------------------------------------------------------
 ----------------------------------------------------------------------------------------------------
 
-#ifdef FREEARC_WIN
+#if defined(FREEARC_WIN) && !defined(__MHS__)
 type TString = Ptr TCHAR
 #else
 withTString  = withCString
@@ -232,7 +232,7 @@ type TString = CString
 #endif
 
 -- |Set console title
-#if defined(FREEARC_WIN)
+#if defined(FREEARC_WIN) && !defined(__MHS__)
 setConsoleTitle title = do
   withTString title c_SetConsoleTitle
 
@@ -243,6 +243,13 @@ foreign import ccall unsafe "Environment.h EnvSetConsoleTitle"
 -- |Reset console title (Windows)
 foreign import ccall unsafe "Environment.h EnvResetConsoleTitle"
   resetConsoleTitle :: IO ()
+
+#elif defined(FREEARC_WIN) && defined(__MHS__)
+-- MHS-Win: stub console title (EnvSetConsoleTitle takes TCHAR which needs wide-char marshalling)
+setConsoleTitle :: String -> IO ()
+setConsoleTitle _ = return ()
+resetConsoleTitle :: IO ()
+resetConsoleTitle = return ()
 
 #else
 -- |Set console title via ANSI/xterm escape sequence on Unix
