@@ -17,6 +17,9 @@ cd ..
 cd Tornado
 make
 cd ..
+cd 4x4
+make
+cd ..
 cd Dict
 make
 cd ..
@@ -26,7 +29,22 @@ cd ..
 cd GRZip
 make
 cd ..
+cd BSC
+make
+cd ..
+cd DisPack
+make
+cd ..
+cd Zstd
+make
+cd ..
+cd 7z
+make
+cd ..
 cd LZMA
+make
+cd ..
+cd LZ4
 make
 cd ..
 cd _Encryption

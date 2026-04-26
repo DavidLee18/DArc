@@ -47,7 +47,10 @@ int dict_decompress (MemSize BlockSize, int MinCompression, int MinWeakChars, in
   int x;            // код произошедшей ошибки
   for(;;) {
     int InSize; unsigned OutSize;   // количество байт во входном и выходном буфере, соответственно
-    checked_read (&InSize, sizeof(InSize));
+    // Read block header; 0 bytes = clean EOF (end of compressed stream)
+    x = callback ("read", &InSize, sizeof(InSize), auxdata);
+    if (x == 0)  { x=0; goto finished; }
+    if (x != sizeof(InSize))  { if (x>=0) x=FREEARC_ERRCODE_IO; goto finished; }
     if (InSize<0) {
         // скопируем неупакованные данные
         In = (BYTE*) malloc(-InSize);

@@ -1,4 +1,4 @@
-{-# OPTIONS_GHC -cpp #-}
+{-# LANGUAGE CPP #-}
 ----------------------------------------------------------------------------------------------------
 ---- Получение и хранение информации о файлах, поиск файлов на диске.                           ----
 ----------------------------------------------------------------------------------------------------
@@ -17,7 +17,7 @@ import Data.Maybe
 import Data.Word
 import Foreign.C
 import System.IO.Unsafe
-import System.Posix.Internals
+import System.Posix.Internals hiding (stat_mode)
 
 import Utils
 import Process
@@ -26,7 +26,7 @@ import Errors
 #ifdef FREEARC_PACKED_STRINGS
 import UTF8Z
 #endif
-#if defined(FREEARC_WIN)
+#if defined(FREEARC_WIN) && !defined(__MHS__)
 import Win32Files
 import System.Win32.File
 #endif
@@ -253,7 +253,7 @@ getDirectoryContents_FileInfo ff parent{-родительская структу
                             (packFilePathPacked3 (fiStoredName   parent_or_root)  packedStored    name lcext)
                           where lcext  =  packext$ filenameLower$ getFileSuffix name
 
-#if !defined(FREEARC_WIN)
+#if !defined(FREEARC_WIN) || defined(__MHS__)
   (dirList (diskDirName|||".")) .$handleFindErrors diskDirName  -- Получим список файлов в каталоге, обрабатывая ошибки чтения каталога,
     >>== filter exclude_special_names                           -- Исключим из списка "." и ".."
     >>= (mapMaybeM $! make_names getFileInfo)                   -- Превратим имена файлов в структуры FileInfo и уберём из списка файлы, на которых споткнулся `stat`

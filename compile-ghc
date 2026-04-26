@@ -1,0 +1,130 @@
+#!/usr/bin/env bash
+# Build DArc with GHC 9.4.7+ (Linux x64). Companion to `compile` (MicroHs build).
+# Produces a faster native binary; C hot path is shared, so archive format is identical.
+set -e
+
+exe=Tests/arc-ghc
+gui_flag=""
+opt="-O2"
+for option; do
+  case $option in
+    -DFREEARC_GUI) exe=Tests/freearc-ghc; gui_flag="-DFREEARC_GUI" ;;
+    -O*) opt="$option" ;;
+  esac
+done
+
+ctempdir=/tmp/out/FreeArc-ghc-c
+htempdir=/tmp/out/FreeArc-ghc
+mkdir -p "$ctempdir" "$htempdir"
+
+if [ "$(getconf LONG_BIT 2>/dev/null)" = "64" ]; then
+  bit64="-DFREEARC_64BIT"
+else
+  bit64=""
+fi
+defines="-DFREEARC_UNIX -DFREEARC_INTEL_BYTE_ORDER $bit64"
+
+# Build C/C++ side fresh for GHC (no -D__MHS__). Uses isolated tempdir to avoid
+# picking up MHS-flagged object files from /tmp/out/FreeArc.
+cp unix-common.mak common.mak
+(cd Compression && chmod +x compile && ./compile)
+# Copy Compression's objects into our tempdir (they are shared, built with no __MHS__)
+for o in /tmp/out/FreeArc/C_*.o /tmp/out/FreeArc/CompressionLibrary.o /tmp/out/FreeArc/Common.o \
+         /tmp/out/FreeArc/LzmaEnc.o /tmp/out/FreeArc/LzmaDec.o \
+         /tmp/out/FreeArc/Lzma2Enc.o /tmp/out/FreeArc/Lzma2Dec.o \
+         /tmp/out/FreeArc/MtCoder.o /tmp/out/FreeArc/MtDec.o \
+         /tmp/out/FreeArc/7zStream.o \
+         /tmp/out/FreeArc/LzFind.o /tmp/out/FreeArc/LzFindMt.o \
+         /tmp/out/FreeArc/LzFindOpt.o /tmp/out/FreeArc/Threads.o \
+         /tmp/out/FreeArc/CpuArch.o; do
+  [[ -f $o ]] && cp "$o" "$ctempdir/"
+done
+# Build Environment.cpp / URL.cpp / GuiEnvironment.cpp into our tempdir, no __MHS__
+make TEMPDIR="$ctempdir" ALL DEFINES="-DFREEARC_UNIX -DFREEARC_INTEL_BYTE_ORDER $bit64"
+
+lua_libs=$(pkg-config --libs lua5.1 2>/dev/null || echo "-llua5.1")
+if pkg-config --exists libcurl 2>/dev/null; then
+  curl_libs=$(pkg-config --libs libcurl)
+else
+  curl_libs=""
+  defines="$defines -DFREEARC_NOURL"
+fi
+clang -std=c99 -c HsLua/src/ntrljmp.c -IHsLua/src $(pkg-config --cflags lua5.1 2>/dev/null) -o "$ctempdir/ntrljmp.o"
+
+c_objs=(
+  "$ctempdir/Environment.o" "$ctempdir/URL.o" "$ctempdir/Common.o"
+  "$ctempdir/CompressionLibrary.o" "$ctempdir/C_PPMD.o" "$ctempdir/C_LZP.o"
+  "$ctempdir/C_LZMA.o" "$ctempdir/C_LZMA2.o"
+  "$ctempdir/LzmaEnc.o" "$ctempdir/LzmaDec.o"
+  "$ctempdir/Lzma2Enc.o" "$ctempdir/Lzma2Dec.o"
+  "$ctempdir/MtCoder.o" "$ctempdir/MtDec.o" "$ctempdir/7zStream.o"
+  "$ctempdir/LzFind.o" "$ctempdir/LzFindMt.o" "$ctempdir/Threads.o"
+  "$ctempdir/LzFindOpt.o" "$ctempdir/CpuArch.o"
+  "$ctempdir/C_LZ4.o" "$ctempdir/C_BCJ.o" "$ctempdir/C_GRZip.o"
+  "$ctempdir/C_Dict.o" "$ctempdir/C_REP.o" "$ctempdir/C_MM.o"
+  "$ctempdir/C_TTA.o" "$ctempdir/C_Tornado.o" "$ctempdir/C_4x4.o"
+  "$ctempdir/C_Delta.o" "$ctempdir/C_External.o" "$ctempdir/C_Encryption.o"
+  "$ctempdir/ntrljmp.o"
+)
+[[ -n $gui_flag ]] && c_objs+=("$ctempdir/GuiEnvironment.o")
+
+lua_cflags=$(pkg-config --cflags lua5.1 2>/dev/null || echo "-I/usr/include/lua5.1")
+
+# Relaxed GHC flags to accept pre-AMP-era Haskell without mass rewrites
+ghc_ext_flags=(
+  -XNoMonomorphismRestriction
+  -XFlexibleContexts
+  -XScopedTypeVariables
+  -XTypeSynonymInstances
+  -XFlexibleInstances
+  -XMultiParamTypeClasses
+  -XCPP
+  -XNondecreasingIndentation
+  -XUndecidableInstances
+  -XOverlappingInstances
+  -XLambdaCase
+  -XBangPatterns
+  -XRecursiveDo
+  -XTupleSections
+)
+
+rm -f "$exe"
+
+# Build define flags as -DXXX args (GHC accepts -D for Haskell CPP directly)
+hs_defines=()
+for d in $defines $gui_flag; do
+  [[ -z $d ]] && continue
+  hs_defines+=("${d/#-D/-D}")
+done
+
+# optl args: one -optl per token
+optl_args=()
+for o in "${c_objs[@]}"; do optl_args+=(-optl "$o"); done
+for l in -lstdc++ -lncurses -lpthread $curl_libs $lua_libs; do
+  optl_args+=(-optl "$l")
+done
+
+# optc args: pass defines + includes to GHC's C compile (for inline .hsc / FFI stubs)
+optc_args=(-optc -I. -optc -ICompression -optc -IHsLua/src)
+for d in $defines $gui_flag; do
+  [[ -z $d ]] && continue
+  optc_args+=(-optc "$d")
+done
+for f in $lua_cflags; do optc_args+=(-optc "$f"); done
+
+# Note: compat-ghc is for MHS fills; exclude when building with real GHC.
+ghc \
+  -i. -iCompression -iHsLua/src \
+  -odir "$htempdir" -hidir "$htempdir" \
+  $opt -threaded \
+  "${hs_defines[@]}" \
+  "${optc_args[@]}" \
+  "${ghc_ext_flags[@]}" \
+  -fno-warn-deprecated-flags -w \
+  "${optl_args[@]}" \
+  --make Arc.hs \
+  -main-is Arc \
+  -o "$exe"
+
+echo ""
+echo "Built: $exe"

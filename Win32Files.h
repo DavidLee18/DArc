@@ -1,7 +1,8 @@
 #include <HsBase.h>
-#include <mingw/io.h>
-#include <mingw/wchar.h>
-#include <mingw/sys/stat.h>
+/* Modern MinGW-w64 headers (GHC 9.x) — old <mingw/*> paths no longer exist */
+#include <io.h>
+#include <wchar.h>
+#include <sys/stat.h>
 
 INLINE HsInt    __w_find_sizeof       ( void ) { return sizeof(struct _wfinddatai64_t); }
 INLINE unsigned __w_find_attrib       ( struct _wfinddatai64_t* st ) { return st->attrib;      }

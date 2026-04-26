@@ -1,4 +1,4 @@
-{-# OPTIONS_GHC -cpp #-}
+{-# LANGUAGE CPP #-}
 ---------------------------------------------------------------------------------------------------
 ---- Регистрация ошибок/предупреждений и печать сообщений о них. ----------------------------------
 ---------------------------------------------------------------------------------------------------
@@ -14,7 +14,7 @@ import Data.IORef
 import System.Exit
 import System.IO
 import System.IO.Unsafe
-#if defined(FREEARC_WIN)
+#if defined(FREEARC_WIN) && !defined(__MHS__)
 import GHC.ConsoleHandler
 #else
 import System.Posix.Signals
@@ -34,7 +34,7 @@ aEXIT_CODE_BAD_PASSWORD = 21
 aEXIT_CODE_USER_BREAK   = 255
 
 -- |Все возможные типы ошибок и предупреждений
-data ErrorTypes = GENERAL_ERROR                 [String]
+data ErrorType  = GENERAL_ERROR                 [String]
                 | CMDLINE_GENERAL               [String]
                 | CMDLINE_SYNTAX                String
                 | CMDLINE_INCOMPATIBLE_OPTIONS  String String
@@ -49,7 +49,12 @@ data ErrorTypes = GENERAL_ERROR                 [String]
                 | CANT_READ_DIRECTORY           String
                 | CANT_GET_FILEINFO             String
                 | CANT_OPEN_FILE                String
+                | UNSUPPORTED_METHOD            String
+                | DATA_ERROR                    String
+                | DATA_ERROR_ENCRYPTED          String
                 | BAD_CRC                       String
+                | BAD_CRC_ENCRYPTED             String
+                | UNKNOWN_ERROR                 String
                 | BAD_CFG_SECTION               String [String]
                 | OP_TERMINATED
                 | TERMINATED
@@ -59,6 +64,7 @@ data ErrorTypes = GENERAL_ERROR                 [String]
                 | INTERNAL_ERROR                String
                 | COMPRESSION_ERROR             [String]
                 | BAD_PASSWORD                  FilePath FilePath
+  deriving (Eq)
 
 --foreign import "&errCounter" :: Ptr Int
 {-
@@ -79,7 +85,7 @@ throwSqlite = throwDyn
 setCtrlBreakHandler action = do
   --myThread <- myThreadId
   -- При выходе или возникновении исключения восстановим предыдущий обработчик событий
-#if defined(FREEARC_WIN)
+#if defined(FREEARC_WIN) && !defined(__MHS__)
   bracket (installHandler$ Catch onBreak) (installHandler) $  \oldHandler -> do
     action
 #else
@@ -102,26 +108,49 @@ terminateOperation = do
 
 -- |Принудительно завершает выполнение программы с заданным exitCode и печатью сообщения msg
 shutdown msg exitCode = do
-  separator' =: ("","\n")
-  log_separator' =: "\n"
-  fin <- val finalizers
-  for fin $ \(name,id,action) -> do
-    action
-  compressionLib_cleanup
-
   w <- val warnings
-  case w of
-    0 -> when (exitCode==aEXIT_CODE_SUCCESS) $ ignoreErrors$ condPrintLineLn "k" "All OK"
-    _ -> ignoreErrors$ condPrintLineLn "n"$ "There were "++show w++" warning(s)"
-  ignoreErrors (msg &&& condPrintLineLn "n" msg)
-  ignoreErrors$ condPrintLineLn "e" ""
-#if !defined(FREEARC_WIN) && !defined(FREEARC_GUI)
-  ignoreErrors$ putStrLn ""  -- в Unix отсутствует автоматический перевод строки в терминале по завершению программы
+  -- Make cleanup unless this is a second call (after pause)
+  unlessM (val programFinished) $ do
+    programFinished =: True
+    separator' =: ("","\n")
+    log_separator' =: "\n"
+
+    fin <- val finalizers
+    for fin $ \(name,id,action) -> do
+      ignoreErrors$ action
+    compressionLib_cleanup
+
+    unlessM (val fileManagerMode) $ do
+      case w of
+        0 -> when (exitCode==aEXIT_CODE_SUCCESS) $ condPrintLineLn "k" "All OK"
+        _ -> condPrintLineLn "n"$ "There were "++show w++" warning(s)"
+      ignoreErrors (msg &&& condPrintLineLn "n" msg)
+      condPrintLineLn "e" ""
+#if !defined(FREEARC_GUI)
+    putStrLn ""
 #endif
-  ignoreErrors$ closeLogFile
-  ignoreErrors$ hFlush stdout
-  ignoreErrors$ hFlush stderr
-  --killThread myThread
+
+    ignoreErrors$ closeLogFile
+    ignoreErrors$ hFlush stdout
+    ignoreErrors$ hFlush stderr
+
+    -- FreeArc 0.67 --shutdown: turn off computer when done
+    whenM (val perform_shutdown) $ ignoreErrors powerOffComputer
+
+    -- FreeArc 0.67 --pause-before-exit: optionally pause for the user
+    pbe <- val pause_before_exit_mode
+    let should_pause = case pbe of
+          "on"          -> True
+          "on-warnings" -> w > 0 || exitCode /= aEXIT_CODE_SUCCESS
+          "on-error"    -> exitCode /= aEXIT_CODE_SUCCESS
+          _             -> False
+    when should_pause $ ignoreErrors $ do
+      putStr "Press Enter to exit..."
+      hFlush stdout
+      _ <- getLine
+      return ()
+
+  -- And finally - exit program!
   exit (exitCode  |||  (w &&& aEXIT_CODE_WARNINGS))
 #if 0
   -- Более корректный способ завершения программы, к сожалению arc.exe с ним иногда виснет
@@ -177,6 +206,20 @@ finalizers = unsafePerformIO (ref [])
 operationTerminated = unsafePerformIO (ref False)
 {-# NOINLINE operationTerminated #-}
 
+-- |Предотвращает повторное выполнение финализации после паузы
+programFinished = unsafePerformIO (ref False)
+{-# NOINLINE programFinished #-}
+
+-- |FreeArc 0.67 --shutdown: выключить компьютер после завершения операции
+perform_shutdown = unsafePerformIO (ref False)
+{-# NOINLINE perform_shutdown #-}
+
+pause_before_exit_mode = unsafePerformIO (ref "off")
+{-# NOINLINE pause_before_exit_mode #-}
+
+foreign import ccall unsafe "PowerOffComputer"
+  powerOffComputer :: IO ()
+
 -- |Режим работы файл-менеджера: при этом registerError обрабатывается по-другому - мы дожидаемся завершения всех тредов упаковки и распаковки
 fileManagerMode = unsafePerformIO (ref False)
 {-# NOINLINE fileManagerMode #-}
@@ -223,7 +266,9 @@ errormsg (CMDLINE_BAD_OPTION_FORMAT option) =
 
 errormsg (INVALID_OPTION_VALUE fullname shortname valid_values) = do
   or <- i18n"0323 or"
-  i18fmt ["0326 %1 option must be one of: %2", fullname, enumerate or (map (('-':shortname)++) valid_values)]
+  let spelling | shortname>"" = (('-':shortname)++)
+               | otherwise    = (("--"++fullname++"=")++)
+  i18fmt ["0326 %1 option must be one of: %2", fullname, enumerate or (map spelling valid_values)]
 
 errormsg (CMDLINE_NO_COMMAND args) =
   i18fmt ["0327 no command name in command: %1", unwords args]
@@ -243,17 +288,32 @@ errormsg (CANT_GET_FILEINFO filename) =
 errormsg (CANT_OPEN_FILE filename) =
   i18fmt ["0332 can't open file \"%1\"", filename]
 
+errormsg (UNSUPPORTED_METHOD filename) =
+  i18fmt ["0472 Unsupported compression method for \"%1\".", filename]
+
+errormsg (DATA_ERROR filename) =
+  i18fmt ["0473 Data error in \"%1\". File is broken.", filename]
+
+errormsg (DATA_ERROR_ENCRYPTED filename) =
+  i18fmt ["0474 Data error in encrypted file \"%1\". Wrong password?", filename]
+
 errormsg (BAD_CRC filename) =
-  i18fmt ["0333 CRC error in file \"%1\"", filename]
+  i18fmt ["0475 CRC failed in \"%1\". File is broken.", filename]
+
+errormsg (BAD_CRC_ENCRYPTED filename) =
+  i18fmt ["0476 CRC failed in encrypted file \"%1\". Wrong password?", filename]
+
+errormsg (UNKNOWN_ERROR filename) =
+  i18fmt ["0477 Unknown error", filename]
 
 errormsg (BAD_CFG_SECTION cfgfile section) =
   i18fmt ["0334 bad section %1 in %2", head section, cfgfile]
 
 errormsg (OP_TERMINATED) =
-  i18fmt ["0335 operation terminated!"]
+  i18fmt ["0455 Operation terminated by user!"]
 
 errormsg (TERMINATED) =
-  i18fmt ["0336 program terminated!"]
+  i18fmt ["0456 Program terminated by user!"]
 
 errormsg (NOFILES) =
   i18fmt ["0337 no files, erasing empty archive"]
@@ -278,6 +338,7 @@ enumerate s list  =  joinWith2 ", " (" "++s++" ") (map quote list)
 ---- Коды выхода для различных ошибок --------------------------------------------------------------
 ----------------------------------------------------------------------------------------------------
 
+errcode TERMINATED     = aEXIT_CODE_USER_BREAK
 errcode BAD_PASSWORD{} = aEXIT_CODE_BAD_PASSWORD
 errcode _              = aEXIT_CODE_FATAL_ERROR
 
@@ -332,8 +393,9 @@ printLineNeedSeparator str = do
 -- Записать строку в логфайл.
 -- Вывести её на экран при условии, что её вывод не запрещён опцией --display
 condPrintLine c line = do
+  if c=="G" then val loggingHandlers >>= mapM_ ($line) else do
   display_option <- val display_option'
-  when (c/="$" || (display_option `contains` '#')) $ do
+  when (c `notElem` words "$ !" || (display_option `contains` '#')) $ do
       printLog line
   when (display_option `contains_one_of` c) $ do
       printLineC c line
@@ -346,7 +408,7 @@ condPrintLineLn c line = do
 -- Отделить последующий вывод заданной строкой при условии разрешения вывода класса c
 condPrintLineNeedSeparator c str = do
   display_option <- val display_option'
-  when (c/="$" || (display_option `contains` '#')) $ do
+  when (c `notElem` words "$ !" || (display_option `contains` '#')) $ do
       log_separator' =: str
   when (c=="" || (display_option `contains_one_of` c)) $ do
       separator' =: (c,str)
@@ -376,7 +438,9 @@ logfile'        = unsafePerformIO$ newIORef Nothing
 -- Переменные, используемые для украшения печати
 separator'      = unsafePerformIO$ newIORef ("","") :: IORef (String,String)
 log_separator'  = unsafePerformIO$ newIORef "\n"    :: IORef String
-display_option' = unsafePerformIO$ newIORef$ (error "undefined display_option" :: String)
+display_option' = unsafePerformIO$ newIORef ""      :: IORef String
+-- Обработчик сообщений в лог
+loggingHandlers = unsafePerformIO$ newIORef [] :: IORef [String -> IO ()]
 
 {-# NOINLINE printLine #-}
 {-# NOINLINE printLineNeedSeparator #-}
@@ -392,17 +456,16 @@ display_option' = unsafePerformIO$ newIORef$ (error "undefined display_option" :
 
 -- |Запись сообщения об ошибке в логфайл и аварийное завершение программы с этим сообщением
 registerError err = do
+  unless (err `elem` [TERMINATED,OP_TERMINATED]) $ do
+    val errcodeHandler >>= ($err)
   msg <- errormsg err
-  msg <- i18fmt ["0316 ERROR: %1", msg]
-  -- Catch exceptions from individual error handlers (e.g. Lua handler before Lua is initialised)
-  -- so that we always reach shutdown and exit cleanly.
+  msg <- if err `elem` [TERMINATED,OP_TERMINATED]
+           then return msg
+           else i18fmt ["0316 ERROR: %1", msg]
   val errorHandlers >>= mapM_ (\h -> h msg `catch` (\(_::SomeException) -> return ()))
   -- Если мы в режиме файл-менеджера, то придётся ждать завершения всех тредов компрессии,
   -- иначе - просто совершаем аварийный выход из программы
   unlessM (val fileManagerMode) $ do
-    -- Safety net: if shutdown itself throws (e.g. uninitialised display_option'), fall back to
-    -- a direct _exit() so the exception never escapes the handler and triggers GHC's hs_exit()
-    -- deadlock (hs_exit sends ThreadKilled to the main thread which is masked inside withMVar).
     shutdown msg (errcode err)
       `catch` \(_::SomeException) -> exit (errcode err)
   operationTerminated =: True
@@ -425,6 +488,8 @@ count_warnings action = do
 
 -- |Счётчик ошибок, возникших в ходе работы программы
 warnings = unsafePerformIO$ newIORef 0 :: IORef Int
+-- |Количество предупреждений перед началом текущей основной операции
+warningsBefore = unsafePerformIO$ newIORef 0 :: IORef Int
 
 -- В зависимости от режима зарегистрировать ошибку или предупреждение
 registerThreadError err = do
@@ -432,12 +497,15 @@ registerThreadError err = do
   (iif isFM registerWarning registerError) err
 
 -- Операции, выполняемые при появлении ошибки/предупреждения (регистрируются в других частях программы)
+errcodeHandler  = unsafePerformIO$ newIORef doNothing :: IORef (ErrorType -> IO ())
 errorHandlers   = unsafePerformIO$ newIORef [] :: IORef [String -> IO ()]
 warningHandlers = unsafePerformIO$ newIORef [] :: IORef [String -> IO ()]
 
 {-# NOINLINE registerError #-}
 {-# NOINLINE registerWarning #-}
 {-# NOINLINE warnings #-}
+{-# NOINLINE warningsBefore #-}
+{-# NOINLINE errcodeHandler #-}
 {-# NOINLINE errorHandlers #-}
 {-# NOINLINE warningHandlers #-}
 

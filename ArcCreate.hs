@@ -38,6 +38,13 @@ import ArcExtract
 import ArcvProcessRead
 import ArcvProcessExtract
 import ArcvProcessCompress
+import Foreign.C.String (CString, withCString)
+import Foreign.C.Types  (CInt(..))
+
+foreign import ccall unsafe "darc_split_file" c_split_file :: CString -> CString -> CString -> IO CInt
+
+pad3 :: Int -> String
+pad3 n = let s = show n in replicate (3 - length s) '0' ++ s
 
 
 -- |Обобщённая команда создания/изменения архива
@@ -53,6 +60,7 @@ runArchiveCreate pretestArchive
     , opt_arccmt_file     = arccmt_file          --   файл, из которого читается новый комментарий к архиву
     , opt_data_compressor = compressor           --   алгоритм сжатия
     } = do
+  nodates_ref =: opt_nodates command  -- FreeArc 0.67: --nodates propagado a archiveWriteDir
   opt_testMalloc command &&& testMalloc  -- напечатать карту памяти
   -- для суперэкономии памяти: find_files |> buffer 100_000 |> write_to_archive
 
@@ -206,6 +214,19 @@ tempfileWrapper filename command deleteFiles pretestArchive action  =  find 0 >>
                                                   fileRemove tempname)
                            -- Если указаны опции "-t" и "-w", то ещё раз протестируем окончательный архив
                            when (opt_test command && opt_workdir command/="") $ test_archive filename (opt_keep_broken command || opt_delete_files command /= NO_DELETE)
+                           -- FreeArc 0.67 -v/--volume: split finished archive into volumes .001 .002 ...
+                           case opt_volumes command of
+                             (volsize:_) | volsize > 0 -> do
+                               nvols <- withCString filename $ \sp ->
+                                          withCString filename $ \dp ->
+                                            withCString (show volsize) $ \sz ->
+                                              c_split_file sp dp sz
+                               if nvols > 0
+                                 then do ignoreErrors (fileRemove filename)
+                                         condPrintLineLn "n" $ "Split into " ++ show nvols ++ " volume(s): " ++ filename ++ ".001 .. ." ++ pad3 (fromIntegral nvols)
+                                         condPrintLineLn "n" $ "To extract, reassemble with: cat "++filename++".* > "++filename
+                                 else registerError$ GENERAL_ERROR ["0381 failed to split archive into volumes", filename]
+                             _ -> return ()
 
         -- Протестировать архив и выйти, удалив его, если при этом возникли проблемы
         test_archive arcname keep_broken_archive = do

@@ -1,4 +1,5 @@
 
+{-# LANGUAGE CPP #-}
 -- |
 -- Module      : Scripting.Lua
 -- Copyright   : (c) Gracjan Polak 2007,2008
@@ -177,7 +178,7 @@ module Scripting.Lua
     argerror
 )
 where
-import Prelude hiding (error,concat)
+import Prelude hiding (concat)
 import qualified Prelude
 import Foreign.C
 import Foreign.Ptr
@@ -369,7 +370,12 @@ foreign import ccall "lauxlib.h luaL_newmetatable" c_luaL_newmetatable :: LuaSta
 foreign import ccall "lauxlib.h luaL_argerror" c_luaL_argerror :: LuaState -> CInt -> Ptr CChar -> IO CInt
 
 foreign import ccall "ntrljmp.h lua_neutralize_longjmp" c_lua_neutralize_longjmp :: LuaState -> IO CInt
-foreign import ccall "ntrljmp.h &lua_neutralize_longjmp" c_lua_neutralize_longjmp_addr :: FunPtr (LuaState -> IO CInt) 
+#ifndef __MHS__
+foreign import ccall "ntrljmp.h &lua_neutralize_longjmp" c_lua_neutralize_longjmp_addr :: FunPtr (LuaState -> IO CInt)
+#else
+c_lua_neutralize_longjmp_addr :: FunPtr (LuaState -> IO CInt)
+c_lua_neutralize_longjmp_addr = nullFunPtr
+#endif
 
 
 -- | See @lua_settop@ in Lua Reference Manual.
@@ -464,8 +470,13 @@ back to Haskell land are costly.
 
 Use standard Lua malloc based allocator.
 
+#ifndef __MHS__
 foreign export ccall "hslua_alloc" hslua_alloc :: Ptr () -> Ptr () -> CInt -> CInt -> IO (Ptr ())
 foreign import ccall "&hslua_alloc" hslua_alloc_addr :: FunPtr LuaAlloc
+#else
+hslua_alloc_addr :: FunPtr LuaAlloc
+hslua_alloc_addr = nullFunPtr
+#endif
 
 hslua_alloc :: Ptr () -> Ptr () -> CInt -> CInt -> IO (Ptr ())
 hslua_alloc ud ptr osize nsize = reallocBytes ptr (fromIntegral nsize)
@@ -562,9 +573,12 @@ setglobal l n = setfield l globalsindex n
 openlibs :: LuaState -> IO ()
 openlibs = c_luaL_openlibs
 
+#ifndef __MHS__
 foreign import ccall "wrapper" mkStringWriter :: LuaWriter -> IO (FunPtr LuaWriter)
+#endif
 
 dump :: LuaState -> IO String
+#ifndef __MHS__
 dump l = do
     r <- newIORef ""
     let wr :: LuaWriter
@@ -576,6 +590,9 @@ dump l = do
     c_lua_dump l writer nullPtr
     freeHaskellFunPtr writer
     readIORef r
+#else
+dump _ = return ""
+#endif
 
 -- | See @lua_equal@ in Lua Reference Manual.
 equal :: LuaState -> Int -> Int -> IO Bool
@@ -639,10 +656,13 @@ loadfile :: LuaState -> String -> IO Int
 loadfile l f = readFile f >>= \c -> loadstring l c f
 
 
+#ifndef __MHS__
 foreign import ccall "wrapper" mkStringReader :: LuaReader -> IO (FunPtr LuaReader)
+#endif
 
 -- | See @luaL_loadstring@ in Lua Reference Manual.
 loadstring :: LuaState -> String -> String -> IO Int
+#ifndef __MHS__
 loadstring l script cn = do
     w <- newIORef nullPtr
     let rd :: LuaReader
@@ -662,6 +682,12 @@ loadstring l script cn = do
     k <- readIORef w
     free k
     return (fromIntegral res)
+#else
+loadstring l script cn = withCString script $ \cs ->
+  fromIntegral <$> c_luaL_loadstring l cs
+
+foreign import ccall "lauxlib.h luaL_loadstring" c_luaL_loadstring :: LuaState -> CString -> IO CInt
+#endif
 
 -- | See @lua_newthread@ in Lua Reference Manual.
 newthread :: LuaState -> IO LuaState
@@ -793,6 +819,7 @@ newmetatable l s = withCString s $ \s -> liftM fromIntegral (c_luaL_newmetatable
 -- | See @luaL_argerror@ in Lua Reference Manual. Contrary to the 
 -- manual, Haskell function does return with value less than zero.
 argerror :: LuaState -> Int -> String -> IO CInt
+#ifndef __MHS__
 argerror l n msg = withCString msg $ \msg -> do
     let doit l = c_luaL_argerror l (fromIntegral n) msg
     f <- mkWrapper doit
@@ -800,6 +827,9 @@ argerror l n msg = withCString msg $ \msg -> do
     freeHaskellFunPtr f
     -- here we should have error message string on top of the stack
     return (-1)
+#else
+argerror l n msg = return (-1)
+#endif
 
 
 
@@ -878,8 +908,24 @@ instance StackValue () where
     peek l n = maybepeek l n isnil (\l n -> return ())
     valuetype _ = TNIL
 
+#ifdef __MHS__
+-- MicroHs: provide (a,b) instance so that [(a,b)] can use the [a] path
+instance (StackValue a, StackValue b) => StackValue (a,b) where
+    push l (x,y) = do
+        createtable l 2 0
+        push l x; rawseti l (-2) 1
+        push l y; rawseti l (-2) 2
+    peek l n = do
+        v <- istable l n
+        if not v then return Nothing
+        else do
+            rawgeti l n 1; mx <- peek l (-1); pop l 1
+            rawgeti l n 2; my <- peek l (-1); pop l 1
+            return (case (mx,my) of { (Just x, Just y) -> Just (x,y); _ -> Nothing })
+    valuetype _ = TTABLE
+#endif
 
-instance StackValue a => StackValue [a] where
+instance {-# OVERLAPPABLE #-} StackValue a => StackValue [a] where
     push l x = do
         createtable l (length x) 0
         let setindex idx val = do
@@ -915,7 +961,8 @@ instance StackValue a => StackValue [a] where
        lua_pop(L, 1);
      }
 -}
-instance (StackValue a,StackValue b) => StackValue [(a,b)] where
+#ifndef __MHS__
+instance {-# OVERLAPPING #-} (StackValue a,StackValue b) => StackValue [(a,b)] where
     push l x = do
         createtable l (length x) 0
         let setindex idx (key,val) = do
@@ -950,6 +997,7 @@ instance (StackValue a,StackValue b) => StackValue [(a,b)] where
                 result <- newIORef []
                 donext result
     valuetype _ = TTABLE
+#endif
 
 -- | Like @getglobal@, but knows about packages. e. g.
 --
@@ -990,12 +1038,18 @@ instance (StackValue a,LuaImport b) => LuaImport (a -> b) where
                 got <- typename l t
                 luaimportargerror narg (exp ++ " expected, got " ++ got) (x undefined) l
 
+#ifndef __MHS__
 foreign import ccall "wrapper" mkWrapper :: LuaCFunction -> IO (FunPtr LuaCFunction)
+#endif
 
 -- | Create new foreign Lua function. Function created can be called
 -- by Lua engine. Remeber to free the pointer with @freecfunction@.
 newcfunction :: LuaImport a => a -> IO (FunPtr LuaCFunction)
+#ifndef __MHS__
 newcfunction = mkWrapper . luaimport
+#else
+newcfunction _ = return nullFunPtr
+#endif
 
 -- | Convert a Haskell function to Lua function. Any Haskell function
 -- can be converted provided that:
@@ -1072,11 +1126,17 @@ instance (StackValue t,LuaCallFunc b) => LuaCallFunc (t -> b) where
     callfunc' l f a k x = callfunc' l f (a >> push l x) (k+1)
 
 
+#ifndef __MHS__
 foreign export ccall hsmethod__gc :: LuaState -> IO CInt
 foreign import ccall "&hsmethod__gc" hsmethod__gc_addr :: FunPtr LuaCFunction
-
 foreign export ccall hsmethod__call :: LuaState -> IO CInt
 foreign import ccall "&hsmethod__call" hsmethod__call_addr :: FunPtr LuaCFunction
+#else
+hsmethod__gc_addr :: FunPtr LuaCFunction
+hsmethod__gc_addr = nullFunPtr
+hsmethod__call_addr :: FunPtr LuaCFunction
+hsmethod__call_addr = nullFunPtr
+#endif
 
 hsmethod__gc :: LuaState -> IO CInt
 hsmethod__gc l = do

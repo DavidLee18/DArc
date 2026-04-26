@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+# Build standalone srep binary (SREP 3.93a beta, vendored from github.com/Intensity/srep).
+# Output: ../Tests/srep, registered via arc.ini [External compressor:srep].
+# This tree is self-contained and does not share headers with DArc's Compression/.
+set -e
+
+HERE="$(cd "$(dirname "$0")" && pwd)"
+OUT="$HERE/../Tests/srep"
+
+CXX="${CXX:-c++}"
+OPT="${OPT:--O3 -mtune=generic -funroll-all-loops -msse2}"
+DEF="-DFREEARC_UNIX -DFREEARC_INTEL_BYTE_ORDER -D_FILE_OFFSET_BITS=64"
+INC="-I$HERE/Compression -I$HERE/Compression/_Encryption -I$HERE/Compression/_Encryption/headers -I$HERE/Compression/_Encryption/hashes"
+WARN="-Wno-write-strings -Wno-unused-result -Wno-stringop-overflow -Wno-format-overflow"
+
+cd "$HERE"
+$CXX $OPT $DEF $INC $WARN \
+  Compression/Common.cpp Compression/SREP/srep.cpp \
+  -lpthread -lstdc++ \
+  -o "$OUT"
+
+echo "Built: $OUT"

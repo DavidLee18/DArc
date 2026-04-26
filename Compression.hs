@@ -64,6 +64,11 @@ isFastDecMethod          =  not . any_function [(=="ppmd"), (=="ppmm"), (=="pmm"
 isEXTERNAL_Method        =  CompressionLib.compressionIs "external?"
 -- |Метод шифрования.
 isEncryption             =  CompressionLib.compressionIs "encryption?"
+-- |Non-solid method — каждый блок сжимается независимо (0.67).
+isNonSolidMethod         =  CompressionLib.compressionIs "nosolid?"
+-- |Memory barrier для цепочки методов сжатия (0.67): метод разбивает учёт памяти на независимые кластеры.
+isMemoryBarrier_Compression    =  any_function [isEXTERNAL_Method, CompressionLib.compressionIs "MemoryBarrierCompression?"]
+isMemoryBarrier_Decompression  =  any_function [isEXTERNAL_Method, CompressionLib.compressionIs "MemoryBarrierDecompression?"]
 
 
 -- |Последовательность алгоритмов сжатия, используемых для обработки данных
@@ -338,24 +343,17 @@ crcTable = UA.listArray (0, 255) $ map buildEntry [0..255]
                  then (c `shiftR` 1) `xor` 0xEDB88320
                  else  c `shiftR` 1
 
--- |Update a running CRC-32 over a memory buffer using a pure Haskell loop.
--- Equivalent to the C UpdateCRC from Environment.cpp.
--- Accepts any Integral length to match the original C signature.
+-- |Update a running CRC-32 over a memory buffer. Delegates to the C
+-- UpdateCRC from Environment.cpp, which processes a whole buffer per call
+-- rather than iterating byte-by-byte in Haskell — critical under MicroHs
+-- where combinator reduction makes per-byte loops ~7µs/byte.
+foreign import ccall "UpdateCRC" c_UpdateCRC :: Ptr () -> CUInt -> CUInt -> IO CUInt
+
 {-# NOINLINE updateCRC #-}
 updateCRC :: (Integral n) => Ptr a -> n -> CRC -> IO CRC
-updateCRC addr len startCRC = go 0 startCRC
-  where
-    !iLen = fromIntegral len :: Int
-    {-# INLINE step #-}
-    step !crc !b =
-      let idx = fromIntegral ((fromIntegral crc :: Word8) `xor` b) :: Int
-      in (crc `shiftR` 8) `xor` fromIntegral (crcTable `unsafeAt` idx)
-    go :: Int -> CRC -> IO CRC
-    go !k !crc
-      | k >= iLen = return crc
-      | otherwise = do
-          b <- peek (castPtr addr `plusPtr` k :: Ptr Word8)
-          go (k + 1) (step crc b)
+updateCRC addr len startCRC =
+  c_UpdateCRC (castPtr addr) (fromIntegral len) (fromIntegral startCRC)
+  >>= return . fromIntegral
 
 finishCRC = xor aINIT_CRC
 
@@ -467,20 +465,20 @@ builtinMethodSubsts = [
     , "#xt = dict: 128m:75% + #binary"
     , ""
     , ";Binary files compression with fast decompression"
-    , "1xb = tor:3"
-    , "2xb = tor:96m:h64m"
+    , "1xb = 4x4:tor:3"
+    , "2xb = 4x4:tor:6"
     , "#xb = delta + #binary"
     , ""
     , ";Binary files compression with fast decompression"
     , "1binary = tor:3"
-    , "2binary = tor:  96m:h64m"
-    , "3binary = lzma: 96m:h64m:fast  :mc8"
-    , "4binary = lzma: 96m:h64m:normal:mc16"
-    , "5binary = lzma: 16m:max"
-    , "6binary = lzma: 32m:max"
-    , "7binary = lzma: 64m:max"
-    , "8binary = lzma:128m:max"
-    , "9binary = lzma:255m:max"
+    , "2binary = tor:6"
+    , "3binary = 4x4:b8m:lzma:8m:h64m:fast:mc8"
+    , "4binary = 4x4:b16m:lzma:16m:h64m:normal:mc16"
+    , "5binary = 4x4:b16m:lzma:16m:max"
+    , "6binary = 4x4:b32m:lzma:32m:max"
+    , "7binary = 4x4:b64m:lzma:64m:max"
+    , "8binary = 4x4:b128m:lzma:128m:max"
+    , "9binary = 4x4:b254m:lzma:254m:max"
     , ""
     , ";Synonyms"
     , "bcj = exe"

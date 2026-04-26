@@ -1,3 +1,4 @@
+{-# LANGUAGE CPP #-}
 ---------------------------------------------------------------------------------------------------
 ---- ����������� ��������� ������ � ����� ������/����� �� ����������.                          ----
 ---------------------------------------------------------------------------------------------------
@@ -435,7 +436,14 @@ parseCmdline cmdline  =  (`mapMaybeM` split ";" cmdline) $ \args -> do
   let match_included  =  orig_include_list &&& [match_filespecs match_with include_list]
       match_excluded  =  exclude_list      &&& [match_filespecs match_with exclude_list]
 
+  -- -ao/--SelectArchiveBit: filter by DOS Archive bit (0x20). Windows-only:
+  -- on Linux fiAttr is 0, so applying the filter would exclude everything;
+  -- we skip it instead, matching FreeArc behavior.
+#if defined(FREEARC_WIN)
+  let attrib_filter = if select_archive_bit then [\attr -> attr .&. 0x20 /= 0] else []
+#else
   let attrib_filter = []
+#endif
 
   -- ����� ������ �� �������
   let size_filter _  "--"   = []
@@ -499,6 +507,11 @@ parseCmdline cmdline  =  (`mapMaybeM` split ";" cmdline) $ \args -> do
          | otherwise                  ->  return aDEFAULT_FILESPECS
       _  | cmd.$is_CMD_WITHOUT_ARGS   ->  registerError$ CMDLINE_GENERAL ["0377 command \"%1\" shouldn't have additional arguments", cmd]
          | otherwise                  ->  return listed_filespecs
+
+  -- Opciones 0.67 aún sin implementación funcional en DArc
+  let archtype = findReqArg o "type" "arc"
+  when (archtype `notElem` words "arc -- ")
+    (registerError$ CMDLINE_GENERAL ["0380 --type=%1: only arc format is supported", archtype])
 
   -- �������� �������� � ���������? ��� ���������� ������������ ������ ��� ��������/����������
   let x_include_dirs  =  case include_dirs of
@@ -590,7 +603,9 @@ parseCmdline cmdline  =  (`mapMaybeM` split ";" cmdline) $ \args -> do
       registerError$ CMDLINE_INCOMPATIBLE_OPTIONS "m[f]/-d[f]" "-ac"
 
   -- ������� ��� ��������� ������ - ����� ���� ������ ���� ��� ����� ���������� �����
+  let create_in_workdir = findNoArg o "create-in-workdir"
   workdir <- case orig_workdir of
+               "--" | create_in_workdir -> getEnv "TMPDIR" `catch` \(_::SomeException) -> getEnv "TEMP" `catch` \(_::SomeException) -> return "/tmp"
                "--"       -> return ""    -- �� ��������� (�������� ��������� ����� ����� � �������� ��������)
                '%':envvar -> getEnv envvar
                dir        -> return dir
@@ -658,6 +673,14 @@ parseCmdline cmdline  =  (`mapMaybeM` split ";" cmdline) $ \args -> do
     , opt_overwrite            = ref_overwrite
     , opt_keep_time            = findNoArg    o "keeptime"
     , opt_time_to_last         = findNoArg    o "timetolast"
+    , opt_nodates              = findNoArg    o "nodates"
+    , opt_create_in_workdir    = findNoArg    o "create-in-workdir"
+    , opt_pause_before_exit    = findOptArg   o "pause-before-exit" "off"
+    , opt_queue                = findNoArg    o "queue"
+    , opt_volumes              = map parseSize (findReqList o "volume")
+    , opt_archive_type         = findReqArg   o "type" "arc"
+    , opt_shutdown             = findNoArg    o "shutdown"
+    , opt_arc_32bit_legacy     = findNoArg    o "arc-32bit-legacy"
     , opt_test                 = findNoArg    o "test"
     , opt_pretest              = readInt pretest
     , opt_keep_broken          = findNoArg    o "keepbroken"
@@ -685,6 +708,7 @@ parseCmdline cmdline  =  (`mapMaybeM` split ";" cmdline) $ \args -> do
     , opt_delete_files         = delete_files
     , opt_workdir              = workdir
     , opt_clear_archive_bit    = clear_archive_bit
+    , opt_select_archive_bit   = select_archive_bit
     , opt_language             = language
     , opt_recovery             = recovery
     , opt_broken_archive       = broken_archive

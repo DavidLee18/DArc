@@ -1,4 +1,7 @@
-{-# LANGUAGE CPP, MagicHash, UnboxedTuples, UnliftedFFITypes #-}
+{-# LANGUAGE CPP #-}
+#ifndef __MHS__
+{-# LANGUAGE MagicHash, UnboxedTuples, UnliftedFFITypes #-}
+#endif
 ----------------------------------------------------------------------------------------------------
 ---- Имена файлов, храняющиеся в UTF8+\0 представлении.                                         ----
 ---- Имена сортируются/сравниваются с учётом или без учёта регистра в зависимости от того,      ----
@@ -20,11 +23,14 @@ module UTF8Z where
 import Data.Bits
 import Data.Char
 import Data.Word
+#ifndef __MHS__
 import GHC.Exts
 import GHC.IO
+#endif
 import GHC.Word
-import Foreign.C.Types
 
+#ifndef __MHS__
+import Foreign.C.Types
 
 data PackedString = PS ByteArray#
 
@@ -106,23 +112,6 @@ utfCount cs = uc 0# cs where
         | otherwise = error "invalid string"
 
 
--- | Convert Unicode characters to UTF-8.
-utfList :: String -> [Word8]
-utfList [] = []
-utfList (x:xs)
-  | ord x<=0x007f = fromIntegral (ord x) : utfList xs
-  | ord x<=0x07ff = fromIntegral (0xC0 .|. ((ord x `shiftR` 6) .&. 0x1F)):
-                    fromIntegral (0x80 .|. (ord x .&. 0x3F)):
-                    utfList xs
-  | ord x<=0xffff = fromIntegral (0xE0 .|. ((ord x `shiftR` 12) .&. 0x0F)):
-                    fromIntegral (0x80 .|. ((ord x `shiftR` 6) .&. 0x3F)):
-                    fromIntegral (0x80 .|. (ord x .&. 0x3F)):
-                    utfList xs
-  | otherwise     = fromIntegral (0xF0 .|. (ord x `shiftR` 18)) :
-                    fromIntegral (0x80 .|. ((ord x `shiftR` 12) .&. 0x3F)) :
-                    fromIntegral (0x80 .|. ((ord x `shiftR` 6) .&. 0x3F)) :
-                    fromIntegral (0x80 .|. (ord x .&. 0x3F)) :
-                    utfList xs
 
 
 {-# INLINE unpackFoldrUtf8# #-}
@@ -176,4 +165,58 @@ unpackFoldlUtf8# f e addr count = unpack 0# e where
 {-# INLINE inlinePerformIO #-}
 inlinePerformIO :: IO a -> a
 inlinePerformIO (IO m) = case m realWorld# of (# _, r #)   -> r
+
+#else
+-- MicroHs-compatible implementation: PackedString is a simple String wrapper.
+import System.IO.Unsafe (unsafePerformIO)
+
+newtype PackedString = PS String deriving (Show)
+
+instance Eq PackedString where
+  (PS a) == (PS b) = comparePS (PS a) (PS b) == EQ
+
+instance Ord PackedString where
+  compare = comparePS
+
+packString :: String -> PackedString
+packString = PS
+
+packStr :: String -> IO PackedString
+packStr = return . PS
+
+unpackPS :: PackedString -> String
+unpackPS (PS s) = s
+
+#if defined(FREEARC_WIN)
+comparePS :: PackedString -> PackedString -> Ordering
+comparePS (PS a) (PS b) = compare (map toLower a) (map toLower b)
+  where toLower c | c >= 'A' && c <= 'Z' = toEnum (fromEnum c + 32)
+                  | otherwise = c
+#else
+comparePS :: PackedString -> PackedString -> Ordering
+comparePS (PS a) (PS b) = compare a b
+#endif
+
+inlinePerformIO :: IO a -> a
+inlinePerformIO = unsafePerformIO
+
+#endif
+
+-- | Convert Unicode characters to UTF-8 bytes. (Portable, used by both GHC and MicroHs.)
+utfList :: String -> [Word8]
+utfList [] = []
+utfList (x:xs)
+  | ord x<=0x007f = fromIntegral (ord x) : utfList xs
+  | ord x<=0x07ff = fromIntegral (0xC0 .|. ((ord x `shiftR` 6) .&. 0x1F)):
+                    fromIntegral (0x80 .|. (ord x .&. 0x3F)):
+                    utfList xs
+  | ord x<=0xffff = fromIntegral (0xE0 .|. ((ord x `shiftR` 12) .&. 0x0F)):
+                    fromIntegral (0x80 .|. ((ord x `shiftR` 6) .&. 0x3F)):
+                    fromIntegral (0x80 .|. (ord x .&. 0x3F)):
+                    utfList xs
+  | otherwise     = fromIntegral (0xF0 .|. (ord x `shiftR` 18)) :
+                    fromIntegral (0x80 .|. ((ord x `shiftR` 12) .&. 0x3F)) :
+                    fromIntegral (0x80 .|. ((ord x `shiftR` 6) .&. 0x3F)) :
+                    fromIntegral (0x80 .|. (ord x .&. 0x3F)) :
+                    utfList xs
 

@@ -1,4 +1,4 @@
-{-# OPTIONS_GHC -cpp #-}
+{-# LANGUAGE CPP #-}
 ----------------------------------------------------------------------------------------------------
 ---- Информирование пользователя о ходе выполнения программы (CUI - Console User Interface).  ------
 ----------------------------------------------------------------------------------------------------
@@ -15,7 +15,7 @@ import Numeric           (showFFloat)
 import System.CPUTime    (getCPUTime)
 import System.IO
 import System.Time
-#ifdef FREEARC_WIN
+#if defined(FREEARC_WIN) && !defined(__MHS__)
 import System.Win32.Types
 #endif
 #ifdef FREEARC_UNIX
@@ -37,8 +37,14 @@ import UIBase
 
 -- |Запускает background thread для вывода индикатора прогресса
 guiStartProgram = do
-  -- Обновляем индикатор прогресса и заголовок окна раз в 0.5 секунды
+  -- Обновляем индикатор прогресса и заголовок окна раз в N секунд
+  -- MicroHs: green thread context switching is very expensive (~0.5s per tick),
+  -- so use a much longer interval to avoid dominating CPU time.
+#ifdef __MHS__
+  indicatorThread 10 $ \indicator indType title b bytes total processed p -> do
+#else
   indicatorThread 0.5 $ \indicator indType title b bytes total processed p -> do
+#endif
     myPutStr$ back_percents indicator ++ p
     myFlushStdout
     setConsoleTitle title
@@ -218,7 +224,7 @@ uiInputArcComment old_comment = syncUI $ pauseTiming $ do
 ----- External functions ---------------------------------------------------------------------------
 ----------------------------------------------------------------------------------------------------
 
-#ifdef FREEARC_WIN
+#if defined(FREEARC_WIN) && !defined(__MHS__)
 type TString = Ptr TCHAR
 #else
 withTString  = withCString
@@ -226,7 +232,7 @@ type TString = CString
 #endif
 
 -- |Set console title
-#if defined(FREEARC_WIN)
+#if defined(FREEARC_WIN) && !defined(__MHS__)
 setConsoleTitle title = do
   withTString title c_SetConsoleTitle
 
@@ -237,6 +243,13 @@ foreign import ccall unsafe "Environment.h EnvSetConsoleTitle"
 -- |Reset console title (Windows)
 foreign import ccall unsafe "Environment.h EnvResetConsoleTitle"
   resetConsoleTitle :: IO ()
+
+#elif defined(FREEARC_WIN) && defined(__MHS__)
+-- MHS-Win: stub console title (EnvSetConsoleTitle takes TCHAR which needs wide-char marshalling)
+setConsoleTitle :: String -> IO ()
+setConsoleTitle _ = return ()
+resetConsoleTitle :: IO ()
+resetConsoleTitle = return ()
 
 #else
 -- |Set console title via ANSI/xterm escape sequence on Unix

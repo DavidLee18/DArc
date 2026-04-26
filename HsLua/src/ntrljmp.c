@@ -13,7 +13,9 @@
 #include "lopcodes.h"
 #include "lundump.h"
 
-extern int hsmethod__call( lua_State *state );
+/* Weak fallback: overridden by GHC's foreign-export for hsmethod__call.
+   Under MicroHs (no foreign export support), this stub is used instead. */
+__attribute__((weak)) int hsmethod__call( lua_State *state ) { return -1; }
 
 LUAI_FUNC int lua_neutralize_longjmp( lua_State *state )
 {

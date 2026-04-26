@@ -1,3 +1,4 @@
+#!/usr/bin/env bash
 exe=Tests/arc
 gui_flag=""
 for option; do
@@ -20,7 +21,7 @@ cd Compression
 chmod +x compile
 ./compile
 cd ..
-make ALL
+make ALL DEFINES="-DFREEARC_UNIX -DFREEARC_INTEL_BYTE_ORDER $bit64 -D__MHS__"
 lua_libs=$(pkg-config --libs lua5.1 2>/dev/null || echo "-llua5.1")
 if pkg-config --exists libcurl 2>/dev/null; then
   curl_libs=$(pkg-config --libs libcurl)
@@ -29,8 +30,8 @@ else
   defines="$defines -DFREEARC_NOURL"
 fi
 clang -std=c99 -c HsLua/src/ntrljmp.c -IHsLua/src $(pkg-config --cflags lua5.1 2>/dev/null) -o $ctempdir/ntrljmp.o
-c_objs="$ctempdir/Environment.o $ctempdir/URL.o $ctempdir/Common.o $ctempdir/CompressionLibrary.o $ctempdir/C_PPMD.o $ctempdir/C_LZP.o $ctempdir/C_LZMA.o $ctempdir/C_BCJ.o $ctempdir/C_GRZip.o $ctempdir/C_Dict.o $ctempdir/C_REP.o $ctempdir/C_MM.o $ctempdir/C_TTA.o $ctempdir/C_Tornado.o $ctempdir/C_Delta.o $ctempdir/C_External.o $ctempdir/C_Encryption.o $ctempdir/ntrljmp.o"
-c_libs="-lstdc++ -lncurses $curl_libs $lua_libs"
+c_objs="$ctempdir/Environment.o $ctempdir/URL.o $ctempdir/Common.o $ctempdir/CompressionLibrary.o $ctempdir/C_PPMD.o $ctempdir/C_LZP.o $ctempdir/C_LZMA.o $ctempdir/C_LZMA2.o $ctempdir/LzmaEnc.o $ctempdir/LzmaDec.o $ctempdir/Lzma2Enc.o $ctempdir/Lzma2Dec.o $ctempdir/MtCoder.o $ctempdir/MtDec.o $ctempdir/7zStream.o $ctempdir/LzFind.o $ctempdir/LzFindMt.o $ctempdir/Threads.o $ctempdir/LzFindOpt.o $ctempdir/CpuArch.o $ctempdir/C_LZ4.o $ctempdir/C_BCJ.o $ctempdir/C_GRZip.o $ctempdir/C_BSC.o $ctempdir/C_DisPack.o $ctempdir/C_Zstd.o $ctempdir/C_7z.o $ctempdir/C_Dict.o $ctempdir/C_REP.o $ctempdir/C_MM.o $ctempdir/C_TTA.o $ctempdir/C_Tornado.o $ctempdir/C_4x4.o $ctempdir/C_Delta.o $ctempdir/C_External.o $ctempdir/C_Encryption.o $ctempdir/ntrljmp.o"
+c_libs="-lstdc++ -lncurses -lpthread -lgomp $curl_libs $lua_libs"
 if [[ -n $gui_flag ]]; then c_objs="$c_objs $ctempdir/GuiEnvironment.o"; fi
 # Build -optc defines for C files compiled by the Haskell compiler
 optc_defines=""
@@ -42,10 +43,16 @@ if ! command -v mhs >/dev/null 2>&1; then
   echo "error: mhs (MicroHs) is required for Haskell compilation but was not found in PATH" >&2
   exit 1
 fi
-# Let the mhs C backend link the already-built C objects/libraries.
-export MHSEXTRACCFLAGS="$c_objs $c_libs -I. -ICompression -IHsLua/src $lua_cflags"
+# Build -optc and -optl flags for the mhs C backend
+optc_args="-optc -I. -optc -ICompression -optc -IHsLua/src"
+for f in $lua_cflags; do optc_args="$optc_args -optc $f"; done
+optl_args=""
+for o in $c_objs; do optl_args="$optl_args -optl $o"; done
+for l in $c_libs; do optl_args="$optl_args -optl $l"; done
 mhs Arc \
   -iCompression -icompat-ghc -iHsLua/src \
   $defines $gui_flag \
+  $optc_args \
+  $optl_args \
   -o$exe
 rm -f Compression/CompressionLib_stub.?

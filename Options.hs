@@ -70,6 +70,14 @@ data Command = Command {
   , opt_sfx                  :: !String             --   имя SFX-модуля, который надо присоединить к архиву ("-" - отсоединить, если уже есть, "--" - скопировать существующий)
   , opt_keep_time            :: !Bool               --   сохранить mtime архива после обновления содержимого?
   , opt_time_to_last         :: !Bool               --   установить mtime архива на mtime самого свежего файла в нём?
+  , opt_nodates              :: !Bool               --   не сохранять метки времени файлов в архиве (FreeArc 0.67, --nodates)
+  , opt_create_in_workdir    :: !Bool               --   создать архив во временном каталоге, затем переместить (FreeArc 0.67)
+  , opt_pause_before_exit    :: !String             --   пауза перед закрытием окна: on/off/on-warnings/on-error (FreeArc 0.67)
+  , opt_queue                :: !Bool               --   сериализовать операции через межпроцессный семафор (FreeArc 0.67)
+  , opt_volumes              :: ![FileSize]         --   размеры томов многотомного архива (FreeArc 0.67)
+  , opt_archive_type         :: !String             --   тип архива (arc/zip/rar/...) (FreeArc 0.67, --type)
+  , opt_shutdown             :: !Bool               --   выключить компьютер после завершения операции (FreeArc 0.67, -ioff/--shutdown)
+  , opt_arc_32bit_legacy     :: !Bool               --   читать архивы созданные FreeArc x86 (маскировка Int/CTime к 32 битам)
   , opt_keep_broken          :: !Bool               --   не удалять файлы, распакованные с ошибками?
   , opt_test                 :: !Bool               --   протестировать архив после упаковки?
   , opt_pretest              :: !Int                --   режим тестирования архивов _перед_ выполнением операции (0 - нет, 1 - только recovery info, 2 - recovery или full, 3 - full testing)
@@ -95,6 +103,7 @@ data Command = Command {
   , opt_delete_files         :: !DelOptions         --   удалить файлы/каталоги после успешной архивации?
   , opt_workdir              :: !String             --   каталог для временных файлов или ""
   , opt_clear_archive_bit    :: !Bool               --   сбросить атрибут Archive у успешно упакованных файлов (и файлов, которые уже есть в архиве)
+  , opt_select_archive_bit   :: !Bool               --   -ao: только файлы с установленным Archive bit (Windows-only)
   , opt_language             :: !String             --   язык/файл локализации
   , opt_recovery             :: !String             --   величина Recovery блока (в процентах, байтах или секторах)
   , opt_broken_archive       :: !String             --   обрабатывать неисправный архив, полностью сканируя его в поисках оставшихся исправными блоков
@@ -145,7 +154,7 @@ limit_compressor command compressor = do
 -- |Список опций, поддерживаемых программой
 optionsList = sortOn (\(OPTION a b _) -> (a|||"zzz",b))
    [OPTION "--"    ""                   "stop processing options"
-   ,OPTION "cfg"   "config"            ("use config FILE (default: " ++ aCONFIG_FILE ++ ")")
+   ,OPTION "cfg"   "config"            ("use configuration FILES (default: " ++ aCONFIG_FILE ++ ")")
    ,OPTION "env"   ""                  ("read default options from environment VAR (default: " ++ aCONFIG_ENV_VAR ++ ")")
    ,OPTION "r"     "recursive"          "recursively collect files"
    ,OPTION "f"     "freshen"            "freshen files"
@@ -178,18 +187,18 @@ optionsList = sortOn (\(OPTION a b _) -> (a|||"zzz",b))
    ,OPTION "op"    "OldPassword"        "old PASSWORD used only for decryption"
    ,OPTION "okf"   "OldKeyfile"         "old KEYFILE used only for decryption"
    ,OPTION "w"     "workdir"            "DIRECTORY for temporary files"
+   ,OPTION ""      "create-in-workdir"  "create archive in workdir and then move to final location"
    ,OPTION "sc"    "charset"            "CHARSETS used for listfiles and comment files"
    ,OPTION ""      "language"           "load localisation from FILE"
    ,OPTION "tp"    "pretest"            "test archive before operation using MODE"
    ,OPTION "t"     "test"               "test archive after operation"
+   ,OPTION "t"     "type"               "archive TYPE (arc/zip/rar/...)"
    ,OPTION "d"     "delete"             "delete files & dirs after successful archiving"
    ,OPTION "df"    "delfiles"           "delete only files after successful archiving"
    ,OPTION "kb"    "keepbroken"         "keep broken extracted files"
    ,OPTION "ba"    "BrokenArchive"      "deal with badly broken archive using MODE"
-#if defined(FREEARC_WIN)
    ,OPTION "ac"    "ClearArchiveBit"    "clear Archive bit on files succesfully (de)archived"
    ,OPTION "ao"    "SelectArchiveBit"   "select only files with Archive bit set"
-#endif
    ,OPTION "sm"    "SizeMore"           "select files larger than SIZE"
    ,OPTION "sl"    "SizeLess"           "select files smaller than SIZE"
    ,OPTION "tb"    "TimeBefore"         "select files modified before specified TIME"
@@ -212,6 +221,12 @@ optionsList = sortOn (\(OPTION a b _) -> (a|||"zzz",b))
    ,OPTION ""      "recompress"         "recompress archive contents"
    ,OPTION ""      "dirs"               "add empty dirs to archive"
    ,OPTION "ed"    "nodirs"             "don't add empty dirs to archive"
+   ,OPTION ""      "nodates"            "don't store filetimes in archive"
+   ,OPTION "ioff"  "shutdown"           "shutdown computer when operation completed"
+   ,OPTION ""      "pause-before-exit"  "make a PAUSE just before closing program window"
+   ,OPTION "v"     "volume"             "split archive to volumes each of SIZE bytes"
+   ,OPTION ""      "queue"              "queue operations across multiple FreeArc copies"
+   ,OPTION ""      "arc-32bit-legacy"   "read archives produced by 32-bit FreeArc/Arc.exe"
    ,OPTION ""      "cache"              "use N mbytes for read-ahead cache"
    ,OPTION "lc"    "LimitCompMem"       "limit memory usage for compression to N mbytes"
    ,OPTION "ld"    "LimitDecompMem"     "limit memory usage for decompression to N mbytes"
@@ -228,7 +243,7 @@ optionsList = sortOn (\(OPTION a b _) -> (a|||"zzz",b))
    ]
 
 -- |Список опций, которым надо отдавать предпочтение при возникновении коллизий в разборе командной строки
-aPREFFERED_OPTIONS = words "method sfx charset SizeMore SizeLess overwrite"
+aPREFFERED_OPTIONS = words "method sfx charset SizeMore SizeLess overwrite shutdown type"
 
 -- |Опции из предыдущего списка, имеющий максимальный приоритет :)
 aSUPER_PREFFERED_OPTIONS = words "OldKeyfile"
@@ -268,6 +283,7 @@ commandsList = [
   , "lt       technical archive listing"
   , "m        move files and dirs to archive"
   , "mf       move files to archive"
+  , "modify   modify archive using +/-/* actions"
   , "r        recover archive using recovery record"
   , "rr       add recovery record to archive"
   , "s        convert archive to SFX"
@@ -316,16 +332,17 @@ aARCHIVE_VERSION = make4byte 0 0 5 1
 aARC_VERSION_WITH_DATE = aARC_VERSION ++ " ("++aARC_DATE++")"   -- aARC_VERSION
 aARC_HEADER_WITH_DATE  = aARC_HEADER  ++ " ("++aARC_DATE++")"   -- aARC_HEADER
 aARC_HEADER  = aARC_NAME++" "++aARC_VERSION++" "
-aARC_VERSION = "0.51"                                  -- "0.50 alpha ("++aARC_DATE++")"
-aARC_DATE    = "Apr 28 2009"
-aARC_NAME    = "FreeArc"
+aARC_VERSION = "0.67.1-compat"                         -- Wire format: 0.51; feature set: FA 0.67.1
+aARC_DATE    = "2026"
+aARC_NAME    = "DArc"
 aARC_AUTHOR  = "Bulat Ziganshin"
 aARC_EMAIL   = "Bulat.Ziganshin@gmail.com"
-aARC_WEBSITE = "http://freearc.org"
+aARC_WEBSITE = "https://github.com/DavidLee18/DArc"
 
 {-# NOINLINE aHELP #-}
 -- |HELP, выводимый при вызове программы без параметров
 aHELP = aARC_HEADER++" "++aARC_WEBSITE++"  "++aARC_DATE++"\n"++
+        "A project created by DavidLee18 with the collaboration of YadeWira\n"++
         "Usage: Arc command [options...] archive [files... @listfiles...]\n" ++
         joinWith "\n  " ("Commands:":commandsList) ++ "\nOptions:\n" ++ optionsHelp
 
@@ -347,11 +364,16 @@ data DelOptions = NO_DELETE | DEL_FILES | DEL_FILES_AND_DIRS  deriving (Eq)
 ---------------------------------------------------------------------------------------------------
 
 -- |Метод сжатия данных
+#ifdef __MHS__
+-- MicroHs: all numeric presets (0-9) now work, including dict+lzp+ppmd chains.
+-- Default to "4" (same as GHC build) for best text compression.
 aDEFAULT_COMPRESSOR = "4"
+#else
+aDEFAULT_COMPRESSOR = "4"
+#endif
 
 -- |Метод сжатия каталога архива
--- Note: MicroHs mkCALL_BACK returns nullFunPtr so C-based compressors (lzma etc.) can't be used yet
-aDEFAULT_DIR_COMPRESSION = "storing"
+aDEFAULT_DIR_COMPRESSION = "lzma:bt4:1m"
 
 -- |Размер солид-блоков (один солид-блок на всех)
 aDEFAULT_DATA_GROUPING  =  ""

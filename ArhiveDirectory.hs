@@ -15,6 +15,9 @@ import System.Mem
 
 -- import GHC.PArr
 
+import System.IO.Unsafe (unsafePerformIO)
+import Data.IORef
+
 import Utils
 import Errors
 import Files
@@ -24,6 +27,12 @@ import Compression      (CRC, Compressor, isFakeCompressor)
 import UI               (debugLog)
 import Options
 import ArhiveStructure
+
+-- |Флаг --nodates: не записывать mtime файлов в архив (FreeArc 0.67).
+-- Устанавливается перед началом упаковки в ArcCreate.
+nodates_ref :: IORef Bool
+nodates_ref = unsafePerformIO (newIORef False)
+{-# NOINLINE nodates_ref #-}
 
 ----------------------------------------------------------------------------------------------------
 ---- ������ ��������� �������� ������ --------------------------------------------------------------
@@ -101,7 +110,7 @@ archiveReadFooter command               -- ����������� �
                   arcname = do          -- ��� �����, ����������� �����
   archive <- archiveOpen arcname
   arcsize <- archiveGetSize archive
-  let scan_bytes = min aScanMax arcsize  -- ��������� 4096 ���� � ����� ������, ���� ������� ������� :)
+  let scan_bytes = min aSCAN_MAX arcsize  -- ��������� 4096 ���� � ����� ������, ���� ������� ������� :)
 
   withPool $ \pool -> do
     -- ��������� 4096 ���� � ����� ������, ������� ������ ��������� ���������� FOOTER_BLOCK'�
@@ -162,20 +171,22 @@ archiveWriteDir dirdata     -- ������ ��� (block :: ArchiveBlo
   (n, dirnames, dir_numbers)  <-  enumDirectories filelist
   debugLog$ "  Found "++show n++" directory names"
   writeLength dirnames  -- ��������, ��� ������ �������� � Compressor==[String]
-  writeList   dirnames
+  -- Always write directory names with '/' separator for cross-OS interop (matches FA 0.67).
+  writeList   (map unixifyPath dirnames)
 
   -- 3. ���������� �������� ������ ���������� ���� � CompressedFile/FileInfo
     -- to do: �������� RLE-����������� �����?
   writeList$ map (fpBasename . fiStoredName)  filelist     -- ����� ������
   writeIntegers                             dir_numbers  -- ������ ���������
   writeList$ map fiSize                     filelist     -- ������� ������
-  writeList$ map fiTime                     filelist     -- ������� ��������
+  nodates <- val nodates_ref
+  writeList$ map (if nodates then const aMINIMAL_POSSIBLE_DATETIME else fiTime) filelist     -- ������� ��������
   writeList$ map fiIsDir                    filelist     -- �������� ��������
   -- cfArcBlock � cfPos ���������� ������, ���� ���������� �� ���� ���� �����
   writeList$ map fwCRC                      crcfilelist  -- CRC
 
   -- 4. ������������ ����, �������������� ������ ������, � ����� - ��� ��������� ������������ �����
-  write aTagEnd  -- ���� ������������ ����� ���, ��� ������� ������ ����� �������� ��� �� ���������
+  write aTAG_END  -- ���� ������������ ����� ���, ��� ������� ������ ����� �������� ��� �� ���������
 
   -- 5. �����! :)
   ByteStream.closeOut stream
@@ -247,7 +258,9 @@ archiveReadDir arc_basedir   -- ������� ������� � 
 
   -- 2. ��������� ����� ���������
   total_dirs    <-  readLength                    -- ������� ����� ��� ��������� ��������� � ���� ���������� ������
-  storedName    <-  readList total_dirs >>== toP  -- ������ ��� ���������
+  -- Sanitize directory names: strip ".."/"." (prevent path traversal on extraction),
+  -- and convert separators to the current OS convention. Matches FA 0.67.
+  storedName    <-  readList total_dirs >>== map (remove_unsafe_dirs . make_OS_native_path) >>== toP
 
   -- 3. ��������� ������ ������ ��� ������� ���� � CompressedFile/FileInfo
   let total_files = sum num_of_files              -- ��������� ���-�� ������ � ��������
@@ -259,7 +272,7 @@ archiveReadDir arc_basedir   -- ������� ������� � 
   crcs          <- readList     total_files       -- CRC ������
 
   -- 4. �������������� ����, �������������� ������ ������, � ����� - ��� ��������� �������������� �����
-{-repeat_while (read) (/=aTagEnd) $ \tag -> do
+{-repeat_while (read) (/=aTAG_END) $ \tag -> do
     (isMandatory::Bool) <- read
     when isMandatory $ do
       registerError$ GENERAL_ERROR ("can't skip mandatory field TAG="++show tag++" in archive directory")

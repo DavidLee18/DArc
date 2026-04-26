@@ -20,6 +20,9 @@ import Foreign.Marshal.Alloc
 import Foreign.Storable
 import Foreign.Ptr
 import System.IO.Unsafe
+#ifdef __MHS__
+import Data.IORef (IORef, newIORef, readIORef, writeIORef)
+#endif
 
 ----------------------------------------------------------------------------------------------------
 ----- Main exported definitions --------------------------------------------------------------------
@@ -42,17 +45,17 @@ compressWithHeader   = runWithMethod c_CompressWithHeader
 decompressWithHeader = run           c_DecompressWithHeader
 
 -- |Compress memory block
-compressMem             :: Method -> Ptr CChar -> Int -> Ptr CChar -> Int -> IO Int
+compressMem             :: Method -> Ptr a -> Int -> Ptr b -> Int -> IO Int
 compressMem             = withMethod c_CompressMem
 -- |Decompress memory block
-decompressMem           :: Method -> Ptr CChar -> Int -> Ptr CChar -> Int -> IO Int
+decompressMem           :: Method -> Ptr a -> Int -> Ptr b -> Int -> IO Int
 decompressMem           = withMethod c_DecompressMem
 -- |Compress memory block and save method name in compressed output
-compressMemWithHeader   :: Method -> Ptr CChar -> Int -> Ptr CChar -> Int -> IO Int
+compressMemWithHeader   :: Method -> Ptr a -> Int -> Ptr b -> Int -> IO Int
 compressMemWithHeader   = withMethod c_CompressMemWithHeader
 -- |Decompress memory block compressed with compressMemWithHeader (method name is read from compressed data)
-decompressMemWithHeader ::           Ptr CChar -> Int -> Ptr CChar -> Int -> IO Int
-decompressMemWithHeader a b c d = c_DecompressMemWithHeader a b c d
+decompressMemWithHeader ::           Ptr a -> Int -> Ptr b -> Int -> IO Int
+decompressMemWithHeader a b c d = c_DecompressMemWithHeader (castPtr a) b (castPtr c) d
 
 -- |Return canonical representation of compression method
 canonizeCompressionMethod :: Method -> Method
@@ -133,7 +136,7 @@ run action callback = do
 
 withMethod action method inp insize outp outsize = do
   withCString method $ \c_method -> do
-    signExtendCInt <$> action c_method inp insize outp outsize
+    signExtendCInt <$> action c_method (castPtr inp) insize (castPtr outp) outsize
 
 -- |Correct GHC 9.12+ sign-extension: C functions imported as `IO Int` no longer
 -- sign-extend 32-bit int return values on 64-bit platforms.  Round-trip via CInt.
@@ -327,8 +330,38 @@ foreign import ccall "Compression.h & compress_all_at_once" compress_all_at_once
 
 -- |General callback function type
 type CALLBACK_FUNC  =  CString -> Ptr CChar -> CInt -> VoidPtr -> IO CInt
+#ifndef __MHS__
 foreign import ccall safe "wrapper"
    mkCALL_BACK :: CALLBACK_FUNC -> IO (FunPtr CALLBACK_FUNC)
+#else
+-- MicroHs: 'wrapper' (dynamic FFI) is not supported.
+-- Instead we export one fixed C-callable Haskell function and dispatch via a global IORef.
+-- freeHaskellFunPtr is a no-op in MicroHs so the bracket in 'run'/'compressionService' is safe.
+
+{-# NOINLINE globalCallbackSlot #-}
+globalCallbackSlot :: IORef (Maybe CALLBACK_FUNC)
+globalCallbackSlot = unsafePerformIO (newIORef Nothing)
+
+darc_haskell_callback :: CString -> Ptr CChar -> CInt -> VoidPtr -> IO CInt
+darc_haskell_callback cwhat buf size auxdata = do
+  what <- peekCString cwhat
+  mf <- readIORef globalCallbackSlot
+  r <- case mf of
+    Nothing -> return (fromIntegral aFREEARC_ERRCODE_GENERAL)
+    Just f  -> f cwhat buf size auxdata
+  return r
+
+foreign export ccall darc_haskell_callback :: CString -> Ptr CChar -> CInt -> VoidPtr -> IO CInt
+
+-- C helper in Environment.cpp returns &darc_haskell_callback at link time,
+-- avoiding the forward-declaration ordering issue in MicroHs's generated C file.
+foreign import ccall "Environment.h darc_get_haskell_callback_ptr" darc_get_haskell_callback_ptr :: IO (FunPtr CALLBACK_FUNC)
+
+mkCALL_BACK :: CALLBACK_FUNC -> IO (FunPtr CALLBACK_FUNC)
+mkCALL_BACK callback = do
+  writeIORef globalCallbackSlot (Just callback)
+  darc_get_haskell_callback_ptr
+#endif
 
 -- |Maximum length of string representing compression/encryption method
 aMAX_METHOD_STRLEN = 2048

@@ -1,0 +1,102 @@
+#!/usr/bin/env bash
+# Build all C/C++ objects for Windows x64 target using mingw-w64 cross toolchain.
+# Shared by both GHC and MHS Windows builds; DOES NOT define __MHS__.
+set -e
+WINOUT=${WINOUT:-/tmp/out/FreeArc-win64-ghc}
+mkdir -p "$WINOUT"
+CC="x86_64-w64-mingw32-g++-posix"
+MHS_DEF=""
+if [[ -n "${MHS:-}" ]]; then
+  MHS_DEF="-D__MHS__"
+fi
+FLAGS=(
+  -std=c++17 -c
+  -DFREEARC_WIN -DFREEARC_INTEL_BYTE_ORDER -DFREEARC_64BIT
+  $MHS_DEF
+  -D_WIN32_WINNT=0x0601 -DWINVER=0x0601
+  -I. -ICompression -IHsLua/src
+  -O2
+  -Wno-unknown-pragmas -Wno-sign-compare -Wno-deprecated-declarations
+)
+
+build() {
+  local src="$1" base extra=()
+  base=$(basename "$src" .cpp)
+  base=$(basename "$base" .c)
+  # Encryption module needs extra -I for tomcrypt headers
+  case "$src" in
+    */_Encryption/*) extra=(-IShared_src/_Encryption/headers -ICompression/_Encryption/headers) ;;
+  esac
+  # PPMD must match Linux makefile exactly (Compression/PPMD/makefile): -O1,
+  # -fstrict-aliasing, -fno-exceptions/-fno-rtti, -fomit-frame-pointer, -funroll-loops.
+  # Any mismatch on the WORD&-alias SWAP pattern in Model.cpp produces cross-
+  # incompatible PPMD streams (Linux↔Win64 archives differ and fail to decode).
+  case "$src" in
+    */PPMD/*) extra+=(-O1 -fstrict-aliasing -fno-exceptions -fno-rtti -fomit-frame-pointer -funroll-loops) ;;
+  esac
+  # Skip the new CLS codec (not needed; host/plugin model, requires dlopen)
+  case "$src" in
+    */CLS/*) echo "  skip: $src (CLS host/plugin)"; return 0 ;;
+  esac
+  echo "  $src"
+  $CC "${FLAGS[@]}" "${extra[@]}" "$src" -o "$WINOUT/$base.o"
+}
+
+# Top-level
+for src in Environment.cpp URL.cpp GuiEnvironment.cpp; do
+  [[ -f $src ]] && build "$src"
+done
+
+# Compression top-level
+for src in Compression/Common.cpp Compression/CompressionLibrary.cpp; do
+  [[ -f $src ]] && build "$src"
+done
+
+# All C_*.cpp under Compression/*/
+for src in Compression/*/C_*.cpp; do
+  [[ -f $src ]] && build "$src"
+done
+
+# LZMA 7-Zip 24.09 C SDK sources
+CC_C="x86_64-w64-mingw32-gcc-posix"
+C7Z_FLAGS=(
+  -std=c11 -c -O2 -DNDEBUG -D_REENTRANT
+  -DFREEARC_WIN -DFREEARC_INTEL_BYTE_ORDER -DFREEARC_64BIT
+  $MHS_DEF
+  -D_WIN32_WINNT=0x0601 -DWINVER=0x0601
+  -Wno-unknown-pragmas -Wno-sign-compare -Wno-deprecated-declarations
+)
+for src in Compression/LZMA/7z24/*.c; do
+  base=$(basename "$src" .c)
+  echo "  $src"
+  $CC_C "${C7Z_FLAGS[@]}" "$src" -o "$WINOUT/$base.o"
+done
+
+# zstd library (not single-TU — all common/compress/decompress .c files)
+ZSTD_FLAGS=(
+  -std=c99 -c -O3 -fomit-frame-pointer -fstrict-aliasing -funroll-loops
+  -DZSTD_MULTITHREAD -DXXH_NAMESPACE=ZSTD_ -DZSTD_LEGACY_SUPPORT=0 -DZSTD_DISABLE_ASM
+  -DFREEARC_WIN -DFREEARC_INTEL_BYTE_ORDER -DFREEARC_64BIT
+  -ICompression/Zstd/libzstd -ICompression/Zstd/libzstd/common
+  -Wno-unknown-pragmas -Wno-sign-compare -Wno-unused-function -Wno-unused-variable
+)
+for src in Compression/Zstd/libzstd/common/*.c \
+           Compression/Zstd/libzstd/compress/*.c \
+           Compression/Zstd/libzstd/decompress/*.c; do
+  base=$(basename "$src" .c)
+  echo "  $src"
+  $CC_C "${ZSTD_FLAGS[@]}" "$src" -o "$WINOUT/zstd_$base.o"
+done
+
+# 7z native reader: C_7z.c + SDK sources (sdk_* prefix to avoid collisions with LZMA/7z24)
+for src in Compression/7z/C_7z.c; do
+  echo "  $src"
+  $CC_C "${C7Z_FLAGS[@]}" -ICompression/7z/sdk "$src" -o "$WINOUT/C_7z.o"
+done
+for src in Compression/7z/sdk/*.c; do
+  base=$(basename "$src" .c)
+  echo "  $src"
+  $CC_C "${C7Z_FLAGS[@]}" -ICompression/7z/sdk "$src" -o "$WINOUT/sdk_$base.o"
+done
+
+echo "Built: $(ls "$WINOUT"/*.o | wc -l) objects in $WINOUT/"

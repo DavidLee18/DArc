@@ -1,4 +1,4 @@
-{-# OPTIONS_GHC -cpp #-}
+{-# LANGUAGE CPP #-}
 ----------------------------------------------------------------------------------------------------
 ---- Шифрование, дешифрование и криптографический PRNG.                                         ----
 ---- Процедура generateEncryption добавляет к цепочке алгоритмов сжатия алгоритм(ы) шифрования. ----
@@ -14,7 +14,10 @@ import Data.Char
 import Foreign.C.String
 import Foreign.C.Types
 import Foreign.Marshal.Alloc
+import Foreign.Marshal.Array (peekArray)
 import Foreign.Ptr
+import Foreign.Storable (peek)
+import Data.Word (Word8)
 import System.IO
 import System.IO.Unsafe
 
@@ -33,7 +36,8 @@ import Compression
 generateEncryption encryption password = do
     addRandomness
     result <- foreach (split_compressor encryption) $ \algorithm -> do
-        initVector <- generateRandomBytes (encryptionGet "ivSize"  algorithm)
+        let ivSz = encryptionGet "ivSize" algorithm
+        initVector <- generateRandomBytes ivSz
         salt       <- generateRandomBytes (encryptionGet "keySize" algorithm)
         let numIterations = encryptionGet "numIterations" algorithm
             checkCodeSize = 2
@@ -110,6 +114,7 @@ check test msg action = do
   unless (test res) (fail$ "Error in "++msg)
 
 -- |OK return code for LibTomCrypt library
+aCRYPT_OK :: CInt
 aCRYPT_OK = 0
 
 
@@ -132,7 +137,10 @@ generateRandomBytes bytes = do
     allocaBytes bytes $ \buf -> do
       check (==i bytes) "prng_read" $
         prng_read buf (i bytes) prng
-      peekCAStringLen (buf, bytes)
+      -- Read as raw bytes; peekCAStringLen under GHC decodes via locale (UTF-8),
+      -- which turns random bytes into multi-byte chars with ord >= 256.
+      ws <- peekArray bytes (castPtr buf :: Ptr Word8)
+      return (map (chr . fromIntegral) ws)
 
 -- |Переменная, хранящая состояние PRNG
 {-# NOINLINE prng_state #-}
@@ -151,6 +159,15 @@ systemRandomData buf size = c_systemRandomData buf size
 
 foreign import ccall unsafe "Environment.h systemRandomData"
   c_systemRandomData :: Ptr CChar -> CInt -> IO CInt
+#elif defined(__MHS__)
+-- MicroHs: hGetBuf crashes (withHandleRd bug); use a direct C helper instead.
+-- MHS truncates FFI return values to 32 bits, so use _w variant with pointer.
+systemRandomData buf size = alloca $ \pOut -> do
+  darc_urandom_read_w (castPtr buf) (fromIntegral size) pOut
+  fmap fromIntegral (peek pOut)
+
+foreign import ccall unsafe "Environment.h darc_urandom_read_w"
+  darc_urandom_read_w :: Ptr () -> CLong -> Ptr CLong -> IO ()
 #else
 systemRandomData buf size = do
   withFile "/dev/urandom" ReadMode $ \h -> do

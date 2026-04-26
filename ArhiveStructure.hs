@@ -37,13 +37,13 @@ import Options
 aSIGNATURE = make4byte 65 114 67 1 :: Word32
 
 -- |Сигнатура, записываемая в самое начало архива - по ней можно опознать архивный файл, + версия архиватора
-aArchiveSignature = (aSIGNATURE, aARCHIVE_VERSION)
+aARCHIVE_SIGNATURE = (aSIGNATURE, aARCHIVE_VERSION)
 
 -- |Сколько байт в конце архива сканировать в поиске сигнатуры, с которой начинается дескриптор последнего блока архива
-aScanMax = 4096
+aSCAN_MAX = 4096
 
 -- Теги опциональных полей
-aTagEnd = 0::Integer   -- ^тег окончания опциональных полей
+aTAG_END = 0::Integer   -- ^тег окончания опциональных полей
 
 
 ----------------------------------------------------------------------------------------------------
@@ -78,7 +78,7 @@ archiveReadBlockDescriptor archive arcpos buf bufsize = do
   let pos   =  blDecodePosRelativeTo arcpos compsize  -- позиция в архиве начала блока
       block =  ArchiveBlock archive block_type compressor pos origsize compsize crc undefined (enc compressor)
   if sign/=aSIGNATURE || pos<0
-    then return$ Left$ BROKEN_ARCHIVE (archiveName archive) ["0355 %1 is corrupted", blockName block]
+    then return$ Left$ BROKEN_ARCHIVE (archiveName archive) ["0355 %1 is corrupted", block_name block]
     else return$ Right block
 
 {-# NOINLINE archiveWriteBlockDescriptor #-}
@@ -97,7 +97,7 @@ findBlocksInBrokenArchive arcname = do
   archive <- archiveOpen arcname
   arcsize <- archiveGetSize archive
   -- Выделяем буфер в 8 мб + 2 раза по 4 кбайт для упрощения реализации поиска дескриптора
-  allocaBytes (aHUGE_BUFFER_SIZE+2*aScanMax) $ \buf -> do
+  allocaBytes (aHUGE_BUFFER_SIZE+2*aSCAN_MAX) $ \buf -> do
   blocks <- withList $ scanArchiveSearchingDescriptors archive buf arcsize
   if null blocks
     then registerError$ BROKEN_ARCHIVE arcname ["0356 archive directory not found"]
@@ -125,8 +125,8 @@ scanArchiveSearchingDescriptors archive buf pos found =
     archiveSeek archive base_pos
     -- Читаем на 4 кбайта больше необходимого чтобы иметь возможность проверить
     -- дескриптор, начинающийся в самом конце буфера (длина дескриптора заведомо меньше 4 кбайт)
-    len <- archiveReadBuf archive buf (i$ pos-base_pos+aScanMax)
-    memset (buf+:len) 0 aScanMax  -- на всякий случай дополним прочитанное 4096-ю нулями
+    len <- archiveReadBuf archive buf (i$ pos-base_pos+aSCAN_MAX)
+    memset (buf+:len) 0 aSCAN_MAX  -- на всякий случай дополним прочитанное 4096-ю нулями
     -- scanMem возвращает позицию в архиве, после которой все дескрипторы уже обнаружены
     newpos <- scanMem archive base_pos found buf (i (pos-base_pos) `min` len)
     -- Вызываем функцию рекурсивно для поиска дескрипторов в предыдущем блоке
@@ -135,7 +135,7 @@ scanArchiveSearchingDescriptors archive buf pos found =
 -- Сканировать буфер buf в поисках дескрипторов, начинающихся в первых len байтах этого буфера
 scanMem archive base_pos found buf len = do
   pos' <- ref base_pos
-  whenRightM_ (archiveFindBlockDescriptor archive base_pos buf (len+aScanMax) len) $ \block -> do
+  whenRightM_ (archiveFindBlockDescriptor archive base_pos buf (len+aSCAN_MAX) len) $ \block -> do
     -- Найден дескриптор блока block. Значит, дальнейший поиск может быть ограничен
     -- его позицией, а если это блок каталога - то позицией первого блока данных в нём
     pos' =: blPos block
@@ -190,7 +190,7 @@ archiveFindBlockDescriptor archive base_pos buf size len =
 
 -- |Записать в начальный блок архива (HEADER_BLOCK) сигнатуру архива
 archiveWriteHeaderBlock (receiveBuf,sendBuf) = do
-  ByteStream.writeAll receiveBuf sendBuf (return ()) aArchiveSignature
+  ByteStream.writeAll receiveBuf sendBuf (return ()) aARCHIVE_SIGNATURE
 
 
 ----------------------------------------------------------------------------------------------------
@@ -299,7 +299,7 @@ blEncodePosRelativeTo arcpos arcblock  =  arcpos - blPos arcblock
 blDecodePosRelativeTo arcpos offset    =  arcpos - offset
 
 -- |Описание блока
-blockName block  =  (case blType block of
+block_name block  =  (case blType block of
                           DESCR_BLOCK    -> "block descriptor"
                           HEADER_BLOCK   -> "header block"
                           DATA_BLOCK     -> "data block"
@@ -345,13 +345,13 @@ archiveBlockReadAll pool
   (origbuf, decompressed_size)  <-  decompressInMemory pool compressor decryption_info archive pos compsize origsize
   crc <- calcCRC origbuf origsize
   when (crc/=right_crc || decompressed_size/=origsize) $ do
-    registerError$ BROKEN_ARCHIVE (archiveName archive) ["0359 %1 failed decompression", blockName block]
+    registerError$ BROKEN_ARCHIVE (archiveName archive) ["0359 %1 failed decompression", block_name block]
   return (origbuf, origsize)
 
 -- |Выделить буфер и прочитать в него содержимое блока. Не проверяет CRC и не распаковывает данные!
 archiveBlockReadUnchecked pool block = do
   when (blCompressor block/=aNO_COMPRESSION) $ do
-    registerError$ BROKEN_ARCHIVE (archiveName$ blArchive block) ["0360 %1 should be uncompressed", blockName block]
+    registerError$ BROKEN_ARCHIVE (archiveName$ blArchive block) ["0360 %1 should be uncompressed", block_name block]
   archiveMallocReadBuf pool (blArchive block) (blPos block) (i$ blOrigSize block)
 
 -- |Выделить буфер и прочитать в него данные из архива

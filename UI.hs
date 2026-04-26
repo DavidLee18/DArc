@@ -1,4 +1,4 @@
-{-# OPTIONS_GHC -cpp #-}
+{-# LANGUAGE CPP #-}
 ----------------------------------------------------------------------------------------------------
 ---- Сбор и отображение статистики работы программы (объём обработанных данных, скорость и т.д.) ---
 ----------------------------------------------------------------------------------------------------
@@ -26,6 +26,7 @@ import Charsets
 import Files
 import FileInfo
 import Compression (encode_method, showMem, getCompressionMem, getDecompressionMem)
+import qualified ByteStream
 import Options
 import UIBase
 
@@ -66,6 +67,9 @@ uiStartArchive command@Command {
   refStartArchiveTime =:: getClockTime
   ref_command =: command
   display_option' =: opt_display command
+  perform_shutdown =: opt_shutdown command  -- FreeArc 0.67 --shutdown/-ioff
+  pause_before_exit_mode =: opt_pause_before_exit command  -- FreeArc 0.67 --pause-before-exit
+  ByteStream.legacy32bitRead =: opt_arc_32bit_legacy command  -- --arc-32bit-legacy: read 32-bit FreeArc archives
   uiMessage =: ""
 
   -- Остаток процедуры не нужно выполнять, если это под-команда (например, тестирование после архивации)

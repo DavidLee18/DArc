@@ -1,4 +1,4 @@
-{-# OPTIONS_GHC -cpp #-}
+{-# LANGUAGE CPP #-}
 ----------------------------------------------------------------------------------------------------
 ---- Операции с именами файлов, манипуляции с файлами на диске, ввод/вывод.                     ----
 ----------------------------------------------------------------------------------------------------
@@ -31,7 +31,16 @@ import Data.Word
 import Foreign
 import Foreign.C
 import Foreign.Marshal.Alloc
+#ifndef __MHS__
 import Foreign.Marshal.Utils (fillBytes)
+import Foreign.Ptr     (castPtr)
+#else
+import Foreign.C.Types (CSize(..))
+import Foreign.Ptr     (castPtr)
+foreign import ccall "memset" c_memset_files :: Ptr () -> Int -> CSize -> IO (Ptr ())
+fillBytes :: Ptr a -> Word8 -> Int -> IO ()
+fillBytes ptr val n = c_memset_files (castPtr ptr) (fromIntegral val) (fromIntegral n) >> return ()
+#endif
 #if defined(FREEARC_WIN)
 import System.Posix.Internals hiding (CFilePath, FD, sEEK_SET, sEEK_CUR, sEEK_END)
 #else
@@ -45,21 +54,54 @@ import System.Locale
 import System.Time
 import System.Process
 import System.Directory
+#ifdef __MHS__
+import System.IO.Internal  (BFILE, withHandleAny)
+import System.IO.StringHandle (stringToHandle)
+import Foreign.ForeignPtr  (ForeignPtr, withForeignPtr)
+#endif
 
 import Utils
 import FilePath
+#ifdef __MHS__
+import System.Environment (lookupEnv)
 #if defined(FREEARC_WIN)
+import MhsBinaryOpen (openBinaryFileBin)
+#endif
+getAppUserDataDirectory :: String -> IO FilePath
+getAppUserDataDirectory appName = do
+  mHome <- lookupEnv "HOME"
+  let home = maybe "/root" id mHome
+  return (home ++ "/." ++ appName)
+#endif
+#if defined(FREEARC_WIN) && !defined(__MHS__)
 import Win32Files
 import System.Win32
+#elif defined(__MHS__)
+-- MHS lacks System.Win32 / Win32Files (the latter pulls HsBase.h GHC).
+-- Under FREEARC_WIN we use System.Posix.Files shim + direct kernel32 FFI.
+import System.Posix.Files hiding (fileExist)
+type DWORD = Word32
+type LPCSTR = CString
 #else
 import System.Posix.Files hiding (fileExist)
 #endif
 
 -- |Размер одного буфера, используемый в различных операциях
+#ifdef __MHS__
+-- MicroHs: use much larger buffers to reduce pipe iteration count.
+-- Each pipe iteration costs ~0.45s in MHS combinator reduction,
+-- so minimizing chunk count is critical for large file performance.
+aBUFFER_SIZE = 8*mb
+#else
 aBUFFER_SIZE = 64*kb
+#endif
 
 -- |Количество байт, которые должны читаться/записываться за один раз в быстрых методах и при распаковке асимметричных алгоритмов
+#ifdef __MHS__
+aLARGE_BUFFER_SIZE = 64*mb
+#else
 aLARGE_BUFFER_SIZE = 256*kb
+#endif
 
 -- |Количество байт, которые должны читаться/записываться за один раз в очень быстрых методах (storing, tornado и тому подобное)
 -- Этот объём минимизирует потери на disk seek operations - при условии, что одновременно не происходит в/в в другом потоке ;)
@@ -95,6 +137,16 @@ filenameLower = id
 
 -- |Return False for special filenames like "." and ".." - used to filtering results of getDirContents
 exclude_special_names s  =  (s/=".")  &&  (s/="..")
+
+-- |Remove "." and ".." components from the path. Prevents path traversal
+-- attacks (e.g. archive containing "../../etc/passwd") on extraction.
+remove_unsafe_dirs :: FilePath -> FilePath
+remove_unsafe_dirs path  =  path .$ splitDirectories .$ reverse .$ filter (/=".") .$ process .$ reverse .$ joinPath
+  where
+    process ("..":_:xs) = process xs
+    process [".."]      = []
+    process (x:xs)      = x : process xs
+    process []          = []
 
 -- Strip "drive:/" at the beginning of absolute filename
 stripRoot = dropDrive
@@ -150,7 +202,7 @@ findOrCreateFile possibleFilePlaces cfgfilename = do
     []   -> return (head variants)
 
 
-#if defined(FREEARC_WIN)
+#if defined(FREEARC_WIN) && !defined(__MHS__)
 -- Под Windows все дополнительные файлы по умолчанию лежат в одном каталоге с программой
 libraryFilePlaces = configFilePlaces
 configFilePlaces filename  =  do -- dir1 <- getAppUserDataDirectory "FreeArc"
@@ -165,6 +217,21 @@ getExeName = do
 
 foreign import ccall unsafe "Environment.h GetExeName"
   c_GetExeName :: CWFilePath -> CInt -> IO CWFilePath
+
+#elif defined(FREEARC_WIN) && defined(__MHS__)
+-- MHS-Win: GetModuleFileNameA returns ANSI path of running .exe
+libraryFilePlaces = configFilePlaces
+configFilePlaces filename  =  do exe <- getExeName
+                                 return [takeDirectory exe </> filename]
+
+getExeName :: IO FilePath
+getExeName = allocaBytes long_path_size $ \buf -> do
+  n <- c_GetModuleFileNameA nullPtr buf (fromIntegral long_path_size)
+  if n == 0 then return ""
+            else peekCString buf
+
+foreign import ccall unsafe "windows.h GetModuleFileNameA"
+  c_GetModuleFileNameA :: Ptr () -> CString -> Word32 -> IO Word32
 
 #else
 -- |Места для поиска конфиг-файлов
@@ -184,6 +251,9 @@ libraryFilePlaces filename  =  return ["/usr/lib/FreeArc"       </> filename
 ----------------------------------------------------------------------------------------------------
 
 -- |Запустить команду через shell и возвратить её stdout
+#ifdef __MHS__
+runProgram cmd = readProcess "/bin/sh" ["-c", cmd] ""
+#else
 runProgram cmd = do
     (_, stdout, stderr, ph) <- runInteractiveCommand cmd
     forkIO (hGetContents stderr >>= evaluate.length >> return ())
@@ -191,15 +261,23 @@ runProgram cmd = do
     evaluate (length result)
     waitForProcess ph
     return result
+#endif
 
 -- |Execute file `filename` in the directory `curdir` optionally waiting until it finished
+#ifdef __MHS__
+runFile filename curdir wait_finish = do
+  let cmd = "cd " ++ show curdir ++ " && ./" ++ filename
+  rc <- system cmd
+  return ()
+#else
 runFile filename curdir wait_finish = do
   let p = (proc ("./" ++ filename) []) { cwd = Just curdir }
   (_, _, _, ph) <- createProcess p
   when wait_finish $ waitForProcess ph >> return ()
+#endif
 
 
-#if defined(FREEARC_WIN)
+#if defined(FREEARC_WIN) && !defined(__MHS__)
 -- |Создать HKEY и прочитать из Registry значение типа REG_SZ
 registryGetStr root branch key =
   bracket (regCreateKey root branch) regCloseKey
@@ -213,7 +291,11 @@ registrySetStr root branch key val =
 -- |Прочитать из Registry значение типа REG_SZ
 registryGetStringValue :: HKEY -> String -> IO (Maybe String)
 registryGetStringValue hk key = do
+#if __GLASGOW_HASKELL__ >= 900
   (regQueryValue hk (Just key) >>== Just)
+#else
+  (regQueryValue hk key >>== Just)
+#endif
     `catch` (\(e::SomeException) -> return Nothing)
 
 -- |Записать в Registry значение типа REG_SZ
@@ -226,8 +308,13 @@ registrySetStringValue hk key val =
 
 #if defined(FREEARC_WIN)
 -- |OS-specific thread id
+#ifdef __MHS__
+foreign import ccall unsafe "windows.h GetCurrentThreadId"
+  getOsThreadId :: IO DWORD
+#else
 foreign import stdcall unsafe "windows.h GetCurrentThreadId"
   getOsThreadId :: IO DWORD
+#endif
 #else
 -- |OS-specific thread id
 foreign import ccall unsafe "pthread.h pthread_self"
@@ -239,7 +326,7 @@ foreign import ccall unsafe "pthread.h pthread_self"
 ---- Операции с неоткрытыми файлами и каталогами ---------------------------------------------------
 ----------------------------------------------------------------------------------------------------
 
-#if defined(FREEARC_WIN)
+#if defined(FREEARC_WIN) && !defined(__MHS__)
 -- |Список дисков в системе с их типами
 getDrives = getLogicalDrives >>== unfoldr (\n -> Just (n `mod` 2, n `div` 2))
                              >>== zipWith (\c n -> n>0 &&& [c:":"]) ['A'..'Z']
@@ -248,8 +335,13 @@ getDrives = getLogicalDrives >>== unfoldr (\n -> Just (n `mod` 2, n `div` 2))
 
 driveTypes = ["", ""]++split ',' "Removable,Fixed,Network,CD/DVD,Ramdisk"
 
+#ifdef __MHS__
+foreign import ccall unsafe "windows.h GetDriveTypeA"
+  c_GetDriveType :: LPCSTR -> IO CInt
+#else
 foreign import stdcall unsafe "windows.h GetDriveTypeA"
   c_GetDriveType :: LPCSTR -> IO CInt
+#endif
 #endif
 
 
@@ -278,19 +370,35 @@ getCurrentDirectory = myCanonicalizePath "."
 myCanonicalizePath :: FilePath -> IO FilePath
 myCanonicalizePath fpath | isURL fpath = return fpath
                          | otherwise   =
-#if defined(FREEARC_WIN)
+#if defined(FREEARC_WIN) && !defined(__MHS__)
   withCFilePath fpath $ \pInPath ->
   allocaBytes (long_path_size*4) $ \pOutPath ->
   alloca $ \ppFilePart ->
-    do c_GetFullPathName pInPath (fromIntegral long_path_size*2) pOutPath ppFilePart
+    do c_DArcGetFullPathName pInPath (fromIntegral long_path_size*2) pOutPath ppFilePart
        peekCFilePath pOutPath >>== dropTrailingPathSeparator
 
-foreign import stdcall unsafe "GetFullPathNameW"
-            c_GetFullPathName :: CWString
+#ifdef __MHS__
+foreign import ccall unsafe "GetFullPathNameW"
+            c_DArcGetFullPathName :: CWString
                               -> CInt
                               -> CWString
                               -> Ptr CWString
                               -> IO CInt
+#else
+foreign import stdcall unsafe "GetFullPathNameW"
+            c_DArcGetFullPathName :: CWString
+                              -> CInt
+                              -> CWString
+                              -> Ptr CWString
+                              -> IO CInt
+#endif
+#elif defined(__MHS__)
+  withCString fpath $ \cs ->
+    allocaBytes long_path_size $ \out -> do
+      r <- darc_realpath cs out
+      if r == 0
+        then return (dropTrailingPathSeparator fpath)
+        else peekCString out >>== dropTrailingPathSeparator
 #else
   -- Use Haskell's canonicalizePath as a pure-Haskell replacement for C realpath
   fmap dropTrailingPathSeparator (canonicalizePath fpath)
@@ -301,7 +409,7 @@ long_path_size :: Int
 long_path_size  =  4096
 
 
-#if defined(FREEARC_WIN)
+#if defined(FREEARC_WIN) && !defined(__MHS__)
 -- |Clear file's Archive bit
 clearArchiveBit filename = do
     attr <- getFileAttributes filename
@@ -367,7 +475,21 @@ returnMVar action          =  action >>= newMVar
 data Archive = Archive { archiveName :: FilePath
                        , archiveFile :: MVar File
                        }
-archiveOpen     name = do file <- fileOpen name >>= newMVar; return (Archive name file)
+foreign import ccall unsafe "darc_volfile_open" c_volfile_open :: CString -> IO Int
+
+archiveOpen     name = do
+  let base | ".001" `isSuffixOf` name = take (length name - 4) name
+           | otherwise                = name
+  exists    <- fileExist base
+  vol1Ex    <- fileExist (base ++ ".001")
+  file <- if exists || not vol1Ex
+            then fileOpen name
+            else do slot <- withCString base c_volfile_open
+                    if slot < 0 then fileOpen name
+                                else return (VolFile slot)
+  mv <- newMVar file
+  let realname = if exists || not vol1Ex then name else base
+  return (Archive realname mv)
 archiveCreate   name = do file <- fileCreate name >>= newMVar; return (Archive name file)
 archiveCreateRW name = do file <- fileCreateRW name >>= newMVar; return (Archive name file)
 archiveGetPos        = liftMVar1 fileGetPos   . archiveFile
@@ -392,7 +514,7 @@ archiveCopyData srcarc pos size dstarc = do
 -- нет смысла выполнять несколько I/O операций параллельно,
 -- поэтому мы их все проводим через "угольное ушко" одной-единственной MVar
 oneIOAtTime = unsafePerformIO$ newMVar "oneIOAtTime value"
-fileReadBuf  file buf size = withMVar oneIOAtTime $ \_ -> fileReadBufSimple  file buf size
+fileReadBuf  file buf size = withMVar oneIOAtTime $ \_ -> fileReadBufSimple file buf size
 fileWriteBuf file buf size = withMVar oneIOAtTime $ \_ -> fileWriteBufSimple file buf size
 
 
@@ -400,19 +522,20 @@ fileWriteBuf file buf size = withMVar oneIOAtTime $ \_ -> fileWriteBufSimple fil
 ---- URL access ------------------------------------------------------------------------------------
 ----------------------------------------------------------------------------------------------------
 
-data File = FileOnDisk FileOnDisk | URL URL
+type VolHandle = Int
+data File = FileOnDisk FileOnDisk | URL URL | VolFile VolHandle
 
 fileOpen           = choose0 fOpen           url_open
 fileCreate         = choose0 fCreate         (\_ -> err "url_create")
 fileCreateRW       = choose0 fCreateRW       (\_ -> err "url_create_rw")
 fileAppendText     = choose0 fAppendText     (\_ -> err "url_append_text")
-fileGetPos         = choose  fGetPos         (url_pos  .>>==i)
-fileGetSize        = choose  fGetSize        (url_size .>>==i)
-fileSeek           = choose  fSeek           (\f p -> url_seek f (i p))
-fileReadBufSimple  = choose  fReadBufSimple  url_read
-fileWriteBufSimple = choose  fWriteBufSimple (\_ _ _ -> err "url_write")
-fileFlush          = choose  fFlush          (\_     -> err "url_flush")
-fileClose          = choose  fClose          url_close
+fileGetPos         = choose3 fGetPos         (url_pos  .>>==i) (volfile_pos  .>>==i)
+fileGetSize        = choose3 fGetSize        (url_size .>>==i) (volfile_size .>>==i)
+fileSeek           = choose3 fSeek           (\f p -> url_seek f (i p)) (\f p -> volfile_seek f (i p))
+fileReadBufSimple  = choose3 fReadBufSimple  url_read volfile_read
+fileWriteBufSimple = choose3 fWriteBufSimple (\_ _ _ -> err "url_write")   (\_ _ _ -> err "volfile_write")
+fileFlush          = choose3 fFlush          (\_     -> err "url_flush")   (\_     -> return ())
+fileClose          = choose3 fClose          url_close volfile_close
 
 -- |Проверяет существование файла/URL
 fileExist name | isURL name = do url <- withCString name url_open
@@ -432,6 +555,23 @@ choose0 onfile onurl name | isURL name = do url <- withCString name onurl
 
 choose _ onurl  (URL        url)   = onurl  url
 choose onfile _ (FileOnDisk file)  = onfile file
+choose _ _      (VolFile    _)     = err "volfile op via choose"
+
+choose3 _ onurl _      (URL     url)    = onurl  url
+choose3 onfile _ _     (FileOnDisk f)   = onfile f
+choose3 _ _ onvol      (VolFile v)      = onvol  v
+
+foreign import ccall safe "darc_volfile_pos_out"  c_volfile_pos_out  :: VolHandle -> Ptr Int64 -> IO ()
+foreign import ccall safe "darc_volfile_size_out" c_volfile_size_out :: VolHandle -> Ptr Int64 -> IO ()
+foreign import ccall safe "darc_volfile_seek"     volfile_seek       :: VolHandle -> Int -> IO ()
+foreign import ccall safe "darc_volfile_read"     volfile_read_raw   :: VolHandle -> Ptr () -> Int -> IO Int
+foreign import ccall safe "darc_volfile_close"    volfile_close      :: VolHandle -> IO ()
+volfile_read :: VolHandle -> Ptr a -> Int -> IO Int
+volfile_read h buf n = volfile_read_raw h (castPtr buf) n
+volfile_size :: VolHandle -> IO Int
+volfile_size h = alloca $ \p -> c_volfile_size_out h p >> peek p >>= return . fromIntegral
+volfile_pos :: VolHandle -> IO Int
+volfile_pos h = alloca $ \p -> c_volfile_pos_out h p >> peek p >>= return . fromIntegral
 
 {-# NOINLINE err #-}
 err s  =  fail$ s++" isn't implemented"    --registerError$ GENERAL_ERROR ["0343 %1 isn't implemented", s]
@@ -441,17 +581,30 @@ type URL = Ptr ()
 foreign import ccall safe "URL.h url_setup_proxy"         url_setup_proxy         :: Ptr CChar -> IO ()
 foreign import ccall safe "URL.h url_setup_bypass_list"   url_setup_bypass_list   :: Ptr CChar -> IO ()
 foreign import ccall safe "URL.h url_open"   url_open   :: Ptr CChar -> IO URL
+#ifndef __MHS__
 foreign import ccall safe "URL.h url_pos"    url_pos    :: URL -> IO Int64
 foreign import ccall safe "URL.h url_size"   url_size   :: URL -> IO Int64
 foreign import ccall safe "URL.h url_seek"   url_seek   :: URL -> Int64 -> IO ()
+#else
+-- MicroHs doesn't support Int64 in FFI; use Int (= 64-bit on 64-bit platforms)
+foreign import ccall safe "URL.h url_pos"    url_pos    :: URL -> IO Int
+foreign import ccall safe "URL.h url_size"   url_size   :: URL -> IO Int
+foreign import ccall safe "URL.h url_seek"   url_seek   :: URL -> Int -> IO ()
+#endif
+#ifndef __MHS__
 foreign import ccall safe "URL.h url_read"   url_read   :: URL -> Ptr a -> Int -> IO Int
+#else
+foreign import ccall safe "URL.h url_read"   url_read_raw :: URL -> Ptr () -> Int -> IO Int
+url_read :: URL -> Ptr a -> Int -> IO Int
+url_read url buf n = url_read_raw url (castPtr buf) n
+#endif
 foreign import ccall safe "URL.h url_close"  url_close  :: URL -> IO ()
 
 
 ----------------------------------------------------------------------------------------------------
 ---- Под Windows мне пришлось реализовать библиотеку в/в самому для поддержки файлов >4Gb и Unicode имён файлов
 ----------------------------------------------------------------------------------------------------
-#if defined(FREEARC_WIN)
+#if defined(FREEARC_WIN) && !defined(__MHS__)
 
 type FileOnDisk      = FD
 type CFilePath       = CWFilePath
@@ -493,15 +646,23 @@ type CFilePath       = CString
 type FileAttributes  = Int
 withCFilePath s a    = (`withCString` a) =<< str2filesystem s
 peekCFilePath ptr    = peekCString ptr >>= filesystem2str
+#if defined(__MHS__) && defined(FREEARC_WIN)
+fOpen                = (`openBinaryFileBin` ReadMode     ) =<<. str2filesystem
+fCreate              = (`openBinaryFileBin` WriteMode    ) =<<. str2filesystem
+fCreateRW            = (`openBinaryFileBin` ReadWriteMode) =<<. str2filesystem
+#else
 fOpen                = (`openBinaryFile` ReadMode     ) =<<. str2filesystem
 fCreate              = (`openBinaryFile` WriteMode    ) =<<. str2filesystem
 fCreateRW            = (`openBinaryFile` ReadWriteMode) =<<. str2filesystem
+#endif
 fAppendText          = (`openFile`       AppendMode   ) =<<. str2filesystem
 fGetPos              = hTell
 fGetSize             = hFileSize
 fSeek                = (`hSeek` AbsoluteSeek)
+#ifndef __MHS__
 fReadBufSimple       = hGetBuf
 fWriteBufSimple      = hPutBuf
+#endif
 fFlush               = hFlush
 fClose               = hClose
 fExist               = doesFileExist =<<. str2filesystem
@@ -509,8 +670,76 @@ fileGetStatus        = getFileStatus =<<. str2filesystem
 fileSetMode name mode= (`setFileMode` mode) =<< str2filesystem name
 fileRemove name      = removeFile    =<<  str2filesystem name
 fileRename a b       = do a1 <- str2filesystem a; b1 <- str2filesystem b; renameFile a1 b1
+#ifdef __MHS__
+renameFile :: FilePath -> FilePath -> IO ()
+renameFile old new = withCString old $ \cs1 -> withCString new $ \cs2 -> do
+  r <- darc_rename cs1 cs2
+  if r /= 0 then ioError (userError ("renameFile: " ++ old)) else return ()
+foreign import ccall "darc_realpath" darc_realpath :: CString -> CString -> IO Int
+foreign import ccall "rename" darc_rename :: CString -> CString -> IO Int
+removeDirectory :: FilePath -> IO ()
+removeDirectory path = withCString path $ \cs -> do
+  r <- darc_rmdir cs
+  if r /= 0 then ioError (userError ("removeDirectory: " ++ path)) else return ()
+foreign import ccall "rmdir" darc_rmdir :: CString -> IO Int
+#endif
 fileSetSize          = hSetFileSize
 fileStdin            = stdin
+
+#ifdef __MHS__
+foreign import ccall "darc_bfile_seek"      darc_bfile_seek      :: Ptr () -> CLong -> Int -> IO Int
+foreign import ccall "darc_bfile_truncate"  darc_bfile_truncate  :: Ptr () -> CLong -> IO Int
+-- MicroHs truncates FFI return values to 32 bits, so use _w variants
+-- that write 64-bit results via pointer instead of returning them.
+foreign import ccall "darc_bfile_tell_w"    darc_bfile_tell_w    :: Ptr () -> Ptr CLong -> IO ()
+foreign import ccall "darc_bfile_size_w"    darc_bfile_size_w    :: Ptr () -> Ptr CLong -> IO ()
+foreign import ccall "darc_bfile_read_w"    darc_bfile_read_w    :: Ptr () -> Ptr () -> CLong -> Ptr CLong -> IO ()
+foreign import ccall "darc_bfile_write_w"   darc_bfile_write_w   :: Ptr () -> Ptr () -> CLong -> Ptr CLong -> IO ()
+
+fReadBufSimple :: Handle -> Ptr a -> Int -> IO Int
+fReadBufSimple h buf size = withHandleAny h $ \bf ->
+  alloca $ \pOut -> do
+    darc_bfile_read_w (castPtr bf) (castPtr buf) (fromIntegral size) pOut
+    fmap fromIntegral (peek pOut)
+
+fWriteBufSimple :: Handle -> Ptr a -> Int -> IO ()
+fWriteBufSimple h buf size = withHandleAny h $ \bf ->
+  alloca $ \pOut -> do
+    darc_bfile_write_w (castPtr bf) (castPtr buf) (fromIntegral size) pOut
+    return ()
+
+hSeek :: Handle -> SeekMode -> Integer -> IO ()
+hSeek h mode pos = withHandleAny h $ \bf -> do
+  let whence = case mode of
+                 AbsoluteSeek -> 0
+                 RelativeSeek -> 1
+                 SeekFromEnd  -> 2
+  _ <- darc_bfile_seek (castPtr bf) (fromIntegral pos) whence
+  return ()
+
+hTell :: Handle -> IO Integer
+hTell h = withHandleAny h $ \bf ->
+  alloca $ \pOut -> do
+    darc_bfile_tell_w (castPtr bf) pOut
+    fmap fromIntegral (peek pOut)
+
+hFileSize :: Handle -> IO Integer
+hFileSize h = withHandleAny h $ \bf ->
+  alloca $ \pOut -> do
+    darc_bfile_size_w (castPtr bf) pOut
+    fmap fromIntegral (peek pOut)
+
+hSetFileSize :: Handle -> Integer -> IO ()
+hSetFileSize h sz = withHandleAny h $ \bf -> do
+  _ <- darc_bfile_truncate (castPtr bf) (fromIntegral sz)
+  return ()
+
+-- |Get raw BFILE* pointer from an Archive, holding the MVar lock during the action
+withArchiveBFILE :: Archive -> (Ptr () -> IO a) -> IO a
+withArchiveBFILE arc action = withMVar (archiveFile arc) $ \file -> case file of
+    FileOnDisk h -> withHandleAny h $ \bf -> action (castPtr bf)
+    _            -> error "withArchiveBFILE: not a disk file"
+#endif
 stat_mode            = st_mode
 stat_size            = st_size  .>>== i
 stat_mtime           = st_mtime
@@ -531,8 +760,8 @@ fileWithStatus loc name f = do
 
 #endif
 
-fileRead      file size = allocaBytes size $ \buf -> do fileReadBuf file buf size; peekCStringLen (buf,size)
-fileWrite     file str  = withCStringLen str $ \(buf,size) -> fileWriteBuf file buf size
+fileRead      file size = allocaBytes size $ \buf -> do fileReadBuf file buf size; peekCStringLen (castPtr buf,size)
+fileWrite     file str  = withCStringLen str $ \(buf,size) -> fileWriteBuf file (castPtr buf) size
 fileGetBinary name      = bracket (fileOpen   name) fileClose (\file -> fileGetSize file >>= fileRead file . i)
 filePutBinary name str  = bracket (fileCreate name) fileClose (`fileWrite` str)
 
