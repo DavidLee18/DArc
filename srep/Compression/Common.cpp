@@ -3,7 +3,7 @@
 #include "Common.h"
 #include "Compression.h"
 
-// Для обработки ошибок во вложенных процедурах - longjmp сигнализирует процедуре верхнего уровня о произошедшей ошибке
+// For error handling in nested procedures - longjmp signals the top-level procedure that an error has occurred
 int jmpready = FALSE;
 jmp_buf jumper;
 
@@ -130,19 +130,19 @@ void BigFree(void *address) throw()
 
 
 // ****************************************************************************
-// Функции парсинга и арифметики **********************************************
+// Parsing and arithmetic functions *******************************************
 // ****************************************************************************
 
-// Копирует строчку from в to, но не более len символов
+// Copies the string from into to, but no more than len characters
 void strncopy( char *to, char *from, int len ) {
   for (int i = len; --i && *from; )     *to++ = *from++;
   *to = '\0';
 }
 
-// Разбить строку str на подстроки, разделённые символом splitter.
-// Результат - в строке str splitter заменяется на '\0'
-//   и массив result заполняется ссылками на выделенные в str подстроки + NULL (аналогично argv)
-// Возвращает число найденных подстрок
+// Split the string str into substrings separated by the splitter character.
+// The result - inside the string str, splitter is replaced with '\0'
+//   and the array result is filled with pointers to the substrings singled out in str + NULL (like argv)
+// Returns the number of substrings found
 int split (char *str, char splitter, char **result_base, int result_size)
 {
   char **result      = result_base;
@@ -160,7 +160,7 @@ int split (char *str, char splitter, char **result_base, int result_size)
   return result-result_base;
 }
 
-// Объединить NULL-terminated массив строк src в строку result, ставя между строками разделитель splitter
+// Join the NULL-terminated array of strings src into the string result, placing the splitter character between the strings
 void join (char **src, char splitter, char *result, int result_size)
 {
   char *dst = result;  *dst = '\0';
@@ -172,7 +172,7 @@ void join (char **src, char splitter, char *result, int result_size)
   }
 }
 
-// Найти параметр с заданным именем в массиве параметров алгоритма
+// Find the parameter with the given name in the array of algorithm parameters
 char *search_param(char **param, char *prefix)
 {
   for ( ; *param; param++)
@@ -181,8 +181,8 @@ char *search_param(char **param, char *prefix)
   return NULL;
 }
 
-// Заменяет в строке original все вхождения from на to,
-// возвращая вновь выделенную new строку и освобождая оригинал, если была хоть одна замена
+// Replaces in the string original all occurrences of from with to,
+// returning a newly allocated string and freeing the original if there was at least one replacement
 char *subst (char *original, char *from, char *to)
 {
   while(1) {
@@ -197,7 +197,7 @@ char *subst (char *original, char *from, char *to)
   }
 }
 
-// Пропускает пробелы в начале строки и убирает их в конце, модифицируя строку
+// Skips spaces at the start of the string and strips them at the end, modifying the string
 char *trim_spaces(char *s)
 {
   while(isspace(*s)) s++;
@@ -290,7 +290,7 @@ char *showMem64 (LongMemSize mem, char *result, bool add_b)
 }
 
 
-// Кодирование строки в шестнадцатеричный вид плюс \0
+// Encoding of a string into hexadecimal form plus \0
 void encode16 (const BYTE *src, int srcSize, char *dst)
 {
     for( ; srcSize--; src++)
@@ -299,21 +299,21 @@ void encode16 (const BYTE *src, int srcSize, char *dst)
     *dst++ = '\0';
 }
 
-// Декодирование строки, записанной в шестнадцатеричном виде, в последовательность байт
+// Decoding of a string written in hexadecimal form into a sequence of bytes
 void decode16 (const char *src, BYTE *dst)
 {
     for( ; src[0] && src[1]; src+=2)
         *dst++ = char2int(src[0]) * 16 + char2int(src[1]);
 }
 
-// ОШИБОЧНОЕ декодирование строки, записанной в шестнадцатеричном виде, в последовательность байт
+// BUGGY decoding of a string written in hexadecimal form into a sequence of bytes
 void buggy_decode16 (const char *src, BYTE *dst)
 {
     for( ; src[0] && src[1]; src+=2)
         *dst++ = buggy_char2int(src[0]) * 16 + buggy_char2int(src[1]);
 }
 
-// Округляет размер памяти вниз до удобной величины
+// Rounds the memory size down to a convenient value
 MemSize rounddown_mem (MemSize n)
 {
          if (n < 32*kb) return n;
@@ -541,7 +541,7 @@ int GetProcessorsCount (void)
 
 void SetFileDateTime (CFILENAME Filename, time_t t)
 {
-  if (t<0)  t=INT_MAX;  // Иначе получаем вылет :(
+  if (t<0)  t=INT_MAX;  // Otherwise we get a crash :(
   struct tm* t2 = gmtime(&t);
 
   SYSTEMTIME t3;
@@ -596,7 +596,7 @@ int RunCommand (CFILENAME command, CFILENAME curdir, int wait_finish, SIMPLE_CAL
   si.hStdError   = (HANDLE) _get_osfhandle(2);
   PROCESS_INFORMATION pi;
   ZeroMemory (&pi, sizeof(pi));
-  DWORD ExitCode = 0;  // код возврата вызываемой программы
+  DWORD ExitCode = 0;  // return code of the called program
 
   BOOL process_created = CreateProcessW (NULL, command, NULL, NULL, TRUE, 0, NULL, curdir, &si, &pi);
   if (callback)
@@ -631,7 +631,7 @@ void RunFile (CFILENAME filename, CFILENAME curdir, int wait_finish)
     CloseHandle (sei.hProcess);
 }
 
-// Версия Windows
+// Windows version
 #define CheckWinVersion(ver)  (GetWinVersion() >= ver)
 
 #define WIN_VERSION_VISTA 0x600
@@ -656,15 +656,15 @@ int GetWinVersion()
 #define THREAD_MODE_BACKGROUND_END      0x00020000
 #endif
 
-// Установить приоритет треда какой полагается для тредов сжатия (распаковки, шифрования...).
-// Используется для тредов, которые выполняют только сжатие
+// Set the thread priority appropriate for compression (decompression, encryption...) threads.
+// Used for threads that perform compression only
 void SetCompressionThreadPriority (void)
 {
    SetThreadPriority (GetCurrentThread(), THREAD_PRIORITY_BELOW_NORMAL);
 }
 
-// Временно установить приоритет треда какой полагается для тредов сжатия (распаковки, шифрования...)
-// и возвратить старое значение уровня приоритета. Используется для тредов, временно выполняющих задачи сжатия
+// Temporarily set the thread priority appropriate for compression (decompression, encryption...) threads
+// and return the old priority level value. Used for threads that temporarily perform compression tasks
 int BeginCompressionThreadPriority (void)
 {
    DWORD dwThreadPriority = GetThreadPriority(GetCurrentThread());
@@ -672,7 +672,7 @@ int BeginCompressionThreadPriority (void)
    return dwThreadPriority;
 }
 
-// Восстановить приоритет треда таким, как мы его запомнили
+// Restore the thread priority to the value we saved
 void EndCompressionThreadPriority (int old_priority)
 {
    SetThreadPriority (GetCurrentThread(), old_priority);
@@ -736,7 +736,7 @@ int GetProcessorsCount (void)
 
 void SetFileDateTime(CFILENAME Filename, time_t t)
 {
-  if (t<0)  t=INT_MAX;  // Иначе получаем вылет :(
+  if (t<0)  t=INT_MAX;  // Otherwise we get a crash :(
   struct stat st;
     stat (Filename, &st);
   struct utimbuf times;
@@ -775,23 +775,23 @@ void RunFile (CFILENAME filename, CFILENAME curdir, int wait_finish)
   RunCommand (filename, curdir, wait_finish, NULL, NULL);
 }
 
-// Установить приоритет треда какой полагается для тредов сжатия (распаковки, шифрования...).
-// Используется для тредов, которые выполняют только сжатие
+// Set the thread priority appropriate for compression (decompression, encryption...) threads.
+// Used for threads that perform compression only
 void SetCompressionThreadPriority (void)
 {
   int old = getpriority(PRIO_PROCESS, 0);
   setpriority(PRIO_PROCESS, 0, old+1);
 }
 
-// Временно установить приоритет треда какой полагается для тредов сжатия (распаковки, шифрования...)
+// Temporarily set the thread priority appropriate for compression (decompression, encryption...) threads
 int BeginCompressionThreadPriority (void)
 {
   int old = getpriority(PRIO_PROCESS, 0);
-  //setpriority(PRIO_PROCESS, 0, old+1);        закомментировано из-за проблем с восстановлением старого приоритета :(
+  //setpriority(PRIO_PROCESS, 0, old+1);        commented out because of problems with restoring the old priority :(
   return old;
 }
 
-// Восстановить приоритет треда таким, как мы его запомнили
+// Restore the thread priority to the value we saved
 void EndCompressionThreadPriority (int old_priority)
 {
   //setpriority(PRIO_PROCESS, 0, old_priority);
@@ -800,7 +800,7 @@ void EndCompressionThreadPriority (int old_priority)
 #endif // Windows/Unix
 
 
-// Создать каталоги на пути к name
+// Create the directories on the path to name
 void BuildPathTo (CFILENAME name)
 {
   CFILENAME path_ptr = NULL;
@@ -822,7 +822,7 @@ void BuildPathTo (CFILENAME name)
 
 
 // ****************************************************************************************************************************
-// ПОДДЕРЖКА СПИСКА ВРЕМЕННЫХ ФАЙЛОВ И УДАЛЕНИЕ ИХ ПРИ АВАРИЙНОМ ВЫХОДЕ ИЗ ПРОГРАММЫ ******************************************
+// SUPPORT FOR THE TEMPORARY FILE LIST AND DELETING THEM ON ABNORMAL PROGRAM EXIT *********************************************
 // ****************************************************************************************************************************
 
 // Table of temporary files that should be deleted on ^Break
@@ -861,7 +861,7 @@ void removeTemporaryFiles (void)
 #ifndef FREEARC_NO_TIMING
 
 //*****************************************************************************
-// Вывод заголовка окна *******************************************************
+// Window title output ********************************************************
 //*****************************************************************************
 
 #ifdef FREEARC_WIN
@@ -870,7 +870,7 @@ void removeTemporaryFiles (void)
 TCHAR Saved_Title[MY_FILENAME_MAX+1000];
 bool Saved = FALSE,  SavedA = FALSE;
 
-// Установить заголовок консольного окна
+// Set the console window title
 void EnvSetConsoleTitle (TCHAR *title)
 {
   if (!Saved && !SavedA) {
@@ -888,7 +888,7 @@ void EnvSetConsoleTitleA (char *title)
   SetConsoleTitleA (title);
 }
 
-// Восстановить заголовок, который был в начале работы программы
+// Restore the title that was in place when the program started
 void EnvResetConsoleTitle (void)
 {
   if (Saved) {

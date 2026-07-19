@@ -18,51 +18,51 @@ extern "C" {
 // Signature of files made by my utilities
 #define BULAT_ZIGANSHIN_SIGNATURE 0x26351817
 
-// Константы для удобной записи объёмов памяти
+// Constants for conveniently writing memory amounts
 #define b_ (1u)
 #define kb (1024*b_)
 #define mb (1024*kb)
 #define gb (1024*mb)
 #define terabyte (1024*uint64(gb))
 
-// Количество байт, которые должны читаться/записываться за один раз во всех упаковщиках
+// Number of bytes that should be read/written at a time in all compressors
 #define BUFFER_SIZE (256*kb)
 
-// Количество байт, которые должны читаться/записываться за один раз в быстрых методах и при распаковке асимметричных алгоритмов
+// Number of bytes that should be read/written at a time in the fast methods and when decompressing asymmetric algorithms
 #define LARGE_BUFFER_SIZE (256*kb)
 
-// Размер блока, который BigAlloc как правило может выделить с использованием Large Pages
+// Block size that BigAlloc can usually allocate using Large Pages
 #define BIGALLOC_BUFFER_SIZE (2*mb)
 
-// Количество байт, которые должны читаться/записываться за один раз в очень быстрых методах (storing, tornado и тому подобное)
-// Этот объём минимизирует потери на disk seek operations - при условии, что одновременно не происходит в/в в другом потоке ;)
+// Number of bytes that should be read/written at a time in the very fast methods (storing, tornado and the like)
+// This amount minimizes the losses on disk seek operations - provided that no I/O is happening in another thread at the same time ;)
 #define HUGE_BUFFER_SIZE (8*mb)
 
-// C какой частотой надо сообщать о прогрессе в упаковке/распаковке
+// How often progress in compression/decompression should be reported
 #define PROGRESS_CHUNK_SIZE (64*kb)
 
-// Дополнительные определения для удобства создания парсеров строк методов сжатия
-#define COMPRESSION_METHODS_DELIMITER            '+'   /* Разделитель методов сжатия в строковом описании компрессора */
-#define COMPRESSION_METHOD_PARAMETERS_DELIMITER  ':'   /* Разделитель параметров в строковом описании метода сжатия */
-#define MAX_COMPRESSION_METHODS    1000        /* Должно быть не меньше числа методов сжатия, регистрируемых с помощью AddCompressionMethod */
-#define MAX_PARAMETERS             200         /* Должно быть не меньше максимального кол-ва параметров (разделённых двоеточиями), которое может иметь метод сжатия */
-#define MAX_COMPRESSOR_STRLEN      2048        /* Максимальная длина строки, описывающей компрессор */
-#define MAX_METHOD_STRLEN          512         /* Максимальная длина строки, описывающей метод сжатия */
-#define MAX_METHODS_IN_COMPRESSOR  100         /* Максимальное число методов в одном компрессоре */
-#define MAX_EXTERNAL_COMPRESSOR_SECTION_LENGTH 2048  /* Максимальная длина секции [External compressor] */
+// Additional definitions that make it convenient to write parsers for compression method strings
+#define COMPRESSION_METHODS_DELIMITER            '+'   /* Separator between compression algorithms in the string description of a compressor */
+#define COMPRESSION_METHOD_PARAMETERS_DELIMITER  ':'   /* Separator between parameters in the string description of a compression method */
+#define MAX_COMPRESSION_METHODS    1000        /* Must be no less than the number of compression methods registered via AddCompressionMethod */
+#define MAX_PARAMETERS             200         /* Must be no less than the maximum number of parameters (separated by colons) that a compression method may have */
+#define MAX_COMPRESSOR_STRLEN      2048        /* Maximum length of a string describing a compressor */
+#define MAX_METHOD_STRLEN          512         /* Maximum length of a string describing a compression method */
+#define MAX_METHODS_IN_COMPRESSOR  100         /* Maximum number of methods in a single compressor */
+#define MAX_EXTERNAL_COMPRESSOR_SECTION_LENGTH 2048  /* Maximum length of the [External compressor] section */
 
 
 // ****************************************************************************************************************************
-// ХЕЛПЕРЫ ЧТЕНИЯ/ЗАПИСИ ДАННЫХ В МЕТОДАХ СЖАТИЯ ******************************************************************************
+// DATA READ/WRITE HELPERS FOR COMPRESSION METHODS ****************************************************************************
 // ****************************************************************************************************************************
 
-// Тип функции для обратных вызовов
+// Callback function type
 typedef int CALLBACK_FUNC (const char *what, void *data, int size, void *auxdata);
 
-// Макросы для чтения/записи в(ы)ходных потоков с проверкой, что передано ровно столько данных, сколько было запрошено
+// Macros for reading/writing the in(out)put streams, checking that exactly as much data was transferred as was requested
 #define checked_read(ptr,size)         {if ((x = callback("read" ,ptr,size,auxdata)) != size) {x>=0 && (x=FREEARC_ERRCODE_READ);  goto finished;}}
 #define checked_write(ptr,size)        {if ((x = callback("write",ptr,size,auxdata)) != size) {x>=0 && (x=FREEARC_ERRCODE_WRITE); goto finished;}}
-// Макрос для чтения входных потоков с проверкой на ошибки и конец входных данных
+// Macro for reading input streams with checks for errors and end of input data
 #define checked_eof_read(ptr,size)     {if ((x = callback("read", ptr,size,auxdata)) != size) {x>0  && (x=FREEARC_ERRCODE_READ);  goto finished;}}
 
 // Auxiliary code to read/write data blocks and 4-byte headers
@@ -210,18 +210,18 @@ typedef int CALLBACK_FUNC (const char *what, void *data, int size, void *auxdata
 #define FCLOSE()  { FFLUSH(); }
 
 
-// Буфер, используемый для организации нескольких независимых потоков записи
-// в программе. Буфер умеет записывать в себя 8/16/32-разрядные числа и расширяться
-// при необходимости. Позднее содержимое буфера сбрасывается в выходной поток.
-// Дополнительно буфер поддерживает чтение ранее записанных в него данных.
-// Конец записанной части буфера - это max(p,end), где p - текущий указатель,
-// а end - максимальная позиция ранее записанных данных.
+// A buffer used to organize several independent write streams
+// within the program. The buffer can write 8/16/32-bit numbers into itself and grow
+// as needed. Later the buffer contents are flushed into the output stream.
+// In addition, the buffer supports reading data previously written into it.
+// The end of the written part of the buffer is max(p,end), where p is the current pointer,
+// and end is the highest position of previously written data.
 struct Buffer
 {
-    byte*  buf;              // адрес выделенного буфера
-    byte*  p;                // текущий указатель чтения/записи внутри этого буфера
-    byte*  end;              // адрес после конца прочитанных/записанных данных
-    byte*  bufend;           // конец самого буфера
+    byte*  buf;              // address of the allocated buffer
+    byte*  p;                // current read/write pointer inside this buffer
+    byte*  end;              // address just past the end of the read/written data
+    byte*  bufend;           // end of the buffer itself
 
     Buffer (uint size=64*kb) { buf=p=end= (byte*) malloc(size);  bufend=buf+size; }
     ~Buffer()                { freebuf(); }
@@ -254,7 +254,7 @@ struct Buffer
                                byte *lo = buf,  *hi = buf + len() - 1,  swap;
                                while (lo < hi)  { swap = *lo;  *lo++ = *hi;  *hi-- = swap; }
                              }
-// Для чтения данных
+// For reading data
     void   rewind()          { end=mymax(p,end);  p=buf; }
     uint   get8 ()           { uint x = *(uint8 *)p;  p+=sizeof(uint8 );  return x; }
     uint   get16()           { uint x = value16(p);   p+=sizeof(uint16);  return x; }
@@ -268,36 +268,36 @@ struct Buffer
 
 
 // ****************************************************************************************************************************
-// ВЫЧИСЛЕНИЕ CRC-32                                                                                                          *
+// CRC-32 COMPUTATION                                                                                                         *
 // ****************************************************************************************************************************
 
 #define INIT_CRC 0xffffffff
 
-uint32 UpdateCRC (const void *Addr, size_t Size, uint32 StartCRC);     // Обновить CRC содержимым блока данных
-uint32 CalcCRC   (const void *Addr, size_t Size);                      // Вычислить CRC блока данных
+uint32 UpdateCRC (const void *Addr, size_t Size, uint32 StartCRC);     // Update CRC with the contents of a data block
+uint32 CalcCRC   (const void *Addr, size_t Size);                      // Compute the CRC of a data block
 
 
 // ****************************************************************************************************************************
-// УТИЛИТЫ ********************************************************************************************************************
+// UTILITIES ******************************************************************************************************************
 // ****************************************************************************************************************************
 
-// Параметр алгоритма сжатия/шифрования
+// A parameter of a compression/encryption algorithm
 typedef char *CPARAM;
 
-// Алгоритм сжатия/шифрования, представленный в виде строки
+// A compression/encryption algorithm represented as a string
 typedef char *CMETHOD;
 
-// Последовательность алгоритмов сжатия/шифрования, представленная в виде "exe+rep+lzma+aes"
+// A sequence of compression/encryption algorithms represented as "exe+rep+lzma+aes"
 typedef char *COMPRESSOR;
 
-// Запросить сервис what метода сжатия method
+// Request service `what` of compression method `method`
 LongMemSize CompressionService (char *method, char *what, DEFAULT(int param,0), DEFAULT(void *data,NULL), DEFAULT(CALLBACK_FUNC *callback,NULL));
 
-// Проверить, что данный компрессор включает алгоритм шифрования
+// Check whether the given compressor includes an encryption algorithm
 int compressorIsEncrypted (COMPRESSOR c);
-// Вычислить, сколько памяти нужно для упаковки этим компрессором
+// Compute how much memory is needed to compress with this compressor
 LongMemSize compressorGetCompressionMem (COMPRESSOR c);
-// Вычислить, сколько памяти нужно для распаковки данных, сжатых этим компрессором
+// Compute how much memory is needed to decompress data compressed by this compressor
 LongMemSize compressorGetDecompressionMem (COMPRESSOR c);
 
 // Compute compression ratio for order-0 byte-granular arithmetic coder
@@ -339,41 +339,41 @@ void compressionLib_cleanup (void);
 
 
 // ****************************************************************************************************************************
-// СЕРВИСЫ СЖАТИЯ И РАСПАКОВКИ ДАННЫХ *****************************************************************************************
+// DATA COMPRESSION AND DECOMPRESSION SERVICES ********************************************************************************
 // ****************************************************************************************************************************
 
 enum COMPRESSION {COMPRESS, DECOMPRESS};  // Direction of operation
 
-// Распаковать данные, упакованные заданным методом или цепочкой методов
+// Decompress data compressed with the given method or chain of methods
 int Decompress (char *method, CALLBACK_FUNC *callback, void *auxdata);
-// Прочитать из входного потока обозначение метода сжатия и распаковать данные этим методом
+// Read the compression method designation from the input stream and decompress the data with that method
 int DecompressWithHeader (CALLBACK_FUNC *callback, void *auxdata);
-// Распаковать данные в памяти, записав в выходной буфер не более outputSize байт.
-// Возвращает код ошибки или количество байт, записанных в выходной буфер
+// Decompress data in memory, writing no more than outputSize bytes into the output buffer.
+// Returns an error code or the number of bytes written into the output buffer
 int DecompressMem (char *method, void *input, int inputSize, void *output, int outputSize);
 int DecompressMemWithHeader     (void *input, int inputSize, void *output, int outputSize);
 
 #ifndef FREEARC_DECOMPRESS_ONLY
-// Упаковать данные заданным методом или цепочкой методов
+// Compress data with the given method or chain of methods
 int Compress   (char *method, CALLBACK_FUNC *callback, void *auxdata);
-// Записать в выходной поток обозначение метода сжатия и упаковать данные этим методом
+// Write the compression method designation into the output stream and compress the data with that method
 int CompressWithHeader (char *method, CALLBACK_FUNC *callback, void *auxdata);
-// Упаковать данные в памяти, записав в выходной буфер не более outputSize байт.
-// Возвращает код ошибки или количество байт, записанных в выходной буфер
+// Compress data in memory, writing no more than outputSize bytes into the output buffer.
+// Returns an error code or the number of bytes written into the output buffer
 int CompressMem           (char *method, void *input, int inputSize, void *output, int outputSize);
 int CompressMemWithHeader (char *method, void *input, int inputSize, void *output, int outputSize);
-// Информация о памяти, необходимой для упаковки/распаковки, размере словаря и размере блока.
+// Information about the memory needed for compression/decompression, the dictionary size and the block size.
 MemSize GetCompressionMem      (char *method);
 MemSize GetMinCompressionMem   (char *method);
 MemSize GetMinDecompressionMem (char *method);
-// Возвратить в out_method новый метод сжатия, настроенный на использование
-// соответствующего количества памяти/словаря/размера блока
+// Return in out_method a new compression method configured to use
+// the corresponding amount of memory / dictionary / block size
 int SetCompressionMem          (char *in_method, MemSize mem,  char *out_method);
 int SetMinDecompressionMem     (char *in_method, MemSize mem,  char *out_method);
 int SetDictionary              (char *in_method, MemSize dict, char *out_method);
 int SetBlockSize               (char *in_method, MemSize bs,   char *out_method);
-// Возвратить в out_method новый метод сжатия, уменьшив, если необходимо,
-// используемую алгоритмом память / его словарь / размер блока
+// Return in out_method a new compression method, reducing, if necessary,
+// the memory used by the algorithm / its dictionary / the block size
 int LimitCompressionMem        (char *in_method, MemSize mem,  char *out_method);
 int LimitMinDecompressionMem   (char *in_method, MemSize mem,  char *out_method);
 int LimitDictionary            (char *in_method, MemSize dict, char *out_method);
@@ -385,25 +385,25 @@ MemSize GetDecompressionMem    (char *method);
 int     SetDecompressionMem    (char *in_method, MemSize mem,  char *out_method);
 int     LimitDecompressionMem  (char *in_method, MemSize mem,  char *out_method);
 
-// Вывести в out_method каноническое представление метода сжатия in_method (выполнить ParseCompressionMethod + ShowCompressionMethod)
-//   purify!=0: подготовить представление method к записи в архив (например, убрать :t:i для 4x4)
+// Write into out_method the canonical representation of compression method in_method (performs ParseCompressionMethod + ShowCompressionMethod)
+//   purify!=0: prepare the method representation for writing into the archive (for example, strip :t:i for 4x4)
 int CanonizeCompressionMethod (char *in_method, char *out_method, int purify);
 
-// Функция "(рас)паковки", копирующая данные один в один
+// A "(de)compression" function that copies the data verbatim
 int copy_data   (CALLBACK_FUNC *callback, void *auxdata);
 
 
 // ****************************************************************************************************************************
-// КЛАСС, РЕАЛИЗУЮЩИЙ ИНТЕРФЕЙС К МЕТОДУ СЖАТИЯ *******************************************************************************
+// CLASS IMPLEMENTING THE INTERFACE TO A COMPRESSION METHOD *******************************************************************
 // ****************************************************************************************************************************
 
 #ifdef __cplusplus
 
-// Абстрактный интерфейс к произвольному методу сжатия
+// Abstract interface to an arbitrary compression method
 class COMPRESSION_METHOD
 {
 public:
-  // Функции распаковки и упаковки
+  // Decompression and compression functions
   //   DeCompressMem can either compress or decompress, either from memory block `input` to `output` or calling `callback` for I/O.
   //   CodecState, unless NULL, points to the place for storing pointer to persistent codec state, such as allocated buffers
   //     and precomputed tables, that should be finally freed by the empty DeCompressMem() call.
@@ -412,18 +412,18 @@ public:
 #ifndef FREEARC_DECOMPRESS_ONLY
   virtual int compress   (CALLBACK_FUNC *callback, void *auxdata) = 0;
 
-  // Информация о памяти, необходимой для упаковки/распаковки (Min - при :t1:i0, т.е. минимальном числе тредов/буферов - для ArcInfo и т.п.),
-  // размере словаря (то есть насколько далеко заглядывает алгоритм в поиске похожих данных - для lz/bs схем),
-  // и размере блока (то есть сколько максимум данных имеет смысл помещать в один солид-блок - для bs схем и lzp)
+  // Information about the memory needed for compression/decompression (Min - with :t1:i0, i.e. the minimum number of threads/buffers - for ArcInfo and the like),
+  // the dictionary size (that is, how far the algorithm looks back when searching for similar data - for lz/bs schemes),
+  // and the block size (that is, the maximum amount of data it makes sense to put into one solid block - for bs schemes and lzp)
   virtual MemSize GetCompressionMem        (void)         = 0;
   virtual MemSize GetMinCompressionMem     (void)               {return GetCompressionMem();}
   virtual MemSize GetMinDecompressionMem   (void)               {return GetDecompressionMem();}
-  // Настроить метод сжатия на использование заданного кол-ва памяти, словаря или размера блока
+  // Configure the compression method to use the given amount of memory, dictionary or block size
   virtual void    SetDictionary            (MemSize dict)       {}
   virtual void    SetBlockSize             (MemSize bs)         {}
   virtual void    SetCompressionMem        (MemSize mem)  = 0;
-  virtual void    SetMinDecompressionMem   (MemSize mem)  = 0;  // для -ld при упаковке (т.е. при :t1:i0): настраиваем минимальный объём памяти, требуемый для распаковки
-  // Ограничить используемую при упаковке/распаковке память, или словарь / размер блока
+  virtual void    SetMinDecompressionMem   (MemSize mem)  = 0;  // for -ld during compression (i.e. with :t1:i0): set the minimum amount of memory required for decompression
+  // Limit the memory used during compression/decompression, or the dictionary / block size
   virtual void    LimitDictionary          (MemSize dict)       {if (dict>0 && GetDictionary()          > dict)  SetDictionary(dict);}
   virtual void    LimitBlockSize           (MemSize bs)         {if (bs>0   && GetBlockSize()           > bs)    SetBlockSize(bs);}
   virtual void    LimitCompressionMem      (MemSize mem)        {if (mem>0  && GetCompressionMem()      > mem)   SetCompressionMem(mem);}
@@ -431,28 +431,28 @@ public:
 #endif
   virtual MemSize GetDictionary            (void)               {return 0;}
   virtual MemSize GetBlockSize             (void)               {return 0;}
-  virtual MemSize GetAlgoMem               (void);                            // Объём памяти, характеризующий алгоритм
+  virtual MemSize GetAlgoMem               (void);                            // Amount of memory that characterizes the algorithm
   virtual MemSize GetDecompressionMem      (void)         = 0;
-  virtual void    SetDecompressionMem      (MemSize mem)        {}    // для -ld при распаковке (т.е. меняем только параметры типа :t:i, сохраняя совместимость с упакованными данными)
+  virtual void    SetDecompressionMem      (MemSize mem)        {}    // for -ld during decompression (i.e. we change only parameters like :t:i, keeping compatibility with the compressed data)
   virtual void    LimitDecompressionMem    (MemSize mem)        {if (mem>0  && GetDecompressionMem() > mem)   SetDecompressionMem(mem);}
 
   // Maximum possible inflation of incompressible input data
   virtual LongMemSize GetMaxCompressedSize (LongMemSize insize) {return insize + (insize/4) + 16*kb;}
 
-  // Записать в buf[MAX_METHOD_STRLEN] строку, описывающую метод сжатия и его параметры (функция, обратная к ParseCompressionMethod)
+  // Write into buf[MAX_METHOD_STRLEN] a string describing the compression method and its parameters (the inverse of ParseCompressionMethod)
   virtual void ShowCompressionMethod (char *buf, bool purify) = 0;
 
-  // Универсальный метод. Параметры:
+  // Universal method. Parameters:
   //   what: "compress", "decompress", "setCompressionMem", "limitDictionary"...
-  //   data: данные для операции в формате, зависящем от конкретной выполняемой операции
-  //   param&result: простой числовой параметр, что достаточно для многих информационных операций
-  // Неиспользуемые параметры устанавливаются в NULL/0. result<0 - код ошибки
+  //   data: data for the operation, in a format that depends on the particular operation being performed
+  //   param&result: a simple numeric parameter, which is enough for many informational operations
+  // Unused parameters are set to NULL/0. result<0 is an error code
   virtual LongMemSize doit (char *what, int param, void *data, CALLBACK_FUNC *callback);
 
   // Check boolean method property
   bool is (char *request)   {return doit (request, 0, NULL, NULL) > 0;}
 
-  double addtime;  // Дополнительное время, потраченное на сжатие (во внешних программах, дополнительных threads и т.д.)
+  double addtime;  // Extra time spent on compression (in external programs, additional threads and so on)
   COMPRESSION_METHOD() {addtime=0;}
   virtual ~COMPRESSION_METHOD() {}
 //  Debugging code:  char buf[100]; ShowCompressionMethod(buf,FALSE); printf("%s : %u => %u\n", buf, GetCompressionMem(), mem);
@@ -460,112 +460,112 @@ public:
 
 
 // ****************************************************************************************************************************
-// ФАБРИКА COMPRESSION_METHOD *************************************************************************************************
+// COMPRESSION_METHOD FACTORY *************************************************************************************************
 // ****************************************************************************************************************************
 
-// Сконструировать объект класса - наследника COMPRESSION_METHOD,
-// реализующий метод сжатия, заданный в виде строки `method`
+// Construct an object of a class derived from COMPRESSION_METHOD
+// that implements the compression method given by the string `method`
 COMPRESSION_METHOD *ParseCompressionMethod (char* method);
 
-// Класс для перебора всех возможных вариантов парсинга и выполнения TryCompressor над ними до тех пор, пока он не вернёт true
+// Class for enumerating all possible parsing variants and running TryCompressor on them until it returns true
 struct CompressionMethodParser
 {
   bool EnumerateCompressors (char* method);
   virtual bool TryCompressor (COMPRESSION_METHOD *_compressor) = 0;
 };
 
-// Ссылка на функцию, парсющую строку одного из методов сжатия и при успехе возвращающую ссылку на сконструированный объект
+// Reference to a function that parses the string of one of the compression methods and on success returns a reference to the constructed object
 typedef COMPRESSION_METHOD* (*CM_PARSER) (char** parameters, void *data);
 
-// Добавить в список поддерживаемых методов сжатия парсер нового метода сжатия
-// с дополнительным параметром, который должен быть передан этому парсеру
+// Add the parser of a new compression method to the list of supported compression methods,
+// together with the extra parameter that must be passed to that parser
 int AddCompressionMethod (CM_PARSER parser, void *data = NULL);
 
-// Очистить таблицу внешних упаковщиков
+// Clear the table of external compressors
 void ClearExternalCompressorsTable (void);
 
 
 // ****************************************************************************************************************************
-// МЕТОД "СЖАТИЯ" STORING *****************************************************************************************************
+// THE "COMPRESSION" METHOD STORING *******************************************************************************************
 // ****************************************************************************************************************************
 
-// Реализация метода "сжатия" STORING
+// Implementation of the "compression" method STORING
 class STORING_METHOD : public COMPRESSION_METHOD
 {
 public:
-  // Функции распаковки и упаковки
+  // Decompression and compression functions
   virtual int decompress (CALLBACK_FUNC *callback, void *auxdata);
 #ifndef FREEARC_DECOMPRESS_ONLY
   virtual int compress   (CALLBACK_FUNC *callback, void *auxdata);
 
-  // Получить/установить объём памяти, используемой при упаковке/распаковке
+  // Get/set the amount of memory used during compression/decompression
   virtual MemSize GetCompressionMem        (void)               {return BUFFER_SIZE;}
   virtual void    SetCompressionMem        (MemSize)            {}
   virtual void    SetMinDecompressionMem   (MemSize)            {}
 #endif
   virtual MemSize GetDecompressionMem      (void)               {return BUFFER_SIZE;}
 
-  // Записать в buf[MAX_METHOD_STRLEN] строку, описывающую метод сжатия (функция, обратная к parse_STORING)
+  // Write into buf[MAX_METHOD_STRLEN] a string describing the compression method (the inverse of parse_STORING)
   virtual void ShowCompressionMethod (char *buf, bool purify)   {sprintf (buf, "storing");}
 };
 
-// Разборщик строки метода сжатия STORING
+// Parser for the STORING compression method string
 COMPRESSION_METHOD* parse_STORING (char** parameters);
 
 
 // ****************************************************************************************************************************
-// МЕТОД "СЖАТИЯ" CRC: читаем данные и ничего не пишем ************************************************************************
+// THE "COMPRESSION" METHOD CRC: read the data and write nothing **************************************************************
 // ****************************************************************************************************************************
 
-// Реализация метода "сжатия" crc
+// Implementation of the "compression" method crc
 class CRC_METHOD : public COMPRESSION_METHOD
 {
 public:
-  // Функции распаковки и упаковки
+  // Decompression and compression functions
   virtual int decompress (CALLBACK_FUNC *callback, void *auxdata) {return FREEARC_ERRCODE_INTERNAL;}
 #ifndef FREEARC_DECOMPRESS_ONLY
   virtual int compress   (CALLBACK_FUNC *callback, void *auxdata);
 
-  // Получить/установить объём памяти, используемой при упаковке/распаковке
+  // Get/set the amount of memory used during compression/decompression
   virtual MemSize GetCompressionMem        (void)               {return BUFFER_SIZE;}
   virtual void    SetCompressionMem        (MemSize)            {}
   virtual void    SetMinDecompressionMem   (MemSize)            {}
 #endif
   virtual MemSize GetDecompressionMem      (void)               {return BUFFER_SIZE;}
 
-  // Записать в buf[MAX_METHOD_STRLEN] строку, описывающую метод сжатия (функция, обратная к parse_CRC)
+  // Write into buf[MAX_METHOD_STRLEN] a string describing the compression method (the inverse of parse_CRC)
   virtual void ShowCompressionMethod (char *buf, bool purify)   {sprintf (buf, "crc");}
 };
 
-// Разборщик строки метода "сжатия" crc
+// Parser for the "compression" method crc string
 COMPRESSION_METHOD* parse_CRC (char** parameters);
 
 
 // ****************************************************************************************************************************
-// МЕТОД "СЖАТИЯ" FAKE: не читаем данные и ничего не пишем ********************************************************************
+// THE "COMPRESSION" METHOD FAKE: read no data and write nothing **************************************************************
 // ****************************************************************************************************************************
 
-// Реализация метода "сжатия" fake
+// Implementation of the "compression" method fake
 class FAKE_METHOD : public COMPRESSION_METHOD
 {
 public:
-  // Функции распаковки и упаковки
+  // Decompression and compression functions
   virtual int decompress (CALLBACK_FUNC *callback, void *auxdata) {return FREEARC_ERRCODE_INTERNAL;}
 #ifndef FREEARC_DECOMPRESS_ONLY
   virtual int compress   (CALLBACK_FUNC *callback, void *auxdata) {return FREEARC_ERRCODE_INTERNAL;}
 
-  // Получить/установить объём памяти, используемой при упаковке/распаковке
+  // Get/set the amount of memory used during compression/decompression
   virtual MemSize GetCompressionMem        (void)               {return BUFFER_SIZE;}
   virtual void    SetCompressionMem        (MemSize)            {}
   virtual void    SetMinDecompressionMem   (MemSize)            {}
 #endif
   virtual MemSize GetDecompressionMem      (void)               {return BUFFER_SIZE;}
 
-  // Записать в buf[MAX_METHOD_STRLEN] строку, описывающую метод сжатия (функция, обратная к parse_FAKE)
+  // Write into buf[MAX_METHOD_STRLEN] a string describing the compression method (the inverse of parse_FAKE)
   virtual void ShowCompressionMethod (char *buf, bool purify)   {sprintf (buf, "fake");}
 };
 
-// Разборщик строки метода сжатия STORING
+// Parser for the STORING compression method string
 COMPRESSION_METHOD* parse_FAKE (char** parameters);
 
 #endif  // __cplusplus
@@ -575,7 +575,7 @@ COMPRESSION_METHOD* parse_FAKE (char** parameters);
 // (De)compress data from memory buffer (input) to another memory buffer (output)                                             *
 // ****************************************************************************************************************************
 
-// Структура, хранящая позицию в буферах чтения/записи при упаковке/распаковке в памяти
+// Structure storing the position in the read/write buffers during in-memory compression/decompression
 struct MemBuf
 {
   MemBuf (void *input, int inputSize, void *output, int outputSize, CALLBACK_FUNC *_callback=0, void *_auxdata=0)
@@ -583,19 +583,19 @@ struct MemBuf
     readPtr=(BYTE*)input, readLeft=inputSize, writePtr=(BYTE*)output, writeLeft=writeBufferSize=outputSize, callback=_callback, auxdata=_auxdata;
   }
 
-  // Сколько данных было записано в буфер
+  // How much data was written into the buffer
   int written()  {return writeBufferSize-writeLeft;}
 
-  BYTE *readPtr;          // текущая позиция читаемых данных (NULL, если надо читать данные через callback)
-  int   readLeft;         // сколько байт ещё осталось во входном буфере
-  BYTE *writePtr;         // текущая позиция записываемых данных (NULL, если надо записывать данные через callback)
-  int   writeLeft;        // сколько байт ещё осталось в выходном буфере
-  int   writeBufferSize;  // полный размер выходного буфера
+  BYTE *readPtr;          // current position of the data being read (NULL if the data must be read via callback)
+  int   readLeft;         // how many bytes are still left in the input buffer
+  BYTE *writePtr;         // current position of the data being written (NULL if the data must be written via callback)
+  int   writeLeft;        // how many bytes are still left in the output buffer
+  int   writeBufferSize;  // full size of the output buffer
   CALLBACK_FUNC *callback;
   void *auxdata;
 };
 
-// Callback-функция чтения/записи для (рас)паковки в памяти
+// Read/write callback function for in-memory (de)compression
 int ReadWriteMem (const char *what, void *buf, int size, void *_membuf);
 
 

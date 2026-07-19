@@ -1,12 +1,12 @@
 #!/usr/bin/env ruby
 ########################################################
-### Íàñòðîéêè ïðîöåññà òåñòèðîâàíèÿ ####################
+### Benchmark process settings #########################
 ########################################################
 
-# Êàòàëîã, èñïîëüçóåìûé äëÿ ñîçäàíèÿ âðåìåííûõ ôàéëîâ (äîëæåí âêëþ÷àòü ñòðîêó temp)
+# Directory used for creating temporary files (must contain the string temp)
 $workdir = 'd:\temp'
 
-# Îáú¸ì ÎÇÓ êîìïüþòåðà/VM (èñïîëüçóåòñÿ äëÿ îïðåäåëåíèÿ öåëåñîîáðàçíîñòè êåøèðîâàíèÿ ôàéëîâ ïåðåä ñæàòèåì)
+# Amount of machine/VM RAM (used to decide whether it is worth caching files before compression)
 $ramsize = 512*1024*1024
 
 # Storing:
@@ -21,10 +21,10 @@ uharc_methods = ["-m0"]
   arc_methods = ["-m6x", "-m6", "-m6p"]
 uharc_methods = ["-mx"]
 
-# Ñïèñîê ìåòîäîâ ñæàòèÿ äëÿ òåñòèðóåìûõ àðõèâàòîðîâ ("--" èñïîëüçóåòñÿ äëÿ ðàçäåëåíèÿ ãðóïï ñõîæèõ ìåòîäîâ â îò÷¸òå)
+# List of compression methods for the archivers under test ("--" is used to separate groups of similar methods in the report)
   ace_methods = ["-m1 -d64", "-m5"]
   sbc_methods = ["-m1 -b5", "-m2 -b15", "-m3 -b63"]
-  rar_methods = ["-m1",  "-m2",  "-m3", "-m5 -mcd-", "-m5", "-m5 -mc14:128t"]   # îïóùåíî: "-m5 -mct-"
+  rar_methods = ["-m1",  "-m2",  "-m3", "-m5 -mcd-", "-m5", "-m5 -mc14:128t"]   # omitted: "-m5 -mct-"
 arc024_methods = ["-m1x",  "-m2xp",  "-m3xp",  "-m4xp",  "-m5xp",  "-m6xp",  "--",
                   "-m2p",  "-m3p",   "-m4p",   "-m5p",   "-m6p"
                  ]
@@ -46,18 +46,18 @@ arcext_methods= ["-mccm", "-mccmx", "-mlpaq", "-mdur", "-muda"]   # ["-mdul0", "
   _7z_methods = ["-mx1", "-mx3", "-mx5", "-mx7", "-mx9 -md=32m"]
 uharc_methods = ["-mz",  "-m1",  "-m2",  "-m3",  "-mx"]
  bssc_methods = ["", "-t"]
-WinRK_methods = ["rolz3"]  # ["fast", "normal", "rolz", "fast3", "normal3", "rolz3", "efficient"]  # îïóùåíû ââèäó æóòêîé òîðìîçíóòîñòè: "high", "max"
+WinRK_methods = ["rolz3"]  # ["fast", "normal", "rolz", "fast3", "normal3", "rolz3", "efficient"]  # omitted because they are terribly slow: "high", "max"
   sqc_methods = ["-uxx1", "-uxx5", "-uxx9"]
   sqc         = 'C:\Base\Tools\ARC\sqc\sqc'
 
-#Êîìàíäíûå ñòðîêè äëÿ WinRK (òåñòèðîâàíèå ôàêòè÷åñêè íå ðàáîòàåò - ïðîãðàììà îæèäàåò íàæàòèÿ OK)
-#Êðîìå òîãî, ýòè íàñòðîéêè íåâîçìîæíî èñïîëüçîâàòü äëÿ òåñòèðîâàíèÿ ñæàòèÿ îòäåëüíûõ ôàéëîâ
+#Command lines for WinRK (benchmarking does not actually work - the program waits for OK to be pressed)
+#Besides, these settings cannot be used to benchmark compression of individual files
 WinRK_add     = 'cmd /c start /w /min WinRK -create %archive -set profile %options -add +recurse * -apply -quit'
 WinRK_test    = 'cmd /c start /w /min WinRK -open %archive -test    -quit'
 WinRK_extract = 'cmd /c start /w /min WinRK -open %archive -extract -quit'
 
 
-# Ñïèñîê òåñòèðóåìûõ àðõèâàòîðîâ/óïàêîâùèêîâ: íàèìåíîâàíèå, êîìàíäà óïàêîâêè, îïöèÿ óïàêîâêè ñ ïîäêàòàëîãàìè, îïöèè ìåòîäîâ ñæàòèÿ, êîìàíäû òåñòèðîâàíèÿ/ðàñïàêîâêè
+# List of archivers/packers under test: name, pack command, option for packing subdirectories, compression method options, test/extract commands
 $archivers = [
 #  ["WinRK 3.0.3"        , WinRK_add                                         , " " ,  WinRK_methods, WinRK_extract],
 #  ["ARC 0.24"           , "Arc_0_24  a  -dsgen      %options %archive %file", "-r", arc024_methods, "Arc_0_24 t %archive"],  # "Arc_0_24 x %archive"],
@@ -77,7 +77,7 @@ $archivers = [
 #  ["BSSC 0.92 -b16383"  , "bssc  e %file %archive -b16383 %options",          ""  ,   bssc_methods, "bssc.exe d %archive nul"]
             ]
 
-# Ñïèñîê ôàéëîâ/êàòàëîãîâ, íà êîòîðûõ ïðîâîäèòñÿ òåñòèðîâàíèå
+# List of files/directories the benchmark is run on
 $files = [
           'C:\Base\Compiler\euphoria',
 #          'C:\Base\Compiler\VC',
@@ -88,7 +88,7 @@ $files = [
           'C:\Base\Compiler\Perl',
           'C:\Base\Compiler\Ruby',
           'C:\Base\Compiler\Bcc55',
-          'C:\FIDO\Disk_Q\Òåêñòû\Russian',
+          'C:\FIDO\Disk_Q\Тексты\Russian',
           'C:\Base\Compiler\msys',
           'C:\Base\Doc\Perl',
           'C:\Base\Doc\Java',
@@ -102,7 +102,7 @@ $files = [
           'C:\--Program Files',
           'C:\Base\Compiler',
           'C:\Base\Compiler\MSVC',
-          'C:\Downloads\Ïðîãðàììèðîâàíèå\Haskell\darcs-get',
+          'C:\Downloads\Программирование\Haskell\darcs-get',
           'C:\Base',
           'C:\!\FreeArchiver\Tests\vyct',
           'E:\backup\!\ArcHaskell\Tests\ghc-exe',
@@ -113,54 +113,54 @@ $files = [
           'E:\backup\!\ArcHaskell\Tests\both'
         ]
 
-# Ôàéë, êóäà ïîìåùàåòñÿ îò÷¸ò î òåñòèðîâàíèè, è ðåæèì åãî îòêðûòèÿ ("a" - äîáàâëåíèå, "w" - ïåðåçàïèñü)
+# File the benchmark report is written to, and its open mode ("a" - append, "w" - overwrite)
 $reportfile = ["report", "a"]
 
-# Ôîðìàò îò÷¸òà: êîýô. ñæàòèÿ è ñêîðîñòü ðàáîòû (true), èëè ðàçìåð àðõèâà è âðåìÿ ðàáîòû (false)
+# Report format: compression ratio and speed (true), or archive size and elapsed time (false)
 $report_ratios = true
 
-# Øèðèíà ñòîëáöà ñ èìåíàìè òåñòèðóåìûõ ìåòîäîâ ñæàòèÿ. Åñëè ïîñòàâèòü 0, òî áóäåò îïðåäåëÿòüñÿ àâòîìàòè÷åñêè
+# Width of the column holding the names of the compression methods under test. If set to 0, it is determined automatically
 $default_method_width = 0
 
 
 
 ########################################################
-### Êîä ïðîãðàììû ######################################
+### Program code #######################################
 ########################################################
 
-# Ïðîòåñòèðîâàòü àðõèâàòîðû `$archivers` íà ôàéëàõ `$files`
+# Benchmark the archivers in `$archivers` on the files in `$files`
 def main
-  sleep 2  # äàäèì ïîëüçîâàòåëþ âðåìÿ ïåðåêëþ÷èòüñÿ íà äðóãóþ çàäà÷ó
+  sleep 2  # give the user time to switch to another task
   workdir = File.join $workdir, "maketest"
   extractPath = File.join workdir, "extract"
   Dir.mkdir workdir rescue 0
   Dir.chdir workdir
   archive = (File.join workdir, "test.rk") .gsub('/','\\')
   File.delete archive rescue 0
-  # Öèêë ïî âñåì ôàéëàì/êàòàëîãàì, íà êîòîðûõ ïðîèçâîäèòñÿ òåñòèðîâàíèå
+  # Loop over all files/directories the benchmark is run on
   for file in $files
     isDir = File.stat(file).directory?
-    # Îáùèé îáú¸ì óïàêîâûâàåìûõ äàííûõ è ìàêñ. øèðèíà íàèìåíîâàíèÿ ìåòîäà
+    # Total size of the data being packed and the max method name width
     bytes, max_method_width = reportFile file, $archivers
-    # Öèêë ïî âñåì òåñòèðóåìûì àðõèâàòîðàì
+    # Loop over all archivers under test
     for archiver in $archivers
       arcname, aCmd, rOption, methods, *xCmds = archiver
-      # Ïðîïóñòèì ïîôàéëîâûå óïàêîâùèêè, åñëè íóæíî óïàêîâàòü öåëûé êàòàëîã ñ ïîäêàòàëîãàìè
+      # Skip per-file packers when a whole directory with subdirectories has to be packed
       next if rOption=="" && isDir
       reportArchiver arcname
-      # Öèêë ïî âñåì òåñòèðóåìûì ìåòîäàì ñæàòèÿ äàííîãî àðõèâàòîðà
+      # Loop over all compression methods under test for this archiver
       for method in methods
         if method=="--" then report ""; next; end
-        # Ñôîðìèðîâàòü íà îñíîâå øàáëîíîâ êîìàíäû óïàêîâêè/òåñòèðîâàíèÿ/ðàñïàêîâêè
+        # Build the pack/test/extract commands from the templates
         commands = ([aCmd]+xCmds).map {|cmd| cmd.gsub( "%options", method+(isDir ? " "+rOption : "")).
                                                  gsub( "%archive", archive).
                                                  gsub( "%file",    isDir ? "" : file)}
         Dir.chdir file  if isDir
         cache file      if bytes < $ramsize*3/4
-        # Îòðàáîòàòü êîìàíäû è ïîëó÷èòü âðåìÿ âûïîëíåíèÿ êàæäîé èç íèõ
+        # Run the commands and measure the execution time of each one
         times = commands.map {|cmd| cacheCmd cmd, archive
                                     time = tSystem cmd
-                                    prepareExtractDir extractPath  # ïåðåéòè â êàòàëîã äëÿ ðàñïàêîâêè è ïî÷èñòèòü åãî
+                                    prepareExtractDir extractPath  # switch to the extraction directory and clean it
                                     time
                              }
         reportResults method, bytes, archive, times, max_method_width
@@ -170,7 +170,7 @@ def main
   end
 end
 
-# Âûïîëíèòü êîìàíäó è âîçâðàòèòü âðåìÿ å¸ ðàáîòû
+# Run a command and return its elapsed time
 def tSystem cmd
   puts
   puts cmd.gsub(/cmd \/c start \/w /,'')
@@ -180,7 +180,7 @@ def tSystem cmd
   return Time.now - t0
 end
 
-# Ðåêóðñèâíûé îáõîä âñåõ ôàéëîâ â çàäàííîì êàòàëîãå è åãî ïîäêàòàëîãàõ
+# Recursively walk all files in the given directory and its subdirectories
 def recurse filename, &action
   if File.stat(filename).directory?
     for f in Dir[filename+'/*']
@@ -193,7 +193,7 @@ def recurse filename, &action
   end
 end
 
-# Îáùåå êîëè÷åñòâî ôàéëîâ â êàòàëîãå è èõ îáùèé ðàçìåð (äëÿ ôàéëîâ âîçâðàùàåò (1, filesize))
+# Total number of files in a directory and their total size (for a file returns (1, filesize))
 def filesAndBytes filename
   totalFiles = totalBytes = 0
   recurse filename do |f|
@@ -203,7 +203,7 @@ def filesAndBytes filename
   return totalFiles, totalBytes
 end
 
-# Ïðî÷èòàòü (çàêåøèðîâàòü) çàäàííûé ôàéë èëè âñå ôàéëû â êàòàëîãå ñ åãî ïîäêàòàëîãàìè
+# Read (cache) the given file, or all files in the directory and its subdirectories
 def cache filename
   puts "Caching files..."
   recurse filename do |f|
@@ -215,13 +215,13 @@ def cache filename
   GC.start
 end
 
-# Ïðî÷èòàòü (çàêåøèðîâàòü) èñïîëíÿåìûé ôàéë êîìàíäû
+# Read (cache) the executable file of the command
 def cacheCmd cmd, archive
   system ((cmd.split ' ')[0] + " -unknown-option <nul >nul")
   cache archive  if FileTest.exists? (archive)
 end
 
-# Ïîäãîòîâèòü êàòàëîã ê èñïîëüçîâàíèþ äëÿ ðàñïàêîâêè ôàéëîâ
+# Prepare the directory to be used for extracting files
 def prepareExtractDir dirname
   exit unless dirname =~ /temp/     # fool proof
   Dir.mkdir dirname rescue 0
@@ -230,7 +230,7 @@ def prepareExtractDir dirname
   Dir.chdir dirname
 end
 
-# Óäàëèòü êàòàëîã ðåêóðñèâíî
+# Remove a directory recursively
 def removeDirRecursively dirname
   if File.stat(dirname).directory?
     for f in Dir.new(dirname)
@@ -246,28 +246,24 @@ end
 
 
 ########################################################
-### Ïîäïðîãðàììû ôîðìèðîâàíèÿ îò÷¸òà î òåñòèðîâàíèè ####
+### Benchmark report generation subroutines ############
 ########################################################
 
-# Ôàéë, êóäà ïîìåùàåòñÿ îò÷¸ò î òåñòèðîâàíèè
-### ������������ ������������ ������ � ������������ ####
-########################################################
-
-# ����, ���� ���������� ����� � ������������
+# File the benchmark report is written to
 $outfile = File.open(*$reportfile)
 $outfile.sync = true
 
-# Ïîìåñòèòü â îò÷¸ò ñòðîêó `s`
+# Write line `s` to the report
 def report s
   $outfile.puts s
 end
 
-# Ïîìåñòèòü â îò÷¸ò çàãîëîâîê òåñòèðîâàíèÿ ôàéëà/êàòàëîãà `file` è âîçâðàòèòü åãî ðàçìåð
+# Write the benchmark header for file/directory `file` to the report and return its size
 def reportFile filename, archivers
-  # Ïîñ÷èòàåì ìàêñèìàëüíóþ øèðèíó ñðåäè íàèìåíîâàíèé ìåòîäîâ ñæàòèÿ
+  # Compute the maximum width among the compression method names
   max_method_width = archivers .map { |x| x[3]} .flatten .map {|s| s.length} .max
 
-  report ""  # Äîáàâèì ïóñòóþ ñòðîêó ïåðåä íîâûì ôàéëîì
+  report ""  # Add a blank line before a new file
   files, bytes = filesAndBytes filename
   if files==1
     report (sprintf "%s (%d bytes)", filename, bytes)
@@ -277,29 +273,29 @@ def reportFile filename, archivers
   return bytes.to_f, $default_method_width>0? $default_method_width : max_method_width
 end
 
-# Ïîìåñòèòü â îò÷¸ò çàãîëîâîê òåñòèðîâàíèÿ îäíîãî àðõèâàòîðà
+# Write the benchmark header for a single archiver to the report
 def reportArchiver archiverName
   report archiverName
 end
 
-# Ïîìåñòèòü â îò÷¸ò ðåçóëüòàòû òåñòèðîâàíèÿ ðåæèìà `method`
+# Write the benchmark results for method `method` to the report
 def reportResults method, bytes, archive, times, max_method_width
-  cbytes = File.size(archive).to_f  # Ðàçìåð ñæàòûõ äàííûõ
-  ratio  = bytes/cbytes             # Ñòåïåíü ñæàòèÿ
-  formatTimes  = times.map {|time| sprintf "%6.3f", time}            # Âðåìÿ óïàêîâêè/òåñòèðîâàíèÿ/ðàñïàêîâêè
-  formatSpeeds = times.map {|time| sprintf "%6.3f", bytes/time/1e6}  # Ñêîðîñòü óïàêîâêè/òåñòèðîâàíèÿ/ðàñïàêîâêè (â ìá/ñåê)
+  cbytes = File.size(archive).to_f  # Size of the compressed data
+  ratio  = bytes/cbytes             # Compression ratio
+  formatTimes  = times.map {|time| sprintf "%6.3f", time}            # Pack/test/extract time
+  formatSpeeds = times.map {|time| sprintf "%6.3f", bytes/time/1e6}  # Pack/test/extract speed (in MB/sec)
   if $report_ratios
-    # Îáû÷íûé ôîðìàò îò÷¸òà - ñî ñòåïåíüþ ñæàòèÿ è ñêîðîñòüþ ðàáîòû
+    # Normal report format - with compression ratio and speed
     report (sprintf " %-*s %6.3f %s", max_method_width, method, ratio, formatSpeeds.join(" "))
   else
-    # Àëüòåðíàòèâíûé ôîðìàò îò÷¸òà - c ðàçìåðîì àðõèâà è âðåìåíåì ðàáîòû
+    # Alternative report format - with archive size and elapsed time
     report (sprintf " %-*s %9d %s", max_method_width, method, cbytes, formatTimes.join(" "))
   end
 end
 
 
 ########################################################
-### Âûçîâ ãëàâíîé ôóíêöèè ##############################
+### Main function call #################################
 ########################################################
 
 main

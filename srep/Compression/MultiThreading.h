@@ -101,7 +101,7 @@ struct ProcessingThread : BackgroundThread
 
     virtual void run()
     {
-        SetCompressionThreadPriority();                 // Понизить приоритет треда (рас)паковки чтоб не завешивать машину
+        SetCompressionThreadPriority();                 // Lower the priority of the (de)compression thread so it doesn't hang the machine
         for(;;)
         {
             Job job = WorkerQueue.Get();
@@ -154,7 +154,7 @@ struct MultipleProcessingThreads
     // Thread performing jobs from queue
     void WorkerThread()
     {
-        SetCompressionThreadPriority();                 // Понизить приоритет треда (рас)паковки чтоб не завешивать машину
+        SetCompressionThreadPriority();                 // Lower the priority of the (de)compression thread so it doesn't hang the machine
         for(;;)
         {
             Task task = WorkerQueue.Get();
@@ -354,7 +354,7 @@ template <class Job, typename Worker>  int MTCompressor<Job,Worker>::Run()
 // Thread performing jobs from queue
 template <class Job, typename Worker>  void MTCompressor<Job,Worker>::WorkerThread()
 {
-    SetCompressionThreadPriority();                 // Понизить приоритет треда (рас)паковки чтоб не завешивать машину
+    SetCompressionThreadPriority();                 // Lower the priority of the (de)compression thread so it doesn't hang the machine
     Worker local;  SetErrCode (WorkerInit (local));
     for(;;)
     {
