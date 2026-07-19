@@ -42,10 +42,12 @@ Archives produced by DArc are format-compatible with [DArc86](https://github.com
 
 ### On Unix (Linux/macOS)
 
-1. Install [MicroHs](https://github.com/augustss/MicroHs) (`mhs`) for Haskell compilation. Also install `clang`, `make`, and the following development libraries:
-   - **Required:** `liblua5.1-dev`, `libncurses-dev` (Linux) / `lua@5.1`, `ncurses` via Homebrew (macOS)
-   - **Optional:** `libcurl-dev` (or `curl` on macOS) for URL/network archive support (auto-detected; the build succeeds without it)
-   - MicroHs is required by the build script; no GHC installation is needed.
+1. Install [MicroHs](https://github.com/augustss/MicroHs) (`mhs`) for Haskell compilation, plus `clang` and `make`.
+   - MicroHs installs both `mhs` and `cpphs` into `~/.mcabal/bin`. **Put that directory on your `PATH`** — `mhs` shells out to `cpphs` for every module using `{-# LANGUAGE CPP #-}`, which is most of this codebase, and its absence produces an unhelpful `callCommand: failed 32512`.
+   - **Required:** ncurses (`libncurses-dev` on Debian/Ubuntu; already present on macOS).
+   - **Optional:** libcurl (`libcurl4-openssl-dev`, or `curl` via Homebrew) for URL/network archive support. Auto-detected; the build succeeds without it.
+   - **Lua is *not* required.** Lua 5.1 is built from the copy vendored in `HsLua/src`, so there is nothing to install and no version skew with the HsLua bindings. This matters because Lua 5.1 is end-of-life: Homebrew has removed `lua@5.1` and distributions are dropping `liblua5.1-dev`.
+   - No GHC installation is needed.
 2. Make compile scripts executable (if needed):
    ```bash
    chmod +x compile*
@@ -76,9 +78,13 @@ Archives produced by DArc are format-compatible with [DArc86](https://github.com
 - **Compilation errors in C++ files**: Ensure you're using C++17 standard. The build scripts automatically set this via the makefiles.
 
 **macOS specifics:**
-- Install the dependencies with `brew install lua@5.1 ncurses`. `lua@5.1` is keg-only, so the build adds its `pkgconfig` directory automatically when `brew` is on PATH; if you build in an environment without `brew`, export `PKG_CONFIG_PATH` yourself.
-- Apple's clang ships no OpenMP. The build detects Darwin and drops `-fopenmp`/`-lgomp`, which costs nothing because libbsc's OpenMP paths are compiled out anyway.
-- `objcopy` does not exist on macOS; the 7z codec uses `ld -r -exported_symbols_list` there to achieve the same symbol localization.
+
+macOS is covered by CI (`macos-latest`) and builds with no extra dependencies beyond `mhs`/`cpphs` and the Xcode command line tools. Handled automatically by the build:
+- Apple's clang ships no OpenMP, so `-fopenmp`/`-lgomp` are dropped on Darwin. Nothing is lost — libbsc's OpenMP paths are compiled out regardless.
+- `objcopy` does not exist; the 7z codec uses `ld -r -exported_symbols_list` to achieve the same symbol localization.
+- There is no `/proc`, so physical-memory queries go through `sysctl` instead of `/proc/meminfo`.
+
+**Windows note:** the Windows CI jobs do not currently produce a binary — `create_dir` in `Compression/Common.h` calls the POSIX two-argument `mkdir`, which MinGW/UCRT does not provide. This is a long-standing failure, not a recent regression.
 
 **Linux/macOS:**
 - **"mhs not found"**: Install MicroHs from [the official repository](https://github.com/augustss/MicroHs) and ensure it's in your PATH.
