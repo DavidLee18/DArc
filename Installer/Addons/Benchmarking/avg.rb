@@ -11,12 +11,12 @@ def abort(a)
   exit 1
 end
 
-# Читаем
+# Read input
 
   for str in ARGF
     str = str.chomp.chomp
 
-    # Определяем заголовок/архиватор/режим/результаты: header, archiver, mode, results
+    # Detect header/archiver/mode/results: header, archiver, mode, results
     if str==""               then lines <<= "" unless lines[-1]==""; next; end
     if str.include? "bytes"  then header=str; next; end
     if str[0]!=32            then archiver=str; next; end
@@ -25,16 +25,16 @@ end
     mode = mode.strip
     results = result.split.map{|x|x.to_f}
 
-    # Добавляем архиватор+режим в список, если их там раньше не было
+    # Add archiver+mode to the list if it was not already there
     line = [archiver, mode]
     lines <<= line  unless lines.include?(line)
     cnt[line] += 1
 
-    # Проверяем, что количество элементов результата не зависит от заголовка
+    # Check that the number of result elements does not depend on the header
     rescnt[line] ||= results.length
     if rescnt[line] != results.length  then abort ["Different amounts of results for:", line]; end
 
-    # Суммируем данные независимо от заголовка
+    # Accumulate the data independently of the header
     results.each_index  { |i|
       sum[archiver]          ||= {}
       sum[archiver][mode]    ||= []
@@ -43,7 +43,7 @@ end
     }
   end
 
-# Проверяем
+# Check
 
   i1 = cnt.keys[0]
   n1 = cnt[i1]
@@ -51,7 +51,7 @@ end
     if n != n1 then abort ["Different amounts of lines:", {i1=>n1}, {i=>n}]; end
   end
 
-# Печатаем
+# Print
 
   last_archiver = ''
   for archiver, mode in lines
