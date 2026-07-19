@@ -362,17 +362,11 @@ void Pbkdf2Hmac (const BYTE *pwd, int pwdSize, const BYTE *salt, int saltSize,
 
 int fortuna_size (void);
 
-// The rest of the Fortuna PRNG interface used by EncryptionLib.hs. Only
-// fortuna_size was declared here, so the other four were reaching their call
-// sites in MicroHs-generated C as implicit declarations -- assumed to return
-// int, which silently truncated fortuna_read's unsigned long result. The
-// prng_state pointer is opaque here to avoid dragging LibTomCrypt's headers
-// into every translation unit that includes this file; it is passed straight
-// back to the library, so only its size matters, not its shape.
-int  fortuna_start       (void *prng);
-int  fortuna_add_entropy (const unsigned char *in, unsigned long inlen, void *prng);
-int  fortuna_ready       (void *prng);
-unsigned long fortuna_read (unsigned char *out, unsigned long outlen, void *prng);
+// The Fortuna PRNG entry points that EncryptionLib.hs binds are declared in
+// EncryptionFFI.h, not here. Declaring them in this header collided with
+// LibTomCrypt's own prototypes (prng_state* versus an opaque pointer) in every
+// translation unit that includes both, which broke the build on all five
+// platforms.
 
 // .7z support, implemented in Compression/7z/C_7z.c. Declared here rather than
 // in a 7z-specific header so that the FFI imports in Arc7z.hs can name a
