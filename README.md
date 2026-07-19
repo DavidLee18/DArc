@@ -14,9 +14,6 @@ Archives produced by DArc are format-compatible with [DArc86](https://github.com
 
 ## Building
 
-> **Note:** The main Haskell source files are stored in [Git LFS](https://git-lfs.github.com/).
-> Install `git-lfs` before cloning, or run `git lfs pull` after cloning, otherwise source files will be empty LFS pointer stubs.
-
 > **Build System Overview:**
 > DArc uses MicroHs (a lightweight Haskell compiler) for the Haskell code and Clang for C/C++ components (compiled with C++17 standard). The build process automatically compiles all compression libraries, HsLua bindings, and links everything into the final executable.
 
@@ -88,8 +85,8 @@ Archives produced by DArc are format-compatible with [DArc86](https://github.com
 - **Permission errors**: Make sure compile scripts are executable: `chmod +x compile*`
 
 **All Platforms:**
-- **Empty Haskell source files**: The Haskell sources use Git LFS. Run `git lfs pull` to download them.
-- **"No such file or directory" during compilation**: Verify all git submodules are initialized: `git submodule update --init --recursive`
+- **"No such file or directory" during compilation**: The `compile` scripts generate `common.mak` (copied from `unix-common.mak` or `win32-common.mak`) before invoking `make`. Run a `compile` script rather than calling `make` directly in a fresh checkout.
+- **Stale object files after switching build paths**: The MicroHs and GHC builds share `/tmp/out/`. If you switch between `./compile-O2` and `./compile-ghc`, remove `/tmp/out/` to avoid link errors from objects built with mismatched `-D__MHS__`.
 
 ---
 

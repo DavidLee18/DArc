@@ -76,7 +76,7 @@ for d in $defines $gui_flag; do optc_args="$optc_args -optc $d"; done
 
 mhs Arc \
   -tenvironment \
-  -iCompression -icompat-ghc -iHsLua/src \
+  -iCompression -icompat-ghc -icompat-oldtime -iHsLua/src \
   $defines $gui_flag \
   $optc_args \
   -o "$exe"

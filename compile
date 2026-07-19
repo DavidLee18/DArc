@@ -50,7 +50,7 @@ optl_args=""
 for o in $c_objs; do optl_args="$optl_args -optl $o"; done
 for l in $c_libs; do optl_args="$optl_args -optl $l"; done
 mhs Arc \
-  -iCompression -icompat-ghc -iHsLua/src \
+  -iCompression -icompat-ghc -icompat-oldtime -iHsLua/src \
   $defines $gui_flag \
   $optc_args \
   $optl_args \
