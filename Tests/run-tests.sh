@@ -88,14 +88,32 @@ probe () {  # probe <description> <dir> <extra-opts...>
 mkdir -p "$WORK/tiny" && echo hello > "$WORK/tiny/one.txt"
 mkdir -p "$WORK/few"  && for i in 1 2 3; do echo "file $i" > "$WORK/few/f$i.txt"; done
 
-echo "preflight (narrowing):"
+echo "preflight (input axis):"
 probe "1 file,  -m0, no --nodates"      "$WORK/tiny"
-probe "1 file,  -m0, --nodates"         "$WORK/tiny" --nodates
-probe "1 file,  -m0, -r --nodates"      "$WORK/tiny" -r --nodates
-probe "3 files, -m0, -r --nodates"      "$WORK/few"  -r --nodates
-probe "corpus,  -m0, -r, no --nodates"  "$CORPUS"    -r
 probe "corpus,  -m0, -r, --nodates"     "$CORPUS"    -r --nodates
-probe "corpus,  -m4, -r, no --nodates"  "$CORPUS"    -r -m4
+
+# Input size, file count and --nodates were already ruled out: a single
+# six-byte file fails exactly like the full corpus. So bisect the *stage*
+# instead. Each of these disables one thing that runs between the banner and
+# the compression pipeline; whichever one starts passing names the culprit.
+echo
+echo "preflight (stage bisect):"
+probe "-i0   no progress indicator"     "$WORK/tiny" -i0
+probe "-di   minimal display"           "$WORK/tiny" -di
+probe "-lc-  no compression mem limit"  "$WORK/tiny" -lc-
+probe "-ld-  no decompression limit"    "$WORK/tiny" -ld-
+probe "-mt1  single thread"             "$WORK/tiny" -mt1
+probe "-s-   non-solid"                 "$WORK/tiny" -s-
+
+# Does any command work at all, or only archive creation break?
+echo
+echo "preflight (other commands):"
+if "$ARC" l "$WORK/tiny" >"$WORK/probe.log" 2>&1; then
+  printf '  %-38s ok\n' "l on a directory (expect usage err)"
+else
+  printf '  %-38s %s\n' "l on a directory" \
+    "$(grep -iE 'exception|error' "$WORK/probe.log" | head -1 | cut -c1-60)"
+fi
 echo
 
 printf '%-24s %-10s %-10s %s\n' TEST ROUNDTRIP FORMAT DETAIL
