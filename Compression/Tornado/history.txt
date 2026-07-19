@@ -69,11 +69,11 @@ chunked hash (15 elements + pointer to the next chunk)
 +match_writer that dynamically uses byte/bit/huf/aricoder
 +kadach huffman   (5000/3)
 
-ускорение lazy parsing благодар€ одновременной проверке двух позиций
-1. tor -5/-6: ищем матчи дл€ p+1, в хеш-таблице сохран€ем p[0,4,5,6],
-              провер€ем сразу матчи на p и p+1,
-              если Ќ»„≈√ќ не найдено - ищем матчи дл€ p до дистанции 48к
-2. в старших режимах - после нахождени€ матча размером N+4 переключаемс€ на поиск
-        матчей дл€ p+4 (или p+1..p+3). или просто ищем на шару :)
+speeding up lazy parsing by checking two positions at the same time
+1. tor -5/-6: search for matches at p+1, store p[0,4,5,6] in the hash table,
+              check matches at p and p+1 right away,
+              if NOTHING is found - search for matches at p up to a distance of 48k
+2. in the higher modes - after finding a match of size N+4, switch to searching
+        for matches at p+4 (or p+1..p+3). or just search on the off chance :)
 
-lzma: искать сразу матчи дл€ p и p+1, заполн€€ две таблицы. при отсутствии результатов - быстрый поиск дл€ p (до 48к)
+lzma: search for matches at p and p+1 at once, filling two tables. if there are no results - fast search for p (up to 48k)
