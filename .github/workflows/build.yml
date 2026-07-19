@@ -109,9 +109,11 @@ jobs:
     - name: Install packages (macOS)
       if: runner.os == 'macOS'
       run: |
-        brew install lua@5.1 ncurses || true
-        # lua@5.1 is keg-only, so expose its pkgconfig for the build.
-        echo "PKG_CONFIG_PATH=$(brew --prefix lua@5.1)/lib/pkgconfig:${PKG_CONFIG_PATH:-}" >> "$GITHUB_ENV"
+        # No lua@5.1 here: Homebrew removed the formula, and ./compile builds
+        # Lua from the copy vendored in HsLua/src regardless. Asking for it
+        # only produced a red "No available formula" line in every macOS run
+        # that had nothing to do with the build.
+        brew install ncurses || true
 
     - name: Install MicroHs (macOS)
       if: runner.os == 'macOS'

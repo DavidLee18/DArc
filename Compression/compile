@@ -22,15 +22,25 @@ fail () { echo "ERROR: $*" >&2; exit 1; }
 # Sanitizer flags arrive from the top-level compile script as DARC_DEBUG_FLAGS
 # and override each makefile's own DEBUG_FLAGS. Passing it on the make command
 # line is what gives it priority over the assignment inside the makefile.
-make_args=()
-[ -n "${DARC_DEBUG_FLAGS:-}" ] && make_args=(DEBUG_FLAGS="$DARC_DEBUG_FLAGS")
+#
+# This is a function rather than an array of extra arguments because macOS
+# still ships bash 3.2, where expanding an empty array under `set -u` is an
+# "unbound variable" error rather than nothing at all. An earlier version used
+# "${make_args[@]}" and broke the macOS build while working everywhere else.
+run_make () {
+  if [ -n "${DARC_DEBUG_FLAGS:-}" ]; then
+    make "$@" DEBUG_FLAGS="$DARC_DEBUG_FLAGS"
+  else
+    make "$@"
+  fi
+}
 
 # Common.o / CompressionLibrary.o first -- the codecs include their headers.
-make "${make_args[@]}" || fail "failed to build Compression/ (Common.o, CompressionLibrary.o)"
+run_make || fail "failed to build Compression/ (Common.o, CompressionLibrary.o)"
 
 for c in "${CODECS[@]}"; do
   [ -d "$c" ] || fail "codec directory missing: Compression/$c"
-  make -C "$c" "${make_args[@]}" || fail "failed to build codec: Compression/$c"
+  run_make -C "$c" || fail "failed to build codec: Compression/$c"
 done
 
 echo "Compression: all ${#CODECS[@]} codecs built"
