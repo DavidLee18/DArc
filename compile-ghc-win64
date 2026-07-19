@@ -123,8 +123,11 @@ export WINEPATH="C:\\ghc948\\mingw\\bin"
 # Build inside the source dir. GHC --make resolves paths relative to CWD.
 cd "$DARC_DIR"
 
+# compat-oldtime supplies System.Time/System.Locale, which the stock GHC Windows
+# bindist lacks (old-time/old-locale are not boot packages). compat-ghc is NOT on
+# the path here: it is a MicroHs fill set and would shadow real base modules.
 wine "$GHC_WIN_ROOT/bin/ghc.exe" \
-  -i. -iCompression -iHsLua/src -icompat-win \
+  -i. -iCompression -iHsLua/src -icompat-oldtime \
   -odir "$HTEMP_WIN" -hidir "$HTEMP_WIN" \
   $opt -threaded \
   "${hs_defines[@]}" \

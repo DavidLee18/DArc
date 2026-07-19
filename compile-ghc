@@ -112,7 +112,12 @@ for d in $defines $gui_flag; do
 done
 for f in $lua_cflags; do optc_args+=(-optc "$f"); done
 
-# Note: compat-ghc is for MHS fills; exclude when building with real GHC.
+# Note: compat-ghc is for MHS fills; exclude when building with real GHC —
+# its System.Process/GHC.Conc/Data.Array/... would shadow GHC's own base modules.
+# compat-oldtime (System.Time/System.Locale) is also omitted here: this path
+# expects the old-time and old-locale packages in the host GHC package db.
+# The Wine cross build (compile-ghc-win64) uses a stock bindist without them,
+# so it adds -icompat-oldtime instead.
 ghc \
   -i. -iCompression -iHsLua/src \
   -odir "$htempdir" -hidir "$htempdir" \
