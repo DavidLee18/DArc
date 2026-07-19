@@ -201,10 +201,10 @@ joinLists main_archive added_archives added_diskfiles
     let select_file arcfile = do
           diskfile <- Hash.lookup added_hash (keyFunc arcfile)
           case (diskfile, update_type) of
-            (Nothing, 's')        ->  return Nothing        -- There is no file with this name on disk: mode "
+            (Nothing, 's')        ->  return Nothing        -- There is no file with this name on disk: the "--sync" mode removes from the archive files that are absent from disk
             (Nothing,  _ )        ->  return$ Just arcfile   --   the other modes keep the already existing file in the archive
             (Just diskfile, 'a')  ->  return$ Just diskfile  -- The file exists both in the archive and on disk:  mode "a" always takes the file from disk
-            (Just diskfile, 's')  ->  return$ Just (sync_file  arcfile diskfile)  -- mode "
+            (Just diskfile, 's')  ->  return$ Just (sync_file  arcfile diskfile)  -- the "--sync" mode keeps the archived file if it does not differ from the file on disk
             (Just diskfile,  _ )  ->  return$ Just (newer_file arcfile diskfile)  -- the other modes take the newer of the two files
 
     list1 <- mapMaybeM select_file main_list  -- choose between the file from the input archive and the file from disk
@@ -227,7 +227,7 @@ joinLists main_archive added_archives added_diskfiles
 
     -- Merge the list of files in the archive with the list of files on disk
     let mergeFunction = case () of     -- Add the new files at the end of the archive in two cases:
-          _ | append         -> (++)   --    when the " option is set
+          _ | append         -> (++)   --    when the "--append" option is set
             | sort_order=="" -> (++)   --    when the sort key is empty ("-ds")
             | otherwise      -> mergeFilelists sort_order find_group  -- otherwise use a full-featured merge
     return$ mergeFunction list1 list2
@@ -294,7 +294,7 @@ splitToSolidBlocks command filelist  =  (dirs &&& [(aNO_COMPRESSION,dirs)])
   where
     -- Directories go into a separate block
     (dirs,files)  =  partition (fiSpecialFile . cfFileInfo) filelist
-    -- In the archive copying commands and when
+    -- In the archive copying commands and with --append, already compressed files must not be repacked
     (solidBlocksToKeep, filesToSplit) | opt_keep_original command = partition isCompressedFile files
                                       | otherwise                 = ([],files)
 
@@ -344,7 +344,7 @@ splitBy []    _          files = [files]  -- If there are no criteria for splitt
 splitBy crits recompress files = splitByLen computeLen files where
   -- Return the number of files from the head of files that should go into the next solid block
   computeLen files = case () of
-     _ | recompress     -> newLen   -- when
+     _ | recompress     -> newLen   -- with --recompress we are not interested in any of the old solid blocks at all
        | Just n<-oldLen -> n        -- copy the existing solid block of n files
        | Just n<-oldPos -> if n<=newLen
                              then n        -- make a new solid block reaching exactly up to the start of the next old one
@@ -461,7 +461,7 @@ splitFileTypes command  -- Determine the file types from arc.groups
   | quick_and_dirty = deleteIf (null . snd) . zip [0..] . partitionList (opt_types_count command) (cfType command)
                       -- Split into groups by extension with max. 2 mb per group and determine the file types by content
   | otherwise       = unsafePerformIO . concatMapM groupType . splitBy [GroupByExt, GroupByBlockSize aGroupSize] True
---splitFileTypes = map (unsafePerformIO.groupType) . splitBy [GroupByExt, GroupByBlockSize (500*kb)] True
+--splitFileTypes = map (unsafePerformIO.groupType) . splitBy [GroupByExt, GroupByBlockSize (500*kb)] True   -- splits into groups *lazily*, as needed
  where                           -- todo: add splitting by groups
 
   -- If autodetection won't help this algorithm
