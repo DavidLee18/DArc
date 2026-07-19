@@ -36,7 +36,8 @@ hash_of () { $SHA "$1" | cut -d' ' -f1; }
 # Hash a directory tree by content AND relative path, so a file landing in the
 # wrong place fails even if its bytes are intact.
 tree_hash () {
-  ( cd "$1" && find . -type f -print0 | LC_ALL=C sort -z |
+  [ -d "$1" ] || { echo "no-such-dir"; return; }
+  ( cd "$1" && find . -type f -print0 2>/dev/null | LC_ALL=C sort -z |
     while IFS= read -r -d '' f; do printf '%s  %s\n' "$(hash_of "$f")" "$f"; done ) | $SHA | cut -d' ' -f1
 }
 
@@ -155,15 +156,26 @@ while IFS= read -r line; do
 
   # Show why a step failed, right here. A harness that says "see some.log"
   # is useless on CI, where that file is never seen by anyone.
-  show_fail () {  # show_fail <stage> <logfile>
-    printf '%-24s %-10s %-10s %s\n' "$label" FAIL - "$1 failed"
+  show_fail () {  # show_fail <stage> <logfile> [exit-status]
+    local why="$1 failed"
+    # Decode signal deaths. 128+N is a signal; bash prints its own "Bus error"
+    # line to the terminal but that never reaches the CI log, so name it here.
+    case "${4:-}" in
+      134) why="$1 died on SIGABRT (128+6)" ;;
+      138) why="$1 died on SIGBUS (128+10) - likely unaligned access" ;;
+      139) why="$1 died on SIGSEGV (128+11)" ;;
+      *) ;;
+    esac
+    printf '%-24s %-10s %-10s %s\n' "$label" FAIL - "$why"
     echo "    command: $2"
     sed 's/^/    | /' "$3" | head -12
   }
 
   # --nodates is what makes the archive bytes reproducible.
-  if ! "$ARC" a --nodates -r -y $opts "$arc" "$CORPUS" >"$WORK/$label.create.log" 2>&1; then
-    show_fail create "$ARC a --nodates -r -y $opts $arc $CORPUS" "$WORK/$label.create.log"
+  "$ARC" a --nodates -r -y $opts "$arc" "$CORPUS" >"$WORK/$label.create.log" 2>&1
+  st=$?
+  if [ $st -ne 0 ]; then
+    show_fail create "$ARC a --nodates -r -y $opts $arc $CORPUS" "$WORK/$label.create.log" "$st"
     fail=$((fail+1)); continue
   fi
 
@@ -180,12 +192,30 @@ while IFS= read -r line; do
 
   # The extracted tree is rooted wherever the corpus path put it; find the
   # directory that actually contains the payload rather than assuming a layout.
-  root="$(find "$out" -type d -name "$(basename "$CORPUS")" | head -1)"
+  # -print -quit rather than piping to head, which closed the pipe under find
+  # and produced "find: write error" noise on every case.
+  root="$(find "$out" -type d -name "$(basename "$CORPUS")" -print -quit 2>/dev/null)"
   [ -n "$root" ] || root="$out"
-  got="$(tree_hash "$root")"
 
+  # Distinguish "extracted nothing" from "extracted the wrong bytes". Both used
+  # to report as "tree differs", which hid the difference between a failed
+  # extraction and a corrupted one.
+  n_got="$(find "$root" -type f 2>/dev/null | wc -l | tr -d ' ')"
+  n_want="$(find "$CORPUS" -type f 2>/dev/null | wc -l | tr -d ' ')"
+  if [ "$n_got" -eq 0 ]; then
+    printf '%-24s %-10s %-10s %s\n' "$label" FAIL - "extract produced no files (expected $n_want)"
+    fail=$((fail+1)); continue
+  fi
+
+  got="$(tree_hash "$root")"
   if [ "$got" != "$EXPECTED_TREE" ]; then
-    printf '%-24s %-10s %-10s %s\n' "$label" FAIL - "extracted tree differs from corpus"
+    detail="content differs"
+    [ "$n_got" -ne "$n_want" ] && detail="file count $n_got, expected $n_want"
+    printf '%-24s %-10s %-10s %s\n' "$label" FAIL - "extracted tree differs: $detail"
+    # name the first few files that actually differ, so the log says which
+    ( cd "$CORPUS" && find . -type f | LC_ALL=C sort ) > "$WORK/$label.want" 2>/dev/null
+    ( cd "$root"   && find . -type f | LC_ALL=C sort ) > "$WORK/$label.got"  2>/dev/null
+    diff "$WORK/$label.want" "$WORK/$label.got" 2>/dev/null | head -4 | sed 's/^/      /'
     fail=$((fail+1)); continue
   fi
 
