@@ -29,7 +29,11 @@
  */
 
 #include <stdlib.h>
+#if defined(__APPLE__) || defined(__FreeBSD__) || defined(__OpenBSD__) || defined(__NetBSD__)
+#include <stdlib.h>   // malloc.h is a glibc header; the BSDs put malloc in stdlib.h
+#else
 #include <malloc.h>
+#endif
 #include "entropy.h"
 #include "ttaenc.h"
 

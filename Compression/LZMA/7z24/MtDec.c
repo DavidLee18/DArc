@@ -802,7 +802,11 @@ static WRes MtDec_ThreadFunc2(CMtDecThread *t)
 
 #ifdef USE_ALLOCA
 #ifdef _WIN32
+#if defined(__APPLE__) || defined(__FreeBSD__) || defined(__OpenBSD__) || defined(__NetBSD__)
+#include <stdlib.h>   // malloc.h is a glibc header; the BSDs put malloc in stdlib.h
+#else
 #include <malloc.h>
+#endif
 #else
 #include <stdlib.h>
 #endif

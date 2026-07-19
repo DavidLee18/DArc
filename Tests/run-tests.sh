@@ -127,6 +127,22 @@ raw "a on ONE named file (no dir scan)"   a -y -m0 "$WORK/e1.arc" "$WORK/tiny/on
 raw "a writing to /tmp"                   a -y -m0 /tmp/e2.arc "$WORK/tiny/one.txt"
 raw "t on a non-archive"                  t -y "$WORK/tiny/one.txt"
 raw "lb on a non-archive"                 lb "$WORK/tiny/one.txt"
+
+# How far did it get? DArc writes into a temp file and renames on success, so
+# whatever is left behind after the crash bounds the failure point far more
+# precisely than reading source does:
+#   nothing        -> died before opening the output
+#   zero bytes     -> opened it, died before the first write
+#   some bytes     -> got through the SFX/header write, died later
+echo
+echo "  forensics after a failed create:"
+rm -rf "$WORK/forensic"; mkdir -p "$WORK/forensic"
+( cd "$WORK/forensic" && "$ARC" a -y -m0 out.arc "$WORK/tiny/one.txt" >/dev/null 2>&1 )
+if [ -z "$(ls -A "$WORK/forensic" 2>/dev/null)" ]; then
+  echo "    (no files left behind - died before creating any output)"
+else
+  ls -la "$WORK/forensic" | tail -n +2 | sed 's/^/    /'
+fi
 echo
 
 printf '%-24s %-10s %-10s %s\n' TEST ROUNDTRIP FORMAT DETAIL
