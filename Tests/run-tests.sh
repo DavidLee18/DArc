@@ -69,6 +69,35 @@ declare -a NEWFP=()
 
 rm -rf "$WORK"; mkdir -p "$WORK"
 
+# ---------------------------------------------------------------------------
+# Preflight. When every configuration fails identically the useful question is
+# not "which codec broke" but "what is the smallest input that still breaks".
+# These narrow it down in one CI round-trip instead of several.
+# ---------------------------------------------------------------------------
+probe () {  # probe <description> <dir> <extra-opts...>
+  local desc="$1" src="$2"; shift 2
+  local a="$WORK/probe.arc"; rm -f "$a"
+  if "$ARC" a -y "$@" "$a" "$src" >"$WORK/probe.log" 2>&1; then
+    printf '  %-38s ok\n' "$desc"
+  else
+    printf '  %-38s FAIL: %s\n' "$desc" \
+      "$(grep -iE 'exception|error' "$WORK/probe.log" | head -1 | cut -c1-70)"
+  fi
+}
+
+mkdir -p "$WORK/tiny" && echo hello > "$WORK/tiny/one.txt"
+mkdir -p "$WORK/few"  && for i in 1 2 3; do echo "file $i" > "$WORK/few/f$i.txt"; done
+
+echo "preflight (narrowing):"
+probe "1 file,  -m0, no --nodates"      "$WORK/tiny"
+probe "1 file,  -m0, --nodates"         "$WORK/tiny" --nodates
+probe "1 file,  -m0, -r --nodates"      "$WORK/tiny" -r --nodates
+probe "3 files, -m0, -r --nodates"      "$WORK/few"  -r --nodates
+probe "corpus,  -m0, -r, no --nodates"  "$CORPUS"    -r
+probe "corpus,  -m0, -r, --nodates"     "$CORPUS"    -r --nodates
+probe "corpus,  -m4, -r, no --nodates"  "$CORPUS"    -r -m4
+echo
+
 printf '%-24s %-10s %-10s %s\n' TEST ROUNDTRIP FORMAT DETAIL
 printf '%s\n' "------------------------------------------------------------------"
 
