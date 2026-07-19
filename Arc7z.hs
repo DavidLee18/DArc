@@ -23,11 +23,11 @@ import System.Process (system)
 import Options
 import Errors
 
-foreign import ccall unsafe "darc_7z_list"
+foreign import ccall unsafe "Compression.h darc_7z_list"
   c_darc_7z_list    :: CString -> IO CInt
-foreign import ccall unsafe "darc_7z_extract"
+foreign import ccall unsafe "Compression.h darc_7z_extract"
   c_darc_7z_extract :: CString -> CString -> IO CInt
-foreign import ccall unsafe "darc_7z_test"
+foreign import ccall unsafe "Compression.h darc_7z_test"
   c_darc_7z_test    :: CString -> IO CInt
 
 is7zArchive :: String -> Bool

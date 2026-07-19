@@ -31,6 +31,14 @@ $(TEMPDIR)/C_7z_wrapper.o: C_7z.c makefile
 # except the three exported entry points so we don't clash with LZMA/PPMD
 # decoders already linked via the main LZMA codec.
 $(TEMPDIR)/C_7z.o: $(TEMPDIR)/C_7z_wrapper.o $(SDK_OBJS)
+ifeq ($(shell uname -s),Darwin)
+	# macOS has no objcopy. Mach-O achieves the same thing at link time:
+	# -exported_symbols_list keeps the listed symbols global and demotes every
+	# other one to private extern. Symbols carry a leading underscore here.
+	printf '_darc_7z_list\n_darc_7z_extract\n_darc_7z_test\n' > $@.exports
+	ld -r -exported_symbols_list $@.exports -o $@ $^
+	rm -f $@.exports
+else
 	ld -r -o $@.tmp $^
 	objcopy --localize-hidden \
 	  --keep-global-symbol=darc_7z_list \
@@ -38,3 +46,4 @@ $(TEMPDIR)/C_7z.o: $(TEMPDIR)/C_7z_wrapper.o $(SDK_OBJS)
 	  --keep-global-symbol=darc_7z_test \
 	  $@.tmp $@
 	rm -f $@.tmp
+endif

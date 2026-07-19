@@ -27,6 +27,7 @@ jobs:
           - os: windows-11-arm
             msys2_sys: UCRT64
             msys2_pkg_prefix: mingw-w64-ucrt-x86_64
+          - os: macos-latest
     steps:
     - uses: actions/checkout@v6.0.2
       with:
@@ -97,6 +98,56 @@ jobs:
     # cleanly and passes every other check.
     - name: Test (Linux)
       if: runner.os == 'Linux'
+      run: |
+        chmod +x Tests/*.sh
+        Tests/run-tests.sh Tests/arc
+
+    # ── macOS steps ────────────────────────────────────────────────────────────
+    # macOS is in the matrix so the portability work stays honest. The README
+    # has claimed macOS support for a long time while the build did not
+    # actually work there; without a runner it would simply rot again.
+    - name: Install packages (macOS)
+      if: runner.os == 'macOS'
+      run: |
+        brew install lua@5.1 ncurses || true
+        # lua@5.1 is keg-only, so expose its pkgconfig for the build.
+        echo "PKG_CONFIG_PATH=$(brew --prefix lua@5.1)/lib/pkgconfig:${PKG_CONFIG_PATH:-}" >> "$GITHUB_ENV"
+
+    - name: Install MicroHs (macOS)
+      if: runner.os == 'macOS'
+      run: |
+        microhs_sha="05a3fbd5d73ae6a37111a6ced5b57bb1717b8975"
+        microhs_tar="/tmp/microhs.tar.gz"
+        microhs_expected_sha256="a1f85821cbae877d0ea3e173235d45c833d9145b2ca9e92e77d284b6730c63b6"
+        curl -fsSL "https://github.com/augustss/MicroHs/archive/$microhs_sha.tar.gz" -o "$microhs_tar"
+        echo "$microhs_expected_sha256  $microhs_tar" | shasum -a 256 -c -
+        tar -xzf "$microhs_tar" -C /tmp
+        cd "/tmp/MicroHs-$microhs_sha"
+        make minstall
+        # mhs and cpphs both land here; putting the directory on PATH keeps them
+        # at the same pinned version.
+        echo "$HOME/.mcabal/bin" >> "$GITHUB_PATH"
+
+    - name: Build (macOS)
+      if: runner.os == 'macOS'
+      run: |
+        chmod +x compile*
+        ./compile-O2
+
+    - name: Verify binary (macOS)
+      if: runner.os == 'macOS'
+      run: |
+        test -f Tests/arc || { echo "::error::build produced no Tests/arc"; exit 1; }
+        test -s Tests/arc || { echo "::error::Tests/arc is empty"; exit 1; }
+        chmod +x Tests/arc
+        ./Tests/arc --help > /tmp/arc-help.txt 2>&1 || true
+        grep -qi 'command' /tmp/arc-help.txt || {
+          echo "::error::Tests/arc did not produce recognisable help output"
+          head -20 /tmp/arc-help.txt; exit 1; }
+        echo "binary verified: $(wc -c < Tests/arc) bytes"
+
+    - name: Test (macOS)
+      if: runner.os == 'macOS'
       run: |
         chmod +x Tests/*.sh
         Tests/run-tests.sh Tests/arc

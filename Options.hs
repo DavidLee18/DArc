@@ -627,7 +627,11 @@ luaLevel level params action = do
 ---- System information ----------------------------------------------------------------------------
 ----------------------------------------------------------------------------------------------------
 
-#if defined(FREEARC_WIN)
+-- macOS is grouped with Windows here rather than with Linux: the Linux branch
+-- below reads /proc/meminfo, which does not exist on macOS, so it would report
+-- zero physical memory and the -lc/-ld defaults derived from it would collapse
+-- to zero. Environment.cpp queries sysctl there instead, so bind to it.
+#if defined(FREEARC_WIN) || defined(FREEARC_MACOS)
 -- |Number of physical processors/cores in the system. Determines number of heavy-computations thread runned
 foreign import ccall unsafe "Environment.h GetProcessorsCount"
   getProcessorsCount :: CInt

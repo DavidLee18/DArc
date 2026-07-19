@@ -43,7 +43,7 @@ Archives produced by DArc are format-compatible with [DArc86](https://github.com
 ### On Unix (Linux/macOS)
 
 1. Install [MicroHs](https://github.com/augustss/MicroHs) (`mhs`) for Haskell compilation. Also install `clang`, `make`, and the following development libraries:
-   - **Required:** `liblua5.1-dev`, `libncurses-dev` (or `ncurses` on macOS via Homebrew)
+   - **Required:** `liblua5.1-dev`, `libncurses-dev` (Linux) / `lua@5.1`, `ncurses` via Homebrew (macOS)
    - **Optional:** `libcurl-dev` (or `curl` on macOS) for URL/network archive support (auto-detected; the build succeeds without it)
    - MicroHs is required by the build script; no GHC installation is needed.
 2. Make compile scripts executable (if needed):
@@ -74,6 +74,11 @@ Archives produced by DArc are format-compatible with [DArc86](https://github.com
 - **"mhs not found"**: Verify MicroHs is installed and `%USERPROFILE%\.mcabal\bin` is in your PATH. Run `mhs --version` to test.
 - **"clang not found"**: Install the UCRT64 toolchain in MSYS2: `pacman -S mingw-w64-ucrt-x86_64-clang mingw-w64-ucrt-x86_64-make`
 - **Compilation errors in C++ files**: Ensure you're using C++17 standard. The build scripts automatically set this via the makefiles.
+
+**macOS specifics:**
+- Install the dependencies with `brew install lua@5.1 ncurses`. `lua@5.1` is keg-only, so the build adds its `pkgconfig` directory automatically when `brew` is on PATH; if you build in an environment without `brew`, export `PKG_CONFIG_PATH` yourself.
+- Apple's clang ships no OpenMP. The build detects Darwin and drops `-fopenmp`/`-lgomp`, which costs nothing because libbsc's OpenMP paths are compiled out anyway.
+- `objcopy` does not exist on macOS; the 7z codec uses `ld -r -exported_symbols_list` there to achieve the same symbol localization.
 
 **Linux/macOS:**
 - **"mhs not found"**: Install MicroHs from [the official repository](https://github.com/augustss/MicroHs) and ensure it's in your PATH.

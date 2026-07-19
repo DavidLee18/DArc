@@ -23,6 +23,9 @@ else
   bit64=""
 fi
 defines="-DFREEARC_UNIX -DFREEARC_INTEL_BYTE_ORDER $bit64"
+# macOS has no /proc, so the Haskell side cannot read /proc/meminfo there and
+# must go through the C sysctl implementation in Environment.cpp instead.
+if [ "$(uname -s)" = "Darwin" ]; then defines="$defines -DFREEARC_MACOS"; fi
 # ******** -DFREEARC_WIN -DFREEARC_MOTOROLA_BYTE_ORDER -DFREEARC_ONLY_ALIGNED_ACCESS *******
 cp unix-common.mak common.mak
 cd Compression
@@ -30,7 +33,14 @@ chmod +x compile
 ./compile
 cd ..
 make ALL DEFINES="-DFREEARC_UNIX -DFREEARC_INTEL_BYTE_ORDER $bit64 -D__MHS__"
-lua_libs=$(pkg-config --libs lua5.1 2>/dev/null || echo "-llua5.1")
+if [ "$(uname -s)" = "Darwin" ] && command -v brew >/dev/null 2>&1; then
+  # Homebrew keeps lua@5.1 keg-only, so its pkgconfig dir is not searched by
+  # default. Add it if present rather than making the user export it.
+  _lua_prefix=$(brew --prefix lua@5.1 2>/dev/null || true)
+  [ -n "$_lua_prefix" ] && [ -d "$_lua_prefix/lib/pkgconfig" ] && \
+    export PKG_CONFIG_PATH="$_lua_prefix/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
+fi
+lua_libs=$(pkg-config --libs lua5.1 2>/dev/null || pkg-config --libs lua-5.1 2>/dev/null || echo "-llua5.1")
 if pkg-config --exists libcurl 2>/dev/null; then
   curl_libs=$(pkg-config --libs libcurl)
 else
@@ -39,13 +49,20 @@ else
 fi
 clang -std=c99 -c HsLua/src/ntrljmp.c -IHsLua/src $(pkg-config --cflags lua5.1 2>/dev/null) -o $ctempdir/ntrljmp.o
 c_objs="$ctempdir/Environment.o $ctempdir/URL.o $ctempdir/Common.o $ctempdir/CompressionLibrary.o $ctempdir/C_PPMD.o $ctempdir/C_LZP.o $ctempdir/C_LZMA.o $ctempdir/C_LZMA2.o $ctempdir/LzmaEnc.o $ctempdir/LzmaDec.o $ctempdir/Lzma2Enc.o $ctempdir/Lzma2Dec.o $ctempdir/MtCoder.o $ctempdir/MtDec.o $ctempdir/7zStream.o $ctempdir/LzFind.o $ctempdir/LzFindMt.o $ctempdir/Threads.o $ctempdir/LzFindOpt.o $ctempdir/CpuArch.o $ctempdir/C_LZ4.o $ctempdir/C_BCJ.o $ctempdir/C_GRZip.o $ctempdir/C_BSC.o $ctempdir/C_DisPack.o $ctempdir/C_Zstd.o $ctempdir/C_7z.o $ctempdir/C_Dict.o $ctempdir/C_REP.o $ctempdir/C_MM.o $ctempdir/C_TTA.o $ctempdir/C_Tornado.o $ctempdir/C_4x4.o $ctempdir/C_Delta.o $ctempdir/C_External.o $ctempdir/C_Encryption.o $ctempdir/ntrljmp.o"
-c_libs="-lstdc++ -lncurses -lpthread -lgomp $curl_libs $lua_libs"
+# -lgomp is GNU's OpenMP runtime and does not exist on macOS. Nothing in this
+# build actually uses OpenMP (see the note in unix-common.mak), so it is simply
+# omitted there rather than substituting Apple's -lomp.
+case "$(uname -s)" in
+  Darwin) omp_libs="" ;;
+  *)      omp_libs="-lgomp" ;;
+esac
+c_libs="-lstdc++ -lncurses -lpthread $omp_libs $curl_libs $lua_libs"
 if [[ -n $gui_flag ]]; then c_objs="$c_objs $ctempdir/GuiEnvironment.o"; fi
 # Build -optc defines for C files compiled by the Haskell compiler
 optc_defines=""
 for d in $defines $gui_flag; do optc_defines="$optc_defines -optc${d}"; done
 # Collect optimization flag (-O2 by default) -- already parsed above
-lua_cflags=$(pkg-config --cflags lua5.1 2>/dev/null || echo "-I/usr/include/lua5.1")
+lua_cflags=$(pkg-config --cflags lua5.1 2>/dev/null || pkg-config --cflags lua-5.1 2>/dev/null || echo "-I/usr/include/lua5.1")
 rm -f $exe
 if ! command -v mhs >/dev/null 2>&1; then
   echo "error: mhs (MicroHs) is required for Haskell compilation but was not found in PATH" >&2
@@ -64,7 +81,12 @@ if ! command -v cpphs >/dev/null 2>&1; then
   exit 1
 fi
 # Build -optc and -optl flags for the mhs C backend
-optc_args="-optc -I. -optc -ICompression -optc -IHsLua/src"
+# mhs emits its callback trampoline as HsFunPtr (void(*)(void)) and passes it
+# where CALLBACK_FUNC* is expected. The cast is ABI-safe and the code is
+# generated, not ours, but newer clang promotes the mismatch from warning to
+# error, which stops the macOS build. Older clang on the CI runners only warns,
+# and -w already hid it there.
+optc_args="-optc -I. -optc -ICompression -optc -IHsLua/src -optc -Wno-incompatible-function-pointer-types"
 for f in $lua_cflags; do optc_args="$optc_args -optc $f"; done
 optl_args=""
 for o in $c_objs; do optl_args="$optl_args -optl $o"; done
