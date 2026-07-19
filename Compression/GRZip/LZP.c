@@ -42,10 +42,21 @@
 #define LZP_RunFlag      0xF3
 #define LZP_XorFlag      (uint8)(0xFF^LZP_RunFlag)
 
-#define LZP_AllocHashTable()                                          \
-  uint8 ** Contexts=(uint8 **)BigAlloc((LZP_HT_Size+1)*sizeof(uint32)); \
-  if (Contexts==NULL) return (GRZ_NOT_ENOUGH_MEMORY);                 \
-  memset(Contexts,0,(LZP_HT_Size+1)*sizeof(uint32));
+// Contexts holds pointers, so it must be sized by sizeof(uint8*), not
+// sizeof(uint32). The two are the same width only on 32-bit; on 64-bit this
+// allocated exactly half the table it then indexed to LZP_HT_Size, so
+// "Contexts[HashIndex]=Input" wrote past the end of the block and the matching
+// read returned a wild pointer that was immediately dereferenced.
+//
+// It surfaced as an intermittent SIGSEGV in a GRZip worker thread, and -- when
+// the overflow landed on heap metadata instead -- as glibc "double free or
+// corruption" during an unrelated later operation. Which one you got depended
+// on heap layout, so the failure appeared to wander between codecs and
+// platforms rather than pointing here.
+#define LZP_AllocHashTable()                                              \
+  uint8 ** Contexts=(uint8 **)BigAlloc((LZP_HT_Size+1)*sizeof(uint8*));   \
+  if (Contexts==NULL) return (GRZ_NOT_ENOUGH_MEMORY);                     \
+  memset(Contexts,0,(LZP_HT_Size+1)*sizeof(uint8*));
 
 #define LZP_FreeHashTable() BigFree(Contexts);
 
