@@ -38,3 +38,6 @@ Tests/.work/
 # Left in the working tree when arc dies mid-write (common while testing crashes)
 $$temparc$$*.tmp
 #.arc
+
+# Cross-built Windows binaries
+Tests/*.exe
