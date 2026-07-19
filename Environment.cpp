@@ -46,7 +46,7 @@ LargestMemoryBlock::LargestMemoryBlock() : p(NULL)
 void LargestMemoryBlock::test()
 {
   if ((size>>20)>0) {
-    printf("Allocated %4d mb, addr=%p\n", size>>20, p);
+    printf("Allocated %4zu mb, addr=%p\n", (size_t)(size>>20), p);
     LargestMemoryBlock next;
     next.test();
   } else {
