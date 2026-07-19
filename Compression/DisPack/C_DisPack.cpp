@@ -1,3 +1,8 @@
+// DisPack codec. Originally by Bulat Ziganshin, from FreeArc 0.67
+// (March 2014, formerly http://freearc.org); ported into DArc.
+// The comments below arrived corrupted and were restored from the
+// upstream 0.67 sources and translated.
+
 extern "C" {
 #include "C_DisPack.h"
 }
@@ -50,10 +55,10 @@ static inline void setvalue32b (void *p, uint32 x) {
 #include "DisPack.cpp"
 
 /*-------------------------------------------------*/
-/* ���������� ������ DISPACK_METHOD                */
+/* Implementation of the DISPACK_METHOD class      */
 /*-------------------------------------------------*/
 
-// �����������, ������������� ���������� ������ ������ �������� �� ���������
+// Constructor assigning default values to the compression method's parameters
 DISPACK_METHOD::DISPACK_METHOD()
 {
     BlockSize      = 8*mb;
@@ -63,11 +68,11 @@ DISPACK_METHOD::DISPACK_METHOD()
 enum {TAG_DATA = 0xC71B3AE1, TAG_EXE};
 bool is_tag (unsigned x)  {return (x^TAG_DATA) < 0x10;}
 
-// ������� ����������
+// Decompression function
 int DISPACK_METHOD::decompress (CALLBACK_FUNC *callback, void *auxdata)
 {
     int   errcode = FREEARC_OK;     // Error code returned by last operation or FREEARC_OK
-    BYTE *In = NULL,  *Out = NULL;  // ��������� �� ������� � �������� ������, ��������������
+    BYTE *In = NULL,  *Out = NULL;  // Pointers to the input and output data, respectively
     uint  BaseAddress = 1u<<30;
     int   CHUNK_SIZE, InBufferSize = BlockSize+BlockSize/4+1024;
     READ4_OR_EOF (CHUNK_SIZE);
@@ -78,7 +83,7 @@ int DISPACK_METHOD::decompress (CALLBACK_FUNC *callback, void *auxdata)
         int tag;
         READ4_OR_EOF (tag);
         if (!is_tag(tag) || tag==TAG_DATA) {
-            // ��������� ������������� ������, �� ��� 4 ����� �� ��� �������� ��������� ;)
+            // copy the uncompressed data; we may already have read 4 bytes of it ;)
             int done = 0, len;
             if (tag==TAG_DATA) {
               READ4 (len);
@@ -91,8 +96,8 @@ int DISPACK_METHOD::decompress (CALLBACK_FUNC *callback, void *auxdata)
             WRITE (In, len);
             BaseAddress += len;
         } else if (tag==TAG_EXE) {
-            int InSize, OutSize;     // ���������� ���� �� ������� � �������� ������, ��������������
-            // ���������� ������������� � �������� ������ �������� ������
+            int InSize, OutSize;     // number of bytes in the input and output buffers, respectively
+            // Perform the decoding and obtain the size of the output data
             READ4 (OutSize);
             READ4 (InSize);
             if (OutSize > BlockSize  ||  InSize > InBufferSize)  ReturnErrorCode(FREEARC_ERRCODE_BAD_COMPRESSED_DATA);
@@ -133,19 +138,19 @@ EXETYPE detect (BYTE *buf, int len)
   return double(e8)/len >= 0.002   &&   double(exe+obj)/e8 >= 0.20  &&   double(exe)/e8 >= 0.01?  EXETYPE_EXE : EXETYPE_DATA;
 }
 
-// ������� ��������
+// Compression function
 int DISPACK_METHOD::compress (CALLBACK_FUNC *callback, void *auxdata)
 {
     int   errcode = FREEARC_OK;     // Error code returned by last operation or FREEARC_OK
-    BYTE *In = NULL,  *Out = NULL;  // ��������� �� ������� � �������� ������, ��������������
-    int   InSize;  uint32 OutSize;  // ���������� ���� �� ������� � �������� ������, ��������������
+    BYTE *In = NULL,  *Out = NULL;  // Pointers to the input and output data, respectively
+    int   InSize;  uint32 OutSize;  // Number of bytes in the input and output buffers, respectively
     uint  BaseAddress = 1u<<30;
     const int CHUNK_SIZE = 16*kb;
     bool  first_time = TRUE;
     BIGALLOC (BYTE, In, BlockSize+2);
     for(;;)
     {
-        // ������ ���� ������� �� 16 ��, ���� �� �������� ����������� ���
+        // Read the file in 16 kb blocks until the executable code runs out
         BYTE *p = In;  int len;
         do {
             READ_LEN (len, p, CHUNK_SIZE);
@@ -161,7 +166,7 @@ int DISPACK_METHOD::compress (CALLBACK_FUNC *callback, void *auxdata)
 
         if (InSize)
         {
-            // �������� ����������� ���
+            // Encode the executable code
             Out = DisFilter(In, InSize, BaseAddress, OutSize);
             if (Out==NULL)  ReturnErrorCode(FREEARC_ERRCODE_NOT_ENOUGH_MEMORY);
             WRITE4 (TAG_EXE);
@@ -172,7 +177,7 @@ int DISPACK_METHOD::compress (CALLBACK_FUNC *callback, void *auxdata)
         }
         if (len)
         {
-            // �������� ������ ������
+            // Encode the remaining data
             if (len!=CHUNK_SIZE  ||  is_tag(value32(p))) {
                 WRITE4 (TAG_DATA);
                 WRITE4 (len);
@@ -188,7 +193,7 @@ finished:
 
 #endif  // !defined (FREEARC_DECOMPRESS_ONLY)
 
-// �������� � buf[MAX_METHOD_STRLEN] ������, ����������� ����� ������ � ��� ��������� (�������, �������� � parse_DISPACK)
+// Write into buf[MAX_METHOD_STRLEN] a string describing the compression method and its parameters (the inverse of parse_DISPACK)
 void DISPACK_METHOD::ShowCompressionMethod (char *buf)
 {
     DISPACK_METHOD defaults; char BlockSizeStr[100]=":";
@@ -196,37 +201,37 @@ void DISPACK_METHOD::ShowCompressionMethod (char *buf)
     sprintf (buf, "dispack070%s%s", BlockSize!=defaults.BlockSize? BlockSizeStr:"", ExtendedTables? ":x":"");
 }
 
-// ������������ ������ ���� DISPACK_METHOD � ��������� ����������� ��������
-// ��� ���������� NULL, ���� ��� ������ ����� ������ ��� �������� ������ � ����������
+// Constructs a DISPACK_METHOD object with the given compression parameters
+// or returns NULL if this is a different compression method, or a parameter is malformed
 COMPRESSION_METHOD* parse_DISPACK (char** parameters)
 {
   if (strcmp (parameters[0], "dispack") == 0
    || strcmp (parameters[0], "dispack070") == 0) {
-    // ���� �������� ������ (������� ��������) - "dispack", �� ������� ��������� ���������
+    // If the method name (parameter zero) is "dispack", parse the remaining parameters
 
     DISPACK_METHOD *p = new DISPACK_METHOD;
-    int error = 0;  // ������� ����, ��� ��� ������� ���������� ��������� ������
+    int error = 0;  // Flag indicating that an error occurred while parsing the parameters
 
-    // �������� ��� ��������� ������ (��� ������ ������ ��� ������������� ������ ��� ������� ���������� ���������)
+    // Iterate over all the method's parameters (or bail out early if parsing one of them fails)
     while (*++parameters && !error)
     {
       char* param = *parameters;
-      if (strlen(param)==1) switch (*param) {    // ������������� ���������
+      if (strlen(param)==1) switch (*param) {    // Single-letter parameters
         case 'x':  p->ExtendedTables = 1; continue;
       }
-      switch (*param) {                    // ���������, ���������� ��������
+      switch (*param) {                    // Parameters carrying values
         case 'b':  p->BlockSize = parseMem (param+1, &error); continue;
       }
-      // ���� �� ��������, ���� � ��������� �� ������� ��� ��������
-      // ���� ���� �������� ������� ��������� ��� ����� ������,
-      // �� �������� ��� �������� ���� BlockSize
+      // We get here when the parameter does not state its name
+      // If this parameter can be parsed as an amount of memory,
+      // then assign its value to the BlockSize field
       p->BlockSize = parseMem (param, &error);
     }
-    if (error)  {delete p; return NULL;}  // ������ ��� �������� ���������� ������
+    if (error)  {delete p; return NULL;}  // Error while parsing the method's parameters
     return p;
   } else
-    return NULL;   // ��� �� ����� DISPACK
+    return NULL;   // This is not the DISPACK method
 }
 
-static int DISPACK_x = AddCompressionMethod (parse_DISPACK);   // �������������� ������ ������ DISPACK
+static int DISPACK_x = AddCompressionMethod (parse_DISPACK);   // Register the DISPACK method parser
 
