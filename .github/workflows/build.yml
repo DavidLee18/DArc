@@ -21,12 +21,6 @@ jobs:
         include:
           - os: ubuntu-latest
           - os: ubuntu-24.04-arm
-          - os: windows-latest
-            msys2_sys: UCRT64
-            msys2_pkg_prefix: mingw-w64-ucrt-x86_64
-          - os: windows-11-arm
-            msys2_sys: UCRT64
-            msys2_pkg_prefix: mingw-w64-ucrt-x86_64
           - os: macos-latest
     steps:
     - uses: actions/checkout@v6.0.2
@@ -154,26 +148,36 @@ jobs:
         chmod +x Tests/*.sh
         Tests/run-tests.sh Tests/arc
 
-    # ── Windows steps ──────────────────────────────────────────────────────────
-    - name: Set up MSYS2 (Windows)
-      if: runner.os == 'Windows'
-      uses: msys2/setup-msys2@v2
+  # ── Windows (cross-compiled from Linux) ─────────────────────────────────────
+  # Windows is built here rather than on a Windows runner under MSYS2.
+  #
+  # The MSYS2 jobs ran compile-O2 -> ./compile, which hardcodes -DFREEARC_UNIX.
+  # That compiles the Unix compat block in Compression/Common.h, whose
+  # __cdecl/_stat/WINAPI/FARPROC definitions then collide with the real
+  # windows.h reached via LZMA/Windows/Thread.h. They never produced a binary.
+  #
+  # compile-mhs-win64 builds the FREEARC_WIN path with the mingw-w64 cross
+  # toolchain, which works, and Wine lets the result actually be exercised
+  # instead of merely inspected.
+  #
+  # Trade-off worth knowing: this checks the Windows *binary*, not a Windows
+  # *host*. Wine is not Windows, and nothing here covers the ARM64 Windows
+  # target the old matrix nominally had (it installed x86-64 MSYS2 packages
+  # anyway). Reinstating a native job is worthwhile once the FREEARC_WIN path
+  # is known-good; that is easier to do from a working baseline than from a
+  # job that has never once succeeded.
+  windows-cross:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v6.0.2
       with:
-        msystem: ${{ matrix.msys2_sys }}
-        update: true
-        path-type: inherit
-        install: >-
-          ${{ matrix.msys2_pkg_prefix }}-clang
-          ${{ matrix.msys2_pkg_prefix }}-lua51
-          curl
-          make
-    - name: Install MicroHs (Windows)
-      if: runner.os == 'Windows'
-      shell: msys2 {0}
+        lfs: false
+    - name: Install cross toolchain and Wine
       run: |
-        # Install MSYS2 development tools needed for MicroHs compilation
-        pacman -S --noconfirm --needed msys2-devel
-
+        sudo apt-get update
+        sudo apt-get install -y --no-install-recommends mingw-w64 mingw-w64-tools cpphs wine64 wine
+    - name: Install MicroHs
+      run: |
         microhs_sha="05a3fbd5d73ae6a37111a6ced5b57bb1717b8975"
         microhs_tar="/tmp/microhs.tar.gz"
         microhs_expected_sha256="a1f85821cbae877d0ea3e173235d45c833d9145b2ca9e92e77d284b6730c63b6"
@@ -181,46 +185,25 @@ jobs:
         echo "$microhs_expected_sha256  $microhs_tar" | sha256sum -c -
         tar -xzf "$microhs_tar" -C /tmp
         cd "/tmp/MicroHs-$microhs_sha"
-
-        # Build MicroHs in MSYS environment (has Unix compatibility headers)
-        export MSYSTEM=MSYS
         make minstall
-      env:
-        MSYSTEM: MSYS
-    # mhs needs cpphs for {-# LANGUAGE CPP #-} modules. MicroHs' own install may
-    # place it in ~/.mcabal/bin; if not, try pacman. Failure here is not fatal
-    # on its own -- the compile script checks for cpphs explicitly and reports
-    # a clear error -- but this gives it the best chance of being present.
-    - name: Ensure cpphs (Windows)
-      if: runner.os == 'Windows'
-      shell: msys2 {0}
+        echo "$HOME/.mcabal/bin" >> "$GITHUB_PATH"
+    - name: Build (Windows cross)
       run: |
-        export PATH="$HOME/.mcabal/bin:$PATH"
-        if command -v cpphs >/dev/null 2>&1; then
-          echo "cpphs already available: $(command -v cpphs)"
-        else
-          pacman -S --noconfirm --needed cpphs 2>/dev/null \
-            || echo "note: cpphs not installable via pacman; compile will report if it is required"
-        fi
-
-    - name: Build (Windows)
-      if: runner.os == 'Windows'
-      shell: msys2 {0}
+        chmod +x compile-win64-c compile-mhs-win64
+        ./compile-mhs-win64
+    # compile-mhs-win64 already checks the MZ signature, so this is about the
+    # artifact reaching the workspace rather than re-deriving the same fact.
+    - name: Verify binary
       run: |
-        export PATH="$HOME/.mcabal/bin:$PATH"
-        cd "$GITHUB_WORKSPACE"
-        chmod +x compile*
-        ./compile-O2
-
-    - name: Verify binary (Windows)
-      if: runner.os == 'Windows'
-      shell: msys2 {0}
+        test -f Tests/arc-mhs-win64.exe || { echo "::error::no Tests/arc-mhs-win64.exe"; exit 1; }
+        echo "binary verified: $(wc -c < Tests/arc-mhs-win64.exe) bytes"
+    # A PE header only proves the toolchain was wired up. The first working
+    # cross-build produced a valid image that printed its help and then failed
+    # every archive operation, so run the thing.
+    - name: Smoke-test under Wine
       run: |
-        cd "$GITHUB_WORKSPACE"
-        bin=Tests/arc; [ -f Tests/arc.exe ] && bin=Tests/arc.exe
-        test -f "$bin" || { echo "::error::build produced no $bin"; exit 1; }
-        test -s "$bin" || { echo "::error::$bin is empty"; exit 1; }
-        echo "binary verified: $bin ($(wc -c < "$bin") bytes)"
+        chmod +x Tests/win-test.sh
+        Tests/win-test.sh
 
   # ── AddressSanitizer on x86-64 ──────────────────────────────────────────────
   # Added to diagnose a double free that only appeared on this runner. It found
