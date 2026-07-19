@@ -667,13 +667,27 @@ getAvailablePhysicalMemory :: CUInt
 getAvailablePhysicalMemory  =  unsafePerformIO $ readSysMemKB "MemAvailable:"
 
 -- |Parse a memory value in kB from /proc/meminfo for the given field label
+-- CUInt is 32 bits, so it tops out at just under 4 GB while /proc/meminfo
+-- reports kB that multiply well past that on any modern machine. Narrowing
+-- the product directly wrapped silently under GHC and threw "arithmetic
+-- overflow" under MicroHs, which made every command abort during
+-- command-line parsing -- Cmdline.hs forces this to compute the default
+-- -lc/-ld limits before touching a single file.
+--
+-- Saturating at maxBound keeps the existing 32-bit interface (the Windows
+-- branch of this #if binds a C function returning unsigned) and is the right
+-- answer for the one thing the value feeds: a memory ceiling. A machine with
+-- more than 4 GB is reported as having 4 GB and gets a correspondingly
+-- conservative limit, which is a performance compromise rather than a
+-- correctness one. Widening the type end to end, including Environment.h,
+-- would remove the compromise.
 readSysMemKB :: String -> IO CUInt
 readSysMemKB label = do
   result <- Control.Exception.try (readFile "/proc/meminfo") :: IO (Either Control.Exception.SomeException String)
   case result of
     Left  _    -> return 0
     Right info ->
-      case [ fromIntegral (n * 1024 :: Integer)
+      case [ clampToCUInt (n * 1024)
            | l <- lines info
            , label `Data.List.isPrefixOf` l
            , w <- [words (drop (length label) l)]
@@ -681,6 +695,15 @@ readSysMemKB label = do
            , let n = read (head w) :: Integer ] of
         (v:_) -> return v
         []    -> return 0
+
+-- |Narrow to CUInt without overflowing: values above the 32-bit ceiling
+-- saturate rather than wrapping or raising an arithmetic exception.
+clampToCUInt :: Integer -> CUInt
+clampToCUInt n
+  | n <= 0        = 0
+  | n >= maxCUInt = maxBound
+  | otherwise     = fromIntegral n
+  where maxCUInt = toInteger (maxBound :: CUInt)
 
 -- |Size of maximum memory block we can allocate.
 -- On 64-bit Unix there is effectively no single-allocation limit.
