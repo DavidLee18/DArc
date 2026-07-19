@@ -25,7 +25,20 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 ARC="${1:-$HERE/arc}"
 BLESS="${2:-}"
 CORPUS="$HERE/corpus"
-WORK="$HERE/.work"
+# The work tree must live OUTSIDE "$HERE", not at "$HERE/.work".
+#
+# "arc a -r ... $CORPUS" treats the final path component as a mask and searches
+# for it recursively beneath the corpus's parent -- which is "$HERE". Extraction
+# reproduces the full stored path, so every "$HERE/.work/out-<label>" ends up
+# containing another directory named "corpus". The next create then matches
+# those too and stores a directory entry for each.
+#
+# The effect compounds: out-m4 carries copies of out-store's and out-m1's trees,
+# and so on, so the entry count grows far faster than the corpus does (228, 290,
+# 482 ... across the suite). That is what exhausted the MicroHs heap on the last
+# few configurations, and what left several same-named "corpus" directories for
+# the extraction check to choose between.
+WORK="${DARC_TEST_WORK:-${TMPDIR:-/tmp}/darc-tests-work}"
 FP="$HERE/fingerprints.txt"
 
 [ -x "$ARC" ] || { echo "error: archiver not found or not executable: $ARC" >&2; exit 2; }
@@ -190,12 +203,32 @@ while IFS= read -r line; do
     fail=$((fail+1)); continue
   fi
 
-  # The extracted tree is rooted wherever the corpus path put it; find the
-  # directory that actually contains the payload rather than assuming a layout.
-  # -print -quit rather than piping to head, which closed the pipe under find
-  # and produced "find: write error" noise on every case.
-  root="$(find "$out" -type d -name "$(basename "$CORPUS")" -print -quit 2>/dev/null)"
-  [ -n "$root" ] || root="$out"
+  # Locate the extracted payload.
+  #
+  # Archives store each path with the leading "/" stripped, so extracting with
+  # -dp"$out" reproduces the corpus at exactly "$out/${CORPUS#/}". Derive it
+  # rather than search for it.
+  #
+  # Searching by name was actively wrong: "arc a -r ... $CORPUS" treats the
+  # last path component as a *mask* and emits a directory entry for every
+  # directory of that name anywhere under the base dir. Extraction then
+  # recreates those as empty dirs, so "$out" holds several directories called
+  # "corpus" of which only one has files. The old
+  #     find "$out" -type d -name corpus -print -quit
+  # returned whichever readdir yielded first -- the real tree on some
+  # filesystems, an empty phantom on others -- which is why this suite reported
+  # "extract produced no files" on one CI runner and passed on another with a
+  # byte-identical archive. Nothing was wrong with extraction.
+  root="$out/${CORPUS#/}"
+  if [ ! -d "$root" ]; then
+    # Fall back only if the layout is genuinely unexpected, and even then
+    # prefer a candidate that actually holds files over the first one found.
+    root=""
+    for cand in $(find "$out" -type d -name "$(basename "$CORPUS")" 2>/dev/null | LC_ALL=C sort); do
+      if [ -n "$(find "$cand" -type f -print -quit 2>/dev/null)" ]; then root="$cand"; break; fi
+    done
+    [ -n "$root" ] || root="$out"
+  fi
 
   # Distinguish "extracted nothing" from "extracted the wrong bytes". Both used
   # to report as "tree differs", which hid the difference between a failed

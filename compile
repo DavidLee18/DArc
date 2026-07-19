@@ -27,24 +27,30 @@ defines="-DFREEARC_UNIX -DFREEARC_INTEL_BYTE_ORDER $bit64"
 # must go through the C sysctl implementation in Environment.cpp instead.
 if [ "$(uname -s)" = "Darwin" ]; then defines="$defines -DFREEARC_MACOS"; fi
 # ******** -DFREEARC_WIN -DFREEARC_MOTOROLA_BYTE_ORDER -DFREEARC_ONLY_ALIGNED_ACCESS *******
-cp unix-common.mak common.mak
-cd Compression
-chmod +x compile
-./compile
-cd ..
-make ALL DEFINES="-DFREEARC_UNIX -DFREEARC_INTEL_BYTE_ORDER $bit64 -D__MHS__"
-# Lua 5.1 is built from the copy vendored in HsLua/src rather than linked from
-# the system. Distributions have been dropping Lua 5.1 for years -- Homebrew
-# removed lua@5.1 entirely -- and the vendored copy is the version HsLua's
-# bindings were written against, so using it removes an external dependency and
-# a version-skew risk at the same time.
-lua_libs=""
+# libcurl detection must happen BEFORE any C is compiled. URL.cpp is guarded by
+# FREEARC_NOURL, so if the probe runs after "make ALL" the guard never reaches
+# the C side: URL.o is built full of curl calls, the link omits -lcurl, and the
+# build dies with a screen of undefined references to curl_easy_*. Only the
+# Haskell half ever saw the define. This stayed hidden because CI installs
+# libcurl and pkg-config together, so the no-curl path was never exercised.
 if pkg-config --exists libcurl 2>/dev/null; then
   curl_libs=$(pkg-config --libs libcurl)
 else
   curl_libs=""
   defines="$defines -DFREEARC_NOURL"
 fi
+cp unix-common.mak common.mak
+cd Compression
+chmod +x compile
+./compile
+cd ..
+make ALL DEFINES="$defines -D__MHS__"
+# Lua 5.1 is built from the copy vendored in HsLua/src rather than linked from
+# the system. Distributions have been dropping Lua 5.1 for years -- Homebrew
+# removed lua@5.1 entirely -- and the vendored copy is the version HsLua's
+# bindings were written against, so using it removes an external dependency and
+# a version-skew risk at the same time.
+lua_libs=""
 lua_objs=""
 for src in HsLua/src/*.c; do
   obj="$ctempdir/hslua_$(basename "${src%.c}").o"

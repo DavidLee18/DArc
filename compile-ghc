@@ -24,6 +24,16 @@ else
 fi
 defines="-DFREEARC_UNIX -DFREEARC_INTEL_BYTE_ORDER $bit64"
 
+# Probe for libcurl before compiling any C. URL.cpp is guarded by
+# FREEARC_NOURL; detecting curl after "make ALL" leaves URL.o full of curl
+# calls that nothing links against. See the same note in ./compile.
+if pkg-config --exists libcurl 2>/dev/null; then
+  curl_libs=$(pkg-config --libs libcurl)
+else
+  curl_libs=""
+  defines="$defines -DFREEARC_NOURL"
+fi
+
 # Build C/C++ side fresh for GHC (no -D__MHS__). Uses isolated tempdir to avoid
 # picking up MHS-flagged object files from /tmp/out/FreeArc.
 cp unix-common.mak common.mak
@@ -40,15 +50,9 @@ for o in /tmp/out/FreeArc/C_*.o /tmp/out/FreeArc/CompressionLibrary.o /tmp/out/F
   [[ -f $o ]] && cp "$o" "$ctempdir/"
 done
 # Build Environment.cpp / URL.cpp / GuiEnvironment.cpp into our tempdir, no __MHS__
-make TEMPDIR="$ctempdir" ALL DEFINES="-DFREEARC_UNIX -DFREEARC_INTEL_BYTE_ORDER $bit64"
+make TEMPDIR="$ctempdir" ALL DEFINES="$defines"
 
 lua_libs=$(pkg-config --libs lua5.1 2>/dev/null || echo "-llua5.1")
-if pkg-config --exists libcurl 2>/dev/null; then
-  curl_libs=$(pkg-config --libs libcurl)
-else
-  curl_libs=""
-  defines="$defines -DFREEARC_NOURL"
-fi
 clang -std=c99 -c HsLua/src/ntrljmp.c -IHsLua/src $(pkg-config --cflags lua5.1 2>/dev/null) -o "$ctempdir/ntrljmp.o"
 
 c_objs=(
