@@ -8,62 +8,62 @@ extern "C" {
 #ifndef FREEARC_DECOMPRESS_ONLY
 int dict_compress (MemSize BlockSize, int MinCompression, int MinWeakChars, int MinLargeCnt, int MinMediumCnt, int MinSmallCnt, int MinRatio, CALLBACK_FUNC *callback, void *auxdata)
 {
-    BYTE* In = NULL;  // указатель на входные данные
-    BYTE* Out= NULL;  // указатель на выходные данные
-    int x;            // код произошедшей ошибки
+    BYTE* In = NULL;  // pointer to the input data
+    BYTE* Out= NULL;  // pointer to the output data
+    int x;            // code of the error that occurred
     while ( (x = callback ("read", (In = (BYTE*) malloc(BlockSize)), BlockSize, auxdata)) > 0 )
     {
-        unsigned InSize, OutSize;     // количество байт во входном и выходном буфере, соответственно
+        unsigned InSize, OutSize;     // number of bytes in the input and output buffers, respectively
         In = (BYTE*) realloc(In,InSize=x);
         x = DictEncode(In,InSize,&Out,&OutSize,MinWeakChars,MinLargeCnt,MinMediumCnt,MinSmallCnt,MinRatio);
         if (x || OutSize/MinCompression>=InSize/100) {
-            // упаковать данные [достаточно хорошо] не удалось, запишем вместо них исходные данные
+            // compressing the data [well enough] failed, so write the original data instead
             int WrSize=-InSize;
             FreeAndNil(Out);
-            // Записать исходный блок и выйти, если при записи произошла ошибка/больше данных не нужно
+            // Write the original block and exit if a write error occurred / no more data is needed
             checked_write (&WrSize, sizeof(WrSize));
             checked_write (In, InSize);
             FreeAndNil(In);
         } else {
-            // данные успешно упакованы, можно освободить входной буфер прежде чем записывать их
-            // (чтобы освободить больше памяти для следующего алгоритма в цепочке алгоритмов сжатия)
+            // the data was compressed successfully, we can free the input buffer before writing it out
+            // (in order to free more memory for the next algorithm in the compression chain)
             FreeAndNil(In);
-            // Записать сжатый блок и выйти, если при записи произошла ошибка/больше данных не нужно
+            // Write the compressed block and exit if a write error occurred / no more data is needed
             checked_write (&OutSize, sizeof(OutSize));
             checked_write (Out, OutSize);
             FreeAndNil(Out);
         }
     }
 finished:
-    FreeAndNil(In); FreeAndNil(Out); return x;  // 0, если всё в порядке, и код ошибки иначе
+    FreeAndNil(In); FreeAndNil(Out); return x;  // 0 if everything is fine, otherwise the error code
 }
 #endif  // !defined (FREEARC_DECOMPRESS_ONLY)
 
 
 int dict_decompress (MemSize BlockSize, int MinCompression, int MinWeakChars, int MinLargeCnt, int MinMediumCnt, int MinSmallCnt, int MinRatio, CALLBACK_FUNC *callback, void *auxdata)
 {
-  BYTE* In = NULL;  // указатель на входные данные
-  BYTE* Out= NULL;  // указатель на выходные данные
-  int x;            // код произошедшей ошибки
+  BYTE* In = NULL;  // pointer to the input data
+  BYTE* Out= NULL;  // pointer to the output data
+  int x;            // code of the error that occurred
   for(;;) {
-    int InSize; unsigned OutSize;   // количество байт во входном и выходном буфере, соответственно
+    int InSize; unsigned OutSize;   // number of bytes in the input and output buffers, respectively
     // Read block header; 0 bytes = clean EOF (end of compressed stream)
     x = callback ("read", &InSize, sizeof(InSize), auxdata);
     if (x == 0)  { x=0; goto finished; }
     if (x != sizeof(InSize))  { if (x>=0) x=FREEARC_ERRCODE_IO; goto finished; }
     if (InSize<0) {
-        // скопируем неупакованные данные
+        // copy the uncompressed data as is
         In = (BYTE*) malloc(-InSize);
         checked_read  (In, -InSize);
         checked_write (In, -InSize);
         FreeAndNil(In);
     } else {
-        // Произвести декодирование и получить размер выходных данных
+        // Perform the decoding and obtain the size of the output data
         In  = (BYTE*) malloc(InSize);
         Out = (BYTE*) malloc(BlockSize);
         checked_read  (In, InSize);
         x = DictDecode (In, InSize, Out, &OutSize);
-        //x = DictDecode (InSize, callback, auxdata);   // для работы в фиксированном объёме памяти
+        //x = DictDecode (InSize, callback, auxdata);   // for operating within a fixed amount of memory
         if (x) break;
         FreeAndNil(In);
         Out = (BYTE*) realloc (Out, OutSize);
@@ -73,15 +73,15 @@ int dict_decompress (MemSize BlockSize, int MinCompression, int MinWeakChars, in
   }
 finished:
   FreeAndNil(In); FreeAndNil(Out);
-  return x<=0? x : FREEARC_ERRCODE_IO;  // 0, если всё в порядке, и код ошибки иначе
+  return x<=0? x : FREEARC_ERRCODE_IO;  // 0 if everything is fine, otherwise the error code
 }
 
 
 /*-------------------------------------------------*/
-/* Реализация класса DICT_METHOD                    */
+/* DICT_METHOD class implementation                */
 /*-------------------------------------------------*/
 
-// Конструктор, присваивающий параметрам метода сжатия значения по умолчанию
+// Constructor that assigns default values to the compression method parameters
 DICT_METHOD::DICT_METHOD()
 {
   BlockSize      = 64*mb;
@@ -93,7 +93,7 @@ DICT_METHOD::DICT_METHOD()
   MinRatio       = 4;
 }
 
-// Функция распаковки
+// Decompression function
 int DICT_METHOD::decompress (CALLBACK_FUNC *callback, void *auxdata)
 {
   // Use faster function from DLL if possible
@@ -106,7 +106,7 @@ int DICT_METHOD::decompress (CALLBACK_FUNC *callback, void *auxdata)
 
 #ifndef FREEARC_DECOMPRESS_ONLY
 
-// Функция упаковки
+// Compression function
 int DICT_METHOD::compress (CALLBACK_FUNC *callback, void *auxdata)
 {
   // Use faster function from DLL if possible
@@ -117,7 +117,7 @@ int DICT_METHOD::compress (CALLBACK_FUNC *callback, void *auxdata)
                   (BlockSize, MinCompression, MinWeakChars, MinLargeCnt, MinMediumCnt, MinSmallCnt, MinRatio, callback, auxdata);
 }
 
-// Записать в buf[MAX_METHOD_STRLEN] строку, описывающую метод сжатия и его параметры (функция, обратная к parse_DICT)
+// Write into buf[MAX_METHOD_STRLEN] a string describing the compression method and its parameters (the inverse of parse_DICT)
 void DICT_METHOD::ShowCompressionMethod (char *buf)
 {
     DICT_METHOD defaults; char BlockSizeStr[100], MinCompressionStr[100], MinWeakCharsStr[100];
@@ -135,25 +135,25 @@ void DICT_METHOD::ShowCompressionMethod (char *buf)
 
 #endif  // !defined (FREEARC_DECOMPRESS_ONLY)
 
-// Конструирует объект типа DICT_METHOD с заданными параметрами упаковки
-// или возвращает NULL, если это другой метод сжатия или допущена ошибка в параметрах
+// Constructs a DICT_METHOD object with the given compression parameters
+// or returns NULL if this is a different compression method or the parameters contain an error
 COMPRESSION_METHOD* parse_DICT (char** parameters)
 {
   if (strcmp (parameters[0], "dict") == 0) {
-    // Если название метода (нулевой параметр) - "dict", то разберём остальные параметры
+    // If the method name (parameter zero) is "dict", parse the remaining parameters
 
     DICT_METHOD *p = new DICT_METHOD;
-    int error = 0;  // Признак того, что при разборе параметров произошла ошибка
+    int error = 0;  // Flag indicating that an error occurred while parsing the parameters
 
-    // Переберём все параметры метода (или выйдем раньше при возникновении ошибки при разборе очередного параметра)
+    // Iterate over all the method parameters (or exit earlier if an error occurs while parsing the current parameter)
     while (*++parameters && !error)
     {
       char* param = *parameters;
-      if (strlen(param)==1) switch (*param) {    // Однобуквенные параметры
+      if (strlen(param)==1) switch (*param) {    // Single-letter parameters
         case 'p':  p->MinLargeCnt=8192; p->MinMediumCnt=400; p->MinSmallCnt=100; p->MinRatio=4; continue;
         case 'f':  p->MinLargeCnt=2048; p->MinMediumCnt=100; p->MinSmallCnt= 50; p->MinRatio=0; continue;
       }
-      else switch (*param) {                    // Параметры, содержащие значения
+      else switch (*param) {                    // Parameters carrying a value
         case 'b':  p->BlockSize    = parseMem (param+1, &error); continue;
         case 'c':  p->MinWeakChars = parseInt (param+1, &error); continue;
         case 'l':  p->MinLargeCnt  = parseInt (param+1, &error); continue;
@@ -161,24 +161,24 @@ COMPRESSION_METHOD* parse_DICT (char** parameters)
         case 's':  p->MinSmallCnt  = parseInt (param+1, &error); continue;
         case 'r':  p->MinRatio     = parseInt (param+1, &error); continue;
       }
-      // Если параметр заканчивается знаком процента. то попробуем распарсить его как "N%"
+      // If the parameter ends with a percent sign, try to parse it as "N%"
       if (last_char(param) == '%') {
         char str[100]; strcpy(str,param); last_char(str) = '\0';
         int n = parseInt (str, &error);
         if (!error) { p->MinCompression = n; continue; }
         error=0;
       }
-      // Сюда мы попадаем, если в параметре не указано его название
-      // Если этот параметр удастся разобрать как целое число (т.е. в нём - только цифры),
-      // то присвоим его значение полю MinMatchLen, иначе попробуем разобрать его как BlockSize
+      // We get here if the parameter name was not specified
+      // If this parameter can be parsed as an integer (i.e. it contains only digits),
+      // assign its value to the MinMatchLen field, otherwise try to parse it as BlockSize
       int n = parseInt (param, &error);
       if (!error) p->MinWeakChars = n;
       else        error=0, p->BlockSize = parseMem (param, &error);
     }
-    if (error)  {delete p; return NULL;}  // Ошибка при парсинге параметров метода
+    if (error)  {delete p; return NULL;}  // Error while parsing the method parameters
     return p;
   } else
-    return NULL;   // Это не метод DICT
+    return NULL;   // This is not a DICT method
 }
 
-static int DICT_x = AddCompressionMethod (parse_DICT);   // Зарегистрируем парсер метода DICT
+static int DICT_x = AddCompressionMethod (parse_DICT);   // Register the DICT method parser

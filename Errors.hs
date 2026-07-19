@@ -1,6 +1,6 @@
 {-# LANGUAGE CPP #-}
 ---------------------------------------------------------------------------------------------------
----- Регистрация ошибок/предупреждений и печать сообщений о них. ----------------------------------
+---- Registration of errors/warnings and printing of their messages. ------------------------------
 ---------------------------------------------------------------------------------------------------
 module Errors where
 
@@ -26,14 +26,14 @@ import Utils
 import Files
 import Charsets
 
--- |Коды возврата программы
+-- |Program return codes
 aEXIT_CODE_SUCCESS      = 0
 aEXIT_CODE_WARNINGS     = 1
 aEXIT_CODE_FATAL_ERROR  = 2
 aEXIT_CODE_BAD_PASSWORD = 21
 aEXIT_CODE_USER_BREAK   = 255
 
--- |Все возможные типы ошибок и предупреждений
+-- |All possible error and warning types
 data ErrorType  = GENERAL_ERROR                 [String]
                 | CMDLINE_GENERAL               [String]
                 | CMDLINE_SYNTAX                String
@@ -79,12 +79,12 @@ throwSqlite = throwDyn
 -}
 
 ---------------------------------------------------------------------------------------------------
----- Обработка Ctrl-Break, Close и т.п. внешних событий -------------------------------------------
+---- Handling of Ctrl-Break, Close and similar external events ------------------------------------
 ---------------------------------------------------------------------------------------------------
 
 setCtrlBreakHandler action = do
   --myThread <- myThreadId
-  -- При выходе или возникновении исключения восстановим предыдущий обработчик событий
+  -- On exit or when an exception occurs, restore the previous event handler
 #if defined(FREEARC_WIN) && !defined(__MHS__)
   bracket (installHandler$ Catch onBreak) (installHandler) $  \oldHandler -> do
     action
@@ -94,19 +94,19 @@ setCtrlBreakHandler action = do
     action
 #endif
 
--- |Вызвать fail, если установлен флаг аварийного завершения программы
+-- |Call fail if the abnormal-termination flag is set
 failOnTerminated = do
   whenM (val operationTerminated) $ do
     fail ""
 
--- |Обработка Ctrl-Break и нажатия на Cancel сводится к выполнению финализаторов и
--- установке спец. флага, который проверяется коллбэками, вызываемыми из Си
+-- |Handling Ctrl-Break and pressing Cancel comes down to running the finalizers and
+-- setting a special flag that is checked by the callbacks invoked from C
 onBreak event = terminateOperation
 terminateOperation = do
   isFM <- val fileManagerMode
   registerError$ iif isFM OP_TERMINATED TERMINATED
 
--- |Принудительно завершает выполнение программы с заданным exitCode и печатью сообщения msg
+-- |Forcibly terminates the program with the given exitCode, printing the message msg
 shutdown msg exitCode = do
   w <- val warnings
   -- Make cleanup unless this is a second call (after pause)
@@ -153,7 +153,7 @@ shutdown msg exitCode = do
   -- And finally - exit program!
   exit (exitCode  |||  (w &&& aEXIT_CODE_WARNINGS))
 #if 0
-  -- Более корректный способ завершения программы, к сожалению arc.exe с ним иногда виснет
+  -- A more correct way to terminate the program, but unfortunately arc.exe sometimes hangs with it
   exitWith$ case () of
    _ | exitCode>0 -> ExitFailure exitCode
      | w>0        -> ExitFailure aEXIT_CODE_WARNINGS
@@ -161,7 +161,7 @@ shutdown msg exitCode = do
 #endif
   return undefined
 
--- |"handle" с выполнением "onException" также при ^Break
+-- |"handle" that also runs "onException" on ^Break
 handleCtrlBreak name onException action = do
   failOnTerminated
   id <- newId
@@ -170,7 +170,7 @@ handleCtrlBreak name onException action = do
              (removeFinalizer id)
              (action)
 
--- |"bracket" с выполнением "close" также при ^Break
+-- |"bracket" that also runs "close" on ^Break
 bracketCtrlBreak name init close action = do
   failOnTerminated
   id <- newId
@@ -178,39 +178,39 @@ bracketCtrlBreak name init close action = do
           (\x -> do removeFinalizer      id; close x)
           action
 
--- |bracketCtrlBreak, выполняющий fail при возврате Nothing из init
+-- |bracketCtrlBreak that runs fail when init returns Nothing
 bracketCtrlBreakMaybe name init fail close action = do
   bracketCtrlBreak name (do x<-init; when (isNothing x) fail; return x)
                         (`whenJust_` close)
                         (`whenJust`  action)
 
--- |Выполнить close-действие по завершению action
+-- |Run the close action once action has finished
 ensureCtrlBreak name close action  =  bracketCtrlBreak name (return ()) (\_->close) (\_->action)
 
--- Добавить/удалить finalizer в список
+-- Add/remove a finalizer to/from the list
 addFinalizer name id action  =  finalizers .= ((name,id,action):)
 removeFinalizer id           =  finalizers .= filter ((/=id) . snd3)
 newId                        =  do curId+=1; id<-val curId; return id
 
--- |Уникальный номер
+-- |Unique number
 curId :: IORef Int
 curId = unsafePerformIO (ref 0)
 {-# NOINLINE curId #-}
 
--- |Список действий, которые надо выполнить перед аварийным завершением программы
+-- |List of actions to be performed before the program terminates abnormally
 finalizers :: IORef [(String, Int, IO ())]
 finalizers = unsafePerformIO (ref [])
 {-# NOINLINE finalizers #-}
 
--- |Флаг, показывающий что мы находимся в режиме прерывания текущей операции
+-- |Flag indicating that we are in the middle of aborting the current operation
 operationTerminated = unsafePerformIO (ref False)
 {-# NOINLINE operationTerminated #-}
 
--- |Предотвращает повторное выполнение финализации после паузы
+-- |Prevents finalization from running a second time after the pause
 programFinished = unsafePerformIO (ref False)
 {-# NOINLINE programFinished #-}
 
--- |FreeArc 0.67 --shutdown: выключить компьютер после завершения операции
+-- |FreeArc 0.67 --shutdown: turn off the computer after the operation finishes
 perform_shutdown = unsafePerformIO (ref False)
 {-# NOINLINE perform_shutdown #-}
 
@@ -220,13 +220,13 @@ pause_before_exit_mode = unsafePerformIO (ref "off")
 foreign import ccall unsafe "PowerOffComputer"
   powerOffComputer :: IO ()
 
--- |Режим работы файл-менеджера: при этом registerError обрабатывается по-другому - мы дожидаемся завершения всех тредов упаковки и распаковки
+-- |File manager mode: registerError is handled differently here - we wait for all compression and decompression threads to finish
 fileManagerMode = unsafePerformIO (ref False)
 {-# NOINLINE fileManagerMode #-}
 
 
 ---------------------------------------------------------------------------------------------------
----- Тексты сообщений о различных типах ошибок. Подходящий ресурс для интернализации --------------
+---- Message texts for the various error types. A good resource for internationalization ----------
 ---------------------------------------------------------------------------------------------------
 
 errormsg (GENERAL_ERROR msgs) =
@@ -328,14 +328,14 @@ errormsg (BAD_PASSWORD archive file) =
   i18fmt ["0340 bad password for %1 in archive %2", file, archive]
 
 
--- |Перечислить список значений
+-- |Enumerate a list of values
 enumerate s list  =  joinWith2 ", " (" "++s++" ") (map quote list)
 
 {-# NOINLINE errormsg #-}
 
 
 ----------------------------------------------------------------------------------------------------
----- Коды выхода для различных ошибок --------------------------------------------------------------
+---- Exit codes for the various errors -------------------------------------------------------------
 ----------------------------------------------------------------------------------------------------
 
 errcode TERMINATED     = aEXIT_CODE_USER_BREAK
@@ -344,7 +344,7 @@ errcode _              = aEXIT_CODE_FATAL_ERROR
 
 
 ----------------------------------------------------------------------------------------------------
----- Ввод/вывод на экран в кодировке, заданной опцией -sct -----------------------------------------
+---- Screen input/output in the encoding specified by the -sct option ------------------------------
 ----------------------------------------------------------------------------------------------------
 
 #ifdef FREEARC_GUI
@@ -360,12 +360,12 @@ myFlushStdout = hFlush stdout
 
 
 ----------------------------------------------------------------------------------------------------
----- Работа с логфайлом и управление объёмом вывода на экран в соответствии с опцией --display -----
+---- Logfile handling and control of the amount of screen output per the --display option ----------
 ----------------------------------------------------------------------------------------------------
 
--- Напечатать заданную строку, отделив её при необходимости от предыдущей команды/обработанного архива
--- Кроме того, первая буква печатаемой строки переводится в нижний регистр,
--- если она печатается непосредственно после заголовка программы
+-- Print the given string, separating it if necessary from the previous command/processed archive
+-- In addition, the first letter of the printed string is lowercased
+-- if it is printed immediately after the program banner
 printLine = printLineC ""
 printLineC c str = do
   (oldc,separator) <- val separator'
@@ -380,18 +380,18 @@ printLineC c str = do
 #endif
   separator' =: (c,"")
 
--- |Напечатать строку с разделителем строк после неё
+-- |Print a string followed by a line separator
 printLineLn str = do
   printLine str
   printLineNeedSeparator "\n"
 
--- Отделить последующий вывод заданной строкой. Не выводим эту строку сразу,
--- поскольку никакого последующего вывода может и не быть :)))
+-- Separate the following output with the given string. We don't print this string right away,
+-- because there may well be no following output at all :)))
 printLineNeedSeparator str = do
   separator' =: ("",str)
 
--- Записать строку в логфайл.
--- Вывести её на экран при условии, что её вывод не запрещён опцией --display
+-- Write a string to the logfile.
+-- Print it on screen provided that its output is not disabled by the --display option
 condPrintLine c line = do
   if c=="G" then val loggingHandlers >>= mapM_ ($line) else do
   display_option <- val display_option'
@@ -400,12 +400,12 @@ condPrintLine c line = do
   when (display_option `contains_one_of` c) $ do
       printLineC c line
 
--- |Напечатать строку с разделителем строк после неё
+-- |Print a string followed by a line separator
 condPrintLineLn c line = do
   condPrintLine c line
   condPrintLineNeedSeparator c "\n"
 
--- Отделить последующий вывод заданной строкой при условии разрешения вывода класса c
+-- Separate the following output with the given string, provided output of class c is enabled
 condPrintLineNeedSeparator c str = do
   display_option <- val display_option'
   when (c `notElem` words "$ !" || (display_option `contains` '#')) $ do
@@ -413,33 +413,33 @@ condPrintLineNeedSeparator c str = do
   when (c=="" || (display_option `contains_one_of` c)) $ do
       separator' =: (c,str)
 
--- Открыть логфайл
+-- Open the logfile
 openLogFile logfilename = do
-  closeLogFile  -- закрыть предыдущий, если был
+  closeLogFile  -- close the previous one, if there was any
   logfile <- case logfilename of
                  ""  -> return Nothing
                  log -> fileAppendText log >>== Just
   logfile' =: logfile
 
--- Вывести строку в логфайл
+-- Write a string to the logfile
 printLog line = do
   separator <- val log_separator'
   whenJustM_ (val logfile') $ \log -> do
       fileWrite log =<< str2logfile (separator ++ line); fileFlush log
       log_separator' =: ""
 
--- Закрыть логфайл
+-- Close the logfile
 closeLogFile = do
   whenJustM_ (val logfile') fileClose
   logfile' =: Nothing
 
--- Переменная, хранящая Handle логфайла
+-- Variable holding the logfile Handle
 logfile'        = unsafePerformIO$ newIORef Nothing
--- Переменные, используемые для украшения печати
+-- Variables used to prettify the printed output
 separator'      = unsafePerformIO$ newIORef ("","") :: IORef (String,String)
 log_separator'  = unsafePerformIO$ newIORef "\n"    :: IORef String
 display_option' = unsafePerformIO$ newIORef ""      :: IORef String
--- Обработчик сообщений в лог
+-- Handler for messages sent to the log
 loggingHandlers = unsafePerformIO$ newIORef [] :: IORef [String -> IO ()]
 
 {-# NOINLINE printLine #-}
@@ -451,10 +451,10 @@ loggingHandlers = unsafePerformIO$ newIORef [] :: IORef [String -> IO ()]
 {-# NOINLINE display_option' #-}
 
 ----------------------------------------------------------------------------------------------------
----- Печать сообщений об ошибках и предупреждений
+---- Printing of error and warning messages
 ----------------------------------------------------------------------------------------------------
 
--- |Запись сообщения об ошибке в логфайл и аварийное завершение программы с этим сообщением
+-- |Write an error message to the logfile and abort the program with that message
 registerError err = do
   unless (err `elem` [TERMINATED,OP_TERMINATED]) $ do
     val errcodeHandler >>= ($err)
@@ -463,15 +463,15 @@ registerError err = do
            then return msg
            else i18fmt ["0316 ERROR: %1", msg]
   val errorHandlers >>= mapM_ (\h -> h msg `catch` (\(_::SomeException) -> return ()))
-  -- Если мы в режиме файл-менеджера, то придётся ждать завершения всех тредов компрессии,
-  -- иначе - просто совершаем аварийный выход из программы
+  -- In file manager mode we have to wait for all compression threads to finish,
+  -- otherwise we simply abort the program
   unlessM (val fileManagerMode) $ do
     shutdown msg (errcode err)
       `catch` \(_::SomeException) -> exit (errcode err)
   operationTerminated =: True
   fail ""
 
--- |Запись предупреждения в логфайл и вывод его на экран
+-- |Write a warning to the logfile and print it on screen
 registerWarning warn = do
   warnings += 1
   msg <- errormsg warn
@@ -479,24 +479,24 @@ registerWarning warn = do
   val warningHandlers >>= mapM_ ($msg)
   condPrintLineLn "w" msg
 
--- |Выполнить операцию и возвратить количество возникших при этом warning'ов
+-- |Run an operation and return the number of warnings it produced
 count_warnings action = do
   w0 <- val warnings
   action
   w  <- val warnings
   return (w-w0)
 
--- |Счётчик ошибок, возникших в ходе работы программы
+-- |Counter of errors that occurred while the program was running
 warnings = unsafePerformIO$ newIORef 0 :: IORef Int
--- |Количество предупреждений перед началом текущей основной операции
+-- |Number of warnings before the current main operation started
 warningsBefore = unsafePerformIO$ newIORef 0 :: IORef Int
 
--- В зависимости от режима зарегистрировать ошибку или предупреждение
+-- Depending on the mode, register either an error or a warning
 registerThreadError err = do
   isFM <- val fileManagerMode
   (iif isFM registerWarning registerError) err
 
--- Операции, выполняемые при появлении ошибки/предупреждения (регистрируются в других частях программы)
+-- Actions performed when an error/warning occurs (registered in other parts of the program)
 errcodeHandler  = unsafePerformIO$ newIORef doNothing :: IORef (ErrorType -> IO ())
 errorHandlers   = unsafePerformIO$ newIORef [] :: IORef [String -> IO ()]
 warningHandlers = unsafePerformIO$ newIORef [] :: IORef [String -> IO ()]
@@ -510,14 +510,14 @@ warningHandlers = unsafePerformIO$ newIORef [] :: IORef [String -> IO ()]
 {-# NOINLINE warningHandlers #-}
 
 ----------------------------------------------------------------------------------------------------
----- Работа с файлами
+---- File operations
 ----------------------------------------------------------------------------------------------------
 
--- |Возвратить Nothing и напечатать сообщение об ошибке, если файл не удалось открыть
+-- |Return Nothing and print an error message if the file could not be opened
 tryOpen filename = (fileOpen filename >>== Just)
                      `catch` (\(e::IOError) -> do registerWarning$ CANT_OPEN_FILE filename; return Nothing)
 
--- |Скопировать файл
+-- |Copy a file
 fileCopy srcname dstname = do
   bracketCtrlBreak "fileClose1:fileCopy" (fileOpen srcname) (fileClose) $ \srcfile -> do
     handleCtrlBreak "fileRemove1:fileCopy" (ignoreErrors$ fileRemove dstname) $ do

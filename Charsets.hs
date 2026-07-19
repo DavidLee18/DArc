@@ -1,6 +1,6 @@
 {-# LANGUAGE CPP #-}
 ----------------------------------------------------------------------------------------------------
----- Поддержка различных кодировок и локализации интерфейса программы                           ----
+---- Support for various charsets and localization of the program interface                     ----
 ----------------------------------------------------------------------------------------------------
 -----------------------------------------------------------------------------
 -- |
@@ -43,7 +43,7 @@ import Files
 
 
 ---------------------------------------------------------------------------------------------------
----- Глобальные настройки перекодировки для использования в глубоко вложенных функциях ------------
+---- Global recoding settings for use in deeply nested functions                       ------------
 ---------------------------------------------------------------------------------------------------
 
 -- DWORD: 32-bit unsigned int; equivalent to System.Win32.Types.DWORD on Windows
@@ -66,7 +66,7 @@ cmdline2str s     = val cmdline2str' >>== ($ s)
 str2logfile'      = unsafePerformIO$ newIORef$ unParseData (domainTranslation aCharsetDefaults 'i')
 str2logfile s     = val str2logfile' >>== ($ s)
 
--- |Операция, устанавливающая глобальные настройки перекодировки для использования в глубоко вложенных функциях
+-- |Operation that sets the global recoding settings for use in deeply nested functions
 setGlobalCharsets charsets = do
   str2filesystem' =: unParseData (domainTranslation charsets 'f')
   str2terminal'   =: unParseData (domainTranslation charsets 't')
@@ -76,7 +76,7 @@ setGlobalCharsets charsets = do
   cmdline2str'    =: parseData (domainTranslation charsets 'p')
 
 
--- Получение командной строки
+-- Obtaining the command line
 
 
 
@@ -97,34 +97,34 @@ myGetArgs = getArgs >>= mapM cmdline2str
 
 
 ---------------------------------------------------------------------------------------------------
----- Парсер опции командной строки -sc/--charset --------------------------------------------------
+---- Parser for the -sc/--charset option         --------------------------------------------------
 ---------------------------------------------------------------------------------------------------
 
--- |Тип функции, транслирующей входных данные заданного типа в Unicode
+-- |Type of a function translating input data of a given type into Unicode
 type ParseDataFunc  =  Domain -> String -> String
 
--- |Обработать список опций --charset/-sc, возвратив таблицу кодировок
--- и процедуры чтения/записи файлов с её учётом
+-- |Process the list of --charset/-sc options, returning the charset table
+-- and the file read/write procedures that take it into account
 parseCharsetOption optionsList = (charsets
                                    ,parseFile   . domainTranslation charsets
                                    ,unParseFile . domainTranslation charsets
                                    ,parseData   . domainTranslation charsets
                                    ,unParseData . domainTranslation charsets)
   where
-    -- Таблица кодировок
+    -- Charset table
     charsets = foldl f aCharsetDefaults optionsList
-    -- Функция обработки опций --charset
-    f value "--"      =  aCharsetDefaults      -- -sc-- означает восстановить значения по умолчанию
-    f value ('s':cs)  =  _7zToRAR value "l" cs  -- -scs... устанавливает кодировку для листфайлов
+    -- Handler function for the --charset options
+    f value "--"      =  aCharsetDefaults      -- -sc-- means restore the default values
+    f value ('s':cs)  =  _7zToRAR value "l" cs  -- -scs... sets the charset for listfiles
     f value ('l':cs)  =  _7zToRAR value "l" cs  -- -scl... does the same
-    f value ('c':cs)  =  _7zToRAR value "c" cs  -- -scs... устанавливает кодировку для комментфайлов
-    f value ('f':cs)  =  _7zToRAR value "f" cs  -- -scf... устанавливает кодировку для файловой системы
-    f value ('d':cs)  =  _7zToRAR value "d" cs  -- -scd... устанавливает кодировку для каталога архива
-    f value ('t':cs)  =  _7zToRAR value "t" cs  -- -sct... устанавливает кодировку для терминала (консоли)
-    f value ('p':cs)  =  _7zToRAR value "p" cs  -- -scp... устанавливает кодировку для параметров ком. строки
-    f value ('i':cs)  =  _7zToRAR value "i" cs  -- -sci... устанавливает кодировку для ini-файлов (arc.ini/arc.groups)
-    f value (x:cs)    =  foldl Utils.update value [(c,x) | c<-cs|||"cl"]  -- установить в `x` элементы списка, перечисленные в cs (по умолчанию 'c' и 'l')
-    -- Вспомогательные функции, преобразующие 7zip-овский формат опций в RAR'овский
+    f value ('c':cs)  =  _7zToRAR value "c" cs  -- -scs... sets the charset for comment files
+    f value ('f':cs)  =  _7zToRAR value "f" cs  -- -scf... sets the charset for the filesystem
+    f value ('d':cs)  =  _7zToRAR value "d" cs  -- -scd... sets the charset for the archive directory
+    f value ('t':cs)  =  _7zToRAR value "t" cs  -- -sct... sets the charset for the terminal (console)
+    f value ('p':cs)  =  _7zToRAR value "p" cs  -- -scp... sets the charset for command line parameters
+    f value ('i':cs)  =  _7zToRAR value "i" cs  -- -sci... sets the charset for ini files (arc.ini/arc.groups)
+    f value (x:cs)    =  foldl Utils.update value [(c,x) | c<-cs|||"cl"]  -- set to `x` those list elements that are enumerated in cs (by default 'c' and 'l')
+    -- Helper functions converting the 7zip option format into the RAR one
     _7zToRAR value typ cs  =  f value (g (strLower cs):typ)
     g "utf-8"  = '8';  g "win"  = 'a'
     g "utf8"   = '8';  g "ansi" = 'a'
@@ -132,19 +132,19 @@ parseCharsetOption optionsList = (charsets
     g "utf16"  = 'u';  g "oem"  = 'o'
 
 
--- Процедура чтения файла, транслирующая его кодировку и разбивающая на отдельные строки
+-- File reading procedure that translates its charset and splits it into separate lines
 parseFile encoding file  =  fileGetBinary file >>== parseData encoding >>== linesCRLF
 
--- Процедура трансляции входных данных из encoding в Unicode
+-- Procedure translating input data from encoding into Unicode
 parseData encoding  =  aTRANSLATE_INPUT (charsetTranslation encoding)
 
--- Процедура записи файла, транслирующая данные в кодировку encoding
+-- File writing procedure that translates the data into the encoding charset
 unParseFile encoding file  =  filePutBinary file . unParseData encoding
 
--- Процедура трансляции выходных данных из encoding из Unicode
+-- Procedure translating output data from Unicode into encoding
 unParseData encoding  =  aTRANSLATE_OUTPUT (charsetTranslation encoding)
 
--- |Разбиение на строки файла, ипользующего любое представление конца строки (CR, LF, CR+LF)
+-- |Split into lines a file that uses any end-of-line representation (CR, LF, CR+LF)
 linesCRLF = recursive oneline  -- oneline "abc\n..." = ("abc","...")
               where oneline ('\r':'\n':s)  =  ("",'\xFEFF':s)
                     oneline ('\r':s)       =  ("",'\xFEFF':s)
@@ -154,30 +154,30 @@ linesCRLF = recursive oneline  -- oneline "abc\n..." = ("abc","...")
                     oneline ""             =  ("","")
 
 
--- Будем считать, что все GUI конфиг-файлы хранятся в UTF-8
+-- We assume that all GUI config files are stored in UTF-8
 readConfigFile          = parseFile   '8'
 saveConfigFile   file   = unParseFile '8' file . joinWith "\n"
 modifyConfigFile file f = handle (\(e::SomeException)->return []) (readConfigFile file) >>== f >>= saveConfigFile file
 
 
 ---------------------------------------------------------------------------------------------------
----- Поддержка различных кодировок для ввода/вывода -----------------------------------------------
+---- Support for various charsets on input/output   -----------------------------------------------
 ---------------------------------------------------------------------------------------------------
 
--- |Возвращает charset, используемый в domainCharsets для данных типа domain
+-- |Returns the charset used in domainCharsets for data of type domain
 domainTranslation domainCharsets domain =
   lookup domain domainCharsets `defaultVal` error ("Unknown charset domain "++quote [domain])
 
--- |Трансляция данных, заданных в кодировке charset
+-- |Translation of data given in the charset encoding
 charsetTranslation charset =
   lookup charset aCHARSETS `defaultVal` error ("Unknown charset "++quote [charset])
 
--- |Трансляция данных из области domain (листфайлы, конфигфайлы, коммент-файлы...),
--- используя charset, заданный для неё в domainСharsets
+-- |Translation of data from the domain area (listfiles, config files, comment files...),
+-- using the charset specified for it in domainCharsets
 translation domainCharsets domain =
   charsetTranslation $ domainTranslation domainCharsets domain
 
--- Типы, используемые для представления domain и charset
+-- Types used to represent domain and charset
 type Domain  = Char
 type Charset = Char
 
@@ -237,7 +237,7 @@ aCharsetDefaults = [ ('f','8')  -- filenames in filesystem: UTF-8 (Linux/Unix us
 ---- Windows-specific codecs ----------------------------------------------------------------------
 ---------------------------------------------------------------------------------------------------
 
--- |Преобразовать виндовые коды символов \r и \n в человеческий вид
+-- |Convert the Windows character codes for \r and \n into a human-readable form
 iHateWindows = replace (chr 9834) '\r' . replace (chr 9689) '\n'
 
 #if defined(FREEARC_WIN) && !defined(__MHS__)
@@ -387,37 +387,37 @@ unicode2utf8 s =
 ---------------------------------------------------------------------------------------------------
 
 {-# NOINLINE locale #-}
--- |Локализация: отображение индекса в локализованную строку
+-- |Localization: mapping from an index to a localized string
 locale :: IORef (Array Int (Maybe String))
 locale = unsafePerformIO $ ref$ array (0,-1) []
 
 {-# NOINLINE setLocale #-}
--- |Установить локализацию по файлу
+-- |Set the localization from a file
 setLocale "--"       = return ()
 setLocale localeFile = do
   localeInfo <- parseLocaleFile localeFile
   locale =: localeInfo
 
--- |Переводит строку/список строк на местный язык
+-- |Translates a string / list of strings into the local language
 i18ns = mapM i18n
 i18n  = i18n' .>>== fst
 i18n' = i18n_general (val locale)
 
 {-# NOINLINE i18fmt #-}
--- |Отформатировать список строк, используя первую как требущий локализации шаблон,
--- а остальные - как его аргументы
+-- |Format a list of strings, using the first one as the template requiring localization
+-- and the rest as its arguments
 i18fmt (x:xs)  =  i18n x >>== (`formatn` xs)
 
 
 {-# NOINLINE parseLocaleFile #-}
--- |Прочитать из файла список строк локализации
+-- |Read the list of localization strings from a file
 parseLocaleFile localeFile = do
-  -- Прочитаем файл локализации или возвратим пустую болванку
+  -- Read the localization file or return an empty stub
   localeInfo <- readConfigFile localeFile `catch` (\(e::SomeException) -> return ["0000=English"])
-  -- Отбираем строки, начинающиеся на "dddd", и создаём из них массив: dddd -> текст после знака '='
-  -- Если текст после '=' заключён в двойные кавычки - избавимся от них
-  -- Символы '&' заменяются на '_' (различие в акселераторах 7-zip и Gtk)
-  -- \" заменяется на просто ", запись "\\n" на сам символ \n
+  -- Select the lines starting with "dddd" and build an array from them: dddd -> the text after the '=' sign
+  -- If the text after '=' is enclosed in double quotes - strip them
+  -- '&' characters are replaced with '_' (7-zip and Gtk differ in their accelerators)
+  -- \" is replaced by a plain ", and the sequence "\\n" by the \n character itself
   return$ localeInfo .$ filter   (\s -> length s > 4  &&  s `contains` '=')
                      .$ filter   (all isDigit . take 4)
                      .$ map      (split2 '=')
@@ -428,11 +428,11 @@ parseLocaleFile localeFile = do
                      .$ populateArray Nothing Just
 
 {-# NOINLINE i18n_general #-}
--- |Возвращает локализованный текст надписи и её всплывающую подсказку
+-- |Returns the localized label text and its tooltip
 i18n_general getLocale text = do
-  -- Если текст содержит в начале "dddd ", то вернём вместо него строку локализации за номером dddd
-  -- Если такой строки не найдено - возвратим переданный текст за вычетом "dddd "
-  -- Кроме того, тексты вида "  *  " локализуются в аналогичный вид
+  -- If the text starts with "dddd ", return the localization string numbered dddd instead of it
+  -- If no such string is found - return the given text without the "dddd " prefix
+  -- In addition, texts of the form "  *  " are localized into a similar form
   case splitAt 4 text of
     (d,' ':engText) | all isDigit d -> do
          let f = (engText.$match "  *  ")  &&&  (("  "++).(++"  "))

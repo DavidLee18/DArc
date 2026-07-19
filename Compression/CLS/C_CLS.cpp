@@ -6,7 +6,7 @@ extern "C" {
 
 
 /*-------------------------------------------------*/
-/* Реализация класса CLS_METHOD                    */
+/* CLS_METHOD class implementation                 */
 /*-------------------------------------------------*/
 
 int cb(void* _instance, int op, void *ptr, int n)
@@ -34,7 +34,7 @@ int cb(void* _instance, int op, void *ptr, int n)
     }
 }
 
-// Функция распаковки
+// Decompression function
 int CLS_METHOD::decompress (CALLBACK_FUNC *_callback, void *_auxdata)
 {
     callback = _callback;
@@ -44,7 +44,7 @@ int CLS_METHOD::decompress (CALLBACK_FUNC *_callback, void *_auxdata)
 
 #ifndef FREEARC_DECOMPRESS_ONLY
 
-// Функция упаковки
+// Compression function
 int CLS_METHOD::compress (CALLBACK_FUNC *_callback, void *_auxdata)
 {
     callback = _callback;
@@ -52,7 +52,7 @@ int CLS_METHOD::compress (CALLBACK_FUNC *_callback, void *_auxdata)
     return ClsMain(CLS_COMPRESS, cb, this);
 }
 
-// Записать в buf[MAX_METHOD_STRLEN] строку, описывающую метод сжатия и его параметры (функция, обратная к parse_CLS)
+// Write into buf[MAX_METHOD_STRLEN] a string describing the compression method and its parameters (the inverse of parse_CLS)
 void CLS_METHOD::ShowCompressionMethod (char *buf)
 {
     if (strequ(params,""))
@@ -63,14 +63,14 @@ void CLS_METHOD::ShowCompressionMethod (char *buf)
 #endif  // !defined (FREEARC_DECOMPRESS_ONLY)
 
 
-// ПОДДЕРЖКА ПРОИЗВОЛЬНЫХ ВНЕШНИХ УПАКОВЩИКОВ **********************************************************************
+// SUPPORT FOR ARBITRARY EXTERNAL COMPRESSORS **********************************************************************
 
-// Конструирует объект типа CLS_METHOD с заданными параметрами упаковки
-// или возвращает NULL, если это другой метод сжатия или допущена ошибка в параметрах
+// Constructs a CLS_METHOD object with the given compression parameters
+// or returns NULL if this is a different compression method or the parameters contain an error
 COMPRESSION_METHOD* parse_CLS (char** parameters, void *method_template)
 {
   if (strequ (parameters[0], ((CLS_METHOD*)method_template)->name)) {
-    // Если название метода (нулевой параметр) соответствует названию проверяемого CLS метода, то разберём остальные параметры
+    // If the method name (parameter zero) matches the name of the CLS method being checked, parse the remaining parameters
     CLS_METHOD *p = new CLS_METHOD (*(CLS_METHOD*)method_template);
 
     // Record method parameters if exists
@@ -79,7 +79,7 @@ COMPRESSION_METHOD* parse_CLS (char** parameters, void *method_template)
 
     return p;
   } else {
-    return NULL;   // Это не метод CLS
+    return NULL;   // This is not a CLS method
   }
 }
 

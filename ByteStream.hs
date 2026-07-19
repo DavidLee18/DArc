@@ -1,6 +1,6 @@
 {-# LANGUAGE CPP #-}
 ----------------------------------------------------------------------------------------------------
----- Кодирование структур данных в виде потока байтов и буферизация его записи/чтения --------------
+---- Encoding data structures as a byte stream, with buffered writing/reading ----------------------
 ----------------------------------------------------------------------------------------------------
 -----------------------------------------------------------------------------
 -- |
@@ -73,15 +73,15 @@ import Utils
 aTypicalBuffer = 64*1024
 
 ----------------------------------------------------------------------------------------------------
----- Выходной буфер для быстрой записи структурированных данных ------------------------------------
+---- Output buffer for fast writing of structured data ---------------------------------------------
 ----------------------------------------------------------------------------------------------------
 
 data OutStream = OutStream
-  { ref_buf     :: IORef (Ptr CChar)    -- буфер в памяти, используемый в настоящий момент
-  , ref_size    :: IORef Int            -- его размер в байтах
-  , ref_pos     :: IORef Int            -- текущая позиция записи в буфере
-  , functions   :: ( RecvBuf              -- функции, обеспечивающие связь с внешним миром
-                   , SendBuf              --   (см. описание create)
+  { ref_buf     :: IORef (Ptr CChar)    -- the in-memory buffer currently in use
+  , ref_size    :: IORef Int            -- its size in bytes
+  , ref_pos     :: IORef Int            -- current write position in the buffer
+  , functions   :: ( RecvBuf              -- functions providing the link to the outside world
+                   , SendBuf              --   (see the description of create)
                    , Cleanup )
   }
 
@@ -90,44 +90,44 @@ type SendBuf = Ptr CChar -> Int -> Int -> IO ()
 type Cleanup = IO ()
 
 
--- |Записать выводимые данные в файл `filename`, буферизуя их в буфере размером `size` байт
+-- |Write the output data to the file `filename`, buffering it in a buffer of `size` bytes
 createFile filename size = do
   file <- fileCreate filename
   createBuffered size (fileWriteBuf file) (fileClose file)
 
--- |Создать выходной поток, выделив для него буфер размером `size` байт.
--- Данные, накапливаемые в буфере, сплавлять наружу функцией `writer`
+-- |Create an output stream, allocating a buffer of `size` bytes for it.
+-- The data accumulated in the buffer is flushed out via the `writer` function
 createBuffered size writer closer = do
   buf <- mallocBytes size
   let buf' = castPtr buf
       sendBuf b sz = writer b
   create (return (buf',size)) sendBuf (free buf >> closer)
 
--- |Создать выходной поток, выделив для него буфер размером `size` байт.
--- Данные, накапливаемые в буфере, сплавлять наружу функцией `writer`
+-- |Create an output stream, allocating a buffer of `size` bytes for it.
+-- The data accumulated in the buffer is flushed out via the `writer` function
 createMemBuf buf size = do
   create (return (buf,size)) (\buf size len -> fail "createMemBuf: Buffer overflow") (return ())
 
--- |Создать универсальный выходной поток, используя следующие функции:
--- receiveBuf : IO (buf,size)                - получить в своё распоряжение очередной буфер
--- sendBuf    : buf -> size -> len -> IO ()  - отправить буфер на выход с данными длиной `len`
--- cleanup    : IO ()                        - cleanup при завершении работы
+-- |Create a general-purpose output stream using the following functions:
+-- receiveBuf : IO (buf,size)                - obtain the next buffer for our own use
+-- sendBuf    : buf -> size -> len -> IO ()  - send the buffer out with `len` bytes of data
+-- cleanup    : IO ()                        - cleanup on shutdown
 create receiveBuf sendBuf cleanup = do
-  (buf, size) <- receiveBuf   -- сразу получить первый в своей жизни буфер
+  (buf, size) <- receiveBuf   -- get the very first buffer of our life right away
   ref_buf  <- ref buf
   ref_size <- ref size
   ref_pos  <- ref 0
   return (OutStream ref_buf ref_size ref_pos (receiveBuf, sendBuf, cleanup))
 
--- |Получить очередной буфер для записи данных
+-- |Get the next buffer for writing data
 receiveBuffer (OutStream ref_buf ref_size ref_pos (receiveBuf, _, _)) = do
   (buf, size) <- receiveBuf
   ref_buf  =: buf
   ref_size =: size
   ref_pos  =: 0
 
--- |Удостовериться, что в буфере ещё есть место для записи `bytes` байт.
--- Если нет - сплавить этот буфер перекупщикам и получить новый, чистенький, где места уж точно должно хватить!
+-- |Make sure the buffer still has room to write `bytes` bytes.
+-- If not - hand this buffer off to the resellers and get a new, nice and clean one, which is sure to have enough room!
 ensureFreeSpaceInOutStream buffer@(OutStream _ ref_size ref_pos _) bytes = do
   size <- val ref_size
   pos  <- val ref_pos
@@ -139,7 +139,7 @@ ensureFreeSpaceInOutStream buffer@(OutStream _ ref_size ref_pos _) bytes = do
     when (pos+bytes>size-1) $
       fail$ "OutStream: needs "++show bytes++" bytes, but entire new buffer contains only "++show size++" bytes"
 
--- |Отослать накопленное содержимое буфера через выходную функцию и прекратить его использование
+-- |Send the accumulated buffer contents through the output function and stop using it
 sendBuffer (OutStream ref_buf ref_size ref_pos (_, sendBuf, _)) = do
   modifyIORefIO ref_buf $ \buf -> do
     size <- val ref_size
@@ -147,20 +147,20 @@ sendBuffer (OutStream ref_buf ref_size ref_pos (_, sendBuf, _)) = do
     sendBuf buf size pos
     return (error "OutStream::buf undefined")
 
--- |Отослать накопленное содержимое буфера и закрыть поток
+-- |Send the accumulated buffer contents and close the stream
 closeOut buffer@(OutStream _ _ _ (_, _, cleanup)) = do
   sendBuffer buffer
   cleanup
 
--- |All-in-one операция: создаёт выходной поток, записывает в него значение и закрывает поток.
--- Если вам нужно записать несколько значений - соберите их в tuple
+-- |All-in-one operation: creates an output stream, writes a value into it and closes the stream.
+-- If you need to write several values - collect them into a tuple
 writeAll :: (BufferData a) =>  RecvBuf -> SendBuf -> Cleanup -> a -> IO ()
 writeAll receiveBuf sendBuf cleanup x =
   bracket (create receiveBuf sendBuf cleanup) closeOut
     (\buf -> write buf x)
 
--- |All-in-one операция: записывает значение в файл и закрывает его.
--- Если вам нужно записать несколько значений - соберите их в tuple
+-- |All-in-one operation: writes a value to a file and closes it.
+-- If you need to write several values - collect them into a tuple
 writeFile :: (BufferData a) => FilePath -> a -> IO ()
 writeFile filename x =
   bracket (createFile filename aTypicalBuffer) closeOut
@@ -177,21 +177,21 @@ writeFile filename x =
 
 
 ----------------------------------------------------------------------------------------------------
----- Входной буфер для быстрого чтения структурированных данных ------------------------------------
+---- Input buffer for fast reading of structured data ----------------------------------------------
 ----------------------------------------------------------------------------------------------------
 
 data InStream = InStream
-  { iref_buf     :: IORef (Ptr CChar)   -- буфер в памяти, используемый в настоящий момент
-  , iref_size    :: IORef Int           -- его размер в байтах
-  , iref_pos     :: IORef Int           -- текущая позиция записи в буфере
-  , ifunctions   :: ( RecvBuf             -- функции, обеспечивающие связь с внешним миром
-                    , SendBuf             --   (см. описание open)
+  { iref_buf     :: IORef (Ptr CChar)   -- the in-memory buffer currently in use
+  , iref_size    :: IORef Int           -- its size in bytes
+  , iref_pos     :: IORef Int           -- current write position in the buffer
+  , ifunctions   :: ( RecvBuf             -- functions providing the link to the outside world
+                    , SendBuf             --   (see the description of open)
                     , Cleanup )
   }
 
--- |to do: Декодировать данные из файла, читая их через буфер размером `size` байт
--- В настоящий момент файл читается в память целиком,
--- что вызвано отсутствием поддержки перехода к следующему буферу
+-- |to do: Decode data from a file, reading it through a buffer of `size` bytes
+-- At the moment the file is read into memory in its entirety,
+-- which is caused by the lack of support for moving on to the next buffer
 openFile filename _size = do
   file     <- fileOpen filename
   filesize <- fileGetSize file   -- temporary solution
@@ -201,55 +201,55 @@ openFile filename _size = do
       sendBuf buf size len  =  return ()
   open receiveBuf sendBuf (free buf >> fileClose file)
 
--- |Декодировать данные, содержащиеся в буфере `buf` длиной `size`
+-- |Decode the data contained in buffer `buf` of length `size`
 openMemory buf size = do
-  ref_bytes_read <- ref 0   -- сколько байт в буфере уже обработано
-  let   -- receiveBuf возвращает (buf,size) без той части данных, которые уже были обработаны
+  ref_bytes_read <- ref 0   -- how many bytes of the buffer have already been processed
+  let   -- receiveBuf returns (buf,size) without the part of the data that has already been processed
       receiveBuf = do bytes_read <- val ref_bytes_read
                       return (buf+:bytes_read, size-bytes_read)
-        -- sendBuf отмечает, что ещё `len` байтов было обработано
+        -- sendBuf records that another `len` bytes have been processed
       sendBuf buf size len  =  ref_bytes_read += len
-   -- Использовать универсальный `open`; при попытке перейти к следующему буферу просто возвращать
-   -- остаток данных в `buf`
+   -- Use the general-purpose `open`; when an attempt is made to move on to the next buffer, simply return
+   -- the remainder of the data in `buf`
   open receiveBuf sendBuf (return ())
 
--- |to do: Создать универсальный входной поток, используя следующие функции:
--- receiveBuf : IO (buf,size)                - получить буфер `buf` с данными размером `size`
--- sendBuf    : buf -> size -> len -> IO ()  - освободить полученный буфер, из которого прочитано `len` байт
--- cleanup    : IO ()                        - cleanup при завершении работы
+-- |to do: Create a general-purpose input stream using the following functions:
+-- receiveBuf : IO (buf,size)                - get a buffer `buf` holding `size` bytes of data
+-- sendBuf    : buf -> size -> len -> IO ()  - release the received buffer, from which `len` bytes were read
+-- cleanup    : IO ()                        - cleanup on shutdown
 open receiveBuf sendBuf cleanup = do
-  (buf, size) <- receiveBuf   -- сразу получить первый в своей жизни буфер
+  (buf, size) <- receiveBuf   -- get the very first buffer of our life right away
   ref_buf  <- ref buf
   ref_size <- ref size
   ref_pos  <- ref 0
   return (InStream ref_buf ref_size ref_pos (receiveBuf, sendBuf, cleanup))
 
--- |Закрыть входной поток и выполнить процедуру `cleanup`
+-- |Close the input stream and run the `cleanup` procedure
 closeIn (InStream _ _ _ (_, _, cleanup)) = do
   cleanup
 
--- |Возвращает указатель чтения в начало текущего буфера
+-- |Returns the read pointer to the beginning of the current buffer
 rewindMemory buffer@(InStream _ _ pos _) = do
   pos =: 0
 
--- |Пропускает заданное число байт
+-- |Skips the given number of bytes
 skipBytes buffer@(InStream _ _ pos _) bytes = do
   pos += bytes
 
--- |Проверяет, что мы достигли конца текущего буфера
+-- |Checks that we have reached the end of the current buffer
 isEOFMemory buffer@(InStream _ size' pos' _) = do
   size <- val size'
   pos  <- val pos'
   return (pos==size)
 
--- |All-in-one операция: создаёт входной поток, читает значение и закрывает поток.
--- Если вам нужно прочитать несколько значений - соберите их в tuple
+-- |All-in-one operation: creates an input stream, reads a value and closes the stream.
+-- If you need to read several values - collect them into a tuple
 readMemory :: (BufferData a) =>  Ptr CChar -> Int -> IO a
 readMemory buf size = do
   bracket (openMemory buf size) closeIn read
 
--- |All-in-one операция: открывает файл, читает значение и закрывает файл.
--- Если вам нужно прочитать несколько значений - соберите их в tuple
+-- |All-in-one operation: opens a file, reads a value and closes the file.
+-- If you need to read several values - collect them into a tuple
 readFile filename = do
   bracket (openFile filename aTypicalBuffer) closeIn read
 
@@ -262,7 +262,7 @@ readFile filename = do
 
 
 ----------------------------------------------------------------------------------------------------
----- Запись блока памяти ---------------------------------------------------------------------------
+---- Writing a memory block ------------------------------------------------------------------------
 ----------------------------------------------------------------------------------------------------
 
 writeBuf :: OutStream -> Ptr a -> Int -> IO ()
@@ -279,22 +279,22 @@ writeBuf buffer@(OutStream ref_buf ref_size ref_pos _) dataptr datasize = do
 
 
 ----------------------------------------------------------------------------------------------------
----- Классы типов данных, для которых реализовано чтение/запись в буфер ----------------------------
+---- Type classes for which buffer reading/writing is implemented ----------------------------------
 ----------------------------------------------------------------------------------------------------
 
--- |Элементы этого класса могут записываться в выходной буфер и читаться из входного
+-- |Elements of this class can be written to an output buffer and read from an input one
 class BufferData a where
-  -- |Записать одно значение в выходной буфер
+  -- |Write a single value to the output buffer
   write :: OutStream -> a -> IO ()
 
-  -- |Записать в буфер целый список значений - реализация по умолчанию делает это медленно и печально :)
+  -- |Write a whole list of values to the buffer - the default implementation does this slowly and sadly :)
   writeList :: OutStream -> [a] -> IO ()
   writeList buffer xs = mapM_ (write buffer) xs
 
-  -- |Прочитать одно значение из входного буфера
+  -- |Read a single value from the input buffer
   read :: InStream -> IO a
 
-  -- |Прочитать из входного буфера целый список значений - и тоже реализация по умолчанию слегка задумчива :)
+  -- |Read a whole list of values from the input buffer - and the default implementation is a bit sluggish too :)
   readList :: InStream -> Int -> IO [a]
   readList buffer length  =  replicateM length (read buffer)
 
@@ -302,7 +302,7 @@ class BufferData a where
   {-# NOINLINE writeList #-}
 
 
--- Утвердить на должности процедуры класса FastBufferData, выполняющие функции процедур класса BufferData :)
+-- Appoint the procedures of the FastBufferData class to the posts of the BufferData class procedures :)
 #ifndef __MHS__
 instance {-# OVERLAPPABLE #-} (FastBufferData a) => BufferData a where
   write     = writeFast
@@ -312,51 +312,51 @@ instance {-# OVERLAPPABLE #-} (FastBufferData a) => BufferData a where
 #endif
 
 
--- |Элементы этого класса могут ОЧЕНЬ БЫСТРО записываться в выходной буфер и читаться из входного
+-- |Elements of this class can be written to an output buffer and read from an input one VERY FAST
 class FastBufferData a where
-  -- Для этого они должны предоставить следующие справки:
-  --   Максимальное кол-во байт, которое может занимать одно значение (1 для CChar, 4 для Int32 и т.д.)
+  -- To do so they must supply the following information:
+  --   The maximum number of bytes a single value can occupy (1 for CChar, 4 for Int32 etc.)
   maxSizeOf :: a -> Int
-  --   Процедура, записывающая в буфер `buf` на позицию `pos` значение `x`, и возвращающая
-  --   позицию в буфере после записанных данных (для типов, занимающих фиксированное число байт,
-  --   это будет просто "pos+maxSizeOf x")
+  --   A procedure that writes value `x` into buffer `buf` at position `pos`, and returns
+  --   the position in the buffer after the written data (for types occupying a fixed number of bytes,
+  --   this will simply be "pos+maxSizeOf x")
   writeUnchecked :: Ptr CChar -> a -> Int -> IO Int
-  --   Процедура, читающая из буфера `buf` с позиции `pos` значение, возвращающая это значение,
-  --   и обновляющая позицию в буфере
+  --   A procedure that reads a value from buffer `buf` at position `pos`, returns that value,
+  --   and updates the position in the buffer
   readUnchecked :: Ptr CChar -> Int -> IO (a, Int)
 
-  -- |Записать в буфер одно значение - и побыстрее
+  -- |Write a single value to the buffer - and be quick about it
   writeFast :: OutStream -> a -> IO ()
   writeFast buffer@(OutStream ref_buf _ ref_pos _) x = do
-    ensureFreeSpaceInOutStream buffer (maxSizeOf x)   -- проверить, что в буфере хватит места
+    ensureFreeSpaceInOutStream buffer (maxSizeOf x)   -- check that there is enough room in the buffer
     buf <- val ref_buf
-    modifyIORefIO ref_pos (writeUnchecked buf x)   -- записать данные в буфер и обновить значение ref_pos
+    modifyIORefIO ref_pos (writeUnchecked buf x)   -- write the data into the buffer and update the value of ref_pos
 
-  -- |Быстро-быстро записать в буфер целый список!
+  -- |Write a whole list into the buffer, quick-quick!
   writeListFast :: OutStream -> [a] -> IO ()
   writeListFast buffer@(OutStream ref_buf _ ref_pos _)   list = do
     let aSIZE = 100
-    -- Проверить, что в буфере хватит места на `aSIZE` значений данного типа
+    -- Check that there is enough room in the buffer for `aSIZE` values of this type
     ensureFreeSpaceInOutStream buffer (aSIZE * maxSizeOf (head list))
     buf <- val ref_buf
     pos <- val ref_pos
 
-    -- Процедура "go list pos n" записывает без всяких проверок, начиная с позиции `pos`,
-    -- данные из списка `list`, но не более `n` значений. Если список оказался
-    -- длиннее - снова вызывается процедура `writeListFast`, которая проверит,
-    -- что в буфере найдётся место для ещё 100 значений, и продолжит запись списка с того
-    -- места, на котором мы остановились
+    -- The procedure "go list pos n" writes without any checks at all, starting at position `pos`,
+    -- the data from list `list`, but no more than `n` values. If the list turns out to be
+    -- longer - the `writeListFast` procedure is called again, which will check
+    -- that there is room in the buffer for another 100 values, and will carry on writing the list from the
+    -- point at which we stopped
     --
     let --go :: (FastBufferData a) => [a] -> Int -> Int -> IO ()
-        go []     pos _  = ref_pos =: pos  -- Мы кончили! Надо только записать новую позицию в буфере!
-        go list   pos 0  = do ref_pos =: pos             -- Записываем новую позицию в буфере
-                              writeListFast buffer list  -- ... и вызываем функцию рекурсивно для остатка списка
-        go (x:xs) pos n  = do new_pos <- writeUnchecked buf x pos    -- записать очередной элемент
-                              go xs new_pos (n-1)                    -- ... и перейти к следующему
-    go list pos aSIZE  -- записать список в память без проверок, но не более `aSIZE` значений
+        go []     pos _  = ref_pos =: pos  -- We are done! All that is left is to write the new position in the buffer!
+        go list   pos 0  = do ref_pos =: pos             -- Write the new position in the buffer
+                              writeListFast buffer list  -- ... and call the function recursively for the rest of the list
+        go (x:xs) pos n  = do new_pos <- writeUnchecked buf x pos    -- write the next element
+                              go xs new_pos (n-1)                    -- ... and move on to the next one
+    go list pos aSIZE  -- write the list into memory without checks, but no more than `aSIZE` values
 
 
-  -- |Быстрое чтение одного значения из входного буфера
+  -- |Fast reading of a single value from the input buffer
   readFast :: InStream -> IO a
   readFast buffer@(InStream buf _ pos _) = do
     abuf <- val buf
@@ -365,7 +365,7 @@ class FastBufferData a where
     pos =: new_pos
     return x
 
-  -- |Быстрое чтение целого списка из входного буфера
+  -- |Fast reading of a whole list from the input buffer
   readListFast :: InStream -> Int -> IO [a]
   readListFast buffer@(InStream buf _ pos _) length = do
     abuf <- val buf
@@ -386,11 +386,11 @@ class FastBufferData a where
 
 
 ----------------------------------------------------------------------------------------------------
----- Реализации для простых типов данных -----------------------------------------------------------
+---- Implementations for simple data types ---------------------------------------------------------
 ----------------------------------------------------------------------------------------------------
 
--- Любая инстанция класса Storable автоматически становится инстанцией класса FastBufferData:
--- мы знаем, сколько данные такого типа занимают байт, и как записать их в память/прочитать из памяти
+-- Any instance of the Storable class automatically becomes an instance of the FastBufferData class:
+-- we know how many bytes data of such a type occupies, and how to write it to / read it from memory
 -- |FreeArc/Arc.exe 0.67 32-bit archives write Int and CTime using the native Storable
 -- stride — 4 bytes on x86 (not 8). DArc x64 defaults to a fixed 8-byte layout. When
 -- --arc-32bit-legacy is set, the Int/CTime reader consumes 4 bytes with stride 4 so
@@ -450,7 +450,7 @@ instance FastBufferData Int64 where
   readUnchecked  buf pos   = do { x <- peekByteOff buf pos; return (x, pos + 8) }
 #endif
 
--- Символы записываются в UTF-8
+-- Characters are written in UTF-8
 instance {-# OVERLAPPING #-} BufferData Char where
   write buf c  =  writeList buf (toUTF8List [c])
   read  buffer@(InStream buf _ pos _) = do
@@ -459,7 +459,7 @@ instance {-# OVERLAPPING #-} BufferData Char where
     unpackCharUtf8 buf' pos' pos
 
 
--- Строка записывается как обычный список символов, но с нулевым символом в конце (в стиле Си)
+-- A string is written as an ordinary list of characters, but with a zero character at the end (C style)
 instance {-# OVERLAPPING #-} BufferData String where
   write buf str  =  writeList buf (toUTF8List str)  >>  write buf (0::Word8)
   read  buffer@(InStream buf _ pos _) = do
@@ -468,19 +468,19 @@ instance {-# OVERLAPPING #-} BufferData String where
     unpackCStringUtf8 buf' pos' pos
 
 
--- Целые числа неограниченной точности кодируются методом, являющимся улучшением используемого в 7-zip.
--- При этом величины вплоть до 2^64 требуют для записи переменное число байт: от 1 до 9
+-- Arbitrary-precision integers are encoded by a method that is an improvement on the one used in 7-zip.
+-- With it, values up to 2^64 require a variable number of bytes to write: from 1 to 9
 instance FastBufferData Integer where
-  maxSizeOf x = 9   -- максимум: 1 байт из единичек и 8 байтов данных
+  maxSizeOf x = 9   -- maximum: 1 byte made of ones and 8 bytes of data
   writeUnchecked buf x pos = do
     let write1  x  =  writeUnchecked buf (x::Word8)
         write4  x  =  writeUnchecked buf (x::Word32)
         write_8 x  =  writeUnchecked buf (x::Word64)
-    -- В память записывается сразу 4 или 8 байт, но указатель позиции изменяется только на нужное
-    -- число байт. Кол-во младших битов-единичек в первом записанном байте определяет, сколько
-    -- дополнительных байт нужно прочитать, чтобы получить всё число
-    -- Эта реализация рассчитана только на машины, где первым в памяти идёт младший значащий байт!!!
-    -- Кроме того, она оптимизирована для 32-разрядных машин, для 64-битных этот код будет неоптимален
+    -- 4 or 8 bytes are written to memory at once, but the position pointer is advanced only by the required
+    -- number of bytes. The number of low-order one-bits in the first byte written determines how many
+    -- additional bytes must be read in order to obtain the whole number
+    -- This implementation is designed only for machines where the least significant byte comes first in memory!!!
+    -- Besides that, it is optimized for 32-bit machines; on 64-bit ones this code will be suboptimal
     case () of
      _ | x<0       ->  fail$ "Sorry, FastBufferData.Integer.writeUnchecked don't support negative values like this: "++show x
        | x<128     ->  do write4  (i x*  2+  0) pos; return (pos+1)
@@ -495,7 +495,7 @@ instance FastBufferData Integer where
        | otherwise ->  fail$ "Sorry, FastBufferData.Integer.writeUnchecked don't support numbers larger than 256^8, like this: "++show x
 
   readUnchecked buf pos = do
-    -- Из памяти читаются сразу 4 байта, но из них используются только младшие байты, остальные маскируются
+    -- 4 bytes are read from memory at once, but only the low-order bytes of them are used, the rest are masked off
     (x::Word32,_)  <-  readUnchecked buf pos
     case () of
      _ | x .&.  1 ==   0  ->  return (i$ (x `mod` 256^1) `shiftR` 1, pos+1)
@@ -503,7 +503,7 @@ instance FastBufferData Integer where
        | x .&.  7 ==   3  ->  return (i$ (x `mod` 256^3) `shiftR` 3, pos+3)
        | x .&. 15 ==   7  ->  return (i$  x              `shiftR` 4, pos+4)
        | otherwise -> do
-          -- Если значение занимает больше 4-х байт, то прочитать из памяти 8 байтов и опять же замаскировать старшие
+          -- If the value occupies more than 4 bytes, then read 8 bytes from memory and again mask off the high-order ones
           (x::Word64,_)  <-  readUnchecked buf pos
           case () of
            _ | x .&. 31 ==  15  ->  return (i$ (x `mod` 256^5) `shiftR` 5, pos+5)
@@ -511,12 +511,12 @@ instance FastBufferData Integer where
              | x .&.127 ==  63  ->  return (i$ (x `mod` 256^7) `shiftR` 7, pos+7)
              | x .&.255 == 127  ->  return (i$  x              `shiftR` 8, pos+8)
              | otherwise        ->  do
-                 -- И последний вариант - байт из единичных битов плюс 8 байт собственно значения
+                 -- And the last variant - a byte made of one-bits plus 8 bytes of the value proper
                  (x::Word64, _) <- readUnchecked buf (pos+1); return (i x, pos+9)
 
 
--- Булевские величины поодиночке записываются как значения типа Word8 (т.е на каждое
--- расходуется целый байт), а при записи списка группируются по восемь значений на один байт
+-- Boolean values are written individually as values of type Word8 (i.e. each one
+-- consumes a whole byte), while when a list is written they are grouped eight values per byte
 instance FastBufferData Bool where
   maxSizeOf x = maxSizeOf (undefined :: Word8)
   writeUnchecked buf x   =  writeUnchecked buf (toWord8 x)
@@ -539,7 +539,7 @@ instance FastBufferData Bool where
 
 
 ----------------------------------------------------------------------------------------------------
----- Реализации для составных типов данных ---------------------------------------------------------
+---- Implementations for compound data types -------------------------------------------------------
 ----------------------------------------------------------------------------------------------------
 
 #ifdef __MHS__
@@ -603,14 +603,14 @@ instance BufferData CTime where
   read      = readFast;  readList  = readListFast
 #endif
 
--- |Функции, позволяющие записывать значения любых целочисленных типов в формате с переменной длиной
+-- |Functions that allow values of any integral type to be written in a variable-length format
 writeInteger buf  =  write buf . toInteger
 readInteger  buf  =  fromInteger <$> read buf
 
 {-
--- |Записать список неотрицательных значений, ограниченных сверху величиной max'
--- Для эффективности процесса записи и большей сжимаемости представления все значения при этом
--- представляются 1/2/4/8 байтами
+-- |Write a list of non-negative values bounded above by max'
+-- For the efficiency of the writing process and better compressibility of the representation, all values are
+-- represented by 1/2/4/8 bytes
 writeBoundList buf max =
   case () of
     _ | toInteger max <= toInteger (maxBound::Word8)   ->  writeList buf . map toWord8
@@ -619,9 +619,9 @@ writeBoundList buf max =
       | toInteger max <= toInteger (maxBound::Word64)  ->  writeList buf . map toWord64
       | otherwise                                      ->  writeList buf
 
--- |Прочитать список неотрицательных значений, ограниченных сверху величиной max'
--- Для эффективности процесса записи и большей сжимаемости представления все значения при этом
--- представляются 1/2/4/8 байтами
+-- |Read a list of non-negative values bounded above by max'
+-- For the efficiency of the writing process and better compressibility of the representation, all values are
+-- represented by 1/2/4/8 bytes
 readBoundList buf max n =
   case () of
     _ | toInteger max <= toInteger (maxBound::Word8)   ->  readList buf n >>= return.map fromWord8
@@ -673,7 +673,7 @@ instance (BufferData a, BufferData b) => BufferData (Either a b)  where
   write buf (Right b) = write buf (False,b)
   read buf = do x <- read buf; if x  then Left <$> read buf  else Right <$> read buf
 
-{- Попытка сделать универсальный класс для чтения/записи данных
+{- An attempt to make a universal class for reading/writing data
 class DerivedBufferData a where
   toTuple   :: BufferData b => a -> b
   fromTuple :: BufferData b => b -> a
@@ -736,16 +736,16 @@ instance (FastBufferData a, FastBufferData b, FastBufferData c, FastBufferData d
 
 
 ----------------------------------------------------------------------------------------------------
----- Вспомогательные функции -----------------------------------------------------------------------
+---- Auxiliary functions ---------------------------------------------------------------------------
 ----------------------------------------------------------------------------------------------------
 
--- |Функции преобразования к заданным типам
+-- |Functions converting to the given types
 toWord8  x = toEnum (fromEnum x) :: Word8
 toWord16 x = toEnum (fromEnum x) :: Word16
 toWord32 x = toEnum (fromEnum x) :: Word32
 toWord64 x = i x                 :: Word64
 
--- |Функции преобразования из заданных типов
+-- |Functions converting from the given types
 fromWord8  (x::Word8 ) = toEnum (fromEnum x)
 fromWord16 (x::Word16) = toEnum (fromEnum x)
 fromWord32 (x::Word32) = toEnum (fromEnum x)
@@ -912,18 +912,18 @@ test = do
   print c
 -}
 --Checklist:
---1. +получать буфера функцией receiveBuf = receiveP pipe
---2. +write для Storable по умолчанию - проверяет наличие свободного места и делает pokeByteOff elem
---3. +быстрая запись строк
---4. +использовать writeUnchecked
---5. +доделать кодирование Integer
---6. +переименовать WriteList в WriteListWithoutLength
---7. +упростить имена функций для квалифицированного импорта и сделать read/writeList=writeLength+writeListWithoutLength
---8. правильно переходить с одного буфера на другой
---9. читать более 100 элементов в списке
---10. восстановить кодирование [Bool]
---11. переделать чтение строк чтоб избавиться от reverse (в стёк помещать пормежуточные данные - без tail recursion)
---12. чтение FastBufferData организовать без возврашения tuple - pos сделать или IORef Int, или FastMutInt, или IORef (Ptr CChar)
+--1. +receive buffers via the function receiveBuf = receiveP pipe
+--2. +default write for Storable - checks for free space and does pokeByteOff elem
+--3. +fast writing of strings
+--4. +use writeUnchecked
+--5. +finish the Integer encoding
+--6. +rename WriteList to WriteListWithoutLength
+--7. +simplify the function names for qualified import and make read/writeList=writeLength+writeListWithoutLength
+--8. correctly move from one buffer to another
+--9. read more than 100 elements in a list
+--10. restore the [Bool] encoding
+--11. rework string reading to get rid of reverse (put the intermediate data on the stack - without tail recursion)
+--12. organize FastBufferData reading without returning a tuple - make pos either IORef Int, or FastMutInt, or IORef (Ptr CChar)
 
 
 

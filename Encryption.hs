@@ -1,9 +1,9 @@
 {-# LANGUAGE CPP #-}
 ----------------------------------------------------------------------------------------------------
----- Шифрование, дешифрование и криптографический PRNG.                                         ----
----- Процедура generateEncryption добавляет к цепочке алгоритмов сжатия алгоритм(ы) шифрования. ----
----- Процедура generateDecryption добавляет ключи к записи алгоритма сжатия+шифрования,         ----
----- Процедура generateRandomBytes возвращает последовательность крипт. случайных байт          ----
+---- Encryption, decryption and cryptographic PRNG.                                             ----
+---- generateEncryption adds encryption algorithm(s) to the compression algorithm chain.        ----
+---- generateDecryption adds keys to the compression+encryption algorithm record,               ----
+---- generateRandomBytes returns a sequence of cryptographically random bytes                   ----
 ----------------------------------------------------------------------------------------------------
 module Encryption (generateEncryption, generateDecryption, generateRandomBytes) where
 
@@ -27,12 +27,12 @@ import Errors
 import Compression
 
 ---------------------------------------------------------------------------------------------------
----- Шифрование и дешифрование --------------------------------------------------------------------
+---- Encryption and decryption --------------------------------------------------------------------
 ---------------------------------------------------------------------------------------------------
 
--- |Возвращает две функции, добавляющие к методу сжатия алгоритм шифрования:
--- первая включает ключ шифрования (для реального использования)
--- вторая только вспомогательные данные (для сохранения в архиве)
+-- |Returns two functions that add an encryption algorithm to the compression method:
+-- the first one includes the encryption key (for real use)
+-- the second one only the auxiliary data (for storing in the archive)
 generateEncryption encryption password = do
     addRandomness
     result <- foreach (split_compressor encryption) $ \algorithm -> do
@@ -48,53 +48,53 @@ generateEncryption encryption password = do
     return ((++map fst result), (++map snd result))
 
 
--- |Обработать compressor, прочитанный из архива, добавив к нему информацию,
--- необходимую для расшифровки
+-- |Process a compressor read from the archive, adding to it the information
+-- required for decryption
 generateDecryption compressor decryption_info  =  mapM addKey compressor   where
-  -- Обработать алгоритм шифрования, добавив к нему key, выведенный
-  -- из заданного пользователем пароля и salt, сохранённого в параметрах алгоритма
+  -- Process the encryption algorithm, adding to it the key derived
+  -- from the user-supplied password and the salt stored in the algorithm parameters
   addKey algorithm | not (isEncryption algorithm)
                                = return (Just algorithm)    -- non-encryption algorithm stays untouched
                    | otherwise = do
-    -- Выделим из записи алгоритма параметры, необходимые для вычисления и проверки ключа
+    -- Extract from the algorithm record the parameters required to compute and verify the key
     let name:params   = split_method algorithm
-        param c       = params .$map (splitAt 1) .$lookup c   -- найти значение параметра с
+        param c       = params .$map (splitAt 1) .$lookup c   -- find the value of parameter c
         salt          = param "s" `defaultVal` (error$ algorithm++" doesn't include salt") .$decode16
         checkCode     = param "c" `defaultVal` "" .$decode16
         numIterations = param "n" `defaultVal` (error$ algorithm++" doesn't include numIterations") .$readInt
 
-    -- Воспользуемся списком паролей распаковкии и, если придётся,
-    -- добавим в него новые пароли, введённые пользователем
+    -- Use the list of decryption passwords and, if it comes to that,
+    -- add to it the new passwords entered by the user
     let (dont_ask_passwords, mvar_passwords, keyfiles, ask_decryption_password, bad_decryption_password) = decryption_info
     modifyMVar mvar_passwords $ \passwords -> do
       passwords_list <- ref passwords
 
-      -- Попробовать расшифровку со всеми возможными keyfiles и затем без них
+      -- Try decryption with all the possible keyfiles and then without them
       let checkPwd password  =  firstJust$ map doCheck (keyfiles++[""])
-            where -- Если верификация по checkCode успешна, то возвращаем найденный ключ алгоритма шифрования, иначе - Nothing
+            where -- If verification against checkCode succeeds we return the found encryption algorithm key, otherwise - Nothing
                   doCheck keyfile  =  recheckCode==checkCode  &&&  Just key
-                    -- Вычислим ключ расшифровки key и recheckCode, используемый для быстрой проверки правильности пароля
+                    -- Compute the decryption key key and the recheckCode used for a quick check that the password is correct
                     where (key, recheckCode) = deriveKey algorithm (password++keyfile) salt numIterations (length checkCode)
 
-      -- Процедура подбора пароля для расшифровки блока.
-      -- Каждый вероятный пароль проверяется с помощью checkPwd.
-      -- Если ни один из уже известных паролей не подошёл, то мы запрашиваем у пользователя новые
+      -- Procedure that guesses the password for decrypting a block.
+      -- Every likely password is checked with checkPwd.
+      -- If none of the already known passwords fits, we ask the user for new ones
       let findDecryptionKey (password:pwds) = do
-            case (checkPwd password) of            -- Если верификация в checkPwd прошла успешно
-              Just key -> return (Just key)        --   то возвращаем найденный ключ алгоритма шифрования
-              Nothing  -> findDecryptionKey pwds   --   иначе - пробуем следующие пароли
+            case (checkPwd password) of            -- If verification in checkPwd succeeded
+              Just key -> return (Just key)        --   then we return the found encryption algorithm key
+              Nothing  -> findDecryptionKey pwds   --   otherwise - we try the next passwords
 
-          findDecryptionKey [] = do   -- Сюда мы попадаем если ни один старый пароль не подошёл
-            -- Если использована опция -p-/-op- или пользователь введёт пустую строку -
-            -- значит, этот блок расшифровать нам не удастся
+          findDecryptionKey [] = do   -- We get here if none of the old passwords fitted
+            -- If the -p-/-op- option was used, or the user enters an empty string -
+            -- it means we will not manage to decrypt this block
             if dont_ask_passwords  then return Nothing   else do
               password <- ask_decryption_password
               if password==""        then return Nothing   else do
-                -- Добавим новый пароль в список паролей, проверяемых при распаковке
+                -- Add the new password to the list of passwords checked during extraction
                 passwords_list .= (password:)
-                case (checkPwd password) of               -- Если верификация в checkPwd прошла успешно
-                  Just key -> return (Just key)           --   то возвращаем найденный ключ алгоритма шифрования
-                  Nothing  -> do bad_decryption_password  --   иначе - запрашиваем другой пароль
+                case (checkPwd password) of               -- If verification in checkPwd succeeded
+                  Just key -> return (Just key)           --   then we return the found encryption algorithm key
+                  Nothing  -> do bad_decryption_password  --   otherwise - we ask for another password
                                  findDecryptionKey []
       --
       key <- findDecryptionKey passwords
@@ -102,7 +102,7 @@ generateDecryption compressor decryption_info  =  mapM addKey compressor   where
       return (pl, key.$fmap (\key -> algorithm++":k"++encode16 key))
 
 
--- |Вывести из password+salt ключ шифрования и код проверки
+-- |Derive the encryption key and the check code from password+salt
 deriveKey algorithm password salt numIterations checkCodeSize =
     splitAt keySize $ pbkdf2Hmac password salt numIterations (keySize+checkCodeSize)
     where   keySize = encryptionGet "keySize" algorithm
@@ -119,10 +119,10 @@ aCRYPT_OK = 0
 
 
 ---------------------------------------------------------------------------------------------------
----- Криптографический генератор случайных последовательностей байт -------------------------------
+---- Cryptographic generator of random byte sequences ---------------------------------------------
 ---------------------------------------------------------------------------------------------------
 
--- |Добавить случайную информацию, полученную от ОС, в PRNG
+-- |Add random information obtained from the OS to the PRNG
 addRandomness = withMVar prng_state addRandomnessTo
 addRandomnessTo prng = do
   let size = 4096
@@ -131,7 +131,7 @@ addRandomnessTo prng = do
     check (==aCRYPT_OK) "prng_add_entropy" $
       prng_add_entropy buf (i bytes) prng
 
--- |Сгенерить случайную последовательность байт указанной длины
+-- |Generate a random byte sequence of the specified length
 generateRandomBytes bytes = do
   withMVar prng_state $ \prng -> do
     allocaBytes bytes $ \buf -> do
@@ -142,7 +142,7 @@ generateRandomBytes bytes = do
       ws <- peekArray bytes (castPtr buf :: Ptr Word8)
       return (map (chr . fromIntegral) ws)
 
--- |Переменная, хранящая состояние PRNG
+-- |The variable holding the PRNG state
 {-# NOINLINE prng_state #-}
 prng_state :: MVar (Ptr CChar)
 prng_state = unsafePerformIO $ do

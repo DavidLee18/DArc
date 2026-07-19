@@ -131,9 +131,9 @@ bool order_by_LZ_match_dest (const LZ_MATCH &left, const LZ_MATCH &right)
   }
 
 
-// Копирует данные из буфера в буфер, идя в порядке возрастания адресов
-// (это важно, поскольку буфера могут пересекаться и в этом случае нужно
-// размножить существующие данные)
+// Copies data from buffer to buffer, going in order of increasing addresses
+// (this is important, since the buffers may overlap and in that case we need
+// to replicate the existing data)
 void memcpy_lz_match (void* _dest, void* _src, unsigned len)
 {
   if (len) {
@@ -655,7 +655,7 @@ int main (int argc, char **argv)
           last_block = &block->next;
 
           if (ROUND_MATCHES)
-            compsize += stat_size / STATS_PER_MATCH(ROUND_MATCHES);   // Добавить размер одного слова STAT из-за того, что данные собираются с ROUND_MATCHES (по 12 байт), а кодироваться будут без него (по 16 байт)
+            compsize += stat_size / STATS_PER_MATCH(ROUND_MATCHES);   // Add the size of one STAT word, because the data is collected with ROUND_MATCHES (12 bytes each) but will be encoded without it (16 bytes each)
 
           if (INDEX_LZ)
             compsize += sizeof(STAT);   // accounting for the future write of statsize_buf[]

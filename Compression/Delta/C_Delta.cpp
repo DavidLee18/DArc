@@ -7,17 +7,17 @@ extern "C" {
 #include "Delta.cpp"
 
 /*-------------------------------------------------*/
-/* Реализация класса DELTA_METHOD                    */
+/* DELTA_METHOD class implementation                 */
 /*-------------------------------------------------*/
 
-// Конструктор, присваивающий параметрам метода сжатия значения по умолчанию
+// Constructor that assigns default values to the compression method parameters
 DELTA_METHOD::DELTA_METHOD()
 {
   BlockSize      = 8*mb;
   ExtendedTables = 0;
 }
 
-// Функция распаковки
+// Decompression function
 int DELTA_METHOD::decompress (CALLBACK_FUNC *callback, void *auxdata)
 {
   // Use faster function from DLL if possible
@@ -30,7 +30,7 @@ int DELTA_METHOD::decompress (CALLBACK_FUNC *callback, void *auxdata)
 
 #ifndef FREEARC_DECOMPRESS_ONLY
 
-// Функция упаковки
+// Compression function
 int DELTA_METHOD::compress (CALLBACK_FUNC *callback, void *auxdata)
 {
   // Use faster function from DLL if possible
@@ -41,7 +41,7 @@ int DELTA_METHOD::compress (CALLBACK_FUNC *callback, void *auxdata)
                           (BlockSize, ExtendedTables, callback, auxdata);
 }
 
-// Записать в buf[MAX_METHOD_STRLEN] строку, описывающую метод сжатия и его параметры (функция, обратная к parse_DELTA)
+// Write into buf[MAX_METHOD_STRLEN] a string describing the compression method and its parameters (the inverse of parse_DELTA)
 void DELTA_METHOD::ShowCompressionMethod (char *buf)
 {
     DELTA_METHOD defaults; char BlockSizeStr[100]=":";
@@ -51,36 +51,36 @@ void DELTA_METHOD::ShowCompressionMethod (char *buf)
 
 #endif  // !defined (FREEARC_DECOMPRESS_ONLY)
 
-// Конструирует объект типа DELTA_METHOD с заданными параметрами упаковки
-// или возвращает NULL, если это другой метод сжатия или допущена ошибка в параметрах
+// Constructs a DELTA_METHOD object with the given compression parameters,
+// or returns NULL if this is a different compression method or the parameters are invalid
 COMPRESSION_METHOD* parse_DELTA (char** parameters)
 {
   if (strcmp (parameters[0], "delta") == 0) {
-    // Если название метода (нулевой параметр) - "delta", то разберём остальные параметры
+    // If the method name (parameter zero) is "delta", parse the remaining parameters
 
     DELTA_METHOD *p = new DELTA_METHOD;
-    int error = 0;  // Признак того, что при разборе параметров произошла ошибка
+    int error = 0;  // Flag indicating that an error occurred while parsing the parameters
 
-    // Переберём все параметры метода (или выйдем раньше при возникновении ошибки при разборе очередного параметра)
+    // Iterate over all method parameters (or bail out early if parsing one of them fails)
     while (*++parameters && !error)
     {
       char* param = *parameters;
-      if (strlen(param)==1) switch (*param) {    // Однобуквенные параметры
+      if (strlen(param)==1) switch (*param) {    // Single-letter parameters
         case 'x':  p->ExtendedTables = 1; continue;
       }
-      switch (*param) {                    // Параметры, содержащие значения
+      switch (*param) {                    // Parameters that carry a value
         case 'b':  p->BlockSize = parseMem (param+1, &error); continue;
       }
-      // Сюда мы попадаем, если в параметре не указано его название
-      // Если этот параметр удастся разобрать как объём памяти,
-      // то присвоим его значение полю BlockSize
+      // We get here if the parameter does not include a name
+      // If this parameter can be parsed as an amount of memory,
+      // its value is assigned to the BlockSize field
       p->BlockSize = parseMem (param, &error);
     }
-    if (error)  {delete p; return NULL;}  // Ошибка при парсинге параметров метода
+    if (error)  {delete p; return NULL;}  // Error while parsing the method parameters
     return p;
   } else
-    return NULL;   // Это не метод DELTA
+    return NULL;   // This is not the DELTA method
 }
 
-static int DELTA_x = AddCompressionMethod (parse_DELTA);   // Зарегистрируем парсер метода DELTA
+static int DELTA_x = AddCompressionMethod (parse_DELTA);   // Register the DELTA method parser
 

@@ -8,11 +8,11 @@ int mm_decompress (CALLBACK_FUNC *callback, void *auxdata);
 
 #ifdef __cplusplus
 
-// Реализация стандартного интерфейса методов сжатия COMPRESSION_METHOD
+// Implementation of the standard COMPRESSION_METHOD compression method interface
 class MM_METHOD : public COMPRESSION_METHOD
 {
 public:
-  // Параметры этого метода сжатия
+  // Parameters of this compression method
   int mode;         // Detection speed mode (1 - fastest, 9 - most accurate)
   int skip_header;  // Skip file header detection
   int is_float ;    // Floating-point data format
@@ -22,18 +22,18 @@ public:
   int reorder;      // Reorder buffer contents so that each channel data are placed continuosly
                     //   (1 - reorder words, 2 - reorder bytes)
 
-  // Конструктор, присваивающий параметрам метода сжатия значения по умолчанию
+  // Constructor assigning default values to the compression method parameters
   MM_METHOD();
 
-  // Функции распаковки и упаковки
+  // Decompression and compression functions
   virtual int decompress (CALLBACK_FUNC *callback, void *auxdata);
 #ifndef FREEARC_DECOMPRESS_ONLY
   virtual int compress   (CALLBACK_FUNC *callback, void *auxdata);
 
-  // Записать в buf[MAX_METHOD_STRLEN] строку, описывающую метод сжатия и его параметры (функция, обратная к parse_TTA)
+  // Write into buf[MAX_METHOD_STRLEN] a string describing the compression method and its parameters (inverse of parse_TTA)
   virtual void ShowCompressionMethod (char *buf);
 
-  // Получить/установить объём памяти, используемой при упаковке/распаковке, размер словаря или размер блока
+  // Get/set the amount of memory used for compression/decompression, the dictionary size or the block size
   virtual MemSize GetCompressionMem     (void)         {return 2*mb;}
   virtual MemSize GetDecompressionMem   (void)         {return 1*mb;}
   virtual MemSize GetDictionary         (void)         {return 0;}
@@ -45,7 +45,7 @@ public:
 #endif
 };
 
-// Разборщик строки метода сжатия MM
+// Parser for the MM compression method string
 COMPRESSION_METHOD* parse_MM (char** parameters);
 
 #endif  // __cplusplus

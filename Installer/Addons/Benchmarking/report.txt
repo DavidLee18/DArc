@@ -470,7 +470,7 @@ Squeez 5.2
  -uxx5           9.558  0.394  2.541
  -uxx9           9.563  0.239  2.531
 
-C:\FIDO\Disk_Q\Тексты\Russian (117 files, 59307893 bytes)
+C:\FIDO\Disk_Q\Texts\Russian (117 files, 59307893 bytes)
 ARC 0.40
  -m1x            2.230  9.936 20.009
  -m2x            2.656  3.767 15.465

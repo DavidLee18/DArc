@@ -11,7 +11,7 @@
 #include "Compression/Compression.h"
 
 
-// Изменим настройки RTS, включив compacting GC начиная с 40 mb:
+// Adjust the RTS settings, enabling the compacting GC starting from 40 mb:
 char *ghc_rts_opts = "-c1 -M4000m";
 
 
@@ -292,12 +292,12 @@ void RunFile (const CFILENAME filename, const CFILENAME curdir, int wait_finish)
 void FormatDateTime (char *buf, int bufsize, time_t t)
 {
   struct tm *p;
-  if (t==-1)  t=0;  // Иначе получим вылет :(
+  if (t==-1)  t=0;  // Otherwise we get a crash :(
   p = localtime(&t);
   strftime( buf, bufsize, "%Y-%m-%d %H:%M:%S", p);
 }
 
-// Максимальная длина имени файла
+// Maximum file name length
 int long_path_size (void)
 {
   return MY_FILENAME_MAX;
@@ -370,7 +370,7 @@ uint UpdateCRC( void *Addr, uint Size, uint StartCRC)
   return crc;
 }
 
-// Вычислить CRC блока данных
+// Compute the CRC of a data block
 uint CalcCRC( void *Addr, uint Size)
 {
   return UpdateCRC (Addr, Size, INIT_CRC) ^ INIT_CRC;
@@ -378,7 +378,7 @@ uint CalcCRC( void *Addr, uint Size)
 
 
 
-// От-xor-ить два блока данных
+// XOR two data blocks together
 void memxor (char *dest, char *src, uint size)
 {
   if (size) do
@@ -386,7 +386,7 @@ void memxor (char *dest, char *src, uint size)
   while (--size);
 }
 
-// Вернуть имя файла без имени каталога
+// Return the file name without the directory name
 FILENAME arc_basename (FILENAME fullname)
 {
   char *p = fullname;
@@ -396,7 +396,7 @@ FILENAME arc_basename (FILENAME fullname)
   return p;
 }
 
-// Создать каталоги на пути к name
+// Create the directories along the path to name
 void BuildPathTo (CFILENAME name)
 {
   CFILENAME path_ptr = NULL;

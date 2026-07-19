@@ -519,7 +519,7 @@ finished:
 // 3. cobalp?
 // 4. class Buffer?
 
-// ХОЗЧАСТЬ ************************************************************************
+// HOUSEKEEPING ********************************************************************
 #include <stdlib.h>
 #include <stdio.h>
 #include <io.h>
@@ -590,7 +590,7 @@ int writeFILE (/*void* param,*/ void* buf, int size)
     return 0;
 }
 
-// Разбор командной строки, чтение входных данных, вызов encode/decode, и запись выходных данных
+// Command-line parsing, reading the input data, calling encode/decode, and writing the output data
 int main (int argc, char **argv)
 {
     int tta_level   = 3;  // Compression level (1..3, higher means tighter and slower compression)
@@ -648,7 +648,7 @@ int main (int argc, char **argv)
         exit(2);
     }
 
-    // Записать выходные данные, если был указан выходной файл
+    // Write the output data if an output file was specified
     fout = fopen( argc==3? argv[2] : "NUL", "wb" );
     if (fout == NULL) {
         printf( "\n Can't open %s for write\n", argv[2]);
@@ -660,7 +660,7 @@ int main (int argc, char **argv)
     stime = time(NULL);
     data_size = filelength(fileno(fin));
 
-    // Произвести упаковку или распаковку
+    // Perform compression or decompression
     !unpack
       ? tta_compress   (tta_level, skip_header, is_float, num_chan, word_size, offset, raw_data, readFILE, fin, writeFILE, fout)
       : tta_decompress (readFILE, fin, writeFILE, fout);

@@ -25,25 +25,25 @@ The algorithm processes 20 mb/sec on 1GHz CPU, but i'm sure that the speed may b
 
 
 /* To-do list:
-+1. Отличать константные столбцы и собирать их отдельно в начале таблицы (без вычитания)
-      приводить переменную часть к кратной 4 ширине!
-2. Ненадёжно работает различение вычитабельных и невычитабельных столбцов
-3. Усложнение критериев принятия таблицы:
-     +разрешить таблицы с широкими столбцами и небольшим числом строк (sqrt(N)*rows >= X)
-     +учитывать расстояние до предыдущей таблицы для оптимизации конечного уровня сжатия
-     улучшать оценку для столбцов с фиксированной разницей между элементами (типа 8,16,24,32...)
-4. Находить границы таблицы, вычисляя количество совпадающих битов/байтов в соседних строках таблицы,
-     при этом можно делать всего одну SLOW проверку для каждого возможного числа столбцов
-     (сейчас количество таких проверок равно числу столбцов)
-5. увеличить LINE до 64, сохранив проверку count[i]>5, добавив hash1 и проверки для 1-2 байтных таблиц
-     LINE=64; hash1 only; делать проверки для N=1,2 без проверки статистики блока
-+6. рассматривать 4 5 6 1 2 3 как одну "смену направления" вместо двух (проверять знак следующей разности)
-7. возвратить last_checked?
-8. проверить DELTA=4
-9. MAXELEM=64+hash1 улучшает на 35кб сжатие mdb, ухудшает на 12-14кб сжатие skype/wwlib/ruby
-   MAXELEM=32+hash1 улучшает на 20кб сжатие ruby
++1. Distinguish constant columns and gather them separately at the start of the table (without diffing)
+      round the variable part up to a width that is a multiple of 4!
+2. Distinguishing diffable from non-diffable columns works unreliably
+3. Refining the table acceptance criteria:
+     +allow tables with wide columns and a small number of rows (sqrt(N)*rows >= X)
+     +take into account the distance to the previous table to optimize the final compression level
+     improve the estimate for columns with a fixed difference between elements (like 8,16,24,32...)
+4. Find table boundaries by counting matching bits/bytes in adjacent table rows,
+     this way only a single SLOW check is needed for each possible number of columns
+     (currently the number of such checks equals the number of columns)
+5. increase LINE to 64, keeping the count[i]>5 check, adding hash1 and checks for 1-2 byte tables
+     LINE=64; hash1 only; run the checks for N=1,2 without checking the block statistics
++6. treat 4 5 6 1 2 3 as a single "direction change" instead of two (check the sign of the next difference)
+7. bring back last_checked?
+8. try DELTA=4
+9. MAXELEM=64+hash1 improves mdb compression by 35kb, worsens skype/wwlib/ruby compression by 12-14kb
+   MAXELEM=32+hash1 improves ruby compression by 20kb
 
-skype - ненайденные таблицы:
+skype - tables not found:
 58602 17
 587e0 14
 cdc0ce 2
@@ -62,45 +62,45 @@ total    727111
 
 
 Old list:
-+1. Некоторые таблицы не находятся (сравни C с GX)
-+2. Точно определять какие байты целесообразно вычитать сравнением энтропии столбца до и после вычитания
-3. На этом основании принимать решение о том, кодировать ли эту таблицу вообще
-4. Транспонирование? отделять столбцы с низкой энтропией (содержащие константные данные)
--5. hash *p/16 -> /8 или /32?
-+6. выделять по 64кб на каждую таблицу с автоматическим расширением при необходимости
-+7. при проверке следующей таблицы предыдущая уже вычтена, что создаёт трудности для ptr=table_end-32 и вообще
--8. считать количество одинаковых битов (в соседних строках таблицы) до и после вычитания/xor
-9. аналогично, находить границы таблицы, вычисляя количество совпадающих битов в соседних строках таблицы
++1. Some tables are not found (compare C with GX)
++2. Precisely determine which bytes are worth diffing by comparing column entropy before and after diffing
+3. On that basis, decide whether to encode this table at all
+4. Transposition? separate out low-entropy columns (containing constant data)
+-5. hash *p/16 -> /8 or /32?
++6. allocate 64kb per table with automatic growth when needed
++7. when checking the next table the previous one is already diffed, which causes trouble for ptr=table_end-32 and in general
+-8. count the number of identical bits (in adjacent table rows) before and after diffing/xor
+9. likewise, find table boundaries by counting matching bits in adjacent table rows
 +10. else carry = 0;
 +11. if (*(int32*)ptr != *(int32*)(ptr+3))   //  a little speed optimization
 
-Теряются таблицы:
-+1. 0C,04,FC... - при переходе через 0 разности больше самих значений,
-      поэтому надо делать difflb<itemlb/1.1? len++:omit++
-+2. идти назад до last_table_end или увеличить LINE до 64 (сохранив проверку count[i]>5)
-+3. использовать для расширения таблицы назад такой же алгоритм, что и для расширения вперёд?
-+4. разрешить таблицы с широкими столбцами и небольшим числом строк (sqrt(N)*rows >= X ?)
-+5. CHECK_FOR_DATA_TABLE: проверяется p[-1]+p[N-1] != p[2*N-1]+p[3*N-1] чтобы не вылететь
-      из-за случайного совпадения в двух соседних элементах таблицы
-+6. DELTA=8 (макс. разница между соседними значениями в одном столбце, которая рассматривается как похожая на таблицу)
--7. 29-байтные таблицы обломились, видимо из-за *p/16 (поменять на /8?)
-8. улучшать оценку для столбцов с фиксированной разницей между элементами (типа 8,16,24,32...)
--9. нынешний алгоритм слишком легко выходит из цикла поиска конца таблицы (500->400?)
+Tables that get missed:
++1. 0C,04,FC... - when crossing 0 the differences are larger than the values themselves,
+      so we should do difflb<itemlb/1.1? len++:omit++
++2. scan backwards up to last_table_end or increase LINE to 64 (keeping the count[i]>5 check)
++3. use the same algorithm for extending the table backwards as for extending it forwards?
++4. allow tables with wide columns and a small number of rows (sqrt(N)*rows >= X ?)
++5. CHECK_FOR_DATA_TABLE: p[-1]+p[N-1] != p[2*N-1]+p[3*N-1] is checked so as not to bail out
+      because of an accidental match in two adjacent table elements
++6. DELTA=8 (max difference between adjacent values in one column that is still considered table-like)
+-7. 29-byte tables failed, apparently because of *p/16 (change it to /8?)
+8. improve the estimate for columns with a fixed difference between elements (like 8,16,24,32...)
+-9. the current algorithm leaves the table-end search loop too easily (500->400?)
 
-Дальнейшее ускорение:
-+1. Пропускать место, занятое таблицей
-+2. убрать last_checked?
-3. строка в 64 байта и две проверки (+0, +32) для 1-байтовых таблиц
-4. проверка суммарных результатов двух последних lines (count[i]/=2 ?)
-5. огромное количество 1-2-байтных дистанций; например для блоков из 32-х нолей, unicode-текстов
-6. обрабатывать 4 раза по 32 байта, проверяя после первых блоков только на 1-4-байтные таблицы
-7. сделать разными CHECK_FOR_DATA_TABLE для 1, 2 и 3+ байтных таблиц
+Further speedups:
++1. Skip the space occupied by the table
++2. remove last_checked?
+3. a 64-byte line and two checks (+0, +32) for 1-byte tables
+4. check the combined results of the last two lines (count[i]/=2 ?)
+5. a huge number of 1-2 byte distances; for example for blocks of 32 zeroes, or unicode texts
+6. process 4 chunks of 32 bytes, checking after the first chunks only for 1-4 byte tables
+7. make CHECK_FOR_DATA_TABLE different for 1, 2 and 3+ byte tables
 
 
-340ms   592 ns/line  18.5 ns/b = только заполнение count
-470ms   634 ns/line  24.3 ns/b + цикл по count
-610ms                          + проверка только 1-4 байтовых таблиц
-750ms 1.230 ns/line  38.4 ns/b + проверка подходящих таблиц
+340ms   592 ns/line  18.5 ns/b = filling count only
+470ms   634 ns/line  24.3 ns/b + loop over count
+610ms                          + checking only 1-4 byte tables
+750ms 1.230 ns/line  38.4 ns/b + checking suitable tables
 */
 
 // ALGORITHM PARAMETERS ************************************************************************
@@ -108,12 +108,12 @@ Old list:
 // Maximum size of one table element (31 max. with current `type` encoding scheme)
 #define MAX_ELEMENT_SIZE 30
 
-// Размер одного блока, в котором ищутся повторения дистанций
+// Size of one block within which distance repetitions are searched for
 const int LINE=32;
 
-// Максимальное отклонение от предыдущего значения в том же столбце,
-// которое мы оцениваем как нечто похожее на реальную таблицу
-// в FAST_CHECK_FOR_DATA_TABLE
+// Maximum deviation from the previous value in the same column
+// that we still judge to look like a real table
+// in FAST_CHECK_FOR_DATA_TABLE
 #define DELTA 8
 
 
@@ -123,13 +123,13 @@ const int LINE=32;
 
 // OPTIONS FOR STANDALONE EXECUTABLE **************************************************************
 #ifndef DELTA_LIBRARY
-// Объем информации, выдаваемой на stdout
-//   0   только ошибки
-//   1   общая статистика
-//   2   детальная информация о процессе
+// Amount of information printed to stdout
+//   0   errors only
+//   1   overall statistics
+//   2   detailed information about the process
 static int verbose = 0;
 
-// Печатать время выполнения каждого шага алгоритма
+// Print the execution time of each algorithm step
 static int print_timings = 1;
 
 // Total stats for sucessfully processed tables
@@ -141,18 +141,18 @@ static uint64 fast_checks=0, slow_checks=0;
 
 // MEMORY BUFFER **********************************************************************************
 
-// Буфер, используемый для организации нескольких независимых потоков записи
-// в программе. Буфер умеет записывать в себя 8/16/32-разрядные числа и расширяться
-// при необходимости. Позднее содержимое буфера сбрасывается в выходной поток.
-// Дополнительно буфер поддерживает чтение ранее записанных в него данных.
-// Конец записанной части буфера - это max(p,end), где p - текущий указатель,
-// а end - максимальная позиция ранее записанных данных.
+// Buffer used to maintain several independent write streams inside the
+// program. The buffer can accept 8/16/32-bit numbers and grow when
+// necessary. Later the buffer contents are flushed to the output stream.
+// Additionally the buffer supports reading back data written to it earlier.
+// The end of the written part of the buffer is max(p,end), where p is the current
+// pointer and end is the furthest position of previously written data.
 struct Buffer
 {
-    byte*  buf;              // адрес выделенного буфера
-    byte*  p;                // текущий указатель чтения/записи внутри этого буфера
-    byte*  end;              // адрес после конца прочитанных/записанных данных
-    byte*  bufend;           // конец самого буфера
+    byte*  buf;              // address of the allocated buffer
+    byte*  p;                // current read/write pointer inside this buffer
+    byte*  end;              // address just past the end of the read/written data
+    byte*  bufend;           // end of the buffer itself
     Buffer (uint size=64*kb) { buf=p=end= (byte*) malloc(size); bufend = buf+size; }
     ~Buffer()                { free(); }
     int    len()             { return mymax(p,end)-buf; }
@@ -172,7 +172,7 @@ struct Buffer
                                  buf  = newbuf;
                                }
                              }
-// Для чтения данных
+// For reading data
     void   rewind()          { end=mymax(p,end); p=buf; }
     uint   get8 ()           { uint x = *(uint8 *)p; p+=sizeof(uint8 ); return x; }
     uint   get16()           { uint x = *(uint16*)p; p+=sizeof(uint16); return x; }
@@ -180,7 +180,7 @@ struct Buffer
     bool   eof()             { return p>=end; }
 };
 
-// Записать 32-битное число в выходной поток
+// Write a 32-bit number to the output stream
 #define Put32(x)                                           \
 {                                                          \
     Buffer header(sizeof(int32));                          \
@@ -192,8 +192,8 @@ struct Buffer
 
 // UTILITY FUNCTIONS ******************************************************************************
 
-// type кодирует формат таблицы. Номер старшего установленного бита - её ширина,
-// остальные биты=1 если соответствующий столбец не нужно вычитать
+// `type` encodes the table format. The index of the highest set bit is its width,
+// the remaining bits are 1 if the corresponding column should not be diffed
 
 // Encode `type` word from N, doDiff[] and immutable[] values.
 inline static uint32 encode_type (int N, bool doDiff[], bool immutable[])
@@ -292,28 +292,28 @@ static void unreorder_table (int N, BYTE *table_start, int table_len, bool immut
 // Analyze which table colums need to be diffed and which ones are (almost) immutable
 static void analyze_table (int N, BYTE *table_start, int table_len, bool doDiff[], bool immutable[])
 {
-    // Проверим каждый столбец отдельно
+    // Check each column separately
     for (int k=0; k<N; k++) {
-        // Все столбцы мы делим на 4 категории:
-        //   (почти) константные
-        //   (почти) константные после вычитания
-        //   вычитаемые (энтропия уменьшается после вычитания)
-        //   содержащие "случайные" данные
-        // (можно ещё добавить две xor-категории)
-        // Пока для простоты мы определяем только константные столбцы,
-        //   а все остальные считаем вычитаемыми
+        // We split all columns into 4 categories:
+        //   (almost) constant
+        //   (almost) constant after diffing
+        //   diffable (entropy decreases after diffing)
+        //   containing "random" data
+        // (two more xor categories could be added)
+        // For now, for simplicity, we only detect constant columns
+        //   and consider all the rest diffable
 
         BYTE *p = table_start+k; int neq=0;
         for (int i=1; i<table_len; i++, p+=N) {
             neq  +=  p[N]!=p[0];
         }
 
-        // Критерий константного столбца: количество(p[i]!=p[i+1]) < 1/4 от числа элементов
+        // Constant column criterion: count(p[i]!=p[i+1]) < 1/4 of the number of elements
         immutable[k] = neq*4 < table_len  && N!=2 && N!=4 && N!=8;
         if (immutable[k]) {
             stat (verbose>0 && printf (" %d", k));
         }
-        // В противном случае этот столбец должен выиграть от вычитания
+        // Otherwise this column should benefit from diffing
         doDiff[k] = !immutable[k];
         if (doDiff[k]) {
             stat (table_diffed += table_len);
@@ -326,7 +326,7 @@ static void analyze_table (int N, BYTE *table_start, int table_len, bool doDiff[
 // Check the following data for presence of table which will be better compressed
 // after subtraction of subsequent elements and find it's exact boundaries
 
-// Сканирует столбец таблицы, останавливаясь в тот момент, когда периоды монотонности становятся слишком малы (длина<4)
+// Scans a table column, stopping once the monotonic runs become too short (length<4)
 static BYTE* search_for_table_boundary (int N, BYTE *t, byte *bufstart, byte *bufend, int &_useless)
 {
     int dir = (*(int16*)(t+N) - *(int16*)t < 0)? -1:1,  len=0, omit=0, useless=_useless=0, bad=0;
@@ -341,39 +341,39 @@ static BYTE* search_for_table_boundary (int N, BYTE *t, byte *bufstart, byte *bu
         else if (diff==0) useless++;
         else {
             if (len>=4 || first_time)  bad=0, lastpoint = t-N*omit,  _useless=useless,  first_time = FALSE;
-            else {bad++; if (bad>=2) break;}  // Выйти, если это второй подряд сегмент монотонности с длиной <4
+            else {bad++; if (bad>=2) break;}  // Exit if this is the second consecutive monotonic segment shorter than 4
             dir = (*(int16*)(t+N) - *(int16*)t < 0)? -1:1;  len=0, omit=0;
-            if (dir*diff>0)  t-=N;   // начать сегмент монотонности прямо с текущего значения, если переход имеет вид V (спуск-подъём), и со следующего, если он имеет вид N (подъём-скачок-подъём)
+            if (dir*diff>0)  t-=N;   // start the monotonic segment right at the current value if the transition looks like V (down-up), and at the next one if it looks like N (up-jump-up)
         }
     }
     return lastpoint;
 }
 
-// Проверяет, можно ли считать таблицей нечто с адресом p и шириной элементов N
+// Checks whether the data at address p with element width N can be considered a table
 static bool slow_check_for_data_table (int N, byte *p, uint32 &type, BYTE *&table_start, BYTE *&table_end, byte *bufstart, byte *bufend, byte *buf, uint64 &offset, Buffer &ReorderingBuffer)
 {
-    // Сначала сканируем назад, начиная с p, в поисках начала таблицы
+    // First scan backwards starting from p, looking for the table start
     int useless;
     table_start = search_for_table_boundary (-N, p,           bufstart, bufend, useless);
-    // Затем сканируем вперёд, начиная с table_start, в поисках конца таблицы
+    // Then scan forwards starting from table_start, looking for the table end
     table_end   = search_for_table_boundary (N,  table_start, bufstart, bufend, useless);
 
-    // +разрешить таблицы с широкими столбцами и небольшим числом строк (sqrt(N)*rows >= X)
-    // +учитывать расстояние до предыдущей таблицы для оптимизации конечного уровня сжатия
-    // улучшать оценку для столбцов с фиксированной разницей между элементами (типа 8,16,24,32...)
-    // считать количество байтов, энтропия которых уменьшилась от вычитания [как минимум на два бита]
+    // +allow tables with wide columns and a small number of rows (sqrt(N)*rows >= X)
+    // +take into account the distance to the previous table to optimize the final compression level
+    // improve the estimate for columns with a fixed difference between elements (like 8,16,24,32...)
+    // count the bytes whose entropy decreased due to diffing [by at least two bits]
 
-    // Теперь выясняем, достаточно ли хороша эта таблица для того, чтобы её стоило закодировать
+    // Now find out whether this table is good enough to be worth encoding
     int rows   = (table_end-table_start)/N;
-    int useful = rows - useless;  // количество полезных строк таблицы
-    double skipBits = logb(mymax(table_start-bufstart,1));  // сколько бит придётся потратить на кодирование поля skip
+    int useful = rows - useless;  // number of useful table rows
+    double skipBits = logb(mymax(table_start-bufstart,1));  // how many bits will have to be spent encoding the skip field
     stat ((slow_checks++, verbose>1 && printf ("Slow check  %08x-%08x (%d*%d+%d)\n", int(table_start-buf+offset), int(table_end-buf+offset), N, useful, useless)));
     if (useful*sqrt((double)N) > 30+4*skipBits) {
         stat ((table_count++,  table_sumlen += N*rows, table_skipBits+=skipBits));
         stat (verbose>0 && printf("%08x-%08x %d*%d   ", int(table_start-buf+offset), int(table_end-buf+offset), N, rows));
 
-        // Определить какие столбцы нужно вычесть, а какие являются иммутабельными.
-        // Вычесть вычитаемое и собрать иммутабельные столбцы в начале таблицы (для удобства работы lz77)
+        // Determine which columns should be diffed and which ones are immutable.
+        // Diff the diffable ones and gather the immutable columns at the table start (to help lz77)
         bool doDiff[MAX_ELEMENT_SIZE], immutable[MAX_ELEMENT_SIZE];
         analyze_table (N, table_start, rows, doDiff, immutable);
         diff_table    (N, table_start, rows, doDiff);
@@ -439,7 +439,7 @@ int delta_compress (MemSize BlockSize, int ExtendedTables, CALLBACK_FUNC *callba
         {
 if (*(int32*)ptr != *(int32*)(ptr+3))   //  a little speed optimization, mainly to skip blocks of all zeroes
 {
-            // Посчитаем количество повторений одинаковых или близких байт на разных дистанциях
+            // Count the repetitions of identical or nearby bytes at various distances
             BYTE count[MAX_ELEMENT_SIZE]; zeroArray(count);
             BYTE *p = ptr; iterate_var(i,LINE)
             {
@@ -455,8 +455,8 @@ if (*(int32*)ptr != *(int32*)(ptr+3))   //  a little speed optimization, mainly 
                 p++;
             }
 
-            // Теперь отберём те дистанции, на которых было больше 5 повторений -
-            // это кандидаты на размер строки таблицы
+            // Now pick out the distances that had more than 5 repetitions -
+            // these are the candidates for the table row size
             iterate_var(i, MAX_ELEMENT_SIZE)  if (count[i] > 5)
             {
                 int N = i+1;
@@ -469,8 +469,8 @@ if (*(int32*)ptr != *(int32*)(ptr+3))   //  a little speed optimization, mainly 
             ptr += LINE;
             continue;
 
-            // Сюда мы попадаем после того, как найдена и закодирована таблица.
-            // Пропустим её содержимое
+            // We get here after a table has been found and encoded.
+            // Skip over its contents
             found:  ptr = mymax (ptr+LINE, last_table_end);
         }
 
@@ -501,10 +501,10 @@ int delta_decompress (MemSize BlockSize, int ExtendedTables, CALLBACK_FUNC *call
     Buffer Data, TSkip, TType, TRows,
            ReorderingBuffer;           // Buffer used in reorder_table
 
-    // Цикл, каждая итерация которого обрабатывает один блок сжатых данных
+    // A loop, each iteration of which processes one block of compressed data
     for (;;)
     {
-        // Прочитаем один блок данных и описание заключённых в нём таблиц
+        // Read one block of data and the description of the tables contained in it
         int DataSize;              READ4_OR_EOF(DataSize);       // Size of data block
         int TableSize;             READ4(TableSize);             // Size of each table describing data tables
         TSkip.reserve(TableSize);  READ (TSkip.buf, TableSize);  // Read table descriptions (see below)
@@ -598,10 +598,10 @@ int ReadWriteCallback (const char *what, void *buf, int size, void *r_)
   }
 }
 
-// Разбор командной строки и вызов delta_compress/delta_decompress с соответствующими параметрами
+// Parse the command line and call delta_compress/delta_decompress with the appropriate parameters
 int main (int argc, char **argv)
 {
-    // Распаковка вместо упаковки?
+    // Decompression instead of compression?
     int unpack = 0;
 
     int BlockSize=8*mb, ExtendedTables=0;
@@ -619,8 +619,8 @@ int main (int argc, char **argv)
         argv++, argc--;
     }
 
-    // Кроме опций, в командной строке должно быть ровно 1 или 2 аргумента
-    // (входной и опционально выходной файлы)
+    // Besides the options, the command line must contain exactly 1 or 2 arguments
+    // (the input file and, optionally, the output file)
     if (argc != 2  &&  argc != 3) {
         printf( "Delta: binary tables preprocessor v1.0  (c) Bulat.Ziganshin@gmail.com  2008-03-13");
         printf( "\n" );
@@ -636,14 +636,14 @@ int main (int argc, char **argv)
 
     Results r = r0;
 
-    // Открыть входной файл
+    // Open the input file
     r.fin = fopen (argv[1], "rb");
     if (r.fin == NULL) {
         printf( "Can't open %s for read\n", argv[1]);
         exit(3);
     }
 
-    // Открыть выходной файл, если он задан в командной строке
+    // Open the output file, if one is given on the command line
     if (argc == 3) {
         r.fout = fopen (argv[2], "wb");
         if (r.fout == NULL) {

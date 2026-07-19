@@ -8,19 +8,19 @@ int bcj_x86_decompress (CALLBACK_FUNC *callback, void *auxdata);
 
 #ifdef __cplusplus
 
-// Реализация стандартного интерфейса методов сжатия COMPRESSION_METHOD
+// Implementation of the standard COMPRESSION_METHOD compression-method interface
 class BCJ_X86_METHOD : public COMPRESSION_METHOD
 {
 public:
-  // Функции распаковки и упаковки
+  // Decompression and compression functions
   virtual int decompress (CALLBACK_FUNC *callback, void *auxdata);
 #ifndef FREEARC_DECOMPRESS_ONLY
   virtual int compress   (CALLBACK_FUNC *callback, void *auxdata);
 
-  // Записать в buf[MAX_METHOD_STRLEN] строку, описывающую метод сжатия (функция, обратная к parse_BCJ_X86)
+  // Write into buf[MAX_METHOD_STRLEN] a string describing the compression method (the inverse of parse_BCJ_X86)
   virtual void ShowCompressionMethod (char *buf);
 
-  // Получить/установить объём памяти, используемой при упаковке/распаковке, размер словаря или размер блока
+  // Get/set the amount of memory used for compression/decompression, the dictionary size or the block size
   virtual MemSize GetCompressionMem     (void)         {return LARGE_BUFFER_SIZE;}
   virtual MemSize GetDecompressionMem   (void)         {return LARGE_BUFFER_SIZE;}
   virtual MemSize GetDictionary         (void)         {return 0;}
@@ -32,7 +32,7 @@ public:
 #endif
 };
 
-// Разборщик строки метода сжатия BCJ_X86
+// Parser for the BCJ_X86 compression method string
 COMPRESSION_METHOD* parse_BCJ_X86 (char** parameters);
 
 #endif  // __cplusplus

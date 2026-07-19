@@ -3,51 +3,51 @@
 int external_compress   (char *packcmd, char *unpackcmd, char *datafile, char *packedfile, CALLBACK_FUNC *callback, void *auxdata);
 int external_decompress (char *packcmd, char *unpackcmd, char *datafile, char *packedfile, CALLBACK_FUNC *callback, void *auxdata);
 
-// Добавить в таблицу методов сжатия описанный пользователем в arc.ini внешний упаковщик.
-// params содержит описание упаковщика из arc.ini. Возвращает 1, если описание корректно.
+// Add to the compression method table an external compressor described by the user in arc.ini.
+// params contains the compressor description from arc.ini. Returns 1 if the description is valid.
 int AddExternalCompressor (char *params);
 
 #ifdef __cplusplus
 
-// Реализация стандартного интерфейса методов сжатия COMPRESSION_METHOD
+// Implementation of the standard COMPRESSION_METHOD compression method interface
 class EXTERNAL_METHOD : public COMPRESSION_METHOD
 {
 public:
-  // Параметры этого метода сжатия
-  char    *name;            // Имя метода (pmm, ccm...)
-  bool    can_set_mem;      // Доступно изменение требований к памяти?
-  MemSize cmem;             // Объём памяти, используемой для сжатия
-  MemSize dmem;             // Объём памяти, используемой для распаковки
-  char    *datafile;        // Наименование файла с неупакованными данными
-  char    *packedfile;      // Наименование файла с упакованными данными
-  char    *packcmd;         // Команда упаковки данных (datafile -> packedfile)
-  char    *unpackcmd;       // Команда распаковки данных (packedfile -> datafile)
-  char    *options[MAX_PARAMETERS];             // Доп. параметры метода
-  char     option_strings[MAX_METHOD_STRLEN];   // Текстовый буфер для хранения текста параметров
-  char    *defaultopt;      // Значения параметров по умолчанию
+  // Parameters of this compression method
+  char    *name;            // Method name (pmm, ccm...)
+  bool    can_set_mem;      // Can the memory requirements be changed?
+  MemSize cmem;             // Amount of memory used for compression
+  MemSize dmem;             // Amount of memory used for decompression
+  char    *datafile;        // Name of the file holding the unpacked data
+  char    *packedfile;      // Name of the file holding the packed data
+  char    *packcmd;         // Command that compresses the data (datafile -> packedfile)
+  char    *unpackcmd;       // Command that decompresses the data (packedfile -> datafile)
+  char    *options[MAX_PARAMETERS];             // Additional method parameters
+  char     option_strings[MAX_METHOD_STRLEN];   // Text buffer holding the parameter text
+  char    *defaultopt;      // Default parameter values
 
-  // Параметры, специфичные для PPMonstr
-  int     order;            // Порядок модели (по скольким последним сивмолам предсказывается следующий)
-  int     MRMethod;         // Что делать, когда память, выделенная для хранения модели, исчерпана
-  int     MinCompression;   // Минимальный процент сжатия. Если выходные данные больше, то вместо них будут записаны оригинальные (несжатые) данные
+  // Parameters specific to PPMonstr
+  int     order;            // Model order (how many preceding symbols the next one is predicted from)
+  int     MRMethod;         // What to do when the memory allocated for storing the model is exhausted
+  int     MinCompression;   // Minimum compression percentage. If the output data is larger, the original (uncompressed) data is stored instead
 
   EXTERNAL_METHOD() {};
-  // Универсальный метод: даём положительный ответ на запросы "external?"
+  // Universal method: answer "external?" queries in the affirmative
   virtual int doit (char *what, int param, void *data, CALLBACK_FUNC *callback)
   {
       if (strequ (what,"external?"))  return 1;
       else return COMPRESSION_METHOD::doit (what, param, data, callback);
   }
 
-  // Функции распаковки и упаковки
+  // Decompression and compression functions
   virtual int decompress (CALLBACK_FUNC *callback, void *auxdata);
 #ifndef FREEARC_DECOMPRESS_ONLY
   virtual int compress   (CALLBACK_FUNC *callback, void *auxdata);
 
-  // Записать в buf[MAX_METHOD_STRLEN] строку, описывающую метод сжатия и его параметры (функция, обратная к parse_EXTERNAL)
+  // Write into buf[MAX_METHOD_STRLEN] a string describing the compression method and its parameters (the inverse of parse_EXTERNAL)
   virtual void ShowCompressionMethod (char *buf);
 
-  // Получить/установить объём памяти, используемой при упаковке/распаковке, размер словаря или размер блока
+  // Get/set the amount of memory used for compression/decompression, the dictionary size or the block size
   virtual MemSize GetCompressionMem     (void)          {return cmem;}
   virtual MemSize GetDecompressionMem   (void)          {return dmem;}
   virtual MemSize GetDictionary         (void)          {return 0;}
@@ -59,7 +59,7 @@ public:
 #endif
 };
 
-// Разборщик строки препроцессора EXTERNAL
+// Parser for the EXTERNAL preprocessor string
 COMPRESSION_METHOD* parse_EXTERNAL (char** parameters);
 
 #endif  // __cplusplus

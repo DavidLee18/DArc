@@ -1,6 +1,6 @@
-// to do: отбор файлов по именам ("name" или "dir/name"),
-//        дешифрование данных/заголовка
-//        добавление ".arc", listfiles/-ap/-kb
+// to do: selecting files by name ("name" or "dir/name"),
+//        decryption of data/headers
+//        appending ".arc", listfiles/-ap/-kb
 #include <stdlib.h>
 #include <stdio.h>
 #include <fcntl.h>
@@ -19,10 +19,10 @@
 #define HEADER1        "FreeArc 0.51 "
 #define HEADER2        "  http://freearc.org  2009-04-28\n"
 
-// Доступ к структуре архива
+// Access to the archive structure
 #include "ArcStructure.h"
 
-// Весь диалог с пользователем описан в сменных модулях, включаемых здесь
+// The whole user dialogue is described in the pluggable modules included here
 #ifdef FREEARC_GUI
 #include "gui\gui.h"
 #include "gui\gui.cpp"
@@ -33,27 +33,27 @@ UI UI;
 
 
 /******************************************************************************
-** Информация о выполняемой деархиватором команде *****************************
+** Information about the command being executed by the extractor **************
 ******************************************************************************/
 class COMMAND
 {
 public:
-  char cmd;             // Выполняемая команда
-  FILENAME arcname;     // Имя обрабатываемого командой архива
-  FILENAME *filenames;  // Имена обрабатываемых командой файлов из архива
-  FILENAME outpath;     // Опция -dp
-  FILENAME runme;       // Файл, запускаемый после распаковки
-  BOOL wipeoutdir;      // Удалить файлы из outpath после завершения работы runme?
-  BOOL ok;              // Команда выполняется успешно?
-  int  silent;          // Опция -s
-  BOOL yes;             // Опция -o+
-  BOOL no;              // Опция -o-
-  BOOL noarcext;        // Опция --noarcext
-  BOOL nooptions;       // Опция --
+  char cmd;             // The command being executed
+  FILENAME arcname;     // Name of the archive processed by the command
+  FILENAME *filenames;  // Names of the files inside the archive processed by the command
+  FILENAME outpath;     // The -dp option
+  FILENAME runme;       // File to run after extraction
+  BOOL wipeoutdir;      // Delete the files from outpath after runme finishes?
+  BOOL ok;              // Is the command executing successfully?
+  int  silent;          // The -s option
+  BOOL yes;             // The -o+ option
+  BOOL no;              // The -o- option
+  BOOL noarcext;        // The --noarcext option
+  BOOL nooptions;       // The -- option
 
-  bool list_cmd()  {return cmd=='l' || cmd=='v';}   // True, если это команда получения листинга архива
+  bool list_cmd()  {return cmd=='l' || cmd=='v';}   // True if this is an archive listing command
 
-  // Разбор командной строки
+  // Command line parsing
   COMMAND (int argc, char *argv[])
   {
 #ifdef FREEARC_WIN
@@ -207,21 +207,21 @@ public:
 #endif
   }
 
-  // TRUE, если i-й файл каталога dirblock следует включить в обработку
+  // TRUE if the i-th file of the directory block dirblock should be included in processing
   BOOL accept_file (DIRECTORY_BLOCK *dirblock, int i)
   {
-    if (!*filenames)  return TRUE;            // В командной строке не указано ни одного имени файла - значит, нужно обрабатывать любой файл
+    if (!*filenames)  return TRUE;            // No file name was given on the command line - so every file must be processed
     for (FILENAME *f=filenames; *f; f++) {
       if (strequ (dirblock->name[i], *f))
-        return TRUE;                          // О! Совпало!
+        return TRUE;                          // Got a match!
     }
-    return FALSE;                             // Совпадающего имени не найдено
+    return FALSE;                             // No matching name was found
   }
 };
 
 
 /******************************************************************************
-** Реализация команды получения листинга архива *******************************
+** Implementation of the archive listing command ******************************
 ******************************************************************************/
 #ifdef FREEARC_GUI
 void ListHeader (COMMAND &) {}
@@ -254,23 +254,23 @@ void ListFooter (COMMAND &command)
 void ListFiles (DIRECTORY_BLOCK *dirblock, COMMAND &command)
 {
   int  b=0;                // current_data_block
-  bool Encrypted = FALSE;  // текущий солид-блок зашифрован?
+  bool Encrypted = FALSE;  // is the current solid block encrypted?
   uint64 packed=0;
   iterate_var (i, dirblock->total_files) {
-    // Увеличим номер солид-блока если мы вышли за последний принадлежащий ему файл
+    // Advance the solid block number if we have moved past the last file belonging to it
     if (i >= dirblock->block_end(b))
       b++;
-    // Если это первый файл в солид-блоке - соберём block-related информацию
+    // If this is the first file in the solid block - gather the block-related information
     if (i == dirblock->block_start(b))
-    { // Запишем на первый файл в блоке весь его упакованный размер
+    { // Record the whole packed size of the block on its first file
       packed = dirblock->data_block[b].compsize;
-      // Запомним информацию о солид-блоке для использования её со всеми файлами из этого солид-блока
+      // Remember the solid block information so it can be used for every file in this solid block
       char *c = dirblock->data_block[b].compressor;
       Encrypted = strstr (c, "+aes-")!=NULL || strstr (c, "+serpent-")!=NULL || strstr (c, "+blowfish-")!=NULL || strstr (c, "+twofish-")!=NULL;
     }
 
 
-    if (command.accept_file (dirblock, i)) { //   Если этот файл требуется обработать
+    if (command.accept_file (dirblock, i)) { //   If this file has to be processed
       unsigned long long filesize = dirblock->size[i];
       char timestr[100];  FormatDateTime (timestr, 100, dirblock->time[i]);
 
@@ -295,40 +295,40 @@ void ListFiles (DIRECTORY_BLOCK *dirblock, COMMAND &command)
 #endif
 
 /******************************************************************************
-** Реализация команд распаковки и тестирования архивов ************************
+** Implementation of the archive extraction and testing commands **************
 ******************************************************************************/
 
-// Переменные, отражающие состояние процесса чтения входных данных
-MYFILE *infile;          // Файл архива, из которого идёт чтение
-FILESIZE bytes_left;     // Кол-во байт, которое осталось прочитать до исчерпания упакованных данных этого солид-блока
+// Variables reflecting the state of the input data reading process
+MYFILE *infile;          // The archive file being read from
+FILESIZE bytes_left;     // Number of bytes left to read before this solid block's packed data is exhausted
 
-// Переменные, отражающие состояние процесса записи распакованных данных
-COMMAND *cmd;             // Выполняемая команда
-DIRECTORY_BLOCK *dir;     // Каталог, которому принадлежат распаковываемые файлы
-int curfile;              //   Номер в каталоге текущего распаковываемого файла
-BOOL included;            //   Текущий файл включён в обработку или мы просто пропускаем его?
-int extractUntil;         //   Номер последнего файла, который нужно извлечь из этого солид-блока
-MYFILE outfile;           // Файл, извлекаемый из архива
-char fullname[MY_FILENAME_MAX*4]; // Полное имя распаковываемого сейчас файла
-FILESIZE bytes_to_write;  // Сколько байт в текущем файле осталось записать
-FILESIZE writtenBytes;    // Сколько байт всего было распаковано в текущем архиве
-FILESIZE archive_pos;     // Текущая позиция в архиве
-CRC crc;                  // CRC данных, записанных в файл
-enum PASS {FIRST_PASS, SECOND_PASS};  // Первый/второй проход по солид-блоку (первый - распаковка каталогов и пустых файлов, второй - всех остальных)
+// Variables reflecting the state of the decompressed data writing process
+COMMAND *cmd;             // The command being executed
+DIRECTORY_BLOCK *dir;     // The directory the files being extracted belong to
+int curfile;              //   Index in the directory of the file currently being extracted
+BOOL included;            //   Is the current file included in processing or are we just skipping it?
+int extractUntil;         //   Index of the last file that has to be extracted from this solid block
+MYFILE outfile;           // The file being extracted from the archive
+char fullname[MY_FILENAME_MAX*4]; // Full name of the file currently being extracted
+FILESIZE bytes_to_write;  // How many bytes are still left to write in the current file
+FILESIZE writtenBytes;    // How many bytes have been decompressed in total in the current archive
+FILESIZE archive_pos;     // Current position in the archive
+CRC crc;                  // CRC of the data written to the file
+enum PASS {FIRST_PASS, SECOND_PASS};  // First/second pass over the solid block (the first extracts directories and empty files, the second all the rest)
 
-// Процедура экстренного выхода
+// Emergency exit procedure
 void quit(void)   {if (outfile.isopen())  outfile.close(), delete_file(outfile.filename);
                    exit (FREEARC_EXIT_ERROR);}
 
-// Действие при ошибке в CHECK()
+// Action taken on an error in CHECK()
 #undef  ON_CHECK_FAIL
 #define ON_CHECK_FAIL()   quit()
 
-// * Нижеследующие процедуры предоставляют абстрактные средства работы с текущим выходным файлом,
-// * скрывая такие детали, как различия команд e/x/t, различие между каталогами и файлами,
-// * и то, что часть файлов может быть исключена из обработки
+// * The procedures below provide an abstract way of working with the current output file,
+// * hiding details such as the differences between the e/x/t commands, the difference between directories and files,
+// * and the fact that some files may be excluded from processing
 
-// Открыть очередной выходной файл и напечатать сообщение о его распаковке
+// Open the next output file and print a message about extracting it
 void outfile_open (PASS pass)
 {
   crc = INIT_CRC;
@@ -362,13 +362,13 @@ void outfile_open (PASS pass)
        }
        if (included)  outfile.open (WRITE_MODE);}
 
-  if (pass==FIRST_PASS || dir->size[curfile]>0)   // Не писать повторно о распаковке каталогов/пустых файлов
-    if (!(dir->isdir[curfile] && cmd->cmd!='x'))  // Не сообщать о тестировании каталогов ;)
+  if (pass==FIRST_PASS || dir->size[curfile]>0)   // Don't report the extraction of directories/empty files twice
+    if (!(dir->isdir[curfile] && cmd->cmd!='x'))  // Don't report testing of directories ;)
       if (!UI.ProgressFile (dir->isdir[curfile], included? (cmd->cmd=='t'? "Testing":"Extracting"):"Skipping", MYFILE(xname).displayname(), bytes_to_write))
         quit();
 }
 
-// Записать данные в выходной файл
+// Write data to the output file
 void outfile_write (void *buf, int size)
 {
   crc = UpdateCRC (buf, size, crc);
@@ -377,7 +377,7 @@ void outfile_write (void *buf, int size)
   if (!UI.ProgressWrite (writtenBytes += size))  quit();
 }
 
-// Закрыть выходной файл
+// Close the output file
 void outfile_close()
 {
   if (included)
@@ -390,7 +390,7 @@ void outfile_close()
   included = FALSE;
 }
 
-// Callback-функция чтения/записи для распаковщика
+// Read/write callback function for the decompressor
 int callback_func (const char *what, void *buf, int size, void *auxdata)
 {
   if (strequ (what, "read")) {
@@ -403,51 +403,51 @@ int callback_func (const char *what, void *buf, int size, void *auxdata)
 
   } else if (strequ (what, "write")) {
     int origsize = size;
-    if (curfile > extractUntil)  return FREEARC_ERRCODE_NO_MORE_DATA_REQUIRED;   // Нам попался тупой распаковщик, не способный завершить распаковку по требованию :(
+    if (curfile > extractUntil)  return FREEARC_ERRCODE_NO_MORE_DATA_REQUIRED;   // We ran into a dumb decompressor unable to stop decompression on request :(
     while (size>0) {
-      int n = mymin (bytes_to_write, size);   // Записываем сколько осталось до конца файла или
-      outfile_write (buf,n);                  // сколько осталось данных в буфере - смотря что меньше
+      int n = mymin (bytes_to_write, size);   // Write however much is left until the end of the file or
+      outfile_write (buf,n);                  // however much data is left in the buffer - whichever is smaller
       bytes_to_write -= n;
-      if (bytes_to_write==0) {                // Если файл записан до конца - перейдём к следующему
+      if (bytes_to_write==0) {                // If the file has been written to the end - move on to the next one
         outfile_close();
-        if (++curfile > extractUntil)  return FREEARC_ERRCODE_NO_MORE_DATA_REQUIRED;   // Если все файлы, которые мы должны распаковать из этого блока, уже извлечены, то попросить распаковщик завершить распаковку
+        if (++curfile > extractUntil)  return FREEARC_ERRCODE_NO_MORE_DATA_REQUIRED;   // If every file we have to extract from this block has already been extracted, ask the decompressor to stop decompressing
         outfile_open(SECOND_PASS);
       }
       buf=(uint8*)buf+n; size-=n;
     }
-    return origsize;     // Сигнализировать успешную запись и попросить продолжить распаковку
+    return origsize;     // Signal a successful write and ask it to continue decompressing
 
   } else return FREEARC_ERRCODE_NOT_IMPLEMENTED;
 }
 
-// Распаковать или протестировать файлы из солид-блока с номером block_num каталога dirblock
+// Extract or test the files from the solid block numbered block_num of the directory block dirblock
 void ExtractFiles (DIRECTORY_BLOCK *dirblock, int block_num, COMMAND &command)
 {
   cmd = &command;
   dir = dirblock;
   BLOCK& data_block (dirblock->data_block [block_num]);
-  extractUntil = -1;                        // В эту переменную будет записан номер последнего файла в солид-блоке, который нужно обработать
-  // Переберём все файлы в этом блоке
+  extractUntil = -1;                        // This variable will hold the index of the last file in the solid block that has to be processed
+  // Walk through all the files in this block
   for (curfile = dirblock->block_start(block_num); curfile < dirblock->block_end(block_num); curfile++) {
-    if (command.accept_file (dirblock, curfile))           // Если этот файл требуется обработать
+    if (command.accept_file (dirblock, curfile))           // If this file has to be processed
     {
-      if (dir->size[curfile]==0) {   // то если это каталог или пустой файл - сделаем это сразу
+      if (dir->size[curfile]==0) {   // then if it is a directory or an empty file - do it right away
         outfile_open (FIRST_PASS);
         outfile_close(); }
       else
-        extractUntil = curfile;      // а иначе - запомним, что нужно распаковать блок как минимум до этого файла
+        extractUntil = curfile;      // otherwise - remember that the block has to be decompressed at least up to this file
     }
   }
-  if (extractUntil >= 0) {                       // Если в этом блоке нашлось что распаковывать - значит, распакуем! :)
-    infile = &dirblock->arcfile;                 //   Архивный файл
-    infile->seek (archive_pos = data_block.pos); //   Начало данных солид-блока в архиве
-    bytes_left = data_block.compsize;            //   Размер упакованных данных в солид-блоке
-    curfile = dirblock->block_start (block_num); // Номер первого файла в этом солид-блоке
-    outfile_open (SECOND_PASS);                  // Откроем первый выходной файл
+  if (extractUntil >= 0) {                       // If there was something to extract in this block - then let's extract it! :)
+    infile = &dirblock->arcfile;                 //   The archive file
+    infile->seek (archive_pos = data_block.pos); //   Start of the solid block's data in the archive
+    bytes_left = data_block.compsize;            //   Size of the packed data in the solid block
+    curfile = dirblock->block_start (block_num); // Index of the first file in this solid block
+    outfile_open (SECOND_PASS);                  // Open the first output file
     int result = MultiDecompress (data_block.compressor, callback_func, NULL);
     CHECK (result!=FREEARC_ERRCODE_INVALID_COMPRESSOR, (s,"ERROR: unsupported compression method %s", data_block.compressor));
     CHECK (result>=0 || result==FREEARC_ERRCODE_NO_MORE_DATA_REQUIRED, (s,"ERROR: archive data corrupted (decompression fails)"));
-    outfile_close();                             // Закроем последний выходной файл
+    outfile_close();                             // Close the last output file
   }
 }
 
@@ -480,16 +480,16 @@ void wipedir(TCHAR *dir)
 
 
 /******************************************************************************
-** Основная программа *********************************************************
+** Main program ***************************************************************
 ******************************************************************************/
 
-// Читает структуру архива и вызывает в зависимости от выполняемой команды
-// ListFiles для каждого блока каталога или ExtractFiles для каждого солид-блока
+// Reads the archive structure and, depending on the command being executed, calls
+// ListFiles for each directory block or ExtractFiles for each solid block
 void ProcessArchive (COMMAND &command)
 {
   static ARCHIVE arcinfo (command.arcname);
-  arcinfo.read_structure();                                           // Прочитаем структуру архива
-  // Выведем заголовок операции на экран и запросим у пользователя разрешение на распаковку SFX
+  arcinfo.read_structure();                                           // Read the archive structure
+  // Print the operation header on the screen and ask the user for permission to unpack the SFX
   if (!UI.AllowProcessing (command.cmd, command.silent, MYFILE(command.arcname).displayname(), &arcinfo.arcComment[0], arcinfo.arcComment.size, command.outpath)) {
     command.ok = FALSE;  return;
   }
@@ -498,15 +498,15 @@ void ProcessArchive (COMMAND &command)
   writtenBytes = 0;
   if (command.list_cmd())  ListHeader (command);
   else                     UI.BeginProgress (arcinfo.arcfile.size());
-  iterate_array (i, arcinfo.control_blocks_descriptors) {             // Переберём все служебные блоки в архиве...
+  iterate_array (i, arcinfo.control_blocks_descriptors) {             // Walk through all the service blocks in the archive...
     BLOCK& block_descriptor = arcinfo.control_blocks_descriptors[i];
-    if (block_descriptor.type == DIR_BLOCK) {                         // ... и отберём из них блоки каталога
-      DIRECTORY_BLOCK dirblock (arcinfo, block_descriptor);           // Прочитаем блок каталога
-      if (command.list_cmd())                                         // Если это команда получения листинга
-        ListFiles (&dirblock, command);                               //   то выполним её
+    if (block_descriptor.type == DIR_BLOCK) {                         // ... and pick out the directory blocks among them
+      DIRECTORY_BLOCK dirblock (arcinfo, block_descriptor);           // Read the directory block
+      if (command.list_cmd())                                         // If this is a listing command
+        ListFiles (&dirblock, command);                               //   then execute it
       else
-        iterate_array (i, dirblock.data_block)                        //   иначе - переберём все солид-блоки в каталоге
-          ExtractFiles (&dirblock, i, command);                       //     и для каждого из них выполним процедуру тестирования/распаковки
+        iterate_array (i, dirblock.data_block)                        //   otherwise - walk through all the solid blocks in the directory
+          ExtractFiles (&dirblock, i, command);                       //     and run the testing/extraction procedure for each of them
     }
   }
   if (command.list_cmd())  ListFooter (command);
@@ -536,9 +536,9 @@ int main (int argc, char *argv[])
 {
   SetCompressionThreads (GetProcessorsCount());
   UI.DisplayHeader (HEADER1 NAME);
-  COMMAND command (argc, argv);    // Распарсить команду
-  if (command.ok)                  // Если парсинг был удачен и можно выполнить команду
-    ProcessArchive (command);      //   Выполнить разобранную команду
+  COMMAND command (argc, argv);    // Parse the command
+  if (command.ok)                  // If parsing succeeded and the command can be executed
+    ProcessArchive (command);      //   Execute the parsed command
   printf ("\n");
   return command.ok? EXIT_SUCCESS : FREEARC_EXIT_ERROR;
 }

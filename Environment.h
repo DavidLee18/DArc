@@ -15,28 +15,28 @@ extern "C" {
 #define INIT_CRC 0xffffffff
 
 // Environment.cpp
-void SetFileDateTime (const CFILENAME Filename, time_t t); // Установить время/дату модификации файла
+void SetFileDateTime (const CFILENAME Filename, time_t t); // Set the file modification time/date
 void RunProgram (const CFILENAME filename, const CFILENAME curdir, int wait_finish);  // Execute program `filename` in the directory `curdir` optionally waiting until it finished
 void RunFile    (const CFILENAME filename, const CFILENAME curdir, int wait_finish);  // Execute file `filename` in the directory `curdir` optionally waiting until it finished
-int long_path_size (void);                                 // Максимальная длина имени файла
-void FormatDateTime (char *buf, int bufsize, time_t t);    // Отформатировать время/дату для команды листинга
-CFILENAME GetExeName (CFILENAME buf, int bufsize);         // Вернуть имя исполняемого файла программы
-unsigned GetPhysicalMemory (void);                         // Объём физической памяти компьютера
-unsigned GetMaxMemToAlloc (void);                          // Макс. объём памяти который мы можем выделить в адресном пространстве нашего процесса
-unsigned GetAvailablePhysicalMemory (void);                // Объём свободной физической памяти компьютера
-void TestMalloc (void);                                    // Печатает статистику свободной памяти
-int GetProcessorsCount (void);                             // Общее количество процессоров (точнее, физических ядер) в системе. Используется для определения того, сколько "тяжёлых" вычислительных потоков целесообразно запустить в программе
-uint UpdateCRC (void *Addr, uint Size, uint StartCRC);     // Обновить CRC содержимым блока данных
-uint CalcCRC (void *Addr, uint Size);                      // Вычислить CRC блока данных
-void memxor (char *dest, char *src, uint size);            // От-xor-ить два блока данных
+int long_path_size (void);                                 // Maximum file name length
+void FormatDateTime (char *buf, int bufsize, time_t t);    // Format time/date for the listing command
+CFILENAME GetExeName (CFILENAME buf, int bufsize);         // Return the name of the program's executable file
+unsigned GetPhysicalMemory (void);                         // Amount of physical memory in the computer
+unsigned GetMaxMemToAlloc (void);                          // Max amount of memory we can allocate in our process's address space
+unsigned GetAvailablePhysicalMemory (void);                // Amount of free physical memory in the computer
+void TestMalloc (void);                                    // Prints free memory statistics
+int GetProcessorsCount (void);                             // Total number of processors (more precisely, physical cores) in the system. Used to decide how many "heavy" computational threads it makes sense to run in the program
+uint UpdateCRC (void *Addr, uint Size, uint StartCRC);     // Update the CRC with the contents of a data block
+uint CalcCRC (void *Addr, uint Size);                      // Compute the CRC of a data block
+void memxor (char *dest, char *src, uint size);            // XOR two data blocks together
 int systemRandomData (char *rand_buf, int rand_size);
 long darc_urandom_read (void *buf, long size);
-void BuildPathTo (CFILENAME name);                         // Создать каталоги на пути к name
+void BuildPathTo (CFILENAME name);                         // Create the directories on the path to name
 
 // GuiEnvironment.cpp
-int BrowseForFolder(TCHAR *prompt, TCHAR *in_filename, TCHAR *out_filename);                      // Дать пользователю выбрать каталог
-int BrowseForFile(TCHAR *prompt, TCHAR *filters, TCHAR *in_filename, TCHAR *out_filename);        // Дать пользователю выбрать файл
-void GuiFormatDateTime (time_t t, char *buf, int bufsize, char *date_format, char *time_format);  // Превратить время/дату файла в строку в соответствии с настройками locale или заданными форматами времени и даты
+int BrowseForFolder(TCHAR *prompt, TCHAR *in_filename, TCHAR *out_filename);                      // Let the user choose a directory
+int BrowseForFile(TCHAR *prompt, TCHAR *filters, TCHAR *in_filename, TCHAR *out_filename);        // Let the user choose a file
+void GuiFormatDateTime (time_t t, char *buf, int bufsize, char *date_format, char *time_format);  // Convert a file's time/date into a string according to the locale settings or the given time and date formats
 
 // MHS C-side compression/decompression pipeline
 void darc_pipeline_init(long initial_cap);

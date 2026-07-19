@@ -1,7 +1,7 @@
 ----------------------------------------------------------------------------------------------------
----- Упаковка, распаковка и вычисление CRC.                                                     ----
----- Типы данных CompressionMethod, Compressor, UserCompressor - описание метода сжатия.        ----
----- Интерфейс с написанными на Си процедурами, выполняющими всю реальную работу.               ----
+---- Compression, decompression and CRC calculation.                                            ----
+---- Data types CompressionMethod, Compressor, UserCompressor - compression method description. ----
+---- Interface to the C routines that do all the real work.                                     ----
 ----------------------------------------------------------------------------------------------------
 module Compression (module Compression, CompressionLib.decompressMem) where
 
@@ -32,74 +32,74 @@ import Files
 import qualified ByteStream
 
 
--- |Метод сжатия или препроцессор и его параметры
+-- |A compression method or preprocessor and its parameters
 type CompressionMethod  =  CompressionLib.Method
 
--- Методы "сжатия", поддерживаемые напрямую, а не через CompressionLib
+-- "Compression" methods supported directly rather than through CompressionLib
 aSTORING              = "storing"
 aFAKE_COMPRESSION     = "fake"
 aCRC_ONLY_COMPRESSION = "crc"
 
--- |Фейковые (нераспаковываемые) методы сжатия.
+-- |Fake (non-decompressible) compression methods.
 isFakeMethod             =  any_function [(==aFAKE_COMPRESSION), (==aCRC_ONLY_COMPRESSION)] . method_name
--- |LZP метод сжатия.
+-- |The LZP compression method.
 isLZP_Method     method  =  method_name method == "lzp"
--- |Tornado метод сжатия.
+-- |The Tornado compression method.
 isTornado_Method method  =  method_name method == "tor"
--- |DICT метод сжатия.
+-- |The DICT compression method.
 isDICT_Method    method  =  method_name method == "dict"
--- |TTA метод сжатия.
+-- |The TTA compression method.
 isTTA_Method     method  =  method_name method == "tta"
--- |MM метод сжатия.
+-- |The MM compression method.
 isMM_Method      method  =  method_name method == "mm"
--- |JPG метод сжатия.
+-- |The JPG compression method.
 isJPG_Method     method  =  method_name method == "jpg"
--- |GRZip метод сжатия.
+-- |The GRZip compression method.
 isGRZIP_Method   method  =  method_name method == "grzip"
--- |Очень быстрый метод упаковки (>10 mb/s на 1ГГц процессоре)
+-- |A very fast compression method (>10 mb/s on a 1GHz processor)
 isVeryFastMethod         =  CompressionLib.compressionIs "VeryFast?"
--- |Быстрый метод распаковки
+-- |A fast decompression method
 isFastDecMethod          =  not . any_function [(=="ppmd"), (=="ppmm"), (=="pmm"), isEXTERNAL_Method] . method_name
--- |Метод сжатия, выполняемый внешней программой
+-- |A compression method carried out by an external program
 isEXTERNAL_Method        =  CompressionLib.compressionIs "external?"
--- |Метод шифрования.
+-- |An encryption method.
 isEncryption             =  CompressionLib.compressionIs "encryption?"
--- |Non-solid method — каждый блок сжимается независимо (0.67).
+-- |Non-solid method — each block is compressed independently (0.67).
 isNonSolidMethod         =  CompressionLib.compressionIs "nosolid?"
--- |Memory barrier для цепочки методов сжатия (0.67): метод разбивает учёт памяти на независимые кластеры.
+-- |Memory barrier for a chain of compression methods (0.67): the method splits memory accounting into independent clusters.
 isMemoryBarrier_Compression    =  any_function [isEXTERNAL_Method, CompressionLib.compressionIs "MemoryBarrierCompression?"]
 isMemoryBarrier_Decompression  =  any_function [isEXTERNAL_Method, CompressionLib.compressionIs "MemoryBarrierDecompression?"]
 
 
--- |Последовательность алгоритмов сжатия, используемых для обработки данных
+-- |The sequence of compression algorithms used to process the data
 type Compressor = [CompressionMethod]
 
--- |Метод "storing" (-m0)
+-- |The "storing" method (-m0)
 aNO_COMPRESSION = [aSTORING] :: Compressor
 
--- |Очень быстрое сжатие для уже сжатых файлов
+-- |Very fast compression for already compressed files
 aCOMPRESSED_METHOD = split_compressor "tor:8m:c3"
 
--- |Это - фейковый компрессор, если в нём ровно один метод сжатия и он - фейковый
+-- |This is a fake compressor if it holds exactly one compression method and that method is fake
 isFakeCompressor (method:xs)  =  isFakeMethod method  &&  null xs
 
--- |Это - fake компрессор, если в нём ровно один метод сжатия и он - "fake"
+-- |This is a fake compressor if it holds exactly one compression method and that method is "fake"
 isReallyFakeCompressor (method:xs)  =  method_name method == aFAKE_COMPRESSION  &&  null xs
 
--- |Это - LZP компрессор, если в нём ровно один метод сжатия и он - LZP
+-- |This is an LZP compressor if it holds exactly one compression method and that method is LZP
 isLZP_Compressor (method:xs)  =  isLZP_Method method  &&  null xs
 
--- |Это - очень быстрый упаковщик, если в нём ровно один, очень быстрый метод сжатия.
+-- |This is a very fast compressor if it holds exactly one, very fast compression method.
 isVeryFastCompressor (method:xs)  =  isVeryFastMethod method  &&  null xs
 
--- |Это - быстрый распаковщик, если он включает только быстрые методы распаковки
+-- |This is a fast decompressor if it includes only fast decompression methods
 isFastDecompressor = all isFastDecMethod
 
 
--- |Выбор компрессора в зависимости от типа обрабатываемых данных.
--- Первый элемент списка безымянен и описывает компрессор, используемый
--- по умолчанию (для файлов всех прочих типов, не описанных в списке явно)
-type UserCompressor = [(String,Compressor)]  -- список ассоциаций типа "$text->m3t, $exe->m3x, $compressed->m0"
+-- |The choice of compressor depending on the type of data being processed.
+-- The first element of the list is unnamed and describes the compressor used
+-- by default (for files of all other types not explicitly described in the list)
+type UserCompressor = [(String,Compressor)]  -- an association list like "$text->m3t, $exe->m3x, $compressed->m0"
 
 getCompressors :: UserCompressor -> [Compressor]
 getCompressors = map snd
@@ -107,34 +107,34 @@ getCompressors = map snd
 getMainCompressor :: UserCompressor -> Compressor
 getMainCompressor = snd . head
 
--- |Это - метод Storing, если в нём только один компрессор aNO_COMPRESSION для файлов всех типов
+-- |This is the Storing method if it holds only the single aNO_COMPRESSION compressor for files of all types
 isStoring ((_,compressor):xs)  =  compressor==aNO_COMPRESSION  &&  null xs
 
--- |Это - fake compression, если в нём только один фейковый компрессор для файлов всех типов
+-- |This is fake compression if it holds only a single fake compressor for files of all types
 isFakeCompression ((_,compressor):xs)  =  isFakeCompressor compressor  &&  null xs
 
--- |Это - LZP compression, если в нём только один LZP компрессор для файлов всех типов
+-- |This is LZP compression if it holds only a single LZP compressor for files of all types
 isLZP_Compression ((_,compressor):xs)  =  isLZP_Compressor compressor  &&  null xs
 
--- |Это очень быстрая упаковка, если в ней используются только очень быстрые упаковщики для файлов всех типов
+-- |This is very fast compression if it uses only very fast compressors for files of all types
 isVeryFastCompression = all (isVeryFastCompressor . snd)
 
--- |Это быстрая распаковка, если в ней используются только быстрые распаковщики для файлов всех типов
+-- |This is fast decompression if it uses only fast decompressors for files of all types
 isFastDecompression = all (isFastDecompressor . snd)
 
--- |Найти компрессор, наиболее подходящий для данных типа `ftype`.
--- Если компрессор для файлов этого типа не описан в списке - возвратить компрессор
--- по умолчанию, записанный в первый элемент списка
+-- |Find the compressor best suited to data of type `ftype`.
+-- If no compressor for files of this type is described in the list, return the compressor
+-- used by default, stored in the first element of the list
 findCompressor ftype list  =  lookup ftype list  `defaultVal`  snd (head list)
 
--- |Для записи в оглавление архива информации об использованных алгоритмах сжатия.
+-- |For writing information about the compression algorithms used into the archive directory.
 instance ByteStream.BufferData Compressor where
   write buf x  =  ByteStream.write buf (join_compressor x)
   read  buf    =  ByteStream.read  buf  >>==  split_compressor
 
 
 ----------------------------------------------------------------------------------------------------
------ Операции над алгоритмами сжатия                                                          -----
+----- Operations on compression algorithms                                                     -----
 ----------------------------------------------------------------------------------------------------
 
 class Compression a where
@@ -149,12 +149,12 @@ class Compression a where
   limitCompressionMemoryUsage    :: MemSize -> a -> a
   limitDecompressionMemoryUsage  :: MemSize -> a -> a
 
--- |Превратить функцию из CompressionLib, изменяющую Method, в функцию, изменяющую CompressionMethod
+-- |Turn a CompressionLib function that modifies a Method into a function that modifies a CompressionMethod
 liftSetter action  method | aSTORING ==  method   =  method
 liftSetter action  method | isFakeMethod method   =  method
 liftSetter action  method                         =  action method
 
--- |Превратить функцию из CompressionLib, опрашивающую Method, в функцию, опрашивающую CompressionMethod
+-- |Turn a CompressionLib function that queries a Method into a function that queries a CompressionMethod
 liftGetter action  method | aSTORING ==  method   =  0
 liftGetter action  method | isFakeMethod method   =  0
 liftGetter action  method                         =  action method
@@ -184,13 +184,13 @@ instance Compression Compressor where
   limitDecompressionMemoryUsage  =  genericLimitMemoryUsage getDecompressionMem
 
 instance Compression UserCompressor where
-  -- Определить максимальное потребление памяти / размер блока в заданном UserCompressor
+  -- Determine the maximum memory usage / block size in the given UserCompressor
   getCompressionMem              =  maximum . map (getCompressionMem   . snd)
   getDecompressionMem            =  maximum . map (getDecompressionMem . snd)
   getBlockSize                   =  maximum . map (getBlockSize        . snd)
   getDictionary                  =  maximum . map (getDictionary       . snd)
-  -- Установить словарь / Ограничить используемую при сжатии/распаковке память
-  -- сразу для всех методов, входящих в UserCompressor
+  -- Set the dictionary / Limit the memory used during compression/decompression
+  -- for all the methods making up the UserCompressor at once
   setDictionary                  =  mapSnds . setDictionary
   limitCompressionMem            =  mapSnds . limitCompressionMem
   limitDecompressionMem          =  mapSnds . limitDecompressionMem
@@ -199,27 +199,27 @@ instance Compression UserCompressor where
   limitDecompressionMemoryUsage  =  mapSnds . limitDecompressionMemoryUsage
 
 
--- |Минимальный объём памяти, необходимый для упаковки/распаковки
+-- |The minimum amount of memory required for compression/decompression
 compressorGetShrinkedCompressionMem    = maximum . map (compressionGetShrinkedCompressionMem . snd)
 compressorGetShrinkedDecompressionMem  = maximum . map (compressionGetShrinkedDecompressionMem . snd)
 compressionGetShrinkedCompressionMem    = maximum . map getCompressionMem
 compressionGetShrinkedDecompressionMem  = maximum . map getDecompressionMem
 
--- |Ограничить словари для цепочки алгоритмов, прекратив это делать после первого алгоритма,
--- который может существенно раздуть данные (типа precomp). Среди внутренних алгоритмов
--- таких нет, но мы держим под подозрением все внешние :)
+-- |Limit the dictionaries for a chain of algorithms, stopping after the first algorithm
+-- that can significantly inflate the data (such as precomp). There are no such algorithms
+-- among the internal ones, but we treat every external one as suspect :)
 compressionLimitDictionary mem (x:xs) =  new_x : (not(isEXTERNAL_Method new_x)  &&&  compressionLimitDictionary mem) xs
                                              where new_x = limitDictionary mem x
 compressionLimitDictionary mem []     =  []
 
--- |Уменьшает потребности в памяти каждого алгоритма в цепочке до mem
--- и затем вставляет между ними вызовы tempfile, если необходимо
+-- |Reduces the memory requirements of each algorithm in the chain down to mem
+-- and then inserts tempfile calls between them if necessary
 compressionLimitMemoryUsage mem  =  genericLimitMemoryUsage getCompressionMem mem . map (limitCompressionMem mem)
 
--- |Вставляет вызовы tempfile между алгоритмами сжатия, разбивая их на "кластера",
--- умещающиеся в memory_limit+5% (при этом "маленькие" алгоритмы не должны начинать новых кластеров).
--- При этом для dict/dict+lzp используется особый учёт памяти (blocksize*2 на оба, blocksize/2 на выходе),
--- а external compressors обнуляют потребление памяти
+-- |Inserts tempfile calls between compression algorithms, splitting them into "clusters"
+-- that fit into memory_limit+5% ("small" algorithms must not start new clusters).
+-- For dict/dict+lzp a special memory accounting is used (blocksize*2 for both, blocksize/2 at the output),
+-- while external compressors reset the memory usage to zero
 genericLimitMemoryUsage getMem memory_limit = go (0::Double) ""
   where go _   _    []      =  []
         go mem prev (x:xs) | isEXTERNAL_Method x          =  x: go 0            x xs
@@ -231,15 +231,15 @@ genericLimitMemoryUsage getMem memory_limit = go (0::Double) ""
                         | otherwise                             =  realToFrac$ getMem x
                  memlimit = realToFrac memory_limit
 
--- |Посчитать потребности в памяти цепочки алгоритмов сжатия с учётом их разбиения.
--- на кластеры по compressionIs "external?" и особым учётом dict/dict+lzp
+-- |Compute the memory requirements of a chain of compression algorithms, taking into account their split
+-- into clusters by compressionIs "external?" and the special accounting for dict/dict+lzp
 calcMem getMem  = maximum . map getMemSum . splitOn isEXTERNAL_Method
   where getMemSum (x:y:xs) | isDICT_Method x && isLZP_Method y  =  max (i$ getMem x) (i(getBlockSize x `div` 2) + getMemSum xs)
         getMemSum (x:xs)   | isDICT_Method x                    =  max (i$ getMem x) (i(getBlockSize x `div` 2) + getMemSum xs)
         getMemSum (x:xs)                                        =  i(getMem x) + getMemSum xs
         getMemSum []                                            =  0::Integer
 
--- |Удаляет все упоминания о "tempfile" из записи алгоритма сжатия.
+-- |Removes every mention of "tempfile" from the compression algorithm spec.
 compressionDeleteTempCompressors = filter (/="tempfile")
 
 
@@ -248,34 +248,34 @@ compressionDeleteTempCompressors = filter (/="tempfile")
 ----------------------------------------------------------------------------------------------------
 
 {-
-compress   method callback      - упаковать данные
-decompress method callback      - распаковать данные
+compress   method callback      - compress the data
+decompress method callback      - decompress the data
 
-  method :: CompressionMethod - алгоритм упаковки
-  callback "read" buf size - прочитать входные данные в буфер `buf` длиной `size`
-                             Возвращает 0   - конец данных
-                                        <0  - прервать (рас)паковку (ошибка или больше данных не нужно)
-                                        >0  - кол-во прочитанных байт
-  callback "write" buf size - записать выходные данные
-                              Возвращает <0  - прервать (рас)паковку (ошибка или больше данных не нужно)
-                                         >=0 - всё ок
-                              При возвращении из этой функции данные должны быть "использованы", потому что
-                                (рас)паковщик может начать запись новых данных на то же место
-Входные и выходные буфера выделяются и освобождаются (рас)паковщиком
+  method :: CompressionMethod - the compression algorithm
+  callback "read" buf size - read the input data into the buffer `buf` of length `size`
+                             Returns 0   - end of data
+                                        <0  - abort the (de)compression (error, or no more data needed)
+                                        >0  - the number of bytes read
+  callback "write" buf size - write the output data
+                              Returns <0  - abort the (de)compression (error, or no more data needed)
+                                         >=0 - all ok
+                              By the time this function returns, the data must be "consumed", because
+                                the (de)compressor may start writing new data to the same place
+The input and output buffers are allocated and freed by the (de)compressor
 -}
 
--- |Процедуры упаковки для различных алгоритмов сжатия.
+-- |Compression procedures for the various compression algorithms.
 freearcCompress   num method | aSTORING ==  method =  copy_data
 freearcCompress   num method | isFakeMethod method =  eat_data
 freearcCompress   num method                       =  checkingCtrlBreak num (CompressionLib.compress method)
 
--- |Процедуры распаковки для различных алгоритмов сжатия.
+-- |Decompression procedures for the various compression algorithms.
 freearcDecompress num method | aSTORING ==  method =  copy_data
-freearcDecompress num method | isFakeMethod method =  impossible_to_decompress   -- эти типы сжатых данных не подлежат распаковке
+freearcDecompress num method | isFakeMethod method =  impossible_to_decompress   -- these kinds of compressed data cannot be decompressed
 freearcDecompress num method                       =  checkingCtrlBreak num (CompressionLib.decompress method)
 
--- |Поскольку Haskell'овский код, вызываемый из Си, не может получать
--- исключений, добавим к процедурам чтения/записи явные проверки
+-- |Since Haskell code called from C cannot receive exceptions,
+-- we add explicit checks to the read/write procedures
 checkingCtrlBreak num action callback = do
   let checked_callback what buf size auxdata = do
         operationTerminated' <- val operationTerminated
@@ -283,13 +283,13 @@ checkingCtrlBreak num action callback = do
           then return CompressionLib.aFREEARC_ERRCODE_OPERATION_TERMINATED   -- foreverM doNothing0
           else callback what buf size
   --
-  res <- checked_callback "read" nullPtr 0 undefined   -- этот вызов позволяет отложить запуск следующего в цепочке алгоритма упаковки/распаковки до момента, когда предыдущий возвратит хоть какие-нибудь данные (а если это поблочный алгоритм - до момента, когда он обработает весь блок)
+  res <- checked_callback "read" nullPtr 0 undefined   -- this call lets us postpone starting the next compression/decompression algorithm in the chain until the previous one returns at least some data (and if it is a block-based algorithm - until it has processed the whole block)
   if res<0  then return res
             else action (checked_callback)
 
--- |Копирование данных без сжатия (-m0)
+-- |Copying the data without compression (-m0)
 copy_data callback = do
-  allocaBytes aHUGE_BUFFER_SIZE $ \buf -> do  -- используем `alloca`, чтобы автоматически освободить выделенный буфер при выходе
+  allocaBytes aHUGE_BUFFER_SIZE $ \buf -> do  -- we use `alloca` so the allocated buffer is freed automatically on exit
     let go ptr = do
           len <- callback "read" ptr ((buf+:aHUGE_BUFFER_SIZE)-:ptr)
           if (len>0)
@@ -299,25 +299,25 @@ copy_data callback = do
                        else do result <- callback "write" buf (newptr-:buf)
                                if (result>=0)
                                  then go buf
-                                 else return (result)  -- Возвратим отрицательное число, если произошла ошибка/больше данных не нужно
+                                 else return (result)  -- Return a negative number if an error occurred / no more data is needed
             else do if (len==0 && ptr>buf)
                       then do result <-  callback "write" buf (ptr-:buf)
                               return (if result>0 then 0 else result)
-                      else return len  -- Возвратим 0, если данные кончились, и отрицательное число, если произошла ошибка/больше данных не нужно
-    go buf -- возвратить результат
+                      else return len  -- Return 0 if the data ran out, and a negative number if an error occurred / no more data is needed
+    go buf -- return the result
 
--- |Читаем всё, не пишем ничего, а CRC считается в другом месте ;)
+-- |We read everything, write nothing, and the CRC is computed elsewhere ;)
 eat_data callback = do
-  allocaBytes aBUFFER_SIZE $ \buf -> do  -- используем `alloca`, чтобы автоматически освободить выделенный буфер при выходе
+  allocaBytes aBUFFER_SIZE $ \buf -> do  -- we use `alloca` so the allocated buffer is freed automatically on exit
     let go = do
           len <- callback "read" buf aBUFFER_SIZE
           if (len>0)
             then go
-            else return len   -- Возвратим 0, если данные кончились, и отрицательное число, если произошла ошибка/больше данных не нужно
-    go  -- возвратить результат
+            else return len   -- Return 0 if the data ran out, and a negative number if an error occurred / no more data is needed
+    go  -- return the result
 
 impossible_to_decompress callback = do
-  return CompressionLib.aFREEARC_ERRCODE_GENERAL   -- сразу возвратить ошибку, поскольку этот алгоритм (FAKE/CRC_ONLY) не подлежит распаковке
+  return CompressionLib.aFREEARC_ERRCODE_GENERAL   -- return an error straight away, since this algorithm (FAKE/CRC_ONLY) cannot be decompressed
 
 {-# NOINLINE checkingCtrlBreak               #-}
 {-# NOINLINE copy_data                       #-}
@@ -328,7 +328,7 @@ impossible_to_decompress callback = do
 ----- CRC calculation ------------------------------------------------------------------------------
 ----------------------------------------------------------------------------------------------------
 
--- |CRC файла
+-- |The CRC of a file
 type CRC  = CUInt
 aINIT_CRC = 0xffffffff  :: CRC
 
@@ -357,11 +357,11 @@ updateCRC addr len startCRC =
 
 finishCRC = xor aINIT_CRC
 
--- |Посчитать CRC данных в буфере (accepts any Integral length)
+-- |Compute the CRC of the data in a buffer (accepts any Integral length)
 calcCRC :: Integral n => Ptr a -> n -> IO CRC
 calcCRC addr len  =  updateCRC addr len aINIT_CRC  >>==  finishCRC
 
--- |Посчитать CRC не-unicode строки (символы с кодами 0..255)
+-- |Compute the CRC of a non-unicode string (characters with codes 0..255)
 crc32 str  =  unsafePerformIO$ withCStringLen str (uncurry calcCRC)
 
 
@@ -370,60 +370,60 @@ crc32 str  =  unsafePerformIO$ withCStringLen str (uncurry calcCRC)
 -------------------------------------------------------------------------------------------------------------
 
 -- |Parse command-line option that represents compression method.
--- Декодировать запись метода сжатия в виде текстовой строки, превратив его в список ассоциаций
--- "тип файла -> метод сжатия". Первый элемент этого списка описывает метод сжатия по умолчанию
+-- Decode the textual representation of a compression method, turning it into an association list
+-- "file type -> compression method". The first element of this list describes the default compression method
 decode_method configuredMethodSubsts str =
     str                       -- "3/$obj=2b/$iso=ecm+3b"
     .$ subst list             -- "3b/3t/$obj=2b/$iso=ecm+3b"
     .$ split_to_methods       -- [("","exe+3b"), ("$obj","3b"), ("$text","3t"), ("$obj","2b"), ("$iso","ecm+3b")]
     .$ keepOnlyLastOn fst     -- [("","exe+3b"), ("$text","3t"), ("$obj","2b"), ("$iso","ecm+3b")]
-    .$ filter (not.null.snd)  -- "-m$bmp=" означает запретить использование специального алгоритма для группы $bmp
+    .$ filter (not.null.snd)  -- "-m$bmp=" means forbidding the use of a special algorithm for the $bmp group
     .$ mapSnds (subst2 list)  -- [("",["exe","lzma"]), ("$text",["ppmd"]), ("$obj",["lzma"]), ("$iso",["ecm","lzma"])]
 
-    where list = prepareSubsts (concatMap reorder [configuredMethodSubsts, builtinMethodSubsts])   -- сначала пользовательские замены, затем встроенные, чтобы дать первым приоритет
-          reorder list = a++b  where (a,b) = partition (notElem '#') list                          -- внутри этих групп: сначала строчки, не содержащие #, затем с # (сначала конкретные, затем общие замены)
+    where list = prepareSubsts (concatMap reorder [configuredMethodSubsts, builtinMethodSubsts])   -- user substitutions first, then the built-in ones, to give the former priority
+          reorder list = a++b  where (a,b) = partition (notElem '#') list                          -- within those groups: first the lines without #, then those with # (specific substitutions first, then general ones)
 
--- Замена по списку для метода сжатия (обобщённого обозначения для файлов всех типов)
+-- List-driven substitution for a compression method (the generic notation covering files of all types)
 subst list method  =  joinWith "/" (main_methods:group_methods++user_methods)
-  where -- Из записи типа -m3/$obj=2b выделяем для расшифровки только первую часть, до слеша
+  where -- From a spec like -m3/$obj=2b we take only the first part, up to the slash, for expansion
         main:user_methods = split '/' method
-        -- Расшифровка основных методов сжатия, типа 3x = 3xb/3xt
+        -- Expansion of the main compression methods, such as 3x = 3xb/3xt
         main_methods = case (lookup main list) of
-            Just x  -> subst list x   -- При успехе повторяем рекурсивно
-            Nothing -> main           -- Больше подстановок нет
-        -- Найдём в списке подстановок дополнительные методы сжатия для отдельных групп, типа 3x$iso = ecm+exe+3xb
-        group_methods = list .$ keepOnlyFirstOn fst                      -- удалим повторные определения (не очень эффективно делать это именно здесь, зато по месту использования)
-                             .$ mapMaybe (startFrom main . join2 "=")    -- оставим только определения, начинающиеся с 3x, удалив это 3x
-                             .$ filter (("$"==) . take 1)                  -- а из них - только начинающиеся с $
+            Just x  -> subst list x   -- On success, repeat recursively
+            Nothing -> main           -- No more substitutions
+        -- Find in the substitution list the extra compression methods for individual groups, such as 3x$iso = ecm+exe+3xb
+        group_methods = list .$ keepOnlyFirstOn fst                      -- drop duplicate definitions (not very efficient to do it right here, but it is at the point of use)
+                             .$ mapMaybe (startFrom main . join2 "=")    -- keep only the definitions starting with 3x, stripping that 3x
+                             .$ filter (("$"==) . take 1)                  -- and of those, only the ones starting with $
 
--- Замена по списку для алгоритма сжатия (посл-ти компрессоров для конкретного типа файлов)
+-- List-driven substitution for a compression algorithm (the sequence of compressors for one specific file type)
 subst2 list  =  concatMap f . split_compressor
     where f method = let (head,params)  =  break (==':') method
                      in case (lookup head list) of
                           Just new_head -> subst2 list (new_head++params)
                           Nothing       -> [decode_one_method method]
 
--- |Декодировать явно описанный метод сжатия.
+-- |Decode an explicitly specified compression method.
 decode_one_method method | isFakeMethod method = method
                          | otherwise           = CompressionLib.canonizeCompressionMethod method
 
--- Превращает длинную строку, описывающую методы сжатия для разных типов файлов,
--- в массив ассоциаций (тип файла, метод сжатия)
+-- Turns a long string describing the compression methods for different file types
+-- into an association array of (file type, compression method)
 split_to_methods method = case (split '/' method) of
-    [_]                 ->  [("",method)]   -- один метод для файлов всех типов
+    [_]                 ->  [("",method)]   -- one method for files of all types
     x : xs@(('$':_):_) ->  ("",x) : map (split2 '=') xs   -- m1/$type=m2...
     b : t : xs          ->  [("","exe+"++b), ("$obj",b), ("$text",t)] ++ map (split2 '=') xs   -- m1/m2/$type=m3...
 
--- Подготовить список замен к использованию в lookup
+-- Prepare the substitution list for use with lookup
 prepareSubsts x = x
-    -- Удалить пустые строки, пробелы и комментарии
+    -- Remove empty lines, spaces and comments
     .$ map (filter (not . isSpace) . fst . split2 ';') .$ filter (not . null)
-    -- Заменить каждую строку с символом # на 9 строк, где # пробегает значения от 1 до 9
+    -- Replace each line containing # with 9 lines where # runs over the values 1 to 9
     .$ concatMap (\s -> if s `contains` '#'  then map (\d->replace '#' d s) ['1'..'9']  else [s])
-    -- Преобразовать список строк вида "a=b" в список для lookup
+    -- Convert the list of "a=b" strings into a list suitable for lookup
     .$ map (split2 '=')
 
--- Встроенные описания методов сжатия в формате, аналогичном используемому в arc.ini
+-- Built-in compression method definitions, in the same format as used in arc.ini
 builtinMethodSubsts = [
       ";High-level method definitions"
     , "x  = 9            ;highest compression mode using only internal algorithms"
@@ -484,7 +484,7 @@ builtinMethodSubsts = [
     , "bcj = exe"
     , "#bx = #xb"
     , "#tx = #xt"
-    , "x#  = #x"    -- принимаем опции типа "-mx7" для мимикрии под 7-zip
+    , "x#  = #x"    -- accept options like "-mx7" to mimic 7-zip
     , ""
     , ";Compression modes involving external PPMONSTR.EXE"
     , "#p  = #rep+exe+#xb / $obj=#pb / $text=#pt"
@@ -537,10 +537,10 @@ builtinMethodSubsts = [
     , "2x$compressed  = rep:8m  + tor:3"
     ]
 
--- |Мультимедийный тип файлов?
+-- |Is this a multimedia file type?
 isMMType x  =  x `elem` words "$wav $bmp"
 
--- |В некотором смысле обратная операция - угадывание типа файла по его компрессору
+-- |In a sense the inverse operation - guessing the file type from its compressor
 typeByCompressor c  =  case (map method_name c) of
   xs | xs `contains` "tta"        -> "$wav"
      | xs `contains` "mm"         -> "$bmp"
@@ -559,7 +559,7 @@ typeByCompressor c  =  case (map method_name c) of
      | xs `contains` "tor"        -> "$obj"
      | otherwise                  -> "default"
 
--- |Список всех типов файлов, обнаруживаемых подобным образом
+-- |The list of all file types detected this way
 typesByCompressor = words "$wav $bmp $text $compressed $iso $precomp $jpgsolid $jpg $obj $binary $exe"
 
 
@@ -571,19 +571,19 @@ join_compressor   =  joinWith "+"
 -- |Opposite to join_compressor (used to read compression method from archive file)
 split_compressor  =  split '+'
 
--- |Обработать алгоритмы в компрессоре императивной операцией process
+-- |Process the algorithms in a compressor with the imperative operation process
 process_algorithms process compressor = do
     return (split_compressor compressor)
        >>=  mapM process
        >>== join_compressor
 
--- |Разбить метод сжатия на заголовок и отдельные параметры
+-- |Split a compression method into its header and the individual parameters
 split_method = split ':'
 
--- |Имя метода сжатия.
+-- |The name of a compression method.
 method_name = head . split_method
 
--- |Строка, информирующая пользователя об используемом объёме памяти
+-- |A string telling the user how much memory is being used
 showMem 0      = "0b"
 showMem mem    = showM [(gb,"gb"),(mb,"mb"),(kb,"kb"),(b,"b"),error"showMem"] mem
 
@@ -595,7 +595,7 @@ showM xs@( (val,str) : ~(nextval,_) : _) mem =
     then show((mem+val`div` 2) `div` val)++str
     else showM (tail xs) mem
 
--- |Округлить объём памяти вверх так, чтобы он приобрёл читабельность
+-- |Round the memory amount up so that it becomes readable
 roundMemUp mem | mem>=4096*kb = mem `roundUp` mb
                | otherwise    = mem `roundUp` kb
 

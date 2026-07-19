@@ -6,10 +6,10 @@ extern "C" {
 
 
 /*-------------------------------------------------*/
-/* Реализация класса MM_METHOD                     */
+/* Implementation of the MM_METHOD class           */
 /*-------------------------------------------------*/
 
-// Конструктор, присваивающий параметрам метода сжатия значения по умолчанию
+// Constructor that assigns default values to the compression method parameters
 MM_METHOD::MM_METHOD()
 {
     mode        = 9;
@@ -21,7 +21,7 @@ MM_METHOD::MM_METHOD()
     reorder     = 0;
 }
 
-// Функция распаковки
+// Decompression function
 int MM_METHOD::decompress (CALLBACK_FUNC *callback, void *auxdata)
 {
     return mm_decompress (callback, auxdata);
@@ -29,13 +29,13 @@ int MM_METHOD::decompress (CALLBACK_FUNC *callback, void *auxdata)
 
 #ifndef FREEARC_DECOMPRESS_ONLY
 
-// Функция упаковки
+// Compression function
 int MM_METHOD::compress (CALLBACK_FUNC *callback, void *auxdata)
 {
     return mm_compress (mode, skip_header, is_float, num_chan, word_size, offset, reorder, callback, auxdata);
 }
 
-// Записать в buf[MAX_METHOD_STRLEN] строку, описывающую метод сжатия и его параметры (функция, обратная к parse_MM)
+// Write into buf[MAX_METHOD_STRLEN] a string describing the compression method and its parameters (the inverse of parse_MM)
 void MM_METHOD::ShowCompressionMethod (char *buf)
 {
     MM_METHOD defaults;
@@ -53,21 +53,21 @@ void MM_METHOD::ShowCompressionMethod (char *buf)
 
 #endif  // !defined (FREEARC_DECOMPRESS_ONLY)
 
-// Конструирует объект типа MM_METHOD с заданными параметрами упаковки
-// или возвращает NULL, если это другой метод сжатия или допущена ошибка в параметрах
+// Constructs an MM_METHOD object with the given compression parameters
+// or returns NULL if this is a different compression method or the parameters are invalid
 COMPRESSION_METHOD* parse_MM (char** parameters)
 {
   if (strcmp (parameters[0], "mm") == 0) {
-    // Если название метода (нулевой параметр) - "mm", то разберём остальные параметры
+    // If the method name (parameter zero) is "mm", parse the remaining parameters
 
     MM_METHOD *p = new MM_METHOD;
-    int error = 0;  // Признак того, что при разборе параметров произошла ошибка
+    int error = 0;  // Flag indicating that an error occurred while parsing the parameters
 
-    // Переберём все параметры метода (или выйдем раньше при возникновении ошибки при разборе очередного параметра)
+    // Walk through all method parameters (or bail out early if parsing one of them fails)
     while (*++parameters && !error)
     {
       char* param = *parameters;
-      switch (*param) {                    // Параметры, содержащие значения
+      switch (*param) {                    // Parameters that carry a value
         case 's':  p->skip_header = 1;                          continue;
         case 'f':  p->is_float    = 1;                          continue;
         case 'd':  p->mode        = parseInt (param+1, &error); continue;
@@ -76,10 +76,10 @@ COMPRESSION_METHOD* parse_MM (char** parameters)
         case 'o':  p->offset      = parseInt (param+1, &error); continue;
         case 'r':  p->reorder     = parseInt (param+1, &error); continue;
       }
-      // Сюда мы попадаем, если в параметре не указано его название
-      // Если этот параметр удастся разобрать как c*w,
-      // то используем эти значения для полей num_chan и word_size.
-      // Дополнительный символ 'f' означает, что это данные в FP-формате
+      // We end up here when the parameter has no name given
+      // If this parameter can be parsed as c*w,
+      // then use those values for the num_chan and word_size fields.
+      // An additional 'f' character means the data is in FP format
       int a, b;  char s[MAX_METHOD_STRLEN];
       if (sscanf (param, "%d*%d%s", &a, &b, s)==3  &&  strequ(s,"f"))
           p->is_float = 1, p->num_chan=a, p->word_size=b;
@@ -87,11 +87,11 @@ COMPRESSION_METHOD* parse_MM (char** parameters)
           p->is_float = 0, p->num_chan=a, p->word_size=b;
       else error=1;
     }
-    if (error)  {delete p; return NULL;}  // Ошибка при парсинге параметров метода
+    if (error)  {delete p; return NULL;}  // Error while parsing the method parameters
     return p;
   } else
-    return NULL;   // Это не метод MM
+    return NULL;   // This is not the MM method
 }
 
-static int MM_x = AddCompressionMethod (parse_MM);   // Зарегистрируем парсер метода MM
+static int MM_x = AddCompressionMethod (parse_MM);   // Register the MM method parser
 

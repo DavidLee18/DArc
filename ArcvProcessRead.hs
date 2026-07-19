@@ -98,7 +98,7 @@ createArchiveAtructureAndReadFilesProcess command archive oldarc files processDi
   sendP pipe TheEnd
 
 
--- |Записать в архив переданные файлы и dir-блок с их описанием
+-- |Write the given files into the archive together with a dir block describing them
 createDirBlock archive processDir decompress_pipe params@(command,bufOps,pipe,backdoor) files = do
   -- Split files into solid blocks and process each sublist separately. For debugging: mapM (print . map (fpFullname . fiDiskName . cfFileInfo)) (splitToSolidBlocks files)
   solidBlocks <- foreach (splitToSolidBlocks command files)
@@ -108,7 +108,7 @@ createDirBlock archive processDir decompress_pipe params@(command,bufOps,pipe,ba
   blocks_info  <-  replicateM (length solidBlocks) (getP backdoor)
   -- ... after which we can be sure that the current position in the archive is where the directory block will start
   dirPos <- archiveGetPos archive
-  -- Записать блок каталога и возвратить информацию о нём для формирования каталога каталогов
+  -- Write the directory block and return information about it for building the directory of directories
   writeControlBlock DIR_BLOCK (dirCompressor command) params $ do
     archiveWriteDir blocks_info dirPos bufOps
 
@@ -124,7 +124,7 @@ createSolidBlock command processDir bufOps pipe decompress_pipe (orig_compressor
       totalBytes = sum$ map (fiSize . cfFileInfo) files
       -- True if this is a whole solid block from an input archive that can be copied without changes
       copy_solid_block = not (opt_recompress command)  &&  isWholeSolidBlock files
-  -- Ограничить компрессор объёмом свободной памяти и значением -lc
+  -- Limit the compressor by the amount of free memory and by the -lc value
   real_compressor <- limit_compressor command compressor
   opt_testMalloc command &&& testMalloc
 
@@ -216,7 +216,7 @@ readFile _ pipe (receiveBuf, sendBuf) decompress_pipe compressed_file = do
   crc  <-  ref aINIT_CRC                       -- Initialize CRC value
   -- The operation of "writing" decompressed data by copying them into our own buffers
   -- and sending these buffers for further processing
-  let writer inbuf 0 = send_backP decompress_pipe ()  -- сообщим распаковщику, что теперь буфер свободен
+  let writer inbuf 0 = send_backP decompress_pipe ()  -- tell the decompressor that the buffer is free now
       writer inbuf insize = do
         (buf, size) <- receiveBuf              -- get a free buffer from the buffer queue
         let len  = min insize size             -- determine how many bytes we can process
@@ -245,7 +245,7 @@ makeFileCache cache_size pool pipe = do
   -- Allocate memory for the cache and start memoryAllocator on the allocated block
   heap                     <-  pooledMallocBytes pool cache_size
   (getBlock, shrinkBlock)  <-  memoryAllocator   heap cache_size bufsize 256 (receive_backP pipe)
-  let -- Операция получения свободного буфера
+  let -- Operation to obtain a free buffer
       receiveBuf            =  do buf <- getBlock
                                   failOnTerminated
                                   return (buf, bufsize)
@@ -257,7 +257,7 @@ makeFileCache cache_size pool pipe = do
   return (receiveBuf, sendBuf)
 
 {-# NOINLINE writeBlock #-}
--- |Записать в архив блок данных/служебный/дескриптор блока
+-- |Write a data block / service block / block descriptor into the archive
 writeBlock pipe blockType compressor real_compressor just_copy action = do
   sendP pipe (CompressData blockType compressor real_compressor just_copy)
   directory <- action
@@ -265,18 +265,18 @@ writeBlock pipe blockType compressor real_compressor just_copy action = do
   sendP pipe (Directory directory)
 
 {-# NOINLINE writeControlBlock #-}
--- Записать в архив служебный блок вместе с его дескриптором и возвратить информацию об этом блоке
+-- Write a service block into the archive together with its descriptor and return information about this block
 writeControlBlock blockType compressor (command,bufOps,pipe,backdoor) action = do
-    if opt_nodir command   -- Опция "--nodir" отключает запись в архив всех служебных блоков - остаются только сами сжатые данные
+    if opt_nodir command   -- The "--nodir" option disables writing all service blocks into the archive - only the compressed data itself remains
     then return (error "Attempt to use value returned by writeControlBlock when \"--nodir\"")
     else do
-      writeBlock pipe blockType compressor compressor False $ do  -- запишем в архив блок каталога
+      writeBlock pipe blockType compressor compressor False $ do  -- write the directory block into the archive
         action
         return []
-      (thisBlock, [])  <-  getP backdoor                      -- получим его дескриптор
-      writeBlock pipe DESCR_BLOCK aNO_COMPRESSION aNO_COMPRESSION False $ do  -- запишем этот дескриптор в архив
+      (thisBlock, [])  <-  getP backdoor                      -- get its descriptor
+      writeBlock pipe DESCR_BLOCK aNO_COMPRESSION aNO_COMPRESSION False $ do  -- write this descriptor into the archive
         archiveWriteBlockDescriptor thisBlock bufOps
         return []
-      (_, [])  <-  getP backdoor                              -- оприходуем ненужный дескриптор дескриптора
-      return thisBlock                                        -- возвратим дескриптор блока каталога
+      (_, [])  <-  getP backdoor                              -- consume the useless descriptor of the descriptor
+      return thisBlock                                        -- return the descriptor of the directory block
 

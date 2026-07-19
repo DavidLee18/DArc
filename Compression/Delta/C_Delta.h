@@ -6,26 +6,26 @@ int delta_decompress (MemSize BlockSize, int ExtendedTables, CALLBACK_FUNC *call
 
 #ifdef __cplusplus
 
-// Реализация стандартного интерфейса методов сжатия COMPRESSION_METHOD
+// Implementation of the standard COMPRESSION_METHOD compression-method interface
 class DELTA_METHOD : public COMPRESSION_METHOD
 {
 public:
-  // Параметры этого метода сжатия
-  MemSize BlockSize;        // Размер блока данных, обрабатываемых за один раз
-  int     ExtendedTables;   // Искать таблицы с размером элемента, отличным от 2/4
+  // Parameters of this compression method
+  MemSize BlockSize;        // Size of the data block processed in one pass
+  int     ExtendedTables;   // Look for tables whose element size differs from 2/4
 
-  // Конструктор, присваивающий параметрам метода сжатия значения по умолчанию
+  // Constructor that assigns default values to the compression method parameters
   DELTA_METHOD();
 
-  // Функции распаковки и упаковки
+  // Decompression and compression functions
   virtual int decompress (CALLBACK_FUNC *callback, void *auxdata);
 #ifndef FREEARC_DECOMPRESS_ONLY
   virtual int compress   (CALLBACK_FUNC *callback, void *auxdata);
 
-  // Записать в buf[MAX_METHOD_STRLEN] строку, описывающую метод сжатия и его параметры (функция, обратная к parse_DELTA)
+  // Write into buf[MAX_METHOD_STRLEN] a string describing the compression method and its parameters (the inverse of parse_DELTA)
   virtual void ShowCompressionMethod (char *buf);
 
-  // Получить/установить объём памяти, используемой при упаковке/распаковке, размер словаря или размер блока
+  // Get/set the amount of memory used for compression/decompression, the dictionary size or the block size
   virtual MemSize GetCompressionMem     (void)         {return BlockSize;}
   virtual MemSize GetDecompressionMem   (void)         {return BlockSize;}
   virtual MemSize GetDictionary         (void)         {return 0;}
@@ -37,7 +37,7 @@ public:
 #endif
 };
 
-// Разборщик строки метода сжатия DELTA
+// Parser for the DELTA compression method string
 COMPRESSION_METHOD* parse_DELTA (char** parameters);
 
 #endif  // __cplusplus

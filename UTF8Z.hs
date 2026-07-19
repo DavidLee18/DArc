@@ -3,9 +3,9 @@
 {-# LANGUAGE MagicHash, UnboxedTuples, UnliftedFFITypes #-}
 #endif
 ----------------------------------------------------------------------------------------------------
----- Имена файлов, храняющиеся в UTF8+\0 представлении.                                         ----
----- Имена сортируются/сравниваются с учётом или без учёта регистра в зависимости от того,      ----
-----   откомпилирована ли программа под Windows или Unix                                        ----
+---- Filenames stored in the UTF8+\0 representation.                                            ----
+---- Names are sorted/compared case-sensitively or case-insensitively depending on              ----
+----   whether the program was compiled for Windows or Unix                                     ----
 ----------------------------------------------------------------------------------------------------
 -- |
 -- Module      :  UTF8Z
@@ -77,7 +77,7 @@ unpackPS (PS ba) = unpackFoldrUtf8# ba f [] where
 
 
 {-# INLINE comparePS #-}
--- Выберем между strcmp и strcasecmp в зависмости от ОС
+-- Choose between strcmp and strcasecmp depending on the OS
 #if defined(FREEARC_WIN)
 comparePS (PS x) (PS y) = case inlinePerformIO$ strcasecmp (unsafeCoerce# x) (unsafeCoerce# y) of
 #else

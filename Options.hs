@@ -1,8 +1,8 @@
 {-# LANGUAGE CPP #-}
 ---------------------------------------------------------------------------------------------------
----- Описание команд и опций, поддерживаемых FreeArc.                                          ----
----- Универсальный парсер командной строки.                                                    ----
----- Интерпретация Lua-скриптов.                                                               ----
+---- Description of the commands and options supported by FreeArc.                             ----
+---- Universal command-line parser.                                                            ----
+---- Lua script interpretation.                                                                ----
 ---------------------------------------------------------------------------------------------------
 module Options where
 
@@ -35,114 +35,114 @@ import FileInfo
 import Compression
 
 
--- |Описание выполняемой команды
+-- |Description of the command being executed
 data Command = Command {
-    cmd_args                 :: ![String]           -- Полный текст команды, разбитый на слова
-  , cmd_additional_args      :: ![String]           -- Дополнительные опции, прочитанные из переменной среды и конфиг-файла
-  , cmd_name                 :: !String             -- Название команды
-  , cmd_arcspec              ::  String             -- Маска архивов
-  , cmd_arclist              ::  [FilePath]         --   Имена всех найденных по этой маске (и возможно, рекурсивно) архивов
-  , cmd_arcname              ::  FilePath           --   Имя обрабатываемого архива (из одной команды с wildcards в cmd_arcspec формируется несколько команд с конкретным именем обрабатываемого архива)
-  , cmd_archive_filter       :: (FileInfo -> Bool)  -- Предикат отбора файлов из существующих архивов
-  , cmd_filespecs            :: ![String]           -- Спецификации добавляемых архивов или файлов
-  , cmd_added_arcnames       :: !(IO [FilePath])    --   Вычисление, возвращающее имена добавляемых архивов (команда "j")
-  , cmd_diskfiles            :: !(IO [FileInfo])    --   Вычисление, возвращающее имена добавляемых файлов  (остальные команды создания/обновления архивов)
-  , cmd_subcommand           :: !Bool               -- Подкоманда? (например, тестирование после архивации)
-  , cmd_setup_command        :: !(IO ())            -- Действия, которые надо выполнить непосредственно перед началом отработки этой команды (один раз на все архивы)
-                                                    -- Опции:
-  , opt_scan_subdirs         :: !Bool               --   рекурсивный поиск файлов?
-  , opt_add_dir              :: !Bool               --   добавить имя архива к имени каталога, куда происходит распаковка?
-  , opt_add_exclude_path     :: !Int                --   исключить имя базового каталога / сохранить абсолютный путь (при ПОИСКЕ архивируемых файлов на диске)
-  , opt_dir_exclude_path     :: !Int                --   исключить имя базового каталога / сохранить абсолютный путь (при чтении КАТАЛОГА АРХИВА)
-  , opt_arc_basedir          :: !String             --   базовый каталог внутри архива
-  , opt_disk_basedir         :: !String             --   базовый каталог на диске
-  , opt_group_dir            :: ![Grouping]         --   группировка файлов для каталога архива
-  , opt_group_data           :: ![Grouping]         --   группировка файлов для солид-блока
-  , opt_data_compressor      :: !UserCompressor     --   методы сжатия для данных
-  , opt_dir_compressor       :: !Compressor         --   метод сжатия для блоков каталога
-  , opt_autodetect           :: !Int                --   уровень автодетекта типов файлов (0..9)
-  , opt_arccmt_file          :: !String             --   файл, из которого читается (в который пишется) комментарий к архиву
-  , opt_arccmt_str           :: !String             --   .. или сам комментарий в чистом виде
-  , opt_include_dirs         :: !(Maybe Bool)       --   включить каталоги в обработку? (Да/Нет/По обстоятельствам)
-  , opt_indicator            :: !String             --   тип индикатора прогресса ("0" - отсутствует, "1" - индикатор по умолчанию, "2" - вывод в отдельной строке имени каждого обрабатываемого файла)
-  , opt_display              :: !String             --   внутренняя опция, описывающая какие строки выводить на экран
-  , opt_overwrite            :: !(IORef String)     --   состояние запроса к пользователю о перезаписи файлов ("a" - перезаписывать все, "s" - пропускать все, любые другие - задавать вопросы)
-  , opt_sfx                  :: !String             --   имя SFX-модуля, который надо присоединить к архиву ("-" - отсоединить, если уже есть, "--" - скопировать существующий)
-  , opt_keep_time            :: !Bool               --   сохранить mtime архива после обновления содержимого?
-  , opt_time_to_last         :: !Bool               --   установить mtime архива на mtime самого свежего файла в нём?
-  , opt_nodates              :: !Bool               --   не сохранять метки времени файлов в архиве (FreeArc 0.67, --nodates)
-  , opt_create_in_workdir    :: !Bool               --   создать архив во временном каталоге, затем переместить (FreeArc 0.67)
-  , opt_pause_before_exit    :: !String             --   пауза перед закрытием окна: on/off/on-warnings/on-error (FreeArc 0.67)
-  , opt_queue                :: !Bool               --   сериализовать операции через межпроцессный семафор (FreeArc 0.67)
-  , opt_volumes              :: ![FileSize]         --   размеры томов многотомного архива (FreeArc 0.67)
-  , opt_archive_type         :: !String             --   тип архива (arc/zip/rar/...) (FreeArc 0.67, --type)
-  , opt_shutdown             :: !Bool               --   выключить компьютер после завершения операции (FreeArc 0.67, -ioff/--shutdown)
-  , opt_arc_32bit_legacy     :: !Bool               --   читать архивы созданные FreeArc x86 (маскировка Int/CTime к 32 битам)
-  , opt_keep_broken          :: !Bool               --   не удалять файлы, распакованные с ошибками?
-  , opt_test                 :: !Bool               --   протестировать архив после упаковки?
-  , opt_pretest              :: !Int                --   режим тестирования архивов _перед_ выполнением операции (0 - нет, 1 - только recovery info, 2 - recovery или full, 3 - full testing)
-  , opt_lock_archive         :: !Bool               --   закрыть создаваемый архив от дальнейших изменений?
-  , opt_match_with           :: !(PackedFilePath -> FilePath)  -- сопоставлять при фильтрации маски с fpBasename или fpFullname
-  , opt_append               :: !Bool               --   добавлять новые файлы только в конец архива?
-  , opt_recompress           :: !Bool               --   принудительно перепаковать все файлы?
-  , opt_keep_original        :: !Bool               --   не перепаковывать ни одного файла?
-  , opt_noarcext             :: !Bool               --   не добавлять стандартное расширение к имени архива?
-  , opt_nodir                :: !Bool               --   не записывать в архив его оглавление (для бенчмарков)?
-  , opt_update_type          :: !Char               --   алгоритм обновления файлов (a/f/u/s)
-  , opt_x_include_dirs       :: !Bool               --   включить каталоги в обработку (для команд листинга/распаковки)?
-  , opt_no_nst_filters       :: !Bool               --   TRUE, если в команде отсутствуют опции отбора файлов по имени/размеру/времени (-n/-s../-t..)
-  , opt_file_filter          :: !(FileInfo -> Bool) --   сформированный опциями предикат отбора файлов по атрибутам/размеру/времени/имени (всё, кроме filespecs)
-  , opt_sort_order           :: !String             --   порядок сортировки файлов в архиве
-  , opt_reorder              :: !Bool               --   переупорядочить файлы после сортировки (поместив рядом одинаковые/близкие файлы)?
-  , opt_find_group           :: !(FileInfo -> Int)  --   функция, определяющая по FileInfo к какой группе (из arc.groups) относится данный файл
-  , opt_groups_count         :: !Int                --   количество групп (`opt_find_group` возвращает результаты в диапазоне 0..opt_groups_count-1)
-  , opt_find_type            :: !(FileInfo -> Int)  --   функция, определяющая по FileInfo к какому типу данных (из перечисленных в `opt_data_compressor`) относится данный файл
-  , opt_types_count          :: !Int                --   количество типов файлов (`opt_find_type` возвращает результаты в диапазоне 0..opt_types_count-1)
-  , opt_group2type           :: !(Int -> Int)       --   преобразует номер группы из arc.groups а номер типа файла из opt_data_compressor
-  , opt_logfile              :: !String             --   имя лог-файла или ""
-  , opt_delete_files         :: !DelOptions         --   удалить файлы/каталоги после успешной архивации?
-  , opt_workdir              :: !String             --   каталог для временных файлов или ""
-  , opt_clear_archive_bit    :: !Bool               --   сбросить атрибут Archive у успешно упакованных файлов (и файлов, которые уже есть в архиве)
-  , opt_select_archive_bit   :: !Bool               --   -ao: только файлы с установленным Archive bit (Windows-only)
-  , opt_language             :: !String             --   язык/файл локализации
-  , opt_recovery             :: !String             --   величина Recovery блока (в процентах, байтах или секторах)
-  , opt_broken_archive       :: !String             --   обрабатывать неисправный архив, полностью сканируя его в поисках оставшихся исправными блоков
-  , opt_original             :: !String             --   перезагружать с указанного URL сбойные части архива
-  , opt_save_bad_ranges      :: !String             --   записать в заданный файл список неисправных частей архива для их перевыкачки
-  , opt_cache                :: !Int                --   размер буфера упреждающего чтения.
-  , opt_limit_compression_memory   :: !MemSize      --   ограничение памяти при упаковке, байт
-  , opt_limit_decompression_memory :: !MemSize      --   ограничение памяти при распаковке, байт
+    cmd_args                 :: ![String]           -- Full command text, split into words
+  , cmd_additional_args      :: ![String]           -- Additional options read from the environment variable and the config file
+  , cmd_name                 :: !String             -- Command name
+  , cmd_arcspec              ::  String             -- Archive mask
+  , cmd_arclist              ::  [FilePath]         --   Names of all archives found by this mask (possibly recursively)
+  , cmd_arcname              ::  FilePath           --   Name of the archive being processed (a single command with wildcards in cmd_arcspec produces several commands, each with a concrete archive name)
+  , cmd_archive_filter       :: (FileInfo -> Bool)  -- Predicate selecting files from existing archives
+  , cmd_filespecs            :: ![String]           -- Specifications of the archives or files being added
+  , cmd_added_arcnames       :: !(IO [FilePath])    --   Computation returning the names of the archives being added (the "j" command)
+  , cmd_diskfiles            :: !(IO [FileInfo])    --   Computation returning the names of the files being added  (all other archive creation/update commands)
+  , cmd_subcommand           :: !Bool               -- Subcommand? (for example, testing after archiving)
+  , cmd_setup_command        :: !(IO ())            -- Actions to perform immediately before this command starts running (once for all archives)
+                                                    -- Options:
+  , opt_scan_subdirs         :: !Bool               --   search for files recursively?
+  , opt_add_dir              :: !Bool               --   append the archive name to the name of the directory files are extracted into?
+  , opt_add_exclude_path     :: !Int                --   strip the base directory name / keep the absolute path (when SEARCHING on disk for files to archive)
+  , opt_dir_exclude_path     :: !Int                --   strip the base directory name / keep the absolute path (when reading the ARCHIVE DIRECTORY)
+  , opt_arc_basedir          :: !String             --   base directory inside the archive
+  , opt_disk_basedir         :: !String             --   base directory on disk
+  , opt_group_dir            :: ![Grouping]         --   file grouping for the archive directory
+  , opt_group_data           :: ![Grouping]         --   file grouping for the solid block
+  , opt_data_compressor      :: !UserCompressor     --   compression methods for data
+  , opt_dir_compressor       :: !Compressor         --   compression method for directory blocks
+  , opt_autodetect           :: !Int                --   file type autodetection level (0..9)
+  , opt_arccmt_file          :: !String             --   file the archive comment is read from (written to)
+  , opt_arccmt_str           :: !String             --   .. or the comment itself, verbatim
+  , opt_include_dirs         :: !(Maybe Bool)       --   include directories in processing? (Yes/No/Depends)
+  , opt_indicator            :: !String             --   progress indicator type ("0" - none, "1" - default indicator, "2" - print the name of each processed file on its own line)
+  , opt_display              :: !String             --   internal option describing which lines to print on screen
+  , opt_overwrite            :: !(IORef String)     --   state of the file overwrite prompt ("a" - overwrite all, "s" - skip all, anything else - keep asking)
+  , opt_sfx                  :: !String             --   name of the SFX module to attach to the archive ("-" - detach if already present, "--" - copy the existing one)
+  , opt_keep_time            :: !Bool               --   preserve the archive mtime after updating its contents?
+  , opt_time_to_last         :: !Bool               --   set the archive mtime to the mtime of the newest file in it?
+  , opt_nodates              :: !Bool               --   don't store file timestamps in the archive (FreeArc 0.67, --nodates)
+  , opt_create_in_workdir    :: !Bool               --   create the archive in the temporary directory, then move it (FreeArc 0.67)
+  , opt_pause_before_exit    :: !String             --   pause before closing the window: on/off/on-warnings/on-error (FreeArc 0.67)
+  , opt_queue                :: !Bool               --   serialize operations through an inter-process semaphore (FreeArc 0.67)
+  , opt_volumes              :: ![FileSize]         --   volume sizes of a multi-volume archive (FreeArc 0.67)
+  , opt_archive_type         :: !String             --   archive type (arc/zip/rar/...) (FreeArc 0.67, --type)
+  , opt_shutdown             :: !Bool               --   shut down the computer once the operation completes (FreeArc 0.67, -ioff/--shutdown)
+  , opt_arc_32bit_legacy     :: !Bool               --   read archives created by FreeArc x86 (masking Int/CTime down to 32 bits)
+  , opt_keep_broken          :: !Bool               --   don't delete files extracted with errors?
+  , opt_test                 :: !Bool               --   test the archive after compression?
+  , opt_pretest              :: !Int                --   archive testing mode _before_ performing the operation (0 - none, 1 - recovery info only, 2 - recovery or full, 3 - full testing)
+  , opt_lock_archive         :: !Bool               --   lock the archive being created against further changes?
+  , opt_match_with           :: !(PackedFilePath -> FilePath)  -- when filtering, match masks against fpBasename or fpFullname
+  , opt_append               :: !Bool               --   only append new files at the end of the archive?
+  , opt_recompress           :: !Bool               --   force recompression of all files?
+  , opt_keep_original        :: !Bool               --   don't recompress any file?
+  , opt_noarcext             :: !Bool               --   don't add the default extension to the archive name?
+  , opt_nodir                :: !Bool               --   don't write the archive directory into the archive (for benchmarks)?
+  , opt_update_type          :: !Char               --   file update algorithm (a/f/u/s)
+  , opt_x_include_dirs       :: !Bool               --   include directories in processing (for the listing/extraction commands)?
+  , opt_no_nst_filters       :: !Bool               --   TRUE if the command has no options selecting files by name/size/time (-n/-s../-t..)
+  , opt_file_filter          :: !(FileInfo -> Bool) --   predicate built from the options that selects files by attributes/size/time/name (everything except filespecs)
+  , opt_sort_order           :: !String             --   sort order of files in the archive
+  , opt_reorder              :: !Bool               --   reorder files after sorting (placing identical/similar files next to each other)?
+  , opt_find_group           :: !(FileInfo -> Int)  --   function determining from FileInfo which group (out of arc.groups) this file belongs to
+  , opt_groups_count         :: !Int                --   number of groups (`opt_find_group` returns results in the range 0..opt_groups_count-1)
+  , opt_find_type            :: !(FileInfo -> Int)  --   function determining from FileInfo which data type (out of those listed in `opt_data_compressor`) this file belongs to
+  , opt_types_count          :: !Int                --   number of file types (`opt_find_type` returns results in the range 0..opt_types_count-1)
+  , opt_group2type           :: !(Int -> Int)       --   converts a group number from arc.groups into a file type number from opt_data_compressor
+  , opt_logfile              :: !String             --   log file name or ""
+  , opt_delete_files         :: !DelOptions         --   delete files/directories after successful archiving?
+  , opt_workdir              :: !String             --   directory for temporary files or ""
+  , opt_clear_archive_bit    :: !Bool               --   clear the Archive attribute on successfully packed files (and on files already present in the archive)
+  , opt_select_archive_bit   :: !Bool               --   -ao: only files with the Archive bit set (Windows-only)
+  , opt_language             :: !String             --   language/localization file
+  , opt_recovery             :: !String             --   size of the recovery block (in percent, bytes or sectors)
+  , opt_broken_archive       :: !String             --   process a damaged archive by fully scanning it in search of the blocks that are still intact
+  , opt_original             :: !String             --   re-download the damaged parts of the archive from the given URL
+  , opt_save_bad_ranges      :: !String             --   write the list of damaged archive parts to the given file so they can be re-downloaded
+  , opt_cache                :: !Int                --   size of the read-ahead buffer.
+  , opt_limit_compression_memory   :: !MemSize      --   memory limit for compression, bytes
+  , opt_limit_decompression_memory :: !MemSize      --   memory limit for decompression, bytes
 
-                                                    -- Настройки шифрования:
-  , opt_encryption_algorithm :: !String             --   алгоритм шифрования.
-  , opt_cook_passwords                              --   подготавливает команду к использованию шифрования, заправшивая у пользователя пароль и считывая keyfile (не должно выполняться прежде, чем начнётся выполнение самой команды, поэтому не может быть выполнено в parseCmdline)
+                                                    -- Encryption settings:
+  , opt_encryption_algorithm :: !String             --   encryption algorithm.
+  , opt_cook_passwords                              --   prepares the command for using encryption by asking the user for a password and reading the keyfile (this must not run before the command itself starts executing, so it cannot be done in parseCmdline)
                              :: !(Command -> (ParseDataFunc -> IO String, ParseDataFunc -> IO String, IO ()) -> IO Command)
-  , opt_data_password        :: String              --   пароль, используемый для шифрования данных (включает в себя ввод с клавиатуры и содержимое keyfiles). "" - паролирование не нужно
-  , opt_headers_password     :: String              --   пароль, используемый для шифрования заголовков (ditto)
-  , opt_decryption_info                             --   информация, используемая процедурой подбора ключа дешифрации:
-                             :: ( Bool              --     не запрашивать у пользователя новый пароль, даже если все известные для распаковки данных не подходят?
-                                , MVar [String]     --     список "старых паролей", которыми мы пытаемся расшифровать распаковываемые данные
-                                , [String]          --     содержимое keyfiles, добавляемых к паролям
+  , opt_data_password        :: String              --   password used to encrypt the data (includes keyboard input and the contents of keyfiles). "" - no password needed
+  , opt_headers_password     :: String              --   password used to encrypt the headers (ditto)
+  , opt_decryption_info                             --   information used by the decryption key search procedure:
+                             :: ( Bool              --     don't ask the user for a new password even if none of the known ones can decrypt the data?
+                                , MVar [String]     --     list of "old passwords" we try to decrypt the data being extracted with
+                                , [String]          --     contents of the keyfiles appended to the passwords
                                 , IO String         --     ask_decryption_password
                                 , IO ()             --     bad_decryption_password
                                 )
-  -- Операции чтения/записи файлов в кодировке, настраиваемый опцией -sc
-  , opt_parseFile   :: !(Domain -> FilePath -> IO [String])      -- процедура парсинга файла с настраиваемой в -sc кодировкой и ОС-независимым разбиением на строки
-  , opt_unParseFile :: !(Domain -> FilePath -> String -> IO ())  -- процедура записи файла с настраиваемой в -sc кодировкой
-  , opt_parseData   :: !(Domain -> String -> String)             -- процедура парсинга введённых данных с настраиваемой в -sc кодировкой
-  , opt_unParseData :: !(Domain -> String -> String)             -- процедура депарсинга данных для вывода с настраиваемой в -sc кодировкой
+  -- File read/write operations in the charset configured by the -sc option
+  , opt_parseFile   :: !(Domain -> FilePath -> IO [String])      -- procedure parsing a file with the charset configured by -sc and OS-independent line splitting
+  , opt_unParseFile :: !(Domain -> FilePath -> String -> IO ())  -- procedure writing a file with the charset configured by -sc
+  , opt_parseData   :: !(Domain -> String -> String)             -- procedure parsing entered data with the charset configured by -sc
+  , opt_unParseData :: !(Domain -> String -> String)             -- procedure unparsing data for output with the charset configured by -sc
   }
 
--- |Виртуальная опция --debug
+-- |Virtual option --debug
 opt_debug cmd = cmd.$opt_display.$(`contains_one_of` "$#")
 
--- |Включить тестирование памяти?
+-- |Enable memory testing?
 opt_testMalloc cmd = cmd.$opt_display.$(`contains_one_of` "%")
 
--- |Реально используемый компрессор отличается от записываемого в заголовок блока
--- вызовами "tempfile", вставленными между слишком прожорливыми алгоритмами
--- (память ограничивается до значения -lc и размера наибольшего блока свободной памяти,
--- если не задано -lc-)
+-- |The compressor actually used differs from the one recorded in the block header
+-- by the "tempfile" calls inserted between overly memory-hungry algorithms
+-- (memory is limited to the -lc value and to the size of the largest free memory block,
+-- unless -lc- is given)
 limit_compressor command compressor = do
   let memory_limit = opt_limit_compression_memory command
   if memory_limit==CompressionLib.aUNLIMITED_MEMORY
@@ -151,7 +151,7 @@ limit_compressor command compressor = do
             return$ limitCompressionMemoryUsage (memory_limit `min` maxMem) compressor
 
 
--- |Список опций, поддерживаемых программой
+-- |List of options supported by the program
 optionsList = sortOn (\(OPTION a b _) -> (a|||"zzz",b))
    [OPTION "--"    ""                   "stop processing options"
    ,OPTION "cfg"   "config"            ("use configuration FILES (default: " ++ aCONFIG_FILE ++ ")")
@@ -177,9 +177,9 @@ optionsList = sortOn (\(OPTION a b _) -> (a|||"zzz",b))
    ,OPTION "mc"    ""                   "disable compression algorithms (-mcd-, -mc-rep...)"
    ,OPTION "mx"    ""                   "maximum internal compression mode"
    ,OPTION "max"   ""                   "maximum compression using external precomp, ecm, ppmonstr"
-   ,OPTION "ds"    "sort"               "sort files in ORDER"                      -- to do: сделать эту опцию OptArg
-   ,OPTION ""      "groups"             "name of groups FILE"                      -- to do: сделать эту опцию OptArg
-   ,OPTION "s"     "solid"              "GROUPING for solid compression"           -- to do: сделать эту опцию OptArg
+   ,OPTION "ds"    "sort"               "sort files in ORDER"                      -- to do: make this option an OptArg
+   ,OPTION ""      "groups"             "name of groups FILE"                      -- to do: make this option an OptArg
+   ,OPTION "s"     "solid"              "GROUPING for solid compression"           -- to do: make this option an OptArg
    ,OPTION "p"     "password"           "encrypt/decrypt compressed data using PASSWORD"
    ,OPTION "hp"    "HeadersPassword"    "encrypt/decrypt archive headers and data using PASSWORD"
    ,OPTION "ae"    "encryption"         "encryption ALGORITHM (aes, blowfish, serpent, twofish)"
@@ -207,12 +207,12 @@ optionsList = sortOn (\(OPTION a b _) -> (a|||"zzz",b))
    ,OPTION "to"    "TimeOlder"          "select files older than specified time PERIOD"
    ,OPTION "k"     "lock"               "lock archive"
    ,OPTION "rr"    "recovery"           "add recovery information of specified SIZE to archive"
-   ,OPTION "sfx"   ""                  ("add sfx MODULE (\""++aDEFAULT_SFX++"\" by default)")  -- to do: сделать эту опцию OptArg
-   ,OPTION "z"     "arccmt"             "read archive comment from FILE or stdin"  -- to do: сделать эту опцию OptArg
+   ,OPTION "sfx"   ""                  ("add sfx MODULE (\""++aDEFAULT_SFX++"\" by default)")  -- to do: make this option an OptArg
+   ,OPTION "z"     "arccmt"             "read archive comment from FILE or stdin"  -- to do: make this option an OptArg
    ,OPTION ""      "archive-comment"    "input archive COMMENT in cmdline"
-   ,OPTION "i"     "indicator"          "select progress indicator TYPE (0/1/2)"   -- to do: сделать эту опцию OptArg
+   ,OPTION "i"     "indicator"          "select progress indicator TYPE (0/1/2)"   -- to do: make this option an OptArg
    ,OPTION "ad"    "adddir"             "add arcname to extraction path"
-   ,OPTION "ag"    "autogenerate"       "autogenerate archive name with FMT"       -- to do: сделать эту опцию OptArg
+   ,OPTION "ag"    "autogenerate"       "autogenerate archive name with FMT"       -- to do: make this option an OptArg
    ,OPTION ""      "noarcext"           "don't add default extension to archive name"
    ,OPTION "tk"    "keeptime"           "keep original archive time"
    ,OPTION "tl"    "timetolast"         "set archive time to latest file"
@@ -242,13 +242,13 @@ optionsList = sortOn (\(OPTION a b _) -> (a|||"zzz",b))
    ,OPTION ""      "save-bad-ranges"    "save list of broken archive parts to the FILE"
    ]
 
--- |Список опций, которым надо отдавать предпочтение при возникновении коллизий в разборе командной строки
+-- |List of options that should be preferred when command-line parsing collisions arise
 aPREFFERED_OPTIONS = words "method sfx charset SizeMore SizeLess overwrite shutdown type"
 
--- |Опции из предыдущего списка, имеющий максимальный приоритет :)
+-- |Options from the previous list that have the highest priority :)
 aSUPER_PREFFERED_OPTIONS = words "OldKeyfile"
 
--- |Скрыть пароли в командной строке (перед её выводом в лог)
+-- |Hide passwords in the command line (before printing it to the log)
 hidePasswords args = map f args1 ++ args2 where
   (args1,args2)  =  break (=="--") args
   f "-p-"                                   =  "-p-"
@@ -266,7 +266,7 @@ hidePasswords args = map f args1 ++ args2 where
   f x = x
 
 
--- |Описание команд, поддерживаемых программой
+-- |Description of the commands supported by the program
 commandsList = [
     "a        add files to archive"
   , "c        add comment to archive"
@@ -293,18 +293,18 @@ commandsList = [
   , "x        extract files from archive"
   ]
 
--- |Список команд, поддерживаемых программой
+-- |List of the commands supported by the program
 aLL_COMMANDS = map (head.words) commandsList
 
--- |Список команд, которые просто копируют архив
+-- |List of the commands that simply copy the archive
 is_COPYING_COMMAND ('r':'r':_) = True
 is_COPYING_COMMAND ('s':_)     = True
 is_COPYING_COMMAND x           = x `elem` words "c ch d j k"
 
--- |Команда, у которой НЕ ДОЛЖНО быть ни одного аргумента (помимо имени архива)
+-- |A command that MUST NOT have any arguments (besides the archive name)
 is_CMD_WITHOUT_ARGS x  =  is_COPYING_COMMAND x  &&  (x `notElem` words "d j")
 
--- |Классификация всех команд по четырём типам: команды упаковки, распаковки, тестирования и листинга
+-- |Classification of all commands into four types: compression, extraction, testing and listing commands
 data CmdType = ADD_CMD | EXTRACT_CMD | TEST_CMD | LIST_CMD | RECOVER_CMD  deriving (Eq)
 cmdType "t"  = TEST_CMD
 cmdType "e"  = EXTRACT_CMD
@@ -318,7 +318,7 @@ cmdType "r"  = RECOVER_CMD
 cmdType  _   = ADD_CMD
 {-# NOINLINE cmdType #-}
 
--- |Версия архиватора, записываемая в HEADER BLOCK
+-- |Archiver version recorded in the HEADER BLOCK
 aARCHIVE_VERSION = make4byte 0 0 5 1
 
 {-# NOINLINE aARC_VERSION_WITH_DATE #-}
@@ -328,7 +328,7 @@ aARCHIVE_VERSION = make4byte 0 0 5 1
 {-# NOINLINE aARC_AUTHOR #-}
 {-# NOINLINE aARC_EMAIL #-}
 {-# NOINLINE aARC_WEBSITE #-}
--- |Краткое наименование программы, выводимое в начале работы
+-- |Short program name printed at startup
 aARC_VERSION_WITH_DATE = aARC_VERSION ++ " ("++aARC_DATE++")"   -- aARC_VERSION
 aARC_HEADER_WITH_DATE  = aARC_HEADER  ++ " ("++aARC_DATE++")"   -- aARC_HEADER
 aARC_HEADER  = aARC_NAME++" "++aARC_VERSION++" "
@@ -340,30 +340,30 @@ aARC_EMAIL   = "Bulat.Ziganshin@gmail.com"
 aARC_WEBSITE = "https://github.com/DavidLee18/DArc"
 
 {-# NOINLINE aHELP #-}
--- |HELP, выводимый при вызове программы без параметров
+-- |HELP printed when the program is invoked without parameters
 aHELP = aARC_HEADER++" "++aARC_WEBSITE++"  "++aARC_DATE++"\n"++
         "A project created by DavidLee18 with the collaboration of YadeWira\n"++
         "Usage: Arc command [options...] archive [files... @listfiles...]\n" ++
         joinWith "\n  " ("Commands:":commandsList) ++ "\nOptions:\n" ++ optionsHelp
 
--- |Способы группировки файлов для солид-блока или оглавления архива
-data Grouping = GroupNone                   -- каждый файл отдельно
-                                            -- группировка по:
-              | GroupByExt                  --   одинаковому расширению
-              | GroupBySize      FileSize   --   минимальному объёму блока данных
-              | GroupByBlockSize MemSize    --   максимальному объёму блока данных (для блочно-ориентированных алгоритмов, таких как BWT и ST)
-              | GroupByNumber    FileCount  --   количеству файлов
-              | GroupAll                    -- все файлы вместе
+-- |Ways of grouping files for a solid block or for the archive directory
+data Grouping = GroupNone                   -- each file separately
+                                            -- grouping by:
+              | GroupByExt                  --   identical extension
+              | GroupBySize      FileSize   --   minimum data block size
+              | GroupByBlockSize MemSize    --   maximum data block size (for block-oriented algorithms such as BWT and ST)
+              | GroupByNumber    FileCount  --   number of files
+              | GroupAll                    -- all files together
 
--- |Значение опции -d[f]: не удалять, удалять только файлы, удалять файлы и каталоги
+-- |Value of the -d[f] option: don't delete, delete files only, delete files and directories
 data DelOptions = NO_DELETE | DEL_FILES | DEL_FILES_AND_DIRS  deriving (Eq)
 
 
 ---------------------------------------------------------------------------------------------------
--- ЗНАЧЕНИЯ, ИСПОЛЬЗУЕМЫЕ ПО УМОЛЧАНИЮ ------------------------------------------------------------
+-- DEFAULT VALUES ---------------------------------------------------------------------------------
 ---------------------------------------------------------------------------------------------------
 
--- |Метод сжатия данных
+-- |Data compression method
 #ifdef __MHS__
 -- MicroHs: all numeric presets (0-9) now work, including dict+lzp+ppmd chains.
 -- Default to "4" (same as GHC build) for best text compression.
@@ -372,99 +372,99 @@ aDEFAULT_COMPRESSOR = "4"
 aDEFAULT_COMPRESSOR = "4"
 #endif
 
--- |Метод сжатия каталога архива
+-- |Compression method for the archive directory
 aDEFAULT_DIR_COMPRESSION = "lzma:bt4:1m"
 
--- |Размер солид-блоков (один солид-блок на всех)
+-- |Solid block size (a single solid block for everything)
 aDEFAULT_DATA_GROUPING  =  ""
 
--- |Группировка для каталогов
+-- |Grouping for directories
 aDEFAULT_DIR_GROUPING  =  GroupByNumber (20*1000)
 
--- |Алгоритм сжатия данных, используемый по умолчанию
+-- |Default data encryption algorithm
 aDEFAULT_ENCRYPTION_ALGORITHM = "aes"
 
--- |Если в командной строке не указаны имена обрабатываемых файлов - обрабатывать все, т.е. "*"
+-- |If no file names are given on the command line - process everything, i.e. "*"
 aDEFAULT_FILESPECS = [reANY_FILE]
 
--- |Расширение архивных файлов
+-- |Extension of archive files
 aDEFAULT_ARC_EXTENSION = ".arc"
 
--- |Расширение SFX архивных файлов
+-- |Extension of SFX archive files
 #ifdef FREEARC_WIN
 aDEFAULT_SFX_EXTENSION = ".exe"
 #else
 aDEFAULT_SFX_EXTENSION = ""
 #endif
 
--- |Файл локализации
+-- |Localization file
 aLANG_FILE = "arc.language.txt"
 
--- |Файл с описанием порядка сортировки имён файлов при "-og"
+-- |File describing the sort order of file names for "-og"
 aDEFAULT_GROUPS_FILE = "arc.groups"
 
--- |SFX-модуль, используемый по умолчанию
+-- |Default SFX module
 aDEFAULT_SFX = "freearc.sfx"
 
--- |Файл конфигурации (хранящий опции, используемые по умолчанию)
+-- |Configuration file (holding the default options)
 aCONFIG_FILE = "arc.ini"
 
--- |Переменная среды, содержащая опции, используемые по умолчанию
+-- |Environment variable containing the default options
 aCONFIG_ENV_VAR = "FREEARC"
 
--- |Порядок сортировки, используемый при solid-сжатии (для увеличения сжатия)
+-- |Sort order used for solid compression (to improve the compression ratio)
 aDEFAULT_SOLID_SORT_ORDER = "gerpn"
 
--- |Объём информации, выводимой на экран - по умолчанию и при использовании опции "--display" без параметра.
--- По умолчанию на экран не выводятся "cmo" - доп. опции, режим сжатия и используемая память
+-- |Amount of information printed on screen - by default and when the "--display" option is used without a parameter.
+-- By default "cmo" is not printed - additional options, compression mode and memory used
 aDISPLAY_DEFAULT = "hanwrftske"
 aDISPLAY_ALL     = "hoacmnwrfdtske"
 
--- Секции arc.ini
+-- arc.ini sections
 compressionMethods = "[Compression methods]"
 defaultOptions     = "[Default options]"
 externalCompressor = "[External compressor:*]"
 
--- |Приведение имени секции к стандартизованной форме
+-- |Normalizing a section name to its canonical form
 cleanupSectionName  =  strLower . filter (not.isSpace)
 
--- |Проверка того, что это - заголовок секции
+-- |Check whether this is a section heading
 selectSectionHeadings  =  ("["==) . take 1 . trim
 
 
 ----------------------------------------------------------------------------------------------------
----- Универсальный парсер командной строки ---------------------------------------------------------
+---- Universal command-line parser -----------------------------------------------------------------
 ----------------------------------------------------------------------------------------------------
 
--- |Описание опции - краткое имя, длинное имя, печатаемое описание
+-- |Option description - short name, long name, printed description
 data Option = OPTION String String String
 
--- |Тип опции - короткие имеют префикс "-", длинные - префикс "--"
+-- |Option type - short ones are prefixed with "-", long ones with "--"
 data OptType  =  SHORT | LONG
 
--- |Наличие параметра в опции: нет/обязательно/опционально
+-- |Presence of a parameter in the option: none/required/optional
 data ParamType  =  ParamNo | ParamReq | ParamOpt
 
--- |"Словарь" опций, содержащий их в удобной для разбора командной строки форме
+-- |Option "dictionary", holding them in a form convenient for command-line parsing
 optionsDict  =  concatMap compileOption optionsList
   where compileOption (OPTION short long description)  =  compile short ++ compile ('-':long)
-          where -- Добавить в список описание опции с именем `name`, если оно непустое
+          where -- Add the description of the option named `name` to the list, if the name is non-empty
                 compile name  =  case (name, paramName description) of
-                    ("",  _      )  ->  []                                -- нет имени - нет и опции :)
-                    ("-", _      )  ->  []                                -- нет имени - нет и опции :)
-                    (_,   Nothing)  ->  [(name, long|||short, ParamNo )]  -- опция без параметра
-                    (_,   Just _ )  ->  [(name, long|||short, ParamReq)]  -- опция с параметром
+                    ("",  _      )  ->  []                                -- no name - no option :)
+                    ("-", _      )  ->  []                                -- no name - no option :)
+                    (_,   Nothing)  ->  [(name, long|||short, ParamNo )]  -- option without a parameter
+                    (_,   Just _ )  ->  [(name, long|||short, ParamReq)]  -- option with a parameter
 
--- |Описание опций для пользователя.
+-- |Description of the options for the user.
 optionsHelp  =  init$ unlines table
   where (ss,ls,ds)     = (unzip3 . map fmtOpt) optionsList
         table          = zipWith3 paste (sameLen ss) (sameLen ls) ds
         paste x y z    = "  " ++ x ++ "  " ++ y ++ "  " ++ z
         sameLen xs     = flushLeft ((maximum . map length) xs) xs
         flushLeft n    = map (left_justify n)
-          -- Возвращает формат "короткой опции", "длинной опции", и их описание
+          -- Returns the formatting of the "short option", the "long option", and their description
         fmtOpt (OPTION short long description)  =  (format short "" description, format ('-':long) "=" description, description)
-          -- Возвращает формат опции `name` с учётом наличия у неё имени и параметра
+          -- Returns the formatting of option `name`, accounting for whether it has a name and a parameter
         format name delim description  =  case (name, paramName description) of
                                             ("",   _         )  ->  ""
                                             ("-",  _         )  ->  ""
@@ -472,14 +472,14 @@ optionsHelp  =  init$ unlines table
                                             (_,    Nothing   )  ->  "-"++name
                                             (_,    Just aWORD)  ->  "-"++name++delim++aWORD
 
--- |Возвращает имя параметра опции, извлекая его из строки её описания.
+-- |Returns the name of the option's parameter, extracting it from its description string.
 paramName descr =
   case filter (all isUpper) (words descr)
-    of []      -> Nothing      -- Описание не содержит UPPERCASED слов
-       [aWORD] -> Just aWORD   -- Описание включает UPPERCASED слово, обозначающее параметр опции
+    of []      -> Nothing      -- The description contains no UPPERCASED words
+       [aWORD] -> Just aWORD   -- The description contains an UPPERCASED word denoting the option's parameter
        _       -> error$ "option description \""++descr++"\" contains more than one uppercased word"
 
--- |Разбор командной строки, возвращающий список опций и список "свободных аргументов"
+-- |Command-line parsing, returning the list of options and the list of "free arguments"
 parseOptions []          options freeArgs  =  return (reverse options, reverse freeArgs)
 parseOptions ("--":args) options freeArgs  =  return (reverse options, reverse freeArgs ++ args)
 
@@ -490,47 +490,47 @@ parseOptions (('-':option):args) options freeArgs = do
       unknown                           =  registerError$ CMDLINE_UNKNOWN_OPTION ('-':option)
       ambiguous variants                =  registerError$ CMDLINE_AMBIGUOUS_OPTION ('-':option) (map (('-':) . fst3) variants)
   newopt <- case (filter check optionsDict) of
-              [opt] -> accept opt  -- принять опцию
-              []    -> unknown     -- неизвестная опция.
-              xs    -> -- При неоднозначности в разборе опции посмотрим на список предпочтительных опций
+              [opt] -> accept opt  -- accept the option
+              []    -> unknown     -- unknown option.
+              xs    -> -- On ambiguity, consult the list of preferred options
                        case (filter ((\x -> x `elem` (aPREFFERED_OPTIONS++aSUPER_PREFFERED_OPTIONS)) . snd3) xs) of
-                         [opt] -> accept opt        -- принять опцию
-                         []    -> ambiguous xs      -- неоднозначная опция, которой нет в списке предпочтений
-                         xs    -> -- Повторим трюк! :)
+                         [opt] -> accept opt        -- accept the option
+                         []    -> ambiguous xs      -- ambiguous option that is not in the preference list
+                         xs    -> -- Repeat the trick! :)
                                   case (filter ((\x -> x `elem` aSUPER_PREFFERED_OPTIONS) . snd3) xs) of
-                                    [opt] -> accept opt        -- принять опцию
-                                    []    -> ambiguous xs      -- неоднозначная опция, которой нет в списке предпочтений
-                                    xs    -> ambiguous xs      -- неоднозначный разбор даже в списке предпочтений!
+                                    [opt] -> accept opt        -- accept the option
+                                    []    -> ambiguous xs      -- ambiguous option that is not in the preference list
+                                    xs    -> ambiguous xs      -- still ambiguous even within the preference list!
 
   parseOptions args (newopt:options) freeArgs
 
 parseOptions (arg:args) options freeArgs   =  parseOptions args options (arg:freeArgs)
 
 
--- |Вернуть список значений опции с названием `flag`. Пример вызова: findReqList opts "exclude"
+-- |Return the list of values of the option named `flag`. Example call: findReqList opts "exclude"
 findReqList ((name, param):flags) flag  | name==flag  =  param: findReqList flags flag
 findReqList (_:flags) flag                            =  findReqList flags flag
 findReqList [] flag                                   =  []
 
--- |Вернуть значение опции с названием `flag`, если её нет - значение по умолчанию `deflt`
+-- |Return the value of the option named `flag`, or the default `deflt` if it is absent
 findReqArg options flag deflt  =  last (deflt : findReqList options flag)
 
--- |Вернуть значение опции с необязательным параметром
+-- |Return the value of an option with an optional parameter
 findOptArg = findReqArg
 
--- |Вернуть значение опции с названием `flag`, если её нет - Nothing
+-- |Return the value of the option named `flag`, or Nothing if it is absent
 findMaybeArg options flag  =  case findReqList options flag
                                 of [] -> Nothing
                                    xs -> Just (last xs)
 
--- |Вернуть True, если в списке опций есть опция с названием `flag`
+-- |Return True if the option list contains an option named `flag`
 findNoArg options flag  =  case findReqList options flag
                                 of [] -> False
                                    _  -> True
 
--- |Вернуть Just True, если в списке опций есть опция с названием `flag1`,
---          Just False, если в списке опций есть опция с названием `flag2`,
---          Nothing, если нет ни той, ни другой
+-- |Return Just True if the option list contains an option named `flag1`,
+--          Just False if the option list contains an option named `flag2`,
+--          Nothing if neither one is present
 findNoArgs options flag1 flag2  =  case filter (\(o,_) -> o==flag1||o==flag2) options
                                      of [] -> Nothing
                                         xs -> Just (fst (last xs) == flag1)
@@ -546,7 +546,7 @@ findNoArgs options flag1 flag2  =  case filter (\(o,_) -> o==flag1||o==flag2) op
 
 
 ---------------------------------------------------------------------------------------------------
----- Интерпретация Lua-скриптов                                                                ----
+---- Lua script interpretation                                                                 ----
 ---------------------------------------------------------------------------------------------------
 
 #if defined(FREEARC_NO_LUA)

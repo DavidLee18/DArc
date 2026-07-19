@@ -1,6 +1,6 @@
 {-# LANGUAGE CPP #-}
 ----------------------------------------------------------------------------------------------------
----- Информирование пользователя о ходе выполнения программы (CUI - Console User Interface).  ------
+---- Informing the user about the program's progress (CUI - Console User Interface). ---------------
 ----------------------------------------------------------------------------------------------------
 module UIBase where
 
@@ -29,70 +29,70 @@ import FileInfo
 import Options
 
 
--- |Здесь хранится вся информация о команде и процессе её выполнения, требуемая для отображения
--- индикатора прогресса и вывода финальной статистики
+-- |This holds all the information about the command and its execution needed to display
+-- the progress indicator and print the final statistics
 data UI_State = UI_State {
-    total_files     :: !FileCount   -- Кол-во файлов, которые она должна обработать
-  , total_bytes     :: !FileSize    -- Общий объём этих файлов (в распакованном виде)
-  , archive_total_bytes      :: !FileSize    -- Общий объём файлов в архиве - устанавливается только для команд распаковки
-  , archive_total_compressed :: !FileSize    -- Общий объём файлов в архиве (в сжатом виде)
-  , datatype        ::  DataType    -- Обрабатываемая в данный момент часть архива: файл/каталог/служебные данные
-  , uiFileinfo      :: !(Maybe FileInfo)  -- Текущий обрабатываемый файл (если есть)
-  -- В зависимости от того, какая часть архива сейчас обрабатывается, статистика заносится
-  -- либо на счёт файлов:
-  ,    files        :: !FileCount   -- Кол-во уже обработанных файлов
-  ,    bytes        :: !FileSize    -- Объём уже обработанных данных в распакованном виде
-  ,    cbytes       :: !FileSize    -- Объём уже обработанных данных в упакованном виде
-  -- либо на счёт каталогов (служебная информация не подсчитывается):
-  ,    dirs         :: !FileCount   -- Кол-во созданных каталогов и других служебных блоков
-  ,    dir_bytes    :: !FileSize    -- Объём уже обработанных данных в распакованном виде
-  ,    dir_cbytes   :: !FileSize    -- Объём уже обработанных данных в упакованном виде
-  -- Кроме того, мы запоминаем, какая часть из этих данных - на самом деле не упаковывалась (это полезно для определения реальной скорости упаковки):
-  ,    fake_files   :: !FileCount   -- Кол-во уже обработанных файлов
-  ,    fake_bytes   :: !FileSize    -- Объём уже обработанных данных в распакованном виде
-  ,    fake_cbytes  :: !FileSize    -- Объём уже обработанных данных в упакованном виде
-  -- Информация о текущем солид-блоке
-  ,    algorithmsCount :: Int       -- Кол-во алгоритмов в цепочке
-  ,    rw_ops       :: [[UI_RW FileSize]] -- Последовательность операций чтения/записи с разбивкой по отдельным алгоритмам
-  ,    r_bytes      :: !FileSize     -- Объём уже обработанных данных на входе первого алгоритма сжатия
-  ,    rnum_bytes   :: !FileSize     -- Объём уже обработанных данных на входе последнего алгоритма сжатия
+    total_files     :: !FileCount   -- Number of files it has to process
+  , total_bytes     :: !FileSize    -- Total size of those files (uncompressed)
+  , archive_total_bytes      :: !FileSize    -- Total size of the files in the archive - set only for extraction commands
+  , archive_total_compressed :: !FileSize    -- Total size of the files in the archive (compressed)
+  , datatype        ::  DataType    -- The part of the archive currently being processed: file/directory/control data
+  , uiFileinfo      :: !(Maybe FileInfo)  -- The file currently being processed (if any)
+  -- Depending on which part of the archive is being processed, the statistics are credited
+  -- either to the files account:
+  ,    files        :: !FileCount   -- Number of files already processed
+  ,    bytes        :: !FileSize    -- Amount of data already processed, uncompressed
+  ,    cbytes       :: !FileSize    -- Amount of data already processed, compressed
+  -- or to the directories account (control data is not counted):
+  ,    dirs         :: !FileCount   -- Number of directory blocks and other control blocks created
+  ,    dir_bytes    :: !FileSize    -- Amount of data already processed, uncompressed
+  ,    dir_cbytes   :: !FileSize    -- Amount of data already processed, compressed
+  -- In addition, we remember what part of this data was in fact not compressed at all (useful for computing the real compression speed):
+  ,    fake_files   :: !FileCount   -- Number of files already processed
+  ,    fake_bytes   :: !FileSize    -- Amount of data already processed, uncompressed
+  ,    fake_cbytes  :: !FileSize    -- Amount of data already processed, compressed
+  -- Information about the current solid block
+  ,    algorithmsCount :: Int       -- Number of algorithms in the chain
+  ,    rw_ops       :: [[UI_RW FileSize]] -- Sequence of read/write operations, split per individual algorithm
+  ,    r_bytes      :: !FileSize     -- Amount of data already processed at the input of the first compression algorithm
+  ,    rnum_bytes   :: !FileSize     -- Amount of data already processed at the input of the last compression algorithm
   }
 
--- |Обрабатываемая в данный момент часть архива: файл/каталог/служебные данные
+-- |The part of the archive currently being processed: file/directory/control data
 data DataType = File | Dir | CData   deriving Eq
 
--- |Операции чтения и записи в списке операций
+-- |Read and write operations in the operations list
 data UI_RW a = UI_Read a | UI_Write a
 
--- |Тип индикатора - только прценты или + файлы/...
+-- |Indicator type - percentages only, or also files/...
 data IndicatorType = INDICATOR_PERCENTS | INDICATOR_FULL   deriving Eq
 
 
--- Выполняемая сейчас команда
+-- The command currently being executed
 ref_command               =  unsafePerformIO$ newIORef$ error "undefined UI::ref_command"
--- Обрабатываемый архив (не совпадает с command.$cmd_arcname при тестировании временного архива после упаковки)
+-- The archive being processed (differs from command.$cmd_arcname when testing a temporary archive after compression)
 uiArcname                 =  unsafePerformIO$ newIORef$ error "undefined UI::uiArcname"
 refStartArchiveTime       =  unsafePerformIO$ newIORef$ error "undefined UI::refStartArchiveTime"
 refStartPauseTime         =  unsafePerformIO$ newIORef$ error "undefined UI::refStartPauseTime"
 refArchiveProcessingTime  =  unsafePerformIO$ newIORef$ error "undefined UI::refArchiveProcessingTime"  :: IORef Double
 ref_ui_state              =  unsafePerformIO$ newIORef$ error "undefined UI::ref_ui_state"
 putHeader                 =  unsafePerformIO$ init_once
--- Текущая стадия выполнения команды или имя файла из uiFileinfo
+-- The current stage of command execution, or the file name from uiFileinfo
 uiMessage                 =  unsafePerformIO$ newIORef$ ""
--- |Счётчик просканированных файлов
+-- |Counter of scanned files
 files_scanned             =  unsafePerformIO$ newIORef$ (0::Integer)
 
--- |Глобальная переменная, хранящая состояние индикатора прогресса
+-- |Global variable holding the progress indicator state
 aProgressIndicatorState    =  unsafePerformIO$ newIORef$ error "undefined UI::aProgressIndicatorState"
 aProgressIndicatorEnabled  =  unsafePerformIO$ newIORef$ False
--- |Время начала отсчёта текущего индиатора
+-- |Start time of the current indicator's countdown
 indicator_start_real_secs  =  unsafePerformIO$ newIORef$ (0::Double)
 
--- |Синхронизация доступа к UI
+-- |Synchronization of access to the UI
 syncUI = withMVar mvarSyncUI . const;  mvarSyncUI = unsafePerformIO$ newMVar "mvarSyncUI"
 
 
--- |Тред, следящий за indicator, и выводящий время от времени его обновлённые значения
+-- |Thread that watches the indicator and prints its updated values from time to time
 indicatorThread secs output =
   backgroundThread secs $ do
     whenM (val aProgressIndicatorEnabled) $ do
@@ -100,7 +100,7 @@ indicatorThread secs output =
       (indicator, indType, arcname, direction, b, bytes', total') <- val aProgressIndicatorState
       when (indicator /= NoIndicator  &&  not operationTerminated') $ do
         bytes <- bytes' b;  total <- total'
-        -- Отношение объёма обработанных данных к общему объёму
+        -- Ratio of the amount of processed data to the total amount
         let processed = total>0 &&& (fromIntegral bytes / fromIntegral total :: Double)
         secs <- return_real_secs
         sec0 <- val indicator_start_real_secs
@@ -109,7 +109,7 @@ indicatorThread secs output =
             p        = percents indicator bytes total
         output indicator indType winTitle b bytes total processed p
 
--- |Выполнять в бэкграунде action каждые secs секунд
+-- |Run action in the background every secs seconds
 backgroundThread secs action =
   forkIO $ do
     foreverM $ do
@@ -121,33 +121,33 @@ backgroundThread secs action =
 {-# NOINLINE backgroundThread #-}
 
 ----------------------------------------------------------------------------------------------------
----- Индикатор прогресса ---------------------------------------------------------------------------
+---- Progress indicator ----------------------------------------------------------------------------
 ----------------------------------------------------------------------------------------------------
 
--- |Типы индикатора прогресса (молчаливый, проценты, десятые процента)
+-- |Progress indicator types (silent, percents, tenths of a percent)
 data Indicator = NoIndicator | ShortIndicator | LongIndicator   deriving (Eq)
 
 bytes_per_sec = 1*mb  -- Typical (de)compression speed
 
--- |Выбрать индикатор прогресса, основываясь на показаниях свидетелей :)
+-- |Choose the progress indicator based on the testimony of witnesses :)
 select_indicator command total_bytes  =  case (opt_indicator command)
-  of "0"                                    ->  NoIndicator      -- опция "-i" - отключить индикатор!
-     _ | i total_bytes < bytes_per_sec*100  ->  ShortIndicator   -- индикатор в процентах, если общий объём данных меньше 100 мб (при этом в секунду обрабатывается больше одного процента данных)
-       | otherwise                          ->  LongIndicator    -- индикатор в десятых долях процента, если данных больше 100 мб
+  of "0"                                    ->  NoIndicator      -- the "-i" option - disable the indicator!
+     _ | i total_bytes < bytes_per_sec*100  ->  ShortIndicator   -- percent indicator if the total data size is under 100 mb (in that case more than one percent of the data is processed per second)
+       | otherwise                          ->  LongIndicator    -- tenths-of-a-percent indicator if there is more than 100 mb of data
 
--- |Вывести индикатор прогресса в соответствии с выбранной точностью
+-- |Render the progress indicator with the chosen precision
 percents NoIndicator    current total  =  ""
 percents ShortIndicator current total  =  right_justify 3 (ratio2 current total) ++ "%"
 percents LongIndicator  current total  =  right_justify 5 (ratio3 current total) ++ "%"
 
--- |Создать место для индикатора прогресса
+-- |Make room for the progress indicator
 open_percents     =  flip replicate ' '  . indicator_len
--- |Вернуться назад на столько символов, сколько занимает индикатор прогресса
+-- |Move back by as many characters as the progress indicator occupies
 back_percents     =  flip replicate '\b' . indicator_len
--- |Напечатать пробелы поверх использовавшегося индикатора прогресса
+-- |Print spaces over the progress indicator that was displayed
 clear_percents i  =  back_percents i ++ open_percents i
 
--- |Размер индикатора прогресса в символах
+-- |Size of the progress indicator in characters
 indicator_len NoIndicator    = 0
 indicator_len ShortIndicator = 4
 indicator_len LongIndicator  = 6
@@ -162,7 +162,7 @@ ratio3 count total =  case (show$ count*1000 `div` total) of
                         [digit]  -> "0." ++ [digit]
                         digits   -> init digits ++ ['.', last digits]
 
--- |Вывести число, отделяя тысячи, миллионы и т.д.: "1.234.567"
+-- |Print a number separating thousands, millions, etc.: "1.234.567"
 show3 :: (Show a) => a -> [Char]
 show3 = reverse . xxx . reverse . show
           where xxx (a:b:c:d:e) = a:b:c:'.': xxx (d:e)
@@ -174,37 +174,37 @@ show3 = reverse . xxx . reverse . show
 
 
 ----------------------------------------------------------------------------------------------------
----- Вспомогательные функции для форматирования чисел/строк и работы с временем --------------------
+---- Helper functions for formatting numbers/strings and working with time -------------------------
 ----------------------------------------------------------------------------------------------------
 
--- |Разница между двумя временами в секундах - использует особенности внутреннего представления!!!
+-- |Difference between two times in seconds - relies on the details of the internal representation!!!
 diffTimes (TOD sa pa) (TOD sb pb)  =  i(sa - sb) + (i(pa-pb) / 1e12)
 
--- |Добавить секунды к времени
+-- |Add seconds to a time value
 addTime (TOD sa pa) secs  = TOD (sa+sb+sc) pc
   where
     sb = i$ floor secs
     pb = round$ (secs - fromIntegral sb)*1e12
     (sc,pc) = (pa+pb) `divMod` (10^12)
 
--- |Возвратить время в юниксовом формае (секунд бог знает с какого времени)
+-- |Return the time in Unix format (seconds since goodness knows when)
 getUnixTime = do
   (TOD seconds picoseconds) <- getClockTime
   return seconds
 
--- |Напечатать объём исходных и упакованных данных, и степень сжатия
+-- |Print the size of the original and compressed data, and the compression ratio
 show_ratio cmd bytes cbytes =
   ""        ++ show3       (if (cmdType cmd == ADD_CMD) then bytes else cbytes) ++
    " => "   ++ show_bytes3 (if (cmdType cmd == ADD_CMD) then cbytes else bytes) ++ ". " ++
    "Ratio " ++ ratio3 cbytes bytes ++ "%"
 
--- |Возвратить строку, описывающую заданное время
+-- |Return a string describing the given time
 showTime secs  =  showFFloat (Just 2) secs " secs"
 
--- |Возвратить строку, описывающую заданную скорость
+-- |Return a string describing the given speed
 showSpeed bytes secs  =  show3(round$ i bytes/1000/secs) ++ " kB/s"
 
--- |Отформатировать время как H:MM:SS
+-- |Format a time as H:MM:SS
 showHMS secs  =  show hour++":"++left_fill '0' 2 (show min)++":"++left_fill '0' 2 (show sec)
   where
     s = round secs
@@ -214,26 +214,26 @@ showHMS secs  =  show hour++":"++left_fill '0' 2 (show min)++":"++left_fill '0' 
 
 
 
--- |Отметить время, когда была достигнута определённая точка программы (чисто для внутренних бенчмарков)
+-- |Record the time when a certain point in the program was reached (purely for internal benchmarks)
 debugLog label = do
-  condPrintLine   "$" $  label   -- вычислим label и напечатаем её значение
+  condPrintLine   "$" $  label   -- evaluate label and print its value
   real_secs <- return_real_secs
   condPrintLineLn "$" $  ": " ++ showTime real_secs
 
--- |Вывести информацию о списке, если он содержит как минимум два элемента
+-- |Print information about the list if it contains at least two elements
 debugLogList label list = do
   drop 1 list &&& debugLog (format label (show3$ length list))
 
--- |Добавить строчку в отладочный вывод программы
+-- |Append a line to the program's debug output
 debugLog0 = condPrintLineLn "$"
 
--- |Время, реально прошедшее с начала выполнения команды над текущим архивом
+-- |Time actually elapsed since the command started running on the current archive
 return_real_secs = do
   start_time    <- val refStartArchiveTime
   current_time  <- getClockTime
   return$ diffTimes current_time start_time
 
--- Вычитаем время, проведённое в паузе, из реального времени выполнения команды
+-- Subtract the time spent paused from the real command execution time
 pause_real_secs = do
   refStartPauseTime =:: getClockTime
 
@@ -251,7 +251,7 @@ pauseTiming = bracket_ pause_real_secs resume_real_secs
 
 
 ----------------------------------------------------------------------------------------------------
----- Выбор сообщений, соответствующих выполняемой команде ------------------------------------------
+---- Choosing the messages corresponding to the command being executed -----------------------------
 ----------------------------------------------------------------------------------------------------
 
 msgStart cmd arcExist =
@@ -280,23 +280,23 @@ msgStat cmd  =  case (cmdType cmd) of
                   TEST_CMD    -> "Testing "
                   EXTRACT_CMD -> "Extraction "
 
--- |Напечатать "file" или "files", в зависимости от кол-ва
+-- |Print "file" or "files", depending on the count
 show_files3 1 = "1 file"
 show_files3 n = show3 n ++ " files"
 
--- |Напечатать "archive" или "archives", в зависимости от кол-ва
+-- |Print "archive" or "archives", depending on the count
 show_archives3 1 = "1 archive"
 show_archives3 n = show3 n ++ " archives"
 
--- |Напечатать "byte" или "bytes", в зависимости от кол-ва
+-- |Print "byte" or "bytes", depending on the count
 show_bytes3 1 = "1 byte"
 show_bytes3 n = show3 n ++ " bytes"
 
 
 {-
-  Структура UI:
-  - один процесс, получающий информацию от упаковки/распаковки и определяющий структуру
-      взаимодействия с UI:
+  UI structure:
+  - a single process that receives information from compression/decompression and defines the structure
+      of the interaction with the UI:
         ui_PROCESS pipe = do
           (StartCommand cmd) <- receiveP pipe
             (StartArchive cmd) <- receiveP pipe
@@ -306,5 +306,5 @@ show_bytes3 n = show3 n ++ " bytes"
             (EndArchive) <- receiveP pipe
           (EndCommand) <- receiveP pipe
          (EndProgram) <- receiveP pipe
-      Этот процесс записывает текущее состояние UI в SampleVar
+      This process writes the current UI state into a SampleVar
 -}

@@ -11,7 +11,7 @@ extern "C" {
 #include "PPMdType.h"
 
 /*-------------------------------------------------*/
-/* Реализация ppmd_compress                        */
+/* ppmd_compress implementation                    */
 /*-------------------------------------------------*/
 #ifndef FREEARC_DECOMPRESS_ONLY
 
@@ -50,7 +50,7 @@ void _STDCALL PrintInfo (_PPMD_FILE* DecodedFile, _PPMD_FILE* EncodedFile)
 
 
 /*-------------------------------------------------*/
-/* Реализация ppmd_decompress                      */
+/* ppmd_decompress implementation                  */
 /*-------------------------------------------------*/
 
 namespace PPMD_decompression {
@@ -85,10 +85,10 @@ void _STDCALL PrintInfo(_PPMD_FILE* DecodedFile,_PPMD_FILE* EncodedFile)
 
 
 /*-------------------------------------------------*/
-/* Реализация класса PPMD_METHOD                  */
+/* PPMD_METHOD class implementation               */
 /*-------------------------------------------------*/
 
-// Конструктор, присваивающий параметрам метода сжатия значения по умолчанию
+// Constructor that assigns default values to the compression method parameters
 PPMD_METHOD::PPMD_METHOD()
 {
   order    = 10;
@@ -96,7 +96,7 @@ PPMD_METHOD::PPMD_METHOD()
   MRMethod = 0;
 }
 
-// Функция распаковки
+// Decompression function
 int PPMD_METHOD::decompress (CALLBACK_FUNC *callback, void *auxdata)
 {
   // Use faster function from DLL if possible
@@ -108,7 +108,7 @@ int PPMD_METHOD::decompress (CALLBACK_FUNC *callback, void *auxdata)
 
 #ifndef FREEARC_DECOMPRESS_ONLY
 
-// Функция упаковки
+// Compression function
 int PPMD_METHOD::compress (CALLBACK_FUNC *callback, void *auxdata)
 {
   // Use faster function from DLL if possible
@@ -118,7 +118,7 @@ int PPMD_METHOD::compress (CALLBACK_FUNC *callback, void *auxdata)
   return ((int (*)(int, MemSize, int, CALLBACK_FUNC*, void*)) f) (order, mem, MRMethod, callback, auxdata);
 }
 
-// Записать в buf[MAX_METHOD_STRLEN] строку, описывающую метод сжатия и его параметры (функция, обратная к parse_PPMD)
+// Write into buf[MAX_METHOD_STRLEN] a string describing the compression method and its parameters (the inverse of parse_PPMD)
 void PPMD_METHOD::ShowCompressionMethod (char *buf)
 {
   char MemStr[100];
@@ -126,7 +126,7 @@ void PPMD_METHOD::ShowCompressionMethod (char *buf)
   sprintf (buf, "ppmd:%d:%s%s", order, MemStr, MRMethod==2? ":r2": (MRMethod==1? ":r":""));
 }
 
-// Изменить потребность в памяти, заодно оттюнинговав order
+// Change the memory requirement, tuning order along the way
 void PPMD_METHOD::SetCompressionMem (MemSize _mem)
 {
   if (_mem==0)  return;
@@ -137,42 +137,42 @@ void PPMD_METHOD::SetCompressionMem (MemSize _mem)
 
 #endif  // !defined (FREEARC_DECOMPRESS_ONLY)
 
-// Конструирует объект типа PPMD_METHOD с заданными параметрами упаковки
-// или возвращает NULL, если это другой метод сжатия или допущена ошибка в параметрах
+// Constructs a PPMD_METHOD object with the given compression parameters,
+// or returns NULL if this is a different compression method or the parameters are malformed
 COMPRESSION_METHOD* parse_PPMD (char** parameters)
 {
   if (strcmp (parameters[0], "ppmd") == 0) {
-    // Если название метода (нулевой параметр) - "ppmd", то разберём остальные параметры
+    // If the method name (parameter zero) is "ppmd", parse the remaining parameters
 
     PPMD_METHOD *p = new PPMD_METHOD;
-    int error = 0;  // Признак того, что при разборе параметров произошла ошибка
+    int error = 0;  // Flag indicating that an error occurred while parsing the parameters
 
-    // Переберём все параметры метода (или выйдем раньше при возникновении ошибки при разборе очередного параметра)
+    // Iterate over all method parameters (or bail out early if parsing one of them fails)
     while (*++parameters && !error)
     {
       char *param = *parameters;
       if (start_with (param, "mem")) {
-        param+=2;  // Обработать "mem..." как "m..."
+        param+=2;  // Handle "mem..." the same as "m..."
       }
-      if (strlen(param)==1) switch (*param) {    // Однобуквенные параметры
+      if (strlen(param)==1) switch (*param) {    // Single-letter parameters
         case 'r':  p->MRMethod = 1; continue;
       }
-      else switch (*param) {                    // Параметры, содержащие значения
+      else switch (*param) {                    // Parameters carrying values
         case 'm':  p->mem      = parseMem (param+1, &error); continue;
         case 'o':  p->order    = parseInt (param+1, &error); continue;
         case 'r':  p->MRMethod = parseInt (param+1, &error); continue;
       }
-      // Сюда мы попадаем, если в параметре не указано его название
-      // Если этот параметр удастся разобрать как целое число (т.е. в нём - только цифры),
-      // то присвоим его значение полю order, иначе попробуем разобрать его как mem
+      // We get here if the parameter has no name given
+      // If this parameter parses as an integer (i.e. it contains only digits),
+      // assign its value to the order field, otherwise try to parse it as mem
       int n = parseInt (param, &error);
       if (!error) p->order = n;
       else        error=0, p->mem = parseMem (param, &error);
     }
-    if (error)  {delete p; return NULL;}  // Ошибка при парсинге параметров метода
+    if (error)  {delete p; return NULL;}  // Error while parsing the method parameters
     return p;
   } else
-    return NULL;   // Это не метод ppmd
+    return NULL;   // This is not the ppmd method
 }
 
-static int PPMD_x = AddCompressionMethod (parse_PPMD);   // Зарегистрируем парсер метода PPMD
+static int PPMD_x = AddCompressionMethod (parse_PPMD);   // Register the PPMD method parser

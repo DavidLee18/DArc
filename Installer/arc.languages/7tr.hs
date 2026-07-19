@@ -16,14 +16,14 @@ main = do (my:szip:old) <- getArgs
               out  = "arc."++lang++".txt"
           readFile my >>= writeFile out.unlines.map (makeLine dict oldLang).lines
 
--- |Сообразить словарь из файла национализации 7-zip
+-- |Build a dictionary from a 7-zip localization file
 makeDict x = ("copyright", c): xs
   where l  = x .$ lines
         xs = l .$ map (split2 '=')
                .$ map (\(key,str) -> (trim key, drop 1 $dropEnd 1 $trim str))
         c = l .$drop 2 .$takeWhile ((";"==).take 1) .$map (dropWhile isSpace.drop 1) .$filter (not.null) .$joinWith "\\n"
 
--- |Сообразить словарь из старого файла национализации FreeArc
+-- |Build a dictionary from an old FreeArc localization file
 makeOldLang x = x .$ lines
                   .$ filter (\s -> length s > 4  &&  s `contains` '=')
                   .$ filter (all isDigit.take 4)
@@ -31,7 +31,7 @@ makeOldLang x = x .$ lines
                   .$ filter (("??"/=).snd)
                   .$ map    (\(a,b) -> (take 4 a, b))
 
--- |Преобразовать строку x в язык, описанный в dict
+-- |Convert the string x into the language described by dict
 makeLine dict oldLang x =
   case x.$ split2 '=' of
     (x,xs) | (n,eng) <- split2 ' ' x,
@@ -57,7 +57,7 @@ makeSubst dict n = case n of
   _      -> d (trans .$lookup n .$fromMaybe ":(")
   where d n = dict .$lookup n .$fromMaybe "??"
 
--- |Трансляция номеров сообщений из FreeArc в 7-zip
+-- |Translation of message numbers from FreeArc to 7-zip
 trans = map (split2 ' ')
         ["0050 03000102"
         ,"0066 03000103"
@@ -187,53 +187,53 @@ trans = map (split2 ' ')
 
 
 ---------------------------------------------------------------------------------------------------
----- Операции над строками ------------------------------------------------------------------------
+---- String operations ----------------------------------------------------------------------------
 ---------------------------------------------------------------------------------------------------
 
--- |Соединить список строк в единый текст с разделителем: "one, two, three"
+-- |Join a list of strings into a single text with a separator: "one, two, three"
 joinWith :: [a] -> [[a]] -> [a]
 joinWith x  =  concat . intersperse x
 
--- |Разбить строку на две подстроки, разделённые заданным символом
+-- |Split a string into two substrings separated by the given character
 split2 :: (Eq a) => a -> [a] -> ([a],[a])
 split2 c s  =  (chunk, drop 1 rest)
   where (chunk, rest) = break (==c) s
 
 contains a b = elem b a
 
--- |Удалить n элементов в конце спсика
+-- |Drop n elements at the end of a list
 dropEnd n  =  reverse . drop n . reverse
 
--- |Истина, если `s` содержит хотя бы один из элементов множества `set`
+-- |True if `s` contains at least one of the elements of the set `set`
 s `contains_one_of` set  =  any (`elem` set) s
 
--- |Последние n элементов
+-- |The last n elements
 n `lastElems` xs  =  drop (length xs - n) xs
 
--- |Заменить n'й элемент (считая с 0) в списке `xs` на `x`
+-- |Replace the n'th element (counting from 0) in the list `xs` with `x`
 replaceAt n x xs  =  hd ++ x : drop 1 tl
     where (hd,tl) = splitAt n xs
 
--- |Изменить n'й элемент (считая с 0) в списке `xs` с `x` на `f x`
+-- |Change the n'th element (counting from 0) in the list `xs` from `x` to `f x`
 updateAt n f xs  =  hd ++ f x : tl
     where (hd,x:tl) = splitAt n xs
 
--- |Заменить в списке все вхождения элемента 'from' на 'to'
+-- |Replace every occurrence of the element 'from' in the list with 'to'
 replace from to  =  map (\x -> if x==from  then to  else x)
 
--- |Если первая строка является префиксом второй - возвратить остаток второй строки, иначе Nothing
+-- |If the first string is a prefix of the second - return the remainder of the second string, otherwise Nothing
 startFrom (x:xs) (y:ys) | x==y  =  startFrom xs ys
 startFrom [] str                =  Just str
 startFrom _  _                  =  Nothing
 
--- |Проверка, что строка начинается или заканчивается заданными символами
+-- |Check that a string begins or ends with the given characters
 beginWith s = isJust . startFrom s
 endWith   s = beginWith (reverse s) . reverse
 
--- |Попытаемся удалить строку substr в начале str
+-- |Try to remove the string substr from the beginning of str
 tryToSkip substr str  =  (startFrom substr str) `defaultVal` str
 
--- |Попытаться удалить строку substr в конце str
+-- |Try to remove the string substr from the end of str
 tryToSkipAtEnd substr str = reverse (tryToSkip (reverse substr) (reverse str))
 
 -- | The 'isInfixOf' function takes two lists and returns 'True'
@@ -241,51 +241,51 @@ tryToSkipAtEnd substr str = reverse (tryToSkip (reverse substr) (reverse str))
 -- anywhere within the first.
 substr haystack needle  =  any (needle `isPrefixOf`) (tails haystack)
 
--- |Список позиций подстроки в строке
+-- |List of positions of a substring within a string
 strPositions haystack needle  =  elemIndices True$ map (needle `isPrefixOf`) (tails haystack)
 
--- |Заменить в строке `s` все вхождения `from` на `to`
+-- |Replace every occurrence of `from` with `to` in the string `s`
 replaceAll from to = repl
   where repl s      | Just remainder <- startFrom from s  =  to ++ repl remainder
         repl (c:cs)                                       =  c : repl cs
         repl []                                           =  []
 
--- |Заменить %1 на заданную строку
+-- |Replace %1 with the given string
 format msg s  =  replaceAll "%1" s msg
 
--- |Заменить %1..%9 на заданные строки
+-- |Replace %1..%9 with the given strings
 formatn msg s  =  go msg
   where go ('%':d:rest) | isDigit d = (s !! (digitToInt d-1)) ++ go rest
         go (x:rest)                 = x : go rest
         go ""                       = ""
 
--- |Заменить в строке `s` префикс `from` на `to`
+-- |Replace the prefix `from` with `to` in the string `s`
 replaceAtStart from to s =
   case startFrom from s of
     Just remainder  -> to ++ remainder
     Nothing         -> s
 
--- |Заменить в строке `s` суффикс `from` на `to`
+-- |Replace the suffix `from` with `to` in the string `s`
 replaceAtEnd from to s =
   case startFrom (reverse from) (reverse s) of
     Just remainder  -> reverse remainder ++ to
     Nothing         -> s
 
--- |Выровнять строку влево/вправо, дополнив её до заданной ширины пробелами или чем-нибудь ещё
+-- |Left/right-justify a string, padding it to the given width with spaces or something else
 right_fill  c n s  =  s ++ replicate (n-length s) c
 left_fill   c n s  =  replicate (n-length s) c ++ s
 left_justify       =  right_fill ' '
 right_justify      =  left_fill  ' '
 
--- Удалить пробелы в начале/конце строки или по обоим сторонам
+-- Remove spaces at the start/end of a string or on both sides
 trimLeft  = dropWhile (==' ')
 trimRight = reverse.trimLeft.reverse
 trim      = trimLeft.trimRight
 
--- |Перевести строку в нижний регистр
+-- |Convert a string to lower case
 strLower = map toLower
 
--- |Сравнить две строки, игнорируя регистр
+-- |Compare two strings ignoring case
 strLowerEq a b  =  strLower a == strLower b
 
 -- |Map various parts of list
@@ -306,9 +306,9 @@ mapLast f xs      =  init xs ++ [f (last xs)]
 
 
 
--- |Заменить Nothing на значение по умолчанию
+-- |Replace Nothing with a default value
 defaultVal = flip fromMaybe
 
 infixl 9  .$
-a.$b         =  b a                -- вариант $ с перевёрнутым порядком аргументов
+a.$b         =  b a                -- variant of $ with the argument order reversed
 

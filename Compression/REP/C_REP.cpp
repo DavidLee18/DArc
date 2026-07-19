@@ -7,10 +7,10 @@ extern "C" {
 #include "rep.cpp"
 
 /*-------------------------------------------------*/
-/* Реализация класса REP_METHOD                    */
+/* Implementation of the REP_METHOD class          */
 /*-------------------------------------------------*/
 
-// Конструктор, присваивающий параметрам метода сжатия значения по умолчанию
+// Constructor that assigns default values to the compression method parameters
 REP_METHOD::REP_METHOD()
 {
   BlockSize      = 64*mb;
@@ -22,7 +22,7 @@ REP_METHOD::REP_METHOD()
   Amplifier      = 1;
 }
 
-// Функция распаковки
+// Decompression function
 int REP_METHOD::decompress (CALLBACK_FUNC *callback, void *auxdata)
 {
   // Use faster function from DLL if possible
@@ -35,7 +35,7 @@ int REP_METHOD::decompress (CALLBACK_FUNC *callback, void *auxdata)
 
 #ifndef FREEARC_DECOMPRESS_ONLY
 
-// Функция упаковки
+// Compression function
 int REP_METHOD::compress (CALLBACK_FUNC *callback, void *auxdata)
 {
   // Use faster function from DLL if possible
@@ -46,7 +46,7 @@ int REP_METHOD::compress (CALLBACK_FUNC *callback, void *auxdata)
                           (BlockSize, MinCompression, MinMatchLen, Barrier, SmallestLen, HashSizeLog, Amplifier, callback, auxdata);
 }
 
-// Записать в buf[MAX_METHOD_STRLEN] строку, описывающую метод сжатия и его параметры (функция, обратная к parse_REP)
+// Write into buf[MAX_METHOD_STRLEN] a string describing the compression method and its parameters (the inverse of parse_REP)
 void REP_METHOD::ShowCompressionMethod (char *buf)
 {
     REP_METHOD defaults; char BlockSizeStr[100], MinCompressionStr[100], BarrierTempStr[100], BarrierStr[100], SmallestLenStr[100], HashSizeLogStr[100], AmplifierStr[100], MinMatchLenStr[100];
@@ -61,11 +61,11 @@ void REP_METHOD::ShowCompressionMethod (char *buf)
     sprintf (buf, "rep:%s%s%s%s%s%s%s", BlockSizeStr, MinCompressionStr, MinMatchLenStr, BarrierStr, SmallestLenStr, HashSizeLogStr, AmplifierStr);
 }
 
-// Посчитать, сколько памяти требуется для упаковки заданным методом
+// Compute how much memory is required to compress with the given method
 MemSize REP_METHOD::GetCompressionMem (void)
 {
-    // Скопировано из rep_compress
-    int L = roundup_to_power_of (mymin(SmallestLen,MinMatchLen)/2, 2);  // Размер блоков, КС которых заносится в хеш
+    // Copied from rep_compress
+    int L = roundup_to_power_of (mymin(SmallestLen,MinMatchLen)/2, 2);  // Size of the blocks whose checksums are put into the hash
     int k = sqrtb(L*2);
     int HashSize = CalcHashSize (HashSizeLog, BlockSize, k);
 
@@ -74,21 +74,21 @@ MemSize REP_METHOD::GetCompressionMem (void)
 
 #endif  // !defined (FREEARC_DECOMPRESS_ONLY)
 
-// Конструирует объект типа REP_METHOD с заданными параметрами упаковки
-// или возвращает NULL, если это другой метод сжатия или допущена ошибка в параметрах
+// Constructs a REP_METHOD object with the given compression parameters
+// or returns NULL if this is a different compression method or the parameters are invalid
 COMPRESSION_METHOD* parse_REP (char** parameters)
 {
   if (strcmp (parameters[0], "rep") == 0) {
-    // Если название метода (нулевой параметр) - "rep", то разберём остальные параметры
+    // If the method name (parameter zero) is "rep", parse the remaining parameters
 
     REP_METHOD *p = new REP_METHOD;
-    int error = 0;  // Признак того, что при разборе параметров произошла ошибка
+    int error = 0;  // Flag indicating that an error occurred while parsing the parameters
 
-    // Переберём все параметры метода (или выйдем раньше при возникновении ошибки при разборе очередного параметра)
+    // Walk through all method parameters (or bail out early if parsing one of them fails)
     while (*++parameters && !error)
     {
       char* param = *parameters;
-      switch (*param) {                    // Параметры, содержащие значения
+      switch (*param) {                    // Parameters that carry a value
         case 'b':  p->BlockSize   = parseMem (param+1, &error); continue;
         case 'l':  p->MinMatchLen = parseInt (param+1, &error); continue;
         case 'd':  p->Barrier     = parseMem (param+1, &error); continue;
@@ -96,24 +96,24 @@ COMPRESSION_METHOD* parse_REP (char** parameters)
         case 'h':  p->HashSizeLog = parseInt (param+1, &error); continue;
         case 'a':  p->Amplifier   = parseInt (param+1, &error); continue;
       }
-      // Если параметр заканчивается знаком процента. то попробуем распарсить его как "N%"
+      // If the parameter ends with a percent sign, try to parse it as "N%"
       if (last_char(param) == '%') {
         char str[100]; strcpy(str,param); last_char(str) = '\0';
         int n = parseInt (str, &error);
         if (!error) { p->MinCompression = n; continue; }
         error=0;
       }
-      // Сюда мы попадаем, если в параметре не указано его название
-      // Если этот параметр удастся разобрать как целое число (т.е. в нём - только цифры),
-      // то присвоим его значение полю MinMatchLen, иначе попробуем разобрать его как BlockSize
+      // We end up here when the parameter has no name given
+      // If this parameter can be parsed as an integer (i.e. it contains only digits),
+      // then assign its value to the MinMatchLen field, otherwise try to parse it as BlockSize
       int n = parseInt (param, &error);
       if (!error) p->MinMatchLen = n;
       else        error=0, p->BlockSize = parseMem (param, &error);
     }
-    if (error)  {delete p; return NULL;}  // Ошибка при парсинге параметров метода
+    if (error)  {delete p; return NULL;}  // Error while parsing the method parameters
     return p;
   } else
-    return NULL;   // Это не метод REP
+    return NULL;   // This is not the REP method
 }
 
-static int REP_x = AddCompressionMethod (parse_REP);   // Зарегистрируем парсер метода REP
+static int REP_x = AddCompressionMethod (parse_REP);   // Register the REP method parser

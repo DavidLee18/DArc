@@ -6,36 +6,36 @@ int lzp_decompress (MemSize BlockSize, int MinCompression, int MinMatchLen, int 
 
 #ifdef __cplusplus
 
-// Реализация стандартного интерфейса методов сжатия COMPRESSION_METHOD
+// Implementation of the standard COMPRESSION_METHOD compression method interface
 class LZP_METHOD : public COMPRESSION_METHOD
 {
 public:
-  // Параметры этого метода сжатия
-  MemSize BlockSize;        // Размер блока, обрабатываемого за раз. Совпадения ищутся только внутри этого блока
-  int     MinCompression;   // Минимальный процент сжатия. Если выходные данные больше, то вместо них будут записаны оригинальные (несжатые) данные
-  int     MinMatchLen;      // Минимальный размер совпадающей строки, который будет сжиматься
-  int     HashSizeLog;      // Логарифм размера хеша (в 4-байтовых словах). Большие значения увеличивают сжатие, но значительно замедляют его
-  int     Barrier;          // Граница, после которой допускается использовать совпадения меньшего размера (поскольку lzma/ppmd всё равно пропустит их)
-  int     SmallestLen;      // Строки какого размера допускаются если дистанция > Barrier
+  // Parameters of this compression method
+  MemSize BlockSize;        // Size of the block processed at a time. Matches are only searched for within this block
+  int     MinCompression;   // Minimum compression percentage. If the output data is larger, the original (uncompressed) data is written instead
+  int     MinMatchLen;      // Minimum length of a matching string that will be compressed
+  int     HashSizeLog;      // Logarithm of the hash size (in 4-byte words). Larger values improve compression but slow it down considerably
+  int     Barrier;          // Threshold beyond which shorter matches are allowed (since lzma/ppmd would miss them anyway)
+  int     SmallestLen;      // What string length is allowed when the distance > Barrier
 
-  // Конструктор, присваивающий параметрам метода сжатия значения по умолчанию
+  // Constructor assigning default values to the parameters of the compression method
   LZP_METHOD();
-  // Универсальный метод: даём положительный ответ на запросы "VeryFast?" для хеша<=128кб
+  // Generic method: answer "VeryFast?" queries positively for a hash <= 128 Kb
   virtual int doit (char *what, int param, void *data, CALLBACK_FUNC *callback)
   {
       if (strequ (what,"VeryFast?"))  return HashSizeLog<=15;
       else return COMPRESSION_METHOD::doit (what, param, data, callback);
   }
 
-  // Функции распаковки и упаковки
+  // Decompression and compression functions
   virtual int decompress (CALLBACK_FUNC *callback, void *auxdata);
 #ifndef FREEARC_DECOMPRESS_ONLY
   virtual int compress   (CALLBACK_FUNC *callback, void *auxdata);
 
-  // Записать в buf[MAX_METHOD_STRLEN] строку, описывающую метод сжатия и его параметры (функция, обратная к parse_LZP)
+  // Write into buf[MAX_METHOD_STRLEN] a string describing the compression method and its parameters (the inverse of parse_LZP)
   virtual void ShowCompressionMethod (char *buf);
 
-  // Получить/установить объём памяти, используемой при упаковке/распаковке, размер словаря или размер блока
+  // Get/set the amount of memory used for compression/decompression, the dictionary size or the block size
   virtual MemSize GetCompressionMem     (void)         {return BlockSize*2 + (1<<HashSizeLog)*sizeof(BYTE*);}
   virtual MemSize GetDecompressionMem   (void)         {return BlockSize*2 + (1<<HashSizeLog)*sizeof(BYTE*);}
   virtual MemSize GetDictionary         (void)         {return BlockSize;}
@@ -47,7 +47,7 @@ public:
 #endif
 };
 
-// Разборщик строки метода сжатия LZP
+// Parser for the LZP compression method string
 COMPRESSION_METHOD* parse_LZP (char** parameters);
 
 #endif  // __cplusplus

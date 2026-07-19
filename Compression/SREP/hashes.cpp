@@ -77,9 +77,9 @@ void cryptographic_prng (void *result, size_t size)
 // Hash functions ***********************************************************************************************************************************
 // //////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
-// hash содержит значение хеш-функции от последних L обработанных байт, для удобства обновления используется скользящая хеш-функция.
-// constructor(buf,L,seed) создаёт хеш, параметризованный seed, и инициализирует его первыми L байтами буфера
-// update(sub,add) выносит из хеша байт sub и добавляет байт add.
+// hash holds the value of a hash function over the last L processed bytes; a rolling hash function is used to make updating it convenient.
+// constructor(buf,L,seed) creates a hash parameterized by seed and initializes it with the first L bytes of the buffer
+// update(sub,add) removes the byte sub from the hash and adds the byte add.
 
 template <class ValueT>
 struct FakeRollingHash
@@ -90,7 +90,7 @@ struct FakeRollingHash
 };
 
 
-// Возведение в степень
+// Exponentiation
 template <class T>
 T power (T base, unsigned n)
 {

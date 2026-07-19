@@ -5,16 +5,16 @@ extern "C" {
 }
 
 /*-------------------------------------------------*/
-/* Реализация класса TORNADO_METHOD                */
+/* TORNADO_METHOD class implementation             */
 /*-------------------------------------------------*/
 
-// Конструктор, присваивающий параметрам метода сжатия значения по умолчанию
+// Constructor assigning default values to the compression method parameters
 TORNADO_METHOD::TORNADO_METHOD()
 {
   m = std_Tornado_method [default_Tornado_method];
 }
 
-// Функция распаковки
+// Decompression function
 int TORNADO_METHOD::decompress (CALLBACK_FUNC *callback, void *auxdata)
 {
   return tor_decompress (callback, auxdata);
@@ -22,32 +22,32 @@ int TORNADO_METHOD::decompress (CALLBACK_FUNC *callback, void *auxdata)
 
 #ifndef FREEARC_DECOMPRESS_ONLY
 
-// Функция упаковки
+// Compression function
 int TORNADO_METHOD::compress (CALLBACK_FUNC *callback, void *auxdata)
 {
   return tor_compress (m, callback, auxdata);
 }
 
-// Установить размер словаря и откорректировать размер хеша
+// Set the dictionary size and adjust the hash size accordingly
 void TORNADO_METHOD::SetDictionary (MemSize dict)
 {
   if (dict>0) {
     if (dict < m.buffer)
-      // При уменьшении словаря: уменьшить размер хэша, если он слишком велик для такого маленького блока
+      // When shrinking the dictionary: reduce the hash size if it's too large for such a small block
       m.hashsize  =  sizeof(PtrVal)  *  mymin (m.hashsize/sizeof(PtrVal), roundup_to_power_of(dict,2));
     else
-      // При увеличении словаря: пропорционально увеличить размер хеша
+      // When growing the dictionary: increase the hash size proportionally
       if (m.hashsize > 1*mb)
       {
-        if (m.hashsize<8*mb && m.hashsize<m.buffer/2)   m.hashsize = m.buffer/2;  // Во-первых, увеличим размер хеша, если он был подогнан под кеш Core2
-        uint h  =  mymin (uint64(dict) / (m.buffer/64) * (m.hashsize/64),  2*gb);  // Идеальный размер нового хеша
-        m.hashsize = mymin (round_to_nearest_power_of(h / m.hash_row_width, 2) * m.hash_row_width,  2*gb);  // Округлим размер хеша с учётом row_width
+        if (m.hashsize<8*mb && m.hashsize<m.buffer/2)   m.hashsize = m.buffer/2;  // First of all, enlarge the hash size if it was tuned to fit the Core2 cache
+        uint h  =  mymin (uint64(dict) / (m.buffer/64) * (m.hashsize/64),  2*gb);  // Ideal size for the new hash
+        m.hashsize = mymin (round_to_nearest_power_of(h / m.hash_row_width, 2) * m.hash_row_width,  2*gb);  // Round the hash size taking row_width into account
       }
     m.buffer = dict;
   }
 }
 
-// Записать в buf[MAX_METHOD_STRLEN] строку, описывающую метод сжатия и его параметры (функция, обратная к parse_TORNADO)
+// Write into buf[MAX_METHOD_STRLEN] a string describing the compression method and its parameters (the inverse of parse_TORNADO)
 void TORNADO_METHOD::ShowCompressionMethod (char *buf)
 {
     struct PackMethod defaults = std_Tornado_method[m.number];  char NumStr[100], BufferStr[100], HashSizeStr[100], TempHashSizeStr[100], RowStr[100], EncStr[100], ParserStr[100], StepStr[100], TableStr[100], TempAuxHashSizeStr[100], AuxHashSizeStr[100], AuxRowStr[100];
@@ -68,21 +68,21 @@ void TORNADO_METHOD::ShowCompressionMethod (char *buf)
 
 #endif  // !defined (FREEARC_DECOMPRESS_ONLY)
 
-// Конструирует объект типа TORNADO_METHOD с заданными параметрами упаковки
-// или возвращает NULL, если это другой метод сжатия или допущена ошибка в параметрах
+// Constructs a TORNADO_METHOD object with the given compression parameters
+// or returns NULL if this is a different compression method or the parameters contain an error
 COMPRESSION_METHOD* parse_TORNADO (char** parameters)
 {
   if (strcmp (parameters[0], "tor") == 0) {
-    // Если название метода (нулевой параметр) - "tor", то разберём остальные параметры
+    // If the method name (parameter zero) is "tor", parse the remaining parameters
 
     TORNADO_METHOD *p = new TORNADO_METHOD;
-    int error = 0;  // Признак того, что при разборе параметров произошла ошибка
+    int error = 0;  // Flag telling that an error occurred while parsing the parameters
 
-    // Переберём все параметры метода (или выйдем раньше при возникновении ошибки при разборе очередного параметра)
+    // Go through all method parameters (or bail out early if parsing one of them fails)
     while (*++parameters && !error)
     {
       char* param = *parameters;
-      switch (*param) {                    // Параметры, содержащие значения
+      switch (*param) {                    // Parameters that carry values
         case 'b': p->m.buffer          = parseMem (param+1, &error); continue;
         case 'h': p->m.hashsize        = parseMem (param+1, &error); continue;
         case 'l': p->m.hash_row_width  = parseInt (param+1, &error); continue;
@@ -90,23 +90,23 @@ COMPRESSION_METHOD* parse_TORNADO (char** parameters)
         case 'p': p->m.match_parser    = parseInt (param+1, &error); continue;
         case 'u': p->m.update_step     = parseInt (param+1, &error); continue;
         case 't': p->m.find_tables     = parseInt (param+1, &error); continue;
-        case 'a': switch (param[1]) {      // Параметры ah/al
+        case 'a': switch (param[1]) {      // The ah/al parameters
                     case 'h': p->m.auxhash_size       = parseMem (param+2, &error); continue;
                     case 'l': p->m.auxhash_row_width  = parseInt (param+2, &error); continue;
                   }
       }
-      // Сюда мы попадаем, если в параметре не указано его название
-      // Если этот параметр удастся разобрать как целое число (т.е. в нём - только цифры),
-      // то будем считать, что это номер пресета, иначе попробуем разобрать его как buffer
+      // We get here if the parameter doesn't state its name
+      // If this parameter can be parsed as an integer (i.e. it contains only digits),
+      // we treat it as a preset number, otherwise we try to parse it as buffer
       int n = parseInt (param, &error);
       if (!error)  p->m = std_Tornado_method[n];
       else         error=0, p->m.buffer = parseMem (param, &error);
     }
 
-    if (error)  {delete p; return NULL;}  // Ошибка при парсинге параметров метода
+    if (error)  {delete p; return NULL;}  // Error while parsing the method parameters
     return p;
   } else
-    return NULL;   // Это не метод TORNADO
+    return NULL;   // This is not the TORNADO method
 }
 
-static int TORNADO_x = AddCompressionMethod (parse_TORNADO);   // Зарегистрируем парсер метода TORNADO
+static int TORNADO_x = AddCompressionMethod (parse_TORNADO);   // Register the TORNADO method parser
