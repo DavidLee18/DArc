@@ -1,6 +1,6 @@
 ----------------------------------------------------------------------------------------------------
----- ������� ���������� ������� �������.                                                        ----
----- ���������� �� ArcExtract.hs � ArcCreate.hs (��� ���������� � ������� �������).             ----
+---- Процесс распаковки входных архивов.                                                        ----
+---- Вызывается из ArcExtract.hs и ArcCreate.hs (при обновлении и слиянии архивов).             ----
 ----------------------------------------------------------------------------------------------------
 {-# LANGUAGE CPP #-}
 {-# LANGUAGE RecursiveDo #-}
@@ -34,17 +34,17 @@ import ArhiveStructure
 import ArhiveDirectory
 
 {-# NOINLINE decompressFile #-}
--- |���������� ����� �� ������ � �������������� ����������� �������� �������������
--- � ������� ������������� ������ � ������� ������� `writer`
+-- |Распаковка файла из архива с использованием переданного процесса декомпрессора
+-- и записью распакованных данных с помощью функции `writer`
 decompressFile decompress_pipe compressed_file writer = do
-  -- �� �������� ����������� ��������/������ ����� � ����� ��� ������, ��������� ������� ��������� 0 ������ - �������� �������� ������� ;)
+  -- Не пытаться распаковать каталоги/пустые файлы и файлы без данных, поскольку ожидать получение 0 байтов - воистину дзенское занятие ;)
   when (fiSize (cfFileInfo compressed_file) > 0  &&  not (isCompressedFake compressed_file)) $ do
     sendP decompress_pipe (Just compressed_file)
     repeat_while (receiveP decompress_pipe) ((>=0) . snd) (uncurry writer)
     failOnTerminated
 
 {-# NOINLINE decompressProcess #-}
--- |�������, ��������������� ����� �� �������
+-- |Процесс, распаковывающий файлы из архивов
 decompressProcess command count_cbytes pipe = do
   cmd <- receiveP pipe
   case cmd of
@@ -62,14 +62,14 @@ decompressProcess command count_cbytes pipe = do
 
 
 {-# NOINLINE decompressBlock #-}
--- |����������� ���� �����-����
+-- |Распаковать один солид-блок
 decompressBlock command cfile state count_cbytes pipe = mdo
   cfile' <- (val cfile :: IO FileToCompress)
   let size        =  fiSize      (cfFileInfo cfile')
       pos         =  cfPos        cfile'
       block       =  cfArcBlock   cfile'
       compressor  =  blCompressor block .$ limitDecompressionMemoryUsage (opt_limit_decompression_memory command)
-      startPos  | compressor==aNO_COMPRESSION  =  pos  -- ��� -m0 �������� ������ �������� � ������ ������� � �����
+      startPos  | compressor==aNO_COMPRESSION  =  pos  -- для -m0 начинаем чтение напрямую с нужной позиции в блоке
                 | otherwise                    =  (0 :: Integer)
   (state :: IORef (Integer, Integer, Integer)) =: (startPos, pos, size)
   archiveBlockSeek block startPos
@@ -86,7 +86,7 @@ decompressBlock command cfile state count_cbytes pipe = mdo
   let writer (DataBuf buf len)  =  decompressStep cfile state pipe buf len
       writer  NoMoreData        =  return (0 :: Int)
 
-  -- �������� ���� � ������ ��������� ������������
+  -- Добавить ключ в запись алгоритма дешифрования
   keyed_compressor <- generateDecryption compressor (opt_decryption_info command)
   when (any isNothing keyed_compressor) $ do
     registerError$ BAD_PASSWORD (cmd_arcname command) (cfile'.$cfFileInfo.$storedName)
@@ -94,7 +94,7 @@ decompressBlock command cfile state count_cbytes pipe = mdo
   -- Создадим конвейер декомпрессии: последний метод цепочки читает первым, первый декодирует последним
   -- Bind `times` before let so decompressa is not in the same mdo rec-group,
   -- allowing GHC to generalise the Pipe element type over PipeElement.
-  (times :: MVar (Integer, String, [(String, Double, Integer)])) <- uiStartDeCompression "decompression"  -- ������� ��������� ��� ����� ������� ����������
+  (times :: MVar (Integer, String, [(String, Double, Integer)])) <- uiStartDeCompression "decompression"  -- Добавить ключ в запись алгоритма дешифрования
 #ifdef __MHS__
   -- MicroHs: C-side pipeline decompression.
   -- Collects compressed data into a C growing buffer, then decompresses
@@ -149,53 +149,53 @@ decompressBlock command cfile state count_cbytes pipe = mdo
       decompressa [p1,p2] = decompress1 p2 |> decompressN p1
       decompressa (p1:ps) = decompress1 (last ps) |> foldl1 (|>) (map decompressN (tail (reverse ps))) |> decompressN p1
 
-  result <- ref (0 :: Int)   -- ���������� ����, ���������� � ��������� ������ writer
+  result <- ref (0 :: Int)   -- количество байт, записанных в последнем вызове writer
   runFuncP (decompressa (map fromJust keyed_compressor)) (fail "decompressBlock::runFuncP" :: IO CompressionData) doNothing ((writer :: CompressionData -> IO Int) .>>= writeIORef result) (val result)
 #endif
-  uiFinishDeCompression times                    -- ������ � UI ������ ����� ��������
+  uiFinishDeCompression times                    -- учесть в UI чистое время операции
 
 
 {-# NOINLINE deCompressProcess #-}
--- |��������������� ������� �������������� ������ �� ������� �������� ������
--- �� ������� ������ ��������� ��������/����������
---   comprMethod - ������ ������ ������ � �����������, ���� "ppmd:o10:m48m"
---   num - ����� �������� � ������� ��������� ��������
+-- |Распаковка файла из архива с использованием переданного процесса декомпрессора
+-- Превратим список методов сжатия/шифрования в конвейер процессов распаковки
+--   comprMethod - строка метода сжатия с параметрами, типа "ppmd:o10:m48m"
+--   num - номер процесса в цепочке процессов упаковки
 deCompressProcess de_compress times comprMethod num pipe = do
-  -- ���������� �� ������� ������, ���������� �� ����������� ��������, �� ��� �� ������������ �� ��������/����������
+  -- Информация об остатке данных, полученных из предыдущего процесса, но ещё не отправленных на упаковку/распаковку
   remains <- ref$ Just (error "undefined remains:buf0", error "undefined remains:srcbuf", (0 :: Int))
   let
-    -- ����������� ������ �� srcbuf � dstbuf � ���������� ������ ������������� ������
+    -- Скопировать данные из srcbuf в dstbuf и возвратить размер скопированных данных
     copyData (prevlen :: Int) dstbuf (dstlen :: Int) buf0 srcbuf (srclen :: Int) = do
-      let len = srclen `min` dstlen    -- ���������� - ������� ������ �� ����� ���������
+      let len = srclen `min` dstlen    -- определить - сколько данных мы можем прочитать
       copyBytes dstbuf srcbuf len
       uiReadData num (i len)
       remains =: Just (buf0, srcbuf+:len, srclen-len)
       case () of
-       _ | len==srclen -> do send_backP pipe (srcbuf-:buf0+srclen)               -- ���������� ������ ������, ��������� ��� ������ �� ���� ��� �������� ����������/������������
-                             read_data (prevlen+len) (dstbuf+:len) (dstlen-len)  -- ��������� ��������� ����������
-         | len==dstlen -> return (prevlen+len)                                   -- ����� ���������� ��������
-         | otherwise   -> read_data (prevlen+len) (dstbuf+:len) (dstlen-len)    -- �������� ������� ������ ���������� ��������� ������
+       _ | len==srclen -> do send_backP pipe (srcbuf-:buf0+srclen)               -- возвратить размер буфера, поскольку все данные из него уже переданы упаковщику/распаковщику
+                             read_data (prevlen+len) (dstbuf+:len) (dstlen-len)  -- прочитать следующую инструкцию
+         | len==dstlen -> return (prevlen+len)                                   -- буфер достаточно заполнен
+         | otherwise   -> read_data (prevlen+len) (dstbuf+:len) (dstlen-len)    -- заполним остаток буфера содержимым следующих файлов
 
-    -- �������� ��������� ���������� �� ������ ������� ������ � ���������� �
+    -- Добавить ключ в запись алгоритма дешифрования
     processNextInstruction (prevlen :: Int) (dstbuf :: Ptr CChar) (dstlen :: Int) = do
       instr <- receiveP pipe
       case instr of
         DataBuf srcbuf srclen  ->  copyData prevlen dstbuf dstlen srcbuf srcbuf srclen
         NoMoreData             ->  do remains =: Nothing;  return prevlen
 
-    -- ��������� "������" ������� ������. �����, ����� ������ ����� � dstlen=0 �� ��������� ���������� ���� �� �������� ���� �� ���� ���� ������ �� ����������� ��������
-    read_data (prevlen :: Int)  -- ������� ������ ��� ���������
-              (dstbuf :: Ptr CChar)   -- �����, ���� ����� ��������� ������� ������
-              (dstlen :: Int)   -- ������ ������
-              = do     -- -> ��������� ������ ���������� ���������� ����������� ���� ��� 0, ���� ������ �����������
+    -- Процедура "чтения" входных данных. Важно, чтобы первый вызов с dstlen=0 не возвращал управление пока не поступит хотя бы один байт данных от предыдущего процесса
+    read_data (prevlen :: Int)  -- сколько данных уже прочитано
+              (dstbuf :: Ptr CChar)   -- буфер, куда нужно поместить входные данные
+              (dstlen :: Int)   -- Добавить ключ в запись алгоритма дешифрования
+              = do     -- -> процедура должна возвратить количество прочитанных байт или 0, если данные закончились
       remains' <- val remains
       case remains' of
-        Just (buf0, srcbuf, srclen)                                       -- ���� ��� ���� ������, ���������� �� ����������� ��������
-         | srclen>(0 :: Int)  ->  copyData prevlen dstbuf dstlen buf0 srcbuf srclen --  �� �������� �� ����������/������������
-         | otherwise ->  processNextInstruction prevlen dstbuf dstlen      --  ����� �������� �����
-        Nothing      ->  return prevlen                                    -- ���� solid-���� ����������, ������ ������ ���
+        Just (buf0, srcbuf, srclen)                                       -- Если ещё есть данные, полученные из предыдущего процесса
+         | srclen>(0 :: Int)  ->  copyData prevlen dstbuf dstlen buf0 srcbuf srclen --  то передать их упаковщику/распаковщику
+         | otherwise ->  processNextInstruction prevlen dstbuf dstlen      --  иначе получить новые
+        Nothing      ->  return prevlen                                    -- Этот solid-блок закончился, данных больше нет
 
-  -- ��������� ������ ������� ������ �������� ��������/���������� (���������� ���� �������, � ������� �� ����������� read_data)
+  -- Процедура чтения входных данных процесса упаковки/распаковки (вызывается лишь однажды, в отличие от рекурсивной read_data)
   let reader dstbuf dstlen  =  read_data (0 :: Int) dstbuf dstlen
 
 #ifdef __MHS__
@@ -241,83 +241,83 @@ deCompressProcess de_compress times comprMethod num pipe = do
 
 
 {-# NOINLINE deCompressProcess1 #-}
--- |deCompressProcess � ��������������� �������� ������ (����� ������ ������ ��������
--- �� ������ ��� ������� �������� � ������� ����������)
+-- |de_compress_PROCESS с параметризуемой функцией чтения (может читать данные напрямую
+-- из архива для первого процесса в цепочке распаковки)
 deCompressProcess1 de_compress reader times comprMethod num pipe = do
   total' <- ref ( 0 :: FileSize)
   time'  <- ref (-1 :: Double)
-  let -- ��������� ������ ������� ������ �������� ��������/����������
+  let -- Процедура чтения входных данных процесса упаковки/распаковки
       callback "read" buf size = reader buf size
-      -- ��������� ������ �������� ������
+      -- Добавить ключ в запись алгоритма дешифрования
       callback "write" buf size = do total' += i size
                                      uiWriteData num (i size)
                                      resendData pipe (DataBuf buf size)
-      -- "�����������" ������ ������������� ������� ������ ����� �������� � ���������� ������
-      -- ��� ����������� ������. �������� ��������� ����� int64* ptr
+      -- "Квазизапись" просто сигнализирует сколько данных будет записано в результате сжатия
+      -- уже прочитанных данных. Значение передаётся через int64* ptr
       callback "quasiwrite" ptr size = do bytes <- peek (castPtr ptr::Ptr Int64) >>==i
                                           uiQuasiWriteData num bytes
                                           return (aFREEARC_OK :: Int)
-      -- ���������� � ������ ������� ���������� ��������/����������
+      -- Превратим список методов сжатия/шифрования в конвейер процессов распаковки
       callback "time" ptr (0 :: Int) = do t <- peek (castPtr ptr::Ptr CDouble) >>==realToFrac
                                           time' =: t
                                           return (aFREEARC_OK :: Int)
-      -- ������ (����������������) callbacks
+      -- Прочие (неподдерживаемые) callbacks
       callback _ _ _ = return (aFREEARC_ERRCODE_NOT_IMPLEMENTED :: Int)
 
-  -- ���������� �������� ��� ����������
+  -- Добавить ключ в запись алгоритма дешифрования
   result <- de_compress num comprMethod callback
-  -- ����������
+  -- Добавить ключ в запись алгоритма дешифрования
   total <- val total'
   time  <- val time'
   uiDeCompressionTime times (comprMethod,time,total)
-  -- ������ � ����������, ���� ��������� ������
+  -- Выйдем с сообщением, если произошла ошибка
   unlessM (val operationTerminated) $ do
     unless (result `elem` [aFREEARC_OK, aFREEARC_ERRCODE_NO_MORE_DATA_REQUIRED]) $ do
       registerThreadError$ COMPRESSION_ERROR [compressionErrorMessage result, comprMethod]
       operationTerminated =: True
-  -- ������� ����������� ��������, ��� ������ ������ �� �����, � ���������� - ��� ������ ������ ���
+  -- Сообщим предыдущему процессу, что данные больше не нужны, а следующему - что данных больше нет
   send_backP  pipe (aFREEARC_ERRCODE_NO_MORE_DATA_REQUIRED :: Int)
   resendData pipe NoMoreData
   return ()
 
 
--- |��������� ��������� ������ ������������� ������ (writer ��� ������������).
--- ��������� (�������� �� ������ state) ��������:
---   1) block_pos - ������� ������� � ����� ������
---   2) pos       - �������, � ������� ���������� ���� (��� ��� ���������� �����)
---   3) size      - ������ ����� (��� ��� ���������� �����)
--- ��������������, ������� �� ������������ ������ �� ������ buf ������ len, �� ������:
---   1) ���������� � ������ ������ ������, �������������� ���������������� ����� (���� ����)
---   2) �������� �� ����� ������, ����������� � ����� ����� (���� ����)
---   3) �������� ��������� - ������� � ����� ���������� �� ������ ����������� ������,
---        � ������� � ������ ���������� ������ ����� - �� ������ ���������� �� ����� ������
---   4) ���� ���� ���������� ��������� - ���� ��������� �� ���� ����������� �������
---        � �������� ��������� ������� �� ����������
---   5) ���� ��������� ��������������� ���� �������� � ������ ����� ��� � ��� ��������� �����
---        �������� ����� - ���� �������� ���������� ����� ����� � ���, ����� decompressBlock
---        ������� � ���������� ����, ��� ����� (�� ������ ��� ������ �� cfile)
+-- |Обработка очередной порции распакованных данных (writer для распаковщика).
+-- Состояние (хранимое по ссылке state) содержит:
+--   1) block_pos - текущую позицию в блоке данных
+--   2) pos       - позицию, с которой начинается файл (или его оставшаяся часть)
+--   3) size      - размер файла (или его оставшейся части)
+-- Соответственно, получив от распаковщика данные по адресу buf длиной len, мы должны:
+--   1) пропустить в начале буфера данные, предшествующие распаковываемому файлу (если есть)
+--   2) передать на выход данные, относящиеся к этому файлу (если есть)
+--   3) обновить состояние - позиция в блоке изменилась на размер полученного буфера,
+--        а позиция и размер оставшихся данных файла - на размер переданных на выход данных
+--   4) если файл распакован полностью - надо известить об этом принимающую сторону
+-- Добавить ключ в запись алгоритма дешифрования
+--   5) если следующий распаковываемый файл оказался в другом блоке или в уже прошедшей части
+--        текущего блока - надо прервать распаковку этого блока с тем, чтобы decompress_block
+--        перешёл к распаковке того, что нужно (он читает эти данные из cfile)
 --
 decompressStep (cfile :: IORef FileToCompress) (state :: IORef (Integer, Integer, Integer)) pipe buf len = do
   (block_pos, pos, size) <- (val state :: IO (Integer, Integer, Integer))
-  if block_pos<(0 :: Integer)   -- ������, ��� ����������� �� ������� ��������, ��� �� ����� ������� � ������� ����� ������
-    then return (aFREEARC_ERRCODE_NO_MORE_DATA_REQUIRED :: Int)   -- ������, ��������, ���� �� �����������. ������������: fail$ "Block isn't changed!!!"
+  if block_pos<(0 :: Integer)   -- похоже, что распаковщик не обратил внимание, что мы хотим перейти к другому блоку данных
+    then return (aFREEARC_ERRCODE_NO_MORE_DATA_REQUIRED :: Int)   -- ничего, потерпим, пока он образумится. альтернатива: fail$ "Block isn't changed!!!"
     else do
-  let skip_bytes = min (pos-block_pos) (i len)   -- ���������� ������ ���������� ������ � ������ ������
-      data_start = buf +: skip_bytes             -- ������ ������, ������������� ���������������� �����
-      data_size  = min size (i len-skip_bytes)   -- ���-�� ����, ������������� ���������������� �����
-      block_end  = block_pos+i len               -- ������� � �����-�����, ��������������� ����� ����������� ������
-  when (data_size>(0 :: Integer)) $ do    -- ���� � ������ ������� ������, ������������� ���������������� �����
-    sendP pipe (data_start, i data_size)  -- �� ������� ��� ������ �� ������ ����� �����������
-    receive_backP pipe                    -- �������� ������������� ����, ��� ������ ���� ������������
+  let skip_bytes = min (pos-block_pos) (i len)   -- пропустить данные предыдущих файлов в начале буфера
+      data_start = buf +: skip_bytes             -- начало данных, принадлежащих распаковываемому файлу
+      data_size  = min size (i len-skip_bytes)   -- кол-во байт, принадлежащих распаковываемому файлу
+      block_end  = block_pos+i len               -- позиция в солид-блоке, соответствующая концу полученного буфера
+  when (data_size>(0 :: Integer)) $ do    -- если в буфере нашлись данные, принадлежащие распаковываемому файлу
+    sendP pipe (data_start, i data_size)  -- то выслать эти данные по каналу связи потребителю
+    receive_backP pipe                    -- получить подтверждение того, что данные были использованы
   state =: (block_end, pos+data_size, size-data_size)
-  if data_size<size     -- ���� ���� ��� �� ���������� ���������
-    then return len     -- �� ���������� ���������� �����
-    else do             -- ����� ��������� � ���������� ������� �� ����������
+  if data_size<size     -- если файл ещё не распакован полностью
+    then return len     -- то продолжаем распаковку блока
+    else do             -- иначе переходим к следующему заданию на распаковку
   sendP pipe (error "End of decompressed data", (aFREEARC_ERRCODE_NO_MORE_DATA_REQUIRED :: Int))
   old_block  <-  cfArcBlock ==<< val cfile
   cmd <- receiveP pipe
   case cmd of
-    Nothing -> do  -- ��� ��������� ��������, ��� ������ ������� ������ �� ����� ���������� �� ��������� � �� ������ ���� ��������
+    Nothing -> do  -- Это сообщение означает, что больше никаких файлов от треда распаковки не требуется и он должен быть завершён
       state =: (aStopDecompressThread, error "undefined state.pos", error "undefined state.size")
       cfile =: error "undefined cfile"
       return (aFREEARC_ERRCODE_NO_MORE_DATA_REQUIRED :: Int)
@@ -327,24 +327,24 @@ decompressStep (cfile :: IORef FileToCompress) (state :: IORef (Integer, Integer
       let size   =  fiSize (cfFileInfo cfile')
           pos    =  cfPos      cfile'
           block  =  cfArcBlock cfile'
-      if block/=old_block || pos<block_pos  -- ���� ����� ���� ��������� � ������ ����� ��� � ����, �� ������
-           || (pos>block_end && blCompressor block==aNO_COMPRESSION)   -- ��� �� ������������� ����, ������ � -m0, � � ��� ���� ����������� ���������� ����� ������
+      if block/=old_block || pos<block_pos  -- если новый файл находится в другом блоке или в этом, но раньше
+           || (pos>block_end && blCompressor block==aNO_COMPRESSION)   -- или мы распаковываем блок, сжатый с -m0, и у нас есть возможность пропустить часть файлов
         then do state =: (-1 :: Integer, error "undefined state.pos", error "undefined state.size")
-                return (aFREEARC_ERRCODE_NO_MORE_DATA_REQUIRED :: Int)   -- ������� ����, ��� ����� ��������� ���������� ����� �����
-        else do state =: (block_pos, pos, size)            -- ����� ���������� ���������� �����,
-                decompressStep cfile state pipe buf len   -- ��� � ��������� ���������� ������ �����
+                return (aFREEARC_ERRCODE_NO_MORE_DATA_REQUIRED :: Int)   -- признак того, что нужно завершить распаковку этого блока
+        else do state =: (block_pos, pos, size)            -- снова рассмотрим переданный буфер,
+                decompressStep cfile state pipe buf len   -- уже в контексте распаковки нового файла
 
--- |������, ��������� ���������� ������ ����� ����������
+-- |Процесс, распаковывающий файлы из архивов
 aStopDecompressThread = -99
 
 
--- |���������, ������������ ��� �������� ������ ���������� �������� ��������/����������
+-- |Структура, используемая для передачи данных следующему процессу упаковки/распаковки
 data CompressionData = DataBuf (Ptr CChar) Int
                      | NoMoreData
 
 {-# NOINLINE resendData #-}
--- |��������� �������� �������� ������ ����������/������������ ��������� ��������� � �������
-resendData pipe x@DataBuf{}   =  sendP pipe x  >>  receive_backP pipe  -- ���������� ���������� ����������� ����, ������������ �� ��������-�����������
+-- |Процедура передачи выходных данных упаковщика/распаковщика следующей процедуре в цепочке
+resendData pipe x@DataBuf{}   =  sendP pipe x  >>  receive_backP pipe  -- возвратить количество потреблённых байт, возвращаемое из процесса-потребителя
 resendData pipe x@NoMoreData  =  sendP pipe x  >>  return 0
 
 

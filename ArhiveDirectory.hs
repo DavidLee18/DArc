@@ -1,8 +1,8 @@
 ----------------------------------------------------------------------------------------------------
----- ������ � ����������� ������.                                                             ------
----- ���� ������ �������� ��������� ���:                                                      ------
-----   * ������ ��������� �������� ������ (�.�. ��������� � ������ ��������� ������)          ------
-----   * ������ � ������ ��������� ������                                                     ------
+---- Работа с оглавлением архива.                                                             ------
+---- Этот модуль содержит процедуры для:                                                      ------
+----   * чтения структуры входного архива (т.е. каталогов и других служебных блоков)          ------
+----   * записи и чтения каталогов архива                                                     ------
 ----------------------------------------------------------------------------------------------------
 module ArhiveDirectory where
 
@@ -35,53 +35,53 @@ nodates_ref = unsafePerformIO (newIORef False)
 {-# NOINLINE nodates_ref #-}
 
 ----------------------------------------------------------------------------------------------------
----- ������ ��������� �������� ������ --------------------------------------------------------------
+---- Чтение структуры входного архива --------------------------------------------------------------
 ----------------------------------------------------------------------------------------------------
 
--- |��� ����������� ���������� � ������� ������
+-- |Вся необходимая информация о входном архиве
 data ArchiveInfo = ArchiveInfo
-         { arcArchive    :: Archive           -- �������� ���� ������
-         , arcFooter     :: FooterBlock       -- FOOTER BLOCK ������
-         , arcDirectory  :: [CompressedFile]  -- �����, ������������ � ������
-         , arcDataBlocks :: [ArchiveBlock]    -- ������ �����-������
-         , arcDirBytes   :: FileSize          -- ������ ��������� ������ � ������������� ����
-         , arcDirCBytes  :: FileSize          -- ������ ��������� ������ � ����������� ����
-         , arcDataBytes  :: FileSize          -- ������ ������ � ������������� ����
-         , arcDataCBytes :: FileSize          -- ������ ������ � ����������� ����
-         , arcPhantom    :: Bool              -- True, ���� ������ �� ����� ���� ��� (������������ ��� main_archive)
+         { arcArchive    :: Archive           -- открытый файл архива
+         , arcFooter     :: FooterBlock       -- FOOTER BLOCK архива
+         , arcDirectory  :: [CompressedFile]  -- файлы, содержащиеся в архиве
+         , arcDataBlocks :: [ArchiveBlock]    -- список солид-блоков
+         , arcDirBytes   :: FileSize          -- размер служебных блоков в распакованном виде
+         , arcDirCBytes  :: FileSize          -- размер служебных блоков в упакованном виде
+         , arcDataBytes  :: FileSize          -- размер данных в распакованном виде
+         , arcDataCBytes :: FileSize          -- размер данных в упакованном виде
+         , arcPhantom    :: Bool              -- True, если архива на самом деле нет (используется для main_archive)
          }
 
--- ���������, ���������� ������ � ��������
+-- Процедуры, упрощающие работу с архивами
 arcGetPos  = archiveGetPos . arcArchive
 arcSeek    = archiveSeek   . arcArchive
 arcComment = ftComment . arcFooter
 
--- |���������, �������������� �����, ����������� ��� ���������� � ��������� ���������
--- (������� ������� ������, �������� ������� �������)
+-- |Фантомный, несуществующий архив, необходимый для применения в некоторых операциях
+-- (слияние списков файлов, закрытие входных архивов)
 phantomArc  =  (dirlessArchive (error "phantomArc:arcArchive") (FooterBlock [] False "" "" 0)) {arcPhantom = True}
 
--- |����� ��� �������� ������ - ������������ ������ ��� ������ writeSFX �� runArchiveRecovery
+-- |Архив без каталога файлов - используется только для вызова writeSFX из runArchiveRecovery
 dirlessArchive archive footer = ArchiveInfo archive footer [] [] (error "emptyArchive:arcDirBytes") (error "emptyArchive:arcDirCBytes") (error "emptyArchive:arcDataBytes") (error "emptyArchive:arcDataCBytes") False
 
--- |������� �������� ����, ���� ������ ��� �� ��������� �����
+-- |Закрыть архивный файл, если только это не фантомный архив
 arcClose arc  =  unless (arcPhantom arc) $  do archiveClose (arcArchive arc)
 
 
 {-# NOINLINE archiveReadInfo #-}
--- |��������� ������� ������
-archiveReadInfo command               -- ����������� ������� �� ����� � �������
-                arc_basedir           -- ������� ������� ������ ������ ("" ��� ������ ����������)
-                disk_basedir          -- ������� ������� �� ����� ("" ��� ������ ����������/��������)
-                filter_f              -- �������� ��� ���������� ������ ������ � ������
-                processFooterInfo     -- ���������, ����������� �� ������ �� FOOTER_BLOCK
-                arcname = do          -- ��� �����, ����������� �����
-  -- ��������� FOOTER_BLOCK � ��������� �� ��� ���������� ���������
+-- |Вся необходимая информация о входном архиве
+archiveReadInfo command               -- выполняемая команда со всеми её опциями
+                arc_basedir           -- базовый каталог внутри архива ("" для команд добавления)
+                disk_basedir          -- базовый каталог на диске ("" для команд добавления/листинга)
+                filter_f              -- предикат для фильтрации списка файлов в архиве
+                processFooterInfo     -- процедура, выполняемая на данных из FOOTER_BLOCK
+                arcname = do          -- имя файла, содержащего архив
+  -- Прочитать FOOTER_BLOCK и выполнить на нём переданную процедуру
   (archive,footer) <- if opt_broken_archive command /= "-"
                          then findBlocksInBrokenArchive arcname
                          else archiveReadFooter command arcname
   processFooterInfo archive footer
 
-  -- ��������� ���������� ������ ��������, ��������� � FOOTER_BLOCK
+  -- Прочитаем содержимое блоков каталога, описанных в FOOTER_BLOCK
   let dir_blocks  =  filter ((DIR_BLOCK ==) . blType) (ftBlocks footer)
   files  <-  foreach dir_blocks $ \block -> do
     withPool $ \pool -> do
@@ -91,7 +91,7 @@ archiveReadInfo command               -- ����������� ��
   let data_blocks = concatMap fst files
       directory   = concatMap snd files
 
-  -- ������� � arcinfo ���������� � ������ ������ � ������
+  -- Добавим в arcinfo информацию о списке файлов в архиве
   return ArchiveInfo { arcArchive    = archive
                      , arcFooter     = footer
                      , arcDirectory  = directory
@@ -105,117 +105,117 @@ archiveReadInfo command               -- ����������� ��
 
 
 {-# NOINLINE archiveReadFooter #-}
--- |��������� ��������� ���� ������
-archiveReadFooter command               -- ����������� ������� �� ����� � �������
-                  arcname = do          -- ��� �����, ����������� �����
+-- |Вся необходимая информация о входном архиве
+archiveReadFooter command               -- выполняемая команда со всеми её опциями
+                  arcname = do          -- имя файла, содержащего архив
   archive <- archiveOpen arcname
   arcsize <- archiveGetSize archive
-  let scan_bytes = min aSCAN_MAX arcsize  -- ��������� 4096 ���� � ����� ������, ���� ������� ������� :)
+  let scan_bytes = min aSCAN_MAX arcsize  -- сканируем 4096 байт в конце архива, если столько найдётся :)
 
   withPool $ \pool -> do
-    -- ��������� 4096 ���� � ����� ������, ������� ������ ��������� ���������� FOOTER_BLOCK'�
+    -- Прочитаем 4096 байт в конце архива, которые должны содержать дескриптор FOOTER_BLOCK'а
     buf <- archiveMallocReadBuf pool archive (arcsize-scan_bytes) (i scan_bytes)
-    -- ����� � ���������� ��������� ���������� ������ (��� ������ ���� ���������� FOOTER_BLOCK'�)
+    -- Найдём и декодируем последний дескриптор архива (это должен быть дескриптор FOOTER_BLOCK'а)
     res <- archiveFindBlockDescriptor archive (arcsize-scan_bytes) buf (i scan_bytes) (i scan_bytes)
     case res of
       Left  msg -> registerError msg
       Right footer_descriptor -> do
-              -- ��������� FOOTER_BLOCK, ����������� ���� ������������, ������� � ����� � ���������� ��� ����������
+              -- Прочитаем FOOTER_BLOCK, описываемый этим дескриптором, целиком в буфер и декодируем его содержимое
               footer <- archiveReadFooterBlock footer_descriptor (opt_decryption_info command)
               return (archive,footer)
 
 
 ----------------------------------------------------------------------------------------------------
----- ������ ����� �������� -------------------------------------------------------------------------
+---- Запись блока каталога -------------------------------------------------------------------------
 ----------------------------------------------------------------------------------------------------
 
 {-# NOINLINE archiveWriteDir #-}
--- |������������ `dirdata` � ������� ���������� ������ �� ���������� ��������� � ������� `sendBuf`
-archiveWriteDir dirdata     -- ������ ��� (block :: ArchiveBlock, directory :: [FileWithCRC])
-                arcpos      -- ������� � ������, ��� ���������� ���� �������
-                (receiveBuf -- "(buf,size) <- receiveBuf" �������� ��� ������ ��������� ����� �������� `size`
-                ,sendBuf)   -- "sendBuf buf size len" �������� �������������� � ������ ������ �� �����
+-- |Закодировать `dirdata` и послать полученные данные на дальнейшую обработку с помощью `sendBuf`
+archiveWriteDir dirdata     -- список пар (block :: ArchiveBlock, directory :: [FileWithCRC])
+                arcpos      -- позиция в архиве, где начинается этот каталог
+                (receiveBuf -- "(buf,size) <- receiveBuf" получает для работы очередной буфер размером `size`
+                ,sendBuf)   -- "sendBuf buf size len" посылает сформированные в буфере данные на выход
                 = do
   debugLog "\n  Writing directory"
   let blocks      :: [ArchiveBlock]
-      blocks       = map fst dirdata            -- ������ �����-������, �������� � ������ �������
+      blocks       = map fst dirdata            -- список солид-блоков, попавших в данный каталог
       crcfilelist  :: [FileWithCRC]
-      crcfilelist  = concatMap snd dirdata      -- ������������ ������ ������ - � ��� �������, � ����� ��� ����������� � ������!
+      crcfilelist  = concatMap snd dirdata      -- объединённый список файлов - в том порядке, в каком они расположены в блоках!
       filelist     :: [FileInfo]
-      filelist     = map fwFileInfo crcfilelist -- ���������� � ����� ������
+      filelist     = map fwFileInfo crcfilelist -- информация о самих файлах
 
-  -- 0. C������� �������� �����, ������������ ��� ������� � ������� ����� ������� `receiveBuf` � `sendBuf`
+  -- 0. Cоздадим выходной буфер, использующий для общения с внешним миром функции `receiveBuf` и `sendBuf`
   stream <- ByteStream.create receiveBuf sendBuf (return ())
-  let write         :: (ByteStream.BufferData a) =>  a -> IO ()   -- shortcuts ��� ������� ������ � �����
+  let write         :: (ByteStream.BufferData a) =>  a -> IO ()   -- shortcuts для функций записи в буфер
       write          =  ByteStream.write          stream
       writeLength    :: [a] -> IO ()
       writeLength xs =  ByteStream.writeInteger   stream (length xs)
       writeList     :: (ByteStream.BufferData a) =>  [a] -> IO ()
       writeList      =  ByteStream.writeList      stream
       writeIntegers  =  mapM_ (ByteStream.writeInteger stream)
-      writeTagged     tag x   =  write tag >> write x     -- ������ � ������ - ��� ������������ �����
+      writeTagged     tag x   =  write tag >> write x     -- запись с тегами - для опциональных полей
       writeTaggedList tag xs  =  write tag >> writeList xs
 
-  -- 1. ���������� �������� ������ ������ � ���-�� ������ � ������ �� ���
-  writeLength dirdata               -- ���-�� ������.    ��� ������� ����� ������������:
-  mapM_ (writeLength . snd) dirdata                        -- ���-�� ������
+  -- 1. Закодируем описания блоков архива и кол-во файлов в каждом из них
+  writeLength dirdata               -- кол-во блоков.    Для каждого блока записывается:
+  mapM_ (writeLength . snd) dirdata                        -- кол-во файлов
   let compressors   = map blCompressor blocks  :: [Compressor]
       encodedPositions = map (blEncodePosRelativeTo arcpos) blocks
       compSizes        = map blCompSize blocks  :: [FileSize]
-  writeList compressors   -- ����� ������
-  writeList encodedPositions   -- ������������� ������� ����� � ����� ������
-  writeList compSizes   -- ������ ����� � ����������� ����
+  writeList compressors   -- метод сжатия
+  writeList encodedPositions   -- открытый файл архива
+  writeList compSizes   -- размеры файлов
 
-  -- 2. ������� � ����� ������ ��� ���������
-    -- ������� ������ ��� ��������� � ������ ���������, ��������������� ������ � filelist
+  -- 2. Запишем в архив список имён каталогов
+    -- Получим список имён каталогов и номера каталогов, соответствующие файлам в filelist
   (n, dirnames, dir_numbers)  <-  enumDirectories filelist
   debugLog$ "  Found "++show n++" directory names"
-  writeLength dirnames  -- ��������, ��� ������ �������� � Compressor==[String]
+  writeLength dirnames  -- временно, для обхода проблемы с Compressor==[String]
   -- Always write directory names with '/' separator for cross-OS interop (matches FA 0.67).
   writeList   (map unixifyPath dirnames)
 
-  -- 3. ���������� �������� ������ ���������� ���� � CompressedFile/FileInfo
-    -- to do: �������� RLE-����������� �����?
-  writeList$ map (fpBasename . fiStoredName)  filelist     -- ����� ������
-  writeIntegers                             dir_numbers  -- ������ ���������
-  writeList$ map fiSize                     filelist     -- ������� ������
+  -- 3. Закодируем отдельно каждое оставшееся поле в CompressedFile/FileInfo
+    -- to do: добавить RLE-кодирование полей?
+  writeList$ map (fpBasename . fiStoredName)  filelist     -- имена файлов
+  writeIntegers                             dir_numbers  -- номера каталогов
+  writeList$ map fiSize                     filelist     -- размеры файлов
   nodates <- val nodates_ref
-  writeList$ map (if nodates then const aMINIMAL_POSSIBLE_DATETIME else fiTime) filelist     -- ������� ��������
-  writeList$ map fiIsDir                    filelist     -- �������� ��������
-  -- cfArcBlock � cfPos ���������� ������, ���� ���������� �� ���� ���� �����
+  writeList$ map (if nodates then const aMINIMAL_POSSIBLE_DATETIME else fiTime) filelist     -- открытый файл архива
+  writeList$ map fiIsDir                    filelist     -- признаки каталога
+  -- cfArcBlock и cfPos кодируются неявно, путём сортировки по этим двум полям
   writeList$ map fwCRC                      crcfilelist  -- CRC
 
-  -- 4. ������������ ����, �������������� ������ ������, � ����� - ��� ��������� ������������ �����
-  write aTAG_END  -- ���� ������������ ����� ���, ��� ������� ������ ����� �������� ��� �� ���������
+  -- 4. Опциональные поля, префиксируются своими тегами, в конце - тег окончания опциональных полей
+  write aTAG_END  -- пока опциональных полей нет, нам остаётся только сразу записать тег их окончания
 
-  -- 5. �����! :)
+  -- 5. Вотысё! :)
   ByteStream.closeOut stream
-  -- ��� �������� � ������ Arc.exe!!! - when (length filelist >= 10000) performGC  -- ������ �����, ���� ���� �������� ���������� ����� ������
+  -- Это приводит к вылету Arc.exe!!! - when (length filelist >= 10000) performGC  -- Соберём мусор, если блок содержит достаточно много файлов
   debugLog "  Directory written"
 
 
--- �������� �� ������ ������ - ������ ���������� ��������� + ����� �������� ��� ������� ����� � ������
+-- Создание по списку файлов - списка уникальных каталогов + номер каталога для каждого файла в списке
 enumDirectories filelist = do
-  -- ��� ������� Stored ����� ����� �� ���� ��� � ��� �� ��������� � ���-������� `table`.
-  -- ���� ��� �������, �� �� �������� �� ���-������� ����� ����� ��������,
-  -- � ���� ��� - ��������� ��� ��� � ���-������� � ��������� ���������� �������, �������
-  -- ��������� ����� ���������� n, � ��������� ��� �������� � ������ `dirnames`.
-  -- ����� �������, ���-������� `table` ���������� ����� ��������� � �� ������
-  -- � ����������� ������ ���� ��������� `dirnames`.
-  table <- Hash.new (==) fpHash                     -- ���������� �������� � �� ������
+  -- Для каждого Stored имени файла мы ищем имя с тем же каталогом в хеш-таблице `table`.
+  -- Если оно найдено, то мы получаем из хеш-таблицы номер этого каталога,
+  -- а если нет - вставляем это имя в хеш-таблицу с очередным порядковым номером, которые
+  -- генерятся через переменную n, и добавляем имя каталога в список `dirnames`.
+  -- Таким образом, хеш-таблица `table` отображает имена каталогов в их номера
+  -- в создаваемом списке всех каталогов `dirnames`.
+  table <- Hash.new (==) fpHash                     -- отображает каталоги в их номера
 
-  -- ���������� ��� ������ ������ ���������� ���������� ��� ���������, �� ������ ������,
-  -- � ����� �������� ��� ������� ����� (��������, [0,1,0,0,2] ��� a\1 b\1 a\2 a\3 c\1)
+  -- Возвратить для списка файлов количество уникальных имён каталогов, их полный список,
+  -- и номер каталога для каждого файла (например, [0,1,0,0,2] для a\1 b\1 a\2 a\3 c\1)
   let go []              dirnames dir_numbers n = return (n, reverse dirnames, reverse dir_numbers)
       go (fileinfo:rest) dirnames dir_numbers n = do
-        let storedName  =  fiStoredName fileinfo    -- ���, ��������������� ��� ���������� � ������
-            dirname     =  fpParent storedName      -- �������, � �������� ����������� ����
-        x <- Hash.lookup table dirname              -- ���� �� ��� � ���� ���� �������?
-        case x of                                   -- ���� ���, ��
-          Nothing -> do Hash.insert table dirname n -- ������� � ��� ����� ��������
-                        -- �������� ��� �������� � ������ ��� ���������,
-                        -- ����� �������� � ������ ������� �������� ��� ������� �����,
-                        -- � ���������������� ������� ���������
+        let storedName  =  fiStoredName fileinfo    -- имя, предназначенное для сохранения в архиве
+            dirname     =  fpParent storedName      -- каталог, к которому принадлежит файл
+        x <- Hash.lookup table dirname              -- есть ли уже в хеше этот каталог?
+        case x of                                   -- Если нет, то
+          Nothing -> do Hash.insert table dirname n -- занести в хеш номер каталога
+                        -- Процедуры, упрощающие работу с архивами
+                        -- Процедуры, упрощающие работу с архивами
+                        -- и инкрементировать счётчик каталогов
                         go rest (fpDirectory storedName:dirnames) (n:dir_numbers) $! n+1
           Just x  -> do go rest dirnames (x:dir_numbers) n
   --
@@ -223,24 +223,24 @@ enumDirectories filelist = do
 
 
 ----------------------------------------------------------------------------------------------------
----- ������ ����� �������� -------------------------------------------------------------------------
+---- Запись блока каталога -------------------------------------------------------------------------
 ----------------------------------------------------------------------------------------------------
 
 {-# NOINLINE archiveReadDir #-}
--- |��������� �������, ���������� �������� `archiveWriteDir`
-archiveReadDir arc_basedir   -- ������� ������� � ������
-               disk_basedir  -- ������� ������� �� �����
-               ep            -- ��������� �������� �� ���/��������� ���������� ����
-               archive       -- ���� ������
-               arcpos        -- ������� � ������, ��� ���������� ���� �������
-               filter_f      -- �������� ���������� ������
-               receiveBuf    -- "(buf,size) <- receiveBuf" �������� ��� ������ ��������� ����� �������� `size`
+-- |Прочитать каталог, записанный функцией `archiveWriteDir`
+archiveReadDir arc_basedir   -- базовый каталог в архиве
+               disk_basedir  -- базовый каталог на диске
+               ep            -- исключить каталоги из имён/разрешить абсолютные пути
+               archive       -- файл архива
+               arcpos        -- позиция в архиве, где начинается этот каталог
+               filter_f      -- предикат для фильтрации списка файлов в архиве
+               receiveBuf    -- "(buf,size) <- receiveBuf" получает для работы очередной буфер размером `size`
                = do
   debugLog "  Decoding directory"
 
-  -- 0. C������� ������� �����, ������������ ��� ������� � ������� ����� ������� `receiveBuf`
+  -- 0. Cоздадим входной буфер, использующий для общения с внешним миром функцию `receiveBuf`
   stream <- ByteStream.open receiveBuf (\a b c->return ()) (return ())
-  let read         :: (ByteStream.BufferData a) =>  IO a   -- shortcuts ��� ������� ������ �� ������
+  let read         :: (ByteStream.BufferData a) =>  IO a   -- shortcuts для функций чтения из буфера
       read           = ByteStream.read stream
       readList     :: (ByteStream.BufferData a) =>  Int -> IO [a]
       readList       = ByteStream.readList stream
@@ -248,63 +248,63 @@ archiveReadDir arc_basedir   -- ������� ������� � 
       readLength     = readInteger
       readIntegers n = replicateM n readInteger
 
-  -- 1. ��������� �������� ������ ������
-  num_of_blocks <- readLength                     -- ���-�� ������
-  -- ��� ������� ����� ���������:
-  num_of_files  <- readIntegers num_of_blocks     -- ���-�� ������
-  blCompressors <- readList     num_of_blocks     -- ����� ������
-  blOffsets     <- readList     num_of_blocks     -- ������������� ������� ����� � ����� ������
-  blCompSizes   <- readList     num_of_blocks     -- ������ ����� � ����������� ����
+  -- 1. Прочитаем описания блоков архива
+  num_of_blocks <- readLength                     -- кол-во блоков
+  -- Для каждого блока прочитаем:
+  num_of_files  <- readIntegers num_of_blocks     -- кол-во файлов
+  blCompressors <- readList     num_of_blocks     -- метод сжатия
+  blOffsets     <- readList     num_of_blocks     -- относительную позицию блока в файле архива
+  blCompSizes   <- readList     num_of_blocks     -- размер блока в упакованном виде
 
-  -- 2. ��������� ����� ���������
-  total_dirs    <-  readLength                    -- ������� ����� ��� ��������� ��������� � ���� ���������� ������
+  -- 2. Запишем в архив список имён каталогов
+  total_dirs    <-  readLength                    -- Сколько всего имён каталогов сохранено в этом оглавлении архива
   -- Sanitize directory names: strip ".."/"." (prevent path traversal on extraction),
   -- and convert separators to the current OS convention. Matches FA 0.67.
   storedName    <-  readList total_dirs >>== map (remove_unsafe_dirs . make_OS_native_path) >>== toP
 
-  -- 3. ��������� ������ ������ ��� ������� ���� � CompressedFile/FileInfo
-  let total_files = sum num_of_files              -- ��������� ���-�� ������ � ��������
-  names         <- readList     total_files       -- ����� ������ (��� ����� ��������)
-  dir_numbers   <- readIntegers total_files       -- ����� �������� ��� ������� �� ������
-  sizes         <- readList     total_files       -- ������� ������
-  times         <- readList     total_files       -- ����� ����������� ������
-  dir_flags     <- readList     total_files       -- ��������� ����� "��� �������?"
-  crcs          <- readList     total_files       -- CRC ������
+  -- 3. Закодируем отдельно каждое оставшееся поле в CompressedFile/FileInfo
+  let total_files = sum num_of_files              -- суммарное кол-во файлов в каталоге
+  names         <- readList     total_files       -- Имена файлов (без имени каталога)
+  dir_numbers   <- readIntegers total_files       -- Номер каталога для каждого из файлов
+  sizes         <- readList     total_files       -- Размеры файлов
+  times         <- readList     total_files       -- Время модификации файлов
+  dir_flags     <- readList     total_files       -- Булевские флаги "это каталог?"
+  crcs          <- readList     total_files       -- CRC файлов
 
-  -- 4. �������������� ����, �������������� ������ ������, � ����� - ��� ��������� �������������� �����
+  -- 4. Опциональные поля, префиксируются своими тегами, в конце - тег окончания опциональных полей
 {-repeat_while (read) (/=aTAG_END) $ \tag -> do
     (isMandatory::Bool) <- read
     when isMandatory $ do
       registerError$ GENERAL_ERROR ("can't skip mandatory field TAG="++show tag++" in archive directory")
-    readInteger >>= ByteStream.skipBytes stream   -- ���������� ������ ����� ����
+    readInteger >>= ByteStream.skipBytes stream   -- пропустить данные этого поля
     return ()
 -}
-  -- 5. �����! :)
+  -- 5. Вотысё! :)
   ByteStream.closeIn stream
   debugLog "  Directory decoded"
 
   ------------------------------------------------------------------------------------------------
-  -- ������ �������� ������� �� ����������� ������ -----------------------------------------------
+  -- Теперь построим каталог по прочитанным данным -----------------------------------------------
   ------------------------------------------------------------------------------------------------
-  -- �������, ���������� ���������� � ���������
+  -- Процедуры, упрощающие работу с архивами
   let drop_arc_basedir  = if arc_basedir>""  then drop (length arc_basedir + 1)  else id
-      make_disk_name    = case ep of         -- ���������� ��� � ������ � ��� �� �����
-                            0 -> const ""    --   ������� "e"  -> ������������ ������ ������� ���
-                            3 -> id          --   ����� -ep3   -> ������������ ������ ���
-                            _ -> stripRoot   --   �� ��������� -> �������� "d:\" �����
-      -- �������, ������������ ����� �������� � ��� Filtered/Disk name (������ ��� Stored name �������� ����� ��� ������)
+      make_disk_name    = case ep of         -- Превращает имя в архиве в имя на диске
+                            0 -> const ""    --   команда "e"  -> использовать только базовое имя
+                            3 -> id          --   опция -ep3   -> использовать полное имя
+                            _ -> stripRoot   --   по умолчанию -> обрезать "d:\" часть
+      -- Массивы, отображающие номер каталога в его Filtered/Disk name (массив для Stored name построен сразу при чтении)
       filteredName      = fmap drop_arc_basedir                    storedName
       diskName          = fmap ((disk_basedir </>) . make_disk_name) filteredName
-      -- �������, ������������ ����� �������� � ��������� PackedFilePath
+      -- Массивы, отображающие номер каталога в структуру PackedFilePath
       storedInfo        = fmap packParentDirPath storedName
       filteredInfo      = fmap packParentDirPath filteredName
       diskInfo          = fmap packParentDirPath diskName
-      -- ��� ������� �������� - ��������� ����: ���������� �� ��� ��� � �������� �������� ("-ap")
+      -- Для каждого каталога - булевский флаг: начинается ли его имя с базового каталога ("-ap")
       dirIncludedArray  = fmap (arc_basedir `isParentDirOf`) storedName
       dirIncluded       = if arc_basedir==""  then const True  else (dirIncludedArray!:)
 
-  -- ������ �������� Maybe FileInfo (Nothing ��� ��� ������, ������� �� �����������
-  -- �������� �������� ("-ap") ��� �� �������� ����� �������� ���������� ������)
+  -- Список структур Maybe FileInfo (Nothing для тех файлов, которые не принадлежат
+  -- базовому каталогу ("-ap") или не проходят через предикат фильтрации файлов)
   let make_fi dir name size time dir_flag =
         if dirIncluded dir && filter_f fileinfo  then Just fileinfo  else Nothing
 
@@ -324,12 +324,12 @@ archiveReadDir arc_basedir   -- ������� ������� � 
               filtered = filteredInfo!:dir
               disk     = diskInfo    !:dir
 
-  -- �������� ��������� FileInfo �� ��������� �����, ����������� �� ������
+  -- Составим структуры FileInfo из отдельных полей, прочитанных из архива
   let fileinfos = zipWith5 make_fi dir_numbers names sizes times dir_flags
 
-  -- �������������� ����������� ������ ������.
-  -- ������� �������� ������ ���� ������ �� ���������, ����������� � ��������� ������.
-  -- ��� �������� ��� ��������� ��������� ����� ������ � ������ �� ������
+  -- Реконструируем дескрипторы блоков данных.
+  -- Сначала разобьём список длин файлов на подсписки, относящиеся к отдельным блокам.
+  -- и инкрементировать счётчик каталогов
   let filesizes = splitByLens num_of_files sizes
   let blocks    = map (tupleToDataBlock archive arcpos) $
                     zip5 blCompressors
@@ -338,31 +338,31 @@ archiveReadDir arc_basedir   -- ������� ������� � 
                          blCompSizes
                          num_of_files
 
-  -- ��������� ������ �� ����������� ������ ������, ����� ������� �� ��� ����� :)
+  -- Размножим ссылки на дескрипторы блоков данных, чтобы хватило на все файлы :)
   let arcblocks = concat [ replicate files_in_block blockDescriptor
                            | (files_in_block, blockDescriptor) <- zip num_of_files blocks
                          ]
 
-  -- ������� ����� � ����� ����� ��������� ����� ���������� ������ � ���� �����.
-  -- filesizes - ������ ������� ���� ������, ����������� � ������� �����.
-  -- ��� ����, ����� �������� �� ���� ������� ����� ������ �����, �� ������ �������
-  -- "����������� �����". ��������� [0] � ������ ������� ������ �������,
-  -- ����� �������� ������� ����� �������, � �� ����� ��� :)
-  -- ����� ������, ����  num_of_files = [1..4]
-  --                  �  sizes = [1..10]
-  --               ��  filesizes = [[1],[2,3],[4,5,6],[7,8, 9,10]]
-  --                �  positions = [ 0,  0,2,  0,4,9,  0,7,15,24]
+  -- Реконструируем дескрипторы блоков данных.
+  -- filesizes - список списков длин файлов, относящихся к каждому блоку.
+  -- Возвратить для списка файлов количество уникальных имён каталогов, их полный список,
+  -- "сканирующую сумму". Добавляем [0] в начало каждого списка позиций,
+  -- Размножим ссылки на дескрипторы блоков данных, чтобы хватило на все файлы :)
+  -- Одним словом, если  num_of_files = [1..4]
+  --                  и  sizes = [1..10]
+  --               то  filesizes = [[1],[2,3],[4,5,6],[7,8, 9,10]]
+  --                и  positions = [ 0,  0,2,  0,4,9,  0,7,15,24]
   let positions = concatMap scanningSum filesizes
       scanningSum [] = []
       scanningSum xs = 0 : scanl1 (+) (init xs)
 
-  -- ������ � ��� ������ ��� ���������� ��� �������� ������ ������, ������������ � ���� ��������
+  -- Процедуры, упрощающие работу с архивами
   let files = [ CompressedFile fileinfo arcblock pos crc
               | (Just fileinfo, arcblock, pos, crc)  <-  zip4 fileinfos arcblocks positions crcs
               ]
 
-  return $! evalList files               -- �������� ��������� ������ ������ � ����������� ���������
-  when (total_files >= 10000) performGC  -- ������ �����, ���� ���� �������� ���������� ����� ������
+  return $! evalList files               -- Переведём созданный список файлов в вычисленное состояние
+  when (total_files >= 10000) performGC  -- Соберём мусор, если блок содержит достаточно много файлов
   debugLog "  Directory built"
 
   return (blocks, files)
@@ -372,7 +372,7 @@ archiveReadDir arc_basedir   -- ������� ������� � 
 
 
 ----------------------------------------------------------------------------------------------------
----- ������������� ���� (��� � �����, ��� �� ��� ������������� ������) -----------------------------
+---- Упаковываемый файл (или с диска, или из уже существующего архива) -----------------------------
 ----------------------------------------------------------------------------------------------------
 
 -- |File to compress: either file on disk or compressed file in existing archive
@@ -391,20 +391,20 @@ data FileToCompress
 type CompressedFile = FileToCompress
 
 
--- |�������� ����, ��� ������������� ���� - �� ��� ������������� ������, � �� � �����
+-- |Проверка того, что упаковываемый файл - из уже существующего архива, а не с диска
 isCompressedFile CompressedFile{} = True
 isCompressedFile DiskFile{}       = False
 
--- |�������� ������, �������������� ��� ������� (�������) �����
+-- |Алгоритм сжатия, использованный для данного (сжатого) файла
 cfCompressor = blCompressor . cfArcBlock
 
--- |��� ������ ����, ������������ �������� ����� ����������?
+-- |Это сжатый файл, использующий фейковый метод компрессии?
 isCompressedFake file  =  isCompressedFile file  &&  isFakeCompressor (cfCompressor file)
 
--- |��� ���������������� ����?
+-- |Это запаролированный файл?
 cfIsEncrypted = blIsEncrypted . cfArcBlock
 
--- |���������� ��� ����� �� ������, ���� ��� �� ����������� - ��������� �� �����
+-- |Определить тип файла по группе, если она не проставлена - вычислить по имени
 cfType command file | group/=fiUndefinedGroup  =  opt_group2type command group
                     | otherwise                =  opt_find_type command fi
                                                     where fi    = cfFileInfo file
@@ -412,7 +412,7 @@ cfType command file | group/=fiUndefinedGroup  =  opt_group2type command group
 
 
 ----------------------------------------------------------------------------------------------------
----- ���� � ��� CRC - ������������ ��� �������� ����������� �������� -------------------------------
+---- Файл и его CRC - используется для передачи результатов упаковки -------------------------------
 ----------------------------------------------------------------------------------------------------
 
 -- |File and it's CRC
@@ -423,7 +423,7 @@ data FileWithCRC = FileWithCRC { fwCRC  :: {-# UNPACK #-} !CRC
 
 data FileType = FILE_ON_DISK | FILE_IN_ARCHIVE  deriving (Eq)
 
--- |�������� ����, ��� ����������� ���� - �� ��������� ������, � �� � �����
+-- |Проверка того, что упаковываемый файл - из уже существующего архива, а не с диска
 isFileOnDisk fw  =  fwType fw == FILE_ON_DISK
 
 -- |Convert FileToCompress to FileWithCRC

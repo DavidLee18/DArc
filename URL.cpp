@@ -48,7 +48,7 @@ URL *url_open (char *_url)
     url->curpos   = 0;
     url->hURL     = NULL;
 
-    // �������������� WinInet
+    // инициализируем WinInet
     hInternet = hInternet? hInternet :
          ::InternetOpenA(
              "FreeArc/0.40",
@@ -57,7 +57,7 @@ URL *url_open (char *_url)
              0);
     if (!hInternet)  {url_close(url); return NULL;}
 
-    // True, ���� ��� ftp url
+    // True, если это ftp url
     url->isFTP = start_with (_url, "ftp://");
 
     if (url->isFTP) {
@@ -81,7 +81,7 @@ URL *url_open (char *_url)
             portnum = atoi(port);
         }
 
-        // ������ FTP ������
+        // Создаём FTP сессию
         url->hConnect =
             ::InternetConnectA(
                 hInternet,
@@ -209,14 +209,14 @@ int url_readp (URL *url, int64 offset, char *buf, int size)
     }
     if (!url->hURL)  return -1;
 
-    int bytes;  // ������� ���� ��� ���������
+    int bytes;  // сколько байт уже прочитано
     for (bytes=0; bytes<size;)
     {
         DWORD dwBytesRead;
-        // ������ ������
+        // читаем данные
         ::InternetReadFile (url->hURL,  buf, size-bytes,  &dwBytesRead);
 
-        // ����� �� ����� ��� ������ ��� ����������
+        // читаем данные
         if (dwBytesRead == 0)
             break;
 
