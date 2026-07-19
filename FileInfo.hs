@@ -7,6 +7,7 @@ module FileInfo where
 import Prelude hiding (catch)
 import Control.Exception
 import Control.Monad
+import Data.Bits
 import Data.Char
 import Data.IORef
 import qualified Data.Map.Strict as Hash
@@ -115,7 +116,18 @@ packParentDirPath dir  =
 -- |Hash of the full file name (without directory separators!).
 -- To speed up its computation it uses `dirhash` - the hash of the directory name containing the file,
 -- and `basename` - the file name without the directory name
-filenameHash {-dirhash basename-}  =  foldl (\h c -> h*37+i(ord c))
+-- The accumulator is masked to 25 bits before each multiply. A hash of this
+-- shape relies on wraparound, and h*37 leaves Int32 within a handful of
+-- characters. GHC wraps silently, but MicroHs traps integer overflow and
+-- raises "arithmetic overflow", so under mhs this aborted every command that
+-- touched a filename -- which is every archive operation. Masking keeps the
+-- largest intermediate at 0x1FFFFFF*37 + 255 = 1241514202, comfortably inside
+-- Int32, so no wraparound is needed and both compilers agree.
+--
+-- Changing the mixing changes the hash values, which is safe here: fpHash is
+-- never written to an archive. Its only uses are in-memory duplicate removal
+-- (ArhiveFileList) and directory-numbering hash tables (ArhiveDirectory).
+filenameHash {-dirhash basename-}  =  foldl (\h c -> (h .&. 0x1FFFFFF)*37 + i(ord c))
 
 {-# INLINE filenameHash #-}
 
