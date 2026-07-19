@@ -178,31 +178,35 @@ The GUI build additionally pulls in the GTK Archive Manager — `FileManager.hs`
 
 `Arc.hs:71` (`doMain`) → `Cmdline.hs:35` (`parseCmdline`) → `Arc.hs:110` (`run`) → `ArcCreate.hs:51` (`runArchiveCreate`) → `ArcCreate.hs:165` (the two-process pipeline). Read `Options.hs:39` (`Command`) and `Process.hs:21–52` early.
 
-### A note on source encoding
+### A note on source encoding and comment history
 
-Comments are mostly Russian. Every `.hs` file is now valid UTF-8 (or pure ASCII) — there are no CP1251 files left to configure your editor for. **But three files have permanently destroyed comments:**
+Comments were originally Russian and are now English throughout; sources are UTF-8 (in practice ASCII). Some history you need before touching old comments:
 
-| File | U+FFFD chars |
-|---|---|
-| `Cmdline.hs` | 10,382 |
-| `ArhiveDirectory.hs` | 5,797 |
-| `ArcvProcessExtract.hs` | 4,119 |
+**Commit `0e441ae` ("convert encoding to utf8", 2025-10-15) destroyed comments in five files** by decoding them as UTF-8 when they were CP1251, turning every non-ASCII byte into U+FFFD. It converted the rest correctly, so this was a partial failure, not a systemic split. Those 478 lines were restored from `01f6bc4` (the last pre-conversion revision) and translated.
 
-Those are literal U+FFFD REPLACEMENT CHARACTERs baked into the files, not a display problem. Commit `0e441ae` ("convert encoding to utf8", 2025-10-15) decoded these three files as UTF-8 when they were actually CP1251, so every non-ASCII byte became U+FFFD. The same commit converted the other files correctly (`Arc.hs` gained 2,942 intact Cyrillic chars in that commit).
+`Compression/DisPack/C_DisPack.{cpp,h}` had the same damage (1,492 U+FFFD) but was **not** recoverable from this repository — DisPack arrived already corrupted at `b328824` ("Port DisPack codec from FreeArc 0.67", 2026-04-12), whose first revision here already has `fffd=1134`. It was restored from the upstream release instead:
 
-Practical consequences:
+```
+FreeArc-0.67-alpha-sources.tar.bz2   sha1 d79f57e48f31b57674c26b4d8b12b7f5ccd7f159
+```
 
-- **Don't try to "repair" them by re-encoding.** The information is not in the file; any conversion just reshuffles replacement characters.
-- **Don't reflow or bulk-rewrite these three files.** Leave untouched lines byte-identical, or you'll produce an enormous diff that obscures the real change.
-- **The original text is recoverable from history if you need it.** `git show 01f6bc4:ArhiveDirectory.hs | iconv -f cp1251 -t utf-8` yields the intact Russian. Note `01f6bc4` (2025-10-13) predates the MicroHs port, so recovery means porting comments onto since-rewritten code, not restoring the file.
-- Revisions between `7778f77` (2025-10-15) and `c379c8b` (2026-04-10) store these files as **Git LFS pointer stubs**, so `git show` on that range returns a 3-line pointer rather than source. Reach back past it to `01f6bc4` for real content. LFS is no longer used.
+from the Wayback Machine capture of freearc.org, checksum-matched against the checksum published with the release; `M-Gonzalo/FreeArc`, `mirror/freearc` and `j2969719/freearc-old` on GitHub hold byte-identical copies. If you need other 0.67-era originals, that tarball is the source of truth — the site itself has been down since ~2016.
+
+When restoring comments from an old revision, note two traps that have already caused bugs here:
+
+- **Match lines order-aware, never by text similarity alone.** An earlier attempt matched on each line's ASCII skeleton. For a standalone Russian comment that skeleton is just `--`, so the matcher compared empty against empty and stamped one arbitrary comment across 69 lines. Use `difflib.SequenceMatcher` over the whole line sequence: map equal runs 1:1, and inside replace regions match forward only so a line can never pair with an earlier one.
+- **Counting Cyrillic after an `errors='replace'` decode silently reports zero.** CP1251 bytes become U+FFFD, not Cyrillic, so a "0 Russian chars" result may just mean you decoded with the wrong codec. Check `utf-8` decodability separately from character counts.
+
+Historical trap: revisions between `7778f77` (2025-10-15) and `c379c8b` (2026-04-10) store `.hs` files as **Git LFS pointer stubs**, so `git show` in that range returns a 3-line pointer rather than source. Reach past it to `01f6bc4`. LFS is no longer used.
+
+Separately, an earlier tool **truncated comments at a `--` appearing inside the comment text** (e.g. `режим "--sync"` became `mode "`). Six such lines in `ArhiveFileList.hs` were restored; a repo-wide sweep found no others, but the pattern is worth recognising.
 
 ## Related components
 
 These build separately from the main binary and are not covered by `./compile-O2`:
 
 - **`Unarc/`** — standalone extractor and the SFX modules embedded into self-extracting archives (`arc.sfx`, `freearc.sfx`, …). Pure C++, built with `cd Unarc && make linux` (or `make windows`). Also produces `FreeArc.fmt`, a FAR Manager plugin.
-- **`srep/`** — SREP 3.93a, a huge-dictionary LZ77 preprocessor, invoked as an external compressor. Vendored repackage of Bulat Ziganshin's original; sources also mirrored under `Compression/SREP/`.
+- **`srep/`** — SREP 3.93a, a huge-dictionary LZ77 preprocessor, invoked as an external compressor. Vendored repackage of Bulat Ziganshin's original; sources also mirrored under `Compression/SREP/`. Its `srep/Compression/*.h` are an older, diverged vintage of the root `Compression/` headers (19–62% similar) — they are not interchangeable, so fix them independently.
 - **`HsLua/`** — vendored Lua 5.1 plus Haskell bindings, used by `Options.hs` for `arc.*.lua` config scripts. Linked on the GHC path only; the MicroHs Windows build sets `FREEARC_NO_LUA`.
 - **`Installer/`** — NSIS installer scripts and packaging assets (Windows).
 
