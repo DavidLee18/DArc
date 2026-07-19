@@ -40,7 +40,7 @@ import FileManUtils
 import FileManDialogs
 
 ----------------------------------------------------------------------------------------------------
----- Диалог упаковки файлов и модификации/слияния архивов ------------------------------------------
+---- Dialog for compressing files and modifying/joining archives -----------------------------------
 ----------------------------------------------------------------------------------------------------
 
 addDialog fm' exec cmd mode = do
@@ -49,7 +49,7 @@ addDialog fm' exec cmd mode = do
   if isFM_Archive fm && cmd=="a"  then fmErrorMsg fm' "0133 You can't compress files directly from archive!" else do
   if isFM_Archive fm && cmd=="j"  then fmErrorMsg fm' "0145 You can't join archives directly from archive!" else do
   files <- if isFM_Archive fm then return [fm_arcname fm]
-                              else getSelection fm' addCmdFiles  -- todo: j/ch когда Selection включает каталоги
+                              else getSelection fm' addCmdFiles  -- todo: j/ch when Selection includes directories
   title <- i18n$ case (cmd,files) of
                    ("a" , []    ) -> "0136 Add all files to archive"
                    ("a" , [file]) -> "0134 Add %1 to archive"
@@ -61,14 +61,14 @@ addDialog fm' exec cmd mode = do
                    ("j" , [file]) -> "0150 Join %1 with another archive"
                    ("j" , _     ) -> "0151 Join %2 archives"
   let wintitle  =  formatn title [head files, show3$ length files]
-  -- Создадим диалог со стандартными кнопками OK/Cancel
+  -- Create the dialog with the standard OK/Cancel buttons
   fmDialog fm' wintitle $ \(dialog,okButton) -> do
     fmCacheConfigFile fm' $ do
     (nb,newPage) <- startNotebook dialog
 
------- Главная закладка ----------------------------------------------------------------------
+------ Main tab ------------------------------------------------------------------------------
     vbox <- newPage "0182 Main";  let pack x = boxPackStart vbox x PackNatural 1
-    ------ Архив и каталог в нём ----------------------------------------------------------------------
+    ------ Archive and directory inside it ------------------------------------------------------------
     (hbox, _, arcname) <- fmOutputArchiveFileBox fm' dialog;  pack hbox  `on`  cmd/="ch"
     (hbox,    arcpath) <- fmLabeledEntryWithHistory fm' "arcpath" "0141 Base directory inside archive:";  pack hbox  `on`  cmd=="a"
     ep                 <- fmExcludePaths;  pack (widget ep)          `on`  cmd=="a"
@@ -86,7 +86,7 @@ addDialog fm' exec cmd mode = do
     (hbox, options, optionsStr) <- fmCheckedEntryWithHistory fm' "options" "0072 Additional options:";  pack hbox
 
 
------- Закладка архивных опций ----------------------------------------------------------------------
+------ Archive options tab --------------------------------------------------------------------------
     vbox <- newPage "0200 Archive";  let pack x = boxPackStart vbox x PackNatural 1
     separate <- checkBox "0201 Compress each marked file/directory into separate archive";  pack (widget separate)  `on`  cmd=="a"
     (hbox, ag, agTemplate) <- fmCheckedEntryWithHistory fm' "ag"  "0202 Add to archive name:";  pack hbox  `on`  cmd/="ch"
@@ -111,7 +111,7 @@ addDialog fm' exec cmd mode = do
                                , "0220 Incremental: select by \"Archive\" attribute & clear it after compression" ];  pack (widget backupMode)  `on`  cmd/="ch"
 
 
------- Закладка отбора файлов ----------------------------------------------------------------------
+------ File selection tab --------------------------------------------------------------------------
     vbox <- newPage "0221 Files";  let pack x = boxPackStart vbox x PackNatural 1
     (hbox, include, includeMasks) <- fmCheckedEntryWithHistory fm' "include" "0222 Include only files:";  pack hbox
     (hbox, exclude, excludeMasks) <- fmCheckedEntryWithHistory fm' "exclude" "0223 Exclude files:";  pack hbox
@@ -119,20 +119,20 @@ addDialog fm' exec cmd mode = do
     (hbox, smaller, smallerSize)  <- fmCheckedEntryWithHistory fm' "smaller" "0225 Include only files smaller than:";  pack hbox
     --times: -tn/to/ta/tb
 
------- Закладка сжатия ------------------------------------------------------------------------
+------ Compression tab ------------------------------------------------------------------------
     (onCompressionChanged, saveCompressionHistories)  <-  compressionPage fm' =<< newPage "0106 Compression"
     onCompressionChanged (compressionMethod =:)
 
------- Закладка шифрования ------------------------------------------------------------------------
+------ Encryption tab -----------------------------------------------------------------------------
     (onEncryptionChanged, encryptionOnOk)  <-  encryptionPage fm' dialog okButton =<< newPage "0119 Encryption"
     onEncryptionChanged (encryptionMethod =:)
 
------- Закладка архивного комментария --------------------------------------------------------------------------
+------ Archive comment tab -------------------------------------------------------------------------------------
     vbox <- newPage "0199 Comment";  let pack x = boxPackStart vbox x PackGrow 1
     commentText <- scrollableTextView "" [];  pack (widget commentText)
 
 
------- Инициализация полей --------------------------------------------------------------------------
+------ Field initialization -------------------------------------------------------------------------
     compression     =: mode==RecompressMode || cmd=="a"
     encryption      =: mode==EncryptionMode
     protection      =: mode==ProtectionMode
@@ -144,18 +144,18 @@ addDialog fm' exec cmd mode = do
     recompressMode  =: 1
     backupMode      =: 0
 
-    -- Имя создаваемого по умолчанию архива зависит от имён архивируемых файлов/сливаемых архивов
+    -- The default name of the archive being created depends on the names of the files being archived / archives being joined
     let arcnameBase = case files of
           [file] -> let base = dropTrailingPathSeparator file
-                    in if base==file  then dropExtension file  -- один файл    - избавимся от расширения
-                                      else base                -- один каталог - избавимся от слеша в конце
-          _      -> takeFileName (fm_curdir fm)                -- много файлов - используем имя текущего каталога
+                    in if base==file  then dropExtension file  -- one file      - strip the extension
+                                      else base                -- one directory - strip the trailing slash
+          _      -> takeFileName (fm_curdir fm)                -- many files    - use the current directory name
     arcname =: if isFM_Archive fm then fm_arcname fm
                                   else (arcnameBase ||| "archive") ++ aDEFAULT_ARC_EXTENSION
     arcpath =: ""
 
 
------- Чтение значений полей и сохранение их для истории ------------------------------------------
+------ Reading field values and saving them to the history ----------------------------------------
     widgetShowAll dialog
     --current_time  <- getClockTime;  debugMsg (show$ diffTimes current_time start_time)
     choice <- fmDialogRun fm' dialog "AddDialog"
@@ -164,7 +164,7 @@ addDialog fm' exec cmd mode = do
       -- Main settings
       arcname' <- val arcname;  saveHistory arcname   `on`  cmd/="ch"
       arcpath' <- val arcpath;  saveHistory arcpath   `on`  cmd=="a"
-      -- Если "имя архива" на самом деле указывает каталог внутри архива, то не ударим в грязь лицом :)
+      -- If the "archive name" actually points to a directory inside an archive, let's not embarrass ourselves :)
       x <- splitArcPath fm' arcname'
       (arcname', arcpath') <- return$ case x of
           ArcPath arc path -> (arc, path </> arcpath')
@@ -212,21 +212,21 @@ addDialog fm' exec cmd mode = do
       -- Global settings
       logfile'        <- fmGetHistory1 fm' "logfile" ""
 {-
-      -- Запомним настройки в истории
+      -- Remember the settings in the history
       fmAddHistory fm' "acmd"$ joinWith "," [ "simpleMethod="  ++simpleMethod'
                                             , "akeyfile="      ++keyfile'
                                             , "xkeyfile="      ++xkeyfile'
                                             , "encryptHeaders="++show encryptHeaders'
                                             , "testAfter="     ++show testAfter']
 -}
-      -- Отобразим изменение имени архива
+      -- Reflect the archive name change
       when sfxEnabled $ do
         when (isFM_Archive fm) $ do
         let newname' = changeSfxExt True (clear sfxFile') arcname'
         when (newname'/=arcname') $ do
           fmChangeArcname fm' newname'
 
------- Формирование выполняемой команды/команд ----------------------------------------------------
+------ Building the command(s) to execute ---------------------------------------------------------
       let msgs = case cmd of
                   "ch"-> ["0237 Modifying %1",
                           "0238 SUCCESFULLY MODIFIED %1",
@@ -278,10 +278,10 @@ addDialog fm' exec cmd mode = do
 
 
 ----------------------------------------------------------------------------------------------------
----- Вспомогательные определения -------------------------------------------------------------------
+---- Helper definitions ----------------------------------------------------------------------------
 ----------------------------------------------------------------------------------------------------
 
--- |Поле выбора имени выходного архива
+-- |Field for choosing the output archive name
 fmOutputArchiveFileBox fm' dialog =
   fmFileBox fm' dialog
             "arcname" FileChooserActionSave
@@ -291,7 +291,7 @@ fmOutputArchiveFileBox fm' dialog =
             (const$ return True)
             (fmCanonicalizeDiskPath fm')
 
--- |Поле выбора опции -ep
+-- |Field for choosing the -ep option
 fmExcludePaths =
   comboBox "0188 Store file paths:"
            [ "0189 No"
@@ -300,7 +300,7 @@ fmExcludePaths =
            , "0192 Absolute (relative to root dir)"
            , "0193 Full (including drive letter)" ]
 
--- |Поле выбора режима обновления.
+-- |Field for choosing the update mode.
 fmUpdateMode =
   comboBox "0194 Update mode:"
            [ "0195 Add and replace files (default)"

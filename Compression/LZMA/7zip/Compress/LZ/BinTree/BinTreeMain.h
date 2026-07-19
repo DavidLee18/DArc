@@ -564,7 +564,7 @@ STDMETHODIMP CMatchFinder::Skip(UInt32 num)
 
 void CMatchFinder::Normalize()
 {
-  // Сдвинуть назад виртуальные позиции. Минимум на 128 мб (актуально для словаря в 1гб, поскольку kMaxValForNormalize=1гб)
+  // Shift the virtual positions back. By at least 128 mb (relevant for a 1gb dictionary, since kMaxValForNormalize=1gb)
   UInt32 subValue = mymax (_pos - _cyclicBufferSize, 128<<20);
   {
     CIndex *items = _hash;

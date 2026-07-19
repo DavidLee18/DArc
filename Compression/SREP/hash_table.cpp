@@ -30,7 +30,7 @@ struct SliceHash
   {
     h = NULL;  errcode = ERROR_MEMORY;  L = _L;
     slices_in_block = sizeof(entry)*CHAR_BIT/BITS;
-    slice_size      = L/slices_in_block;                               // to do: 8/16-byte entry (считывать в check по одному байту из h)
+    slice_size      = L/slices_in_block;                               // to do: 8/16-byte entry (read one byte at a time from h in check)
     check_slices    = int((MIN_MATCH-L)/slice_size) - io_accelerator;  // if less that this amount of slices around match has the same hashes, then we are sure that match can't be extended to MIN_MATCH size
     if (io_accelerator<0 || check_slices<=0)
          memreq = 0;                                                   // no need in SliceHash since each potential match is almost guaranteed to have MIN_MATCH matched bytes
@@ -361,7 +361,7 @@ struct HashTable
   // Chunk size in -m1/-m2 mode
   Offset chunksize_CDC (Chunk chunk)  {return startarr[chunk+1] - startarr[chunk];}
 
-  // Индексировать новый блок и вернуть смещение до эквивалентного ему старого (или 0)
+  // Index the new block and return the offset to the old block equivalent to it (or 0)
   Offset find_match_CDC (Offset offset, void *p, int size, BYTE *vhashes);
 };
 
@@ -377,10 +377,10 @@ Offset HashTable::find_match_CDC (Offset offset, void *p, int size, BYTE *vhashe
   memcpy (digestarr+curchunk, vhashes, sizeof(*digestarr));
   BigHash index  =  *(BigHash*) (vhashes + sizeof(*digestarr));
 
-  // найти в хеш-таблице старый блок, эквивалентный новому, и заменить его новым блоком
+  // find in the hash table an old block equivalent to the new one, and replace it with the new block
   Chunk chunk = add_hash0<true> (p, 0, 0, curchunk, index, 0, offset);
 
-  // если найден старый эквивалентный блок, то возвратить расстояние до него
+  // if an equivalent old block was found, return the distance to it
   if (chunk!=NOT_FOUND && chunksize_CDC(chunk)==size) {
     if (offset < pc.max_offset)
       pc.check_len++,

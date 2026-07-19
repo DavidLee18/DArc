@@ -7,8 +7,8 @@
   Copyrigth (c) 2000-2002 FAR group
   Copyleft  (l) 2005-2008 Bulat Ziganshin
 
-  TO DO: время летних/зимних файлов сдвигается на час
-         join_name - проверять, что мы не выходим за пределы буфера
+  TO DO: timestamps of summer/winter files are shifted by one hour
+         join_name - check that we do not run past the end of the buffer
 */
 /* Revision: 22.06.2008 $ */
 
@@ -25,14 +25,14 @@
 #include "plugin.hpp"
 #include "fmt.hpp"
 
-// Для обработки ошибок во вложенных процедурах - longjmp сигнализирует процедуре верхнего уровня о произошедшей ошибке
+// For error handling in nested procedures - longjmp signals the top-level procedure that an error has occurred
 static jmp_buf jumper;
 #define CHECK(a,b)               {if(!(a)) longjmp(jumper,1);}
 #define FreeAndNil(ptr)          {delete (ptr); (ptr)=NULL;}
 #include "ArcStructure.h"
 
 /***********************************************************************
- *** Основная программа ************************************************
+ *** Main program ******************************************************
  ***********************************************************************
 */
 
@@ -56,12 +56,12 @@ void cleanup()
 
 BOOL WINAPI _export IsArchive(const char *Name,const unsigned char *Data,int DataSize)
 {
-  // Найти в буфере сигнатуру, а после неё - версию архиватора
+  // Find the signature in the buffer and, right after it, the archiver version
   for( int I=0; I <= (int)(DataSize-20); I++ )
   {
     if (*(uint32*)(Data+I) == aSIGNATURE)
     {
-      UnpVer=(Data[I+4]*10+Data[I+5])*256 + Data[I+6]*10+Data[I+7];  // Версия программы, требуемая для распаковки архива
+      UnpVer=(Data[I+4]*10+Data[I+5])*256 + Data[I+6]*10+Data[I+7];  // Program version required to unpack the archive
       SFXSize = I;
       return TRUE;
     }
@@ -72,18 +72,18 @@ BOOL WINAPI _export IsArchive(const char *Name,const unsigned char *Data,int Dat
 BOOL WINAPI _export OpenArchive(const char *Name,int *Type)
 {
   if (setjmp(jumper) != 0)
-    {cleanup(); return FALSE;}  // Сюда мы попадём при возникновении ошибки в одной из вызываемых процедур
+    {cleanup(); return FALSE;}  // We end up here if an error occurs in one of the called procedures
 
   // OEM -> UTF8
   char utf8name[MY_FILENAME_MAX*4];
   oem_to_utf8 (Name, utf8name);
 
-  // Прочитаем структуру архива
+  // Read the archive structure
   arcinfo = new ARCHIVE (FILENAME (utf8name));
   arcinfo->read_structure();
   *Type   = 0;
 
-  // Сделаем так, чтобы следующий вызов GetArcItem привёл к чтению первого блока
+  // Arrange for the next GetArcItem call to read the first block
   current_block=-1; dirblock=NULL;
   return TRUE;
 }
@@ -91,9 +91,9 @@ BOOL WINAPI _export OpenArchive(const char *Name,int *Type)
 int WINAPI _export GetArcItem(struct PluginPanelItem *Item,struct ArcItemInfo *Info)
 {
   if (setjmp(jumper) != 0)
-    {cleanup(); return GETARC_BROKEN;}  // Сюда мы попадём при возникновении ошибки в одной из вызываемых процедур
+    {cleanup(); return GETARC_BROKEN;}  // We end up here if an error occurs in one of the called procedures
 
-  // Считаем следующий блок каталога архива, если все файлы из текущего уже перечислены
+  // Read the next archive directory block once all files in the current one have been listed
   if( current_block < 0 || ++current_file_in_block >= dirblock->total_files)
   {
     FreeAndNil (dirblock);
@@ -104,7 +104,7 @@ int WINAPI _export GetArcItem(struct PluginPanelItem *Item,struct ArcItemInfo *I
         return GETARC_EOF;
       }
 
-      // Если это блок каталога - прочитаем его и выйдем из цикла
+      // If this is a directory block - read it and leave the loop
       BLOCK& descriptor = arcinfo->control_blocks_descriptors [current_block];
       if (descriptor.type == DIR_BLOCK)
       {
@@ -117,7 +117,7 @@ int WINAPI _export GetArcItem(struct PluginPanelItem *Item,struct ArcItemInfo *I
     //printf("%d files\n", dirblock->total_files);
   }
 
-  // Заполним описание файла
+  // Fill in the file description
   int i = current_file_in_block;
   Item->FindData.dwFileAttributes = dirblock->isdir[i]? FILE_ATTRIBUTE_DIRECTORY : 0;
   UnixTimeToFileTime (dirblock->time[i], &Item->FindData.ftLastWriteTime);
@@ -130,24 +130,24 @@ int WINAPI _export GetArcItem(struct PluginPanelItem *Item,struct ArcItemInfo *I
   Item->CRC32  = dirblock->crc[i];
   Info->UnpVer = UnpVer;
 
-  // Теперь извлечём информацию из описания солид-блока
+  // Now extract information from the solid block descriptor
   int &b = current_data_block;
-  // Увеличим номер солид-блока если мы вышли за последний принадлежащий ему файл
+  // Advance the solid block number if we have gone past its last file
   if (current_file_in_block >= dirblock->block_end(b))
     b++;
-  // Если это первый файл в солид-блоке - соберём block-related информацию
+  // If this is the first file in the solid block - gather block-related information
   if (current_file_in_block == dirblock->block_start(b))
-  { // Запишем на первый файл в блоке весь его упакованный размер
+  { // Attribute the whole packed size of the block to its first file
     uint64 packed = dirblock->data_block[b].compsize;
     Item->PackSizeHigh = packed >> 32;
     Item->PackSize     = packed;
-    // Запомним информацию о солид-блоке для использования её со всеми файлами из этого солид-блока
+    // Remember the solid block information so it can be reused for every file in this solid block
     char *c = dirblock->data_block[b].compressor;
     Solid     = dirblock->block_start(b)+1 != dirblock->block_end(b);
     Encrypted = strstr (c, "+aes-")!=NULL || strstr (c, "+serpent-")!=NULL || strstr (c, "+blowfish-")!=NULL || strstr (c, "+twofish-")!=NULL;
     DictSize  = compressorGetDecompressionMem (dirblock->data_block[b].compressor);
   }
-  // Заполним поля информацией, считанной при обработке первого файла в солид-блоке
+  // Fill the fields with the information read while processing the first file in the solid block
   Info->Solid     = Solid;
   Info->Encrypted = Encrypted;
   Info->DictSize  = DictSize;
@@ -158,7 +158,7 @@ int WINAPI _export GetArcItem(struct PluginPanelItem *Item,struct ArcItemInfo *I
 BOOL WINAPI _export CloseArchive(struct ArcInfo *Info)
 {
   if (setjmp(jumper) != 0)
-    {cleanup(); return FALSE;}  // Сюда мы попадём при возникновении ошибки в одной из вызываемых процедур
+    {cleanup(); return FALSE;}  // We end up here if an error occurs in one of the called procedures
 
   Info->SFXSize = SFXSize;
   Info->Comment = arcinfo->arcComment.size>0;

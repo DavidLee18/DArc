@@ -1,6 +1,6 @@
 #include "../Compression.h"
 
-// Максимальный размер ключа/iv/хеша в байтах
+// Maximum size of the key/iv/hash in bytes
 #define MAXKEYSIZE 64
 
 enum TEncrypt {ENCRYPT, DECRYPT};
@@ -10,36 +10,36 @@ int docrypt (enum TEncrypt DoEncryption, int cipher, int mode, BYTE *key, int ke
 
 #ifdef __cplusplus
 
-// Реализация стандартного интерфейса методов сжатия/шифрования COMPRESSION_METHOD
+// Implementation of the standard COMPRESSION_METHOD interface for compression/encryption methods
 class ENCRYPTION_METHOD : public COMPRESSION_METHOD
 {
 public:
-  // Параметры этого метода шифрования
-  int  cipher;                   // ИД алгоритма шифрования
-  int  mode;                     // ИД режима шифрования (ctr, cfb...)
-  char key [MAXKEYSIZE*2+1];     // Ключ в base16 записи
-  char iv  [MAXKEYSIZE*2+1];     // Вектор инициализации в base16 записи
-  char salt[MAXKEYSIZE*2+1];     // "Соль" в base16 записи
-  char code[MAXKEYSIZE*2+1];     // Код самопроверки в base16 записи
-  int  numIterations;            // Количество итераций при генерации ключа по password+salt
-  int  rounds;                   // Количество шагов при шифровании, чем больше - тем медленней, но надёжней. 0 - использовать знаечние по умолчанию, рекомендованное создателями алгоритма
-  int  keySize;                  // Длина ключа в байтах (0 - использовать максимальную доступную)
-  int  ivSize;                   // Длина IV в байтах (=размеру блока алгоритма шифрования)
+  // Parameters of this encryption method
+  int  cipher;                   // ID of the encryption algorithm
+  int  mode;                     // ID of the encryption mode (ctr, cfb...)
+  char key [MAXKEYSIZE*2+1];     // Key in base16 notation
+  char iv  [MAXKEYSIZE*2+1];     // Initialization vector in base16 notation
+  char salt[MAXKEYSIZE*2+1];     // "Salt" in base16 notation
+  char code[MAXKEYSIZE*2+1];     // Self-check code in base16 notation
+  int  numIterations;            // Number of iterations when generating the key from password+salt
+  int  rounds;                   // Number of rounds during encryption; the more, the slower but the more secure. 0 - use the default value recommended by the algorithm's authors
+  int  keySize;                  // Key length in bytes (0 - use the maximum available)
+  int  ivSize;                   // IV length in bytes (= the block size of the encryption algorithm)
 
-  // Конструктор, присваивающий параметрам метода шифрования значения по умолчанию
+  // Constructor that assigns the default values to the encryption method parameters
   ENCRYPTION_METHOD();
 
-  // Универсальный метод, отвечает на запросы "encryption?", "KeySize" и "IVSize"
+  // Universal method, answers the "encryption?", "KeySize" and "IVSize" queries
   virtual int doit (char *what, int param, void *data, CALLBACK_FUNC *callback);
-  // Функции распаковки и упаковки
+  // Decompression and compression functions
   virtual int decompress (CALLBACK_FUNC *callback, void *auxdata);
 #ifndef FREEARC_DECOMPRESS_ONLY
   virtual int compress   (CALLBACK_FUNC *callback, void *auxdata);
 
-  // Записать в buf[MAX_METHOD_STRLEN] строку, описывающую метод сжатия и его параметры (функция, обратная к parse_ENCRYPTION)
+  // Write into buf[MAX_METHOD_STRLEN] a string describing the compression method and its parameters (the inverse of parse_ENCRYPTION)
   virtual void ShowCompressionMethod (char *buf);
 
-  // Получить/установить объём памяти, используемой при упаковке/распаковке, размер словаря или размер блока
+  // Get/set the amount of memory used during packing/unpacking, the dictionary size or the block size
   virtual MemSize GetCompressionMem     (void)         {return 0;}
   virtual MemSize GetDecompressionMem   (void)         {return 0;}
   virtual MemSize GetDictionary         (void)         {return 0;}
@@ -51,7 +51,7 @@ public:
 #endif
 };
 
-// Разборщик строки метода шифрования
+// Parser for the encryption method string
 COMPRESSION_METHOD* parse_ENCRYPTION (char** parameters);
 
 #endif  // __cplusplus

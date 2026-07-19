@@ -1,29 +1,29 @@
 {-# LANGUAGE CPP #-}
 ----------------------------------------------------------------------------------------------------
----- Основной модуль программы.                                                                 ----
----- Вызывает parseCmdline из модуля Cmdline для разбора командной строки и выполняет каждую    ----
-----   полученную команду.                                                                      ----
----- Если команда должна обработать несколько архивов, то findArchives дублирует её            ----
-----   для каждого из них.                                                                      ----
----- Затем каждая команда сводится к выполнению одной из следующих задач:                       ----
----- * изменение архива  с помощью  runArchiveCreate   из модуля ArcCreate   (команды a/f/m/u/j/d/ch/c/k/rr)
----- * распаковка архива         -  runArchiveExtract  -         ArcExtract  (команды t/e/x)    ----
----- * получение листинга архива -  runArchiveList     -         ArcList     (команды l/v)      ----
----- * восстановление архива     -  runArchiveRecovery -         ArcRecover  (команда r)        ----
----- которым передаются аргументы в соответствии со спецификой конкретной выполняемой команды.  ----
+---- Main program module.                                                                       ----
+---- Calls parseCmdline from the Cmdline module to parse the command line and executes each     ----
+----   resulting command.                                                                       ----
+---- If a command must process several archives, findArchives duplicates it                     ----
+----   for each of them.                                                                        ----
+---- Then each command boils down to performing one of the following tasks:                     ----
+---- * modification of an archive  using  runArchiveCreate   from module ArcCreate   (commands a/f/m/u/j/d/ch/c/k/rr)
+---- * extraction of an archive  -  runArchiveExtract  -         ArcExtract  (commands t/e/x)   ----
+---- * listing of an archive     -  runArchiveList     -         ArcList     (commands l/v)     ----
+---- * recovery of an archive    -  runArchiveRecovery -         ArcRecover  (command r)        ----
+---- which are given arguments according to the specifics of the particular command being run.  ----
 ----                                                                                            ----
----- Эти процедуры в свою очередь прямо или косвенно обращаются к модулям:                      ----
-----   ArhiveFileList   - для работы со списками архивируемых файлов                            ----
-----   ArhiveDirectory  - для чтения/записи оглавления архива                                   ----
-----   ArhiveStructure  - для работы со структурой архива                                       ----
-----   ByteStream       - для превращения каталога архива в последовательность байтов           ----
-----   Compression      - для вызова алгоритмов упаковки, распаковки и вычисления CRC           ----
-----   UI               - для информирования пользователя о ходе выполняемых работ :)           ----
-----   Errors           - для сигнализации о возникших ошибках и записи в логфайл               ----
-----   FileInfo         - для поиска файлов на диске и получения информации о них               ----
-----   Files            - для всех операций с файлами на диске и именами файлов                 ----
-----   Process          - для разделения алгоритма на параллельные взаимодействующие процессы   ----
-----   Utils            - для всех остальных вспомогательных функций                            ----
+---- These procedures in turn refer, directly or indirectly, to the modules:                    ----
+----   ArhiveFileList   - for working with the lists of files being archived                    ----
+----   ArhiveDirectory  - for reading/writing the archive directory                             ----
+----   ArhiveStructure  - for working with the archive structure                                ----
+----   ByteStream       - for turning the archive directory into a byte sequence                ----
+----   Compression      - for invoking the compression, decompression and CRC algorithms        ----
+----   UI               - for keeping the user informed about the work in progress :)           ----
+----   Errors           - for reporting errors that occur and writing to the log file           ----
+----   FileInfo         - for finding files on disk and obtaining information about them        ----
+----   Files            - for all operations on files on disk and on file names                 ----
+----   Process          - for splitting the algorithm into parallel communicating processes     ----
+----   Utils            - for all the remaining helper functions                                ----
 ----------------------------------------------------------------------------------------------------
 module Arc where
 
@@ -62,15 +62,15 @@ foreign import ccall unsafe "darc_queue_acquire" c_queue_acquire :: CString -> I
 foreign import ccall unsafe "darc_queue_release" c_queue_release :: CInt   -> IO ()
 
 
--- |Главная функция программы
+-- |The program's main function
 main         =  (doMain =<< myGetArgs) >> shutdown "" aEXIT_CODE_SUCCESS
--- |Дублирующая главная функция для интерактивной отладки
+-- |A duplicate main function for interactive debugging
 arc cmdline  =  doMain (words cmdline)
 
--- |Превратить командную строку в набор команд и выполнить их
+-- |Turn the command line into a set of commands and execute them
 doMain args  = do
 #ifdef FREEARC_GUI
-  bg $ do                           -- выполняем в новом треде, не являющемся bound thread
+  bg $ do                           -- run in a new thread that is not a bound thread
 #endif
 #ifdef __GLASGOW_HASKELL__
   setUncaughtExceptionHandler handler
@@ -78,23 +78,23 @@ doMain args  = do
   ncaps  <- getNumCapabilities
   when (ncaps < nprocs) $ setNumCapabilities nprocs
 #endif
-  setCtrlBreakHandler $ do          -- Организуем обработку ^Break
+  setCtrlBreakHandler $ do          -- Set up ^Break handling
   ensureCtrlBreak "resetConsoleTitle" resetConsoleTitle $ do
   luaLevel "Program" [("command", args)] $ do
 #ifdef FREEARC_GUI
-  if length args < 2                -- При вызове программы без аргументов или с одним аргументом (именем каталога/архива)
-    then myGUI run args             --   запускаем полноценный Archive Manager
-    else do                         --   а иначе - просто отрабатываем команды (де)архивации
+  if length args < 2                -- When the program is invoked with no arguments or with a single argument (a directory/archive name)
+    then myGUI run args             --   start the full-featured Archive Manager
+    else do                         --   otherwise just carry out the (de)archiving commands
 #endif
-  uiStartProgram                    -- Открыть UI
-  commands <- parseCmdline args     -- Превратить командную строку в список команд на выполнение
+  uiStartProgram                    -- Open the UI
+  commands <- parseCmdline args     -- Turn the command line into a list of commands to execute
   -- FreeArc 0.67 --queue: serialize with other arc processes via advisory lockfile
   queue_fd <- if any opt_queue commands
                 then withCString "/tmp/darc.queue.lock" c_queue_acquire
                 else return (-1)
-  mapM_ run commands                -- Выполнить каждую полученную команду
+  mapM_ run commands                -- Execute each of the resulting commands
   when (queue_fd >= 0) $ c_queue_release queue_fd
-  uiDoneProgram                     -- Закрыть UI
+  uiDoneProgram                     -- Close the UI
 
  where
    handler (ex :: SomeException)  =
@@ -106,14 +106,14 @@ doMain args  = do
       maybe (show ex) (\(ErrorCall s) -> s) (fromException ex) : []
 
 
--- |Диспетчеризует команду и организует её повторение для каждого подходящего архива
+-- |Dispatches a command and arranges for it to be repeated for each matching archive
 run command@Command
                 { cmd_name            = cmd
                 , cmd_setup_command   = setup_command
                 , opt_scan_subdirs    = scan_subdirs
                 } = do
-  performGC       -- почистить мусор после обработки предыдущих команд
-  setup_command   -- выполнить настройки, необходимые перед началом выполнения команды
+  performGC       -- collect the garbage left over from processing the previous commands
+  setup_command   -- apply the settings required before the command starts running
   luaLevel "Command" [("command", cmd)] $ do
   -- Route .7z archives to the system 7zz/7z binary.
   if is7zArchive (cmd_arcspec command)
@@ -145,28 +145,28 @@ run command@Command
       _ -> registerError$ UNKNOWN_CMD cmd aLL_COMMANDS
 
 
--- |Ищет архивы, подходящие под маску arcspec, и выполняет заданную команду на каждом из них
-findArchives scan_subdirs   -- искать архивы и в подкаталогах?
-              run_command    -- процедура, которую нужно запустить на каждом найденном архиве
+-- |Finds the archives matching the wildcard arcspec and runs the given command on each of them
+findArchives scan_subdirs   -- search for archives in subdirectories too?
+              run_command    -- the procedure to run on each archive found
               command@Command {cmd_arcspec = arcspec} = do
-  uiStartCommand command   -- Отметим начало выполнения команды
+  uiStartCommand command   -- Mark the start of the command's execution
   arclist <- if scan_subdirs || is_wildcard arcspec
                then find_files scan_subdirs arcspec >>== map diskName
                else return [arcspec]
   results <- foreach arclist $ \arcname -> do
-    performGC   -- почистить мусор после обработки предыдущих архивов
+    performGC   -- collect the garbage left over from processing the previous archives
     luaLevel "Archive" [("arcname", arcname)] $ do
-    -- Если указана опция -ad, то добавить к базовому каталогу на диске имя архива (без расширения)
+    -- If the -ad option is given, append the archive name (without extension) to the base directory on disk
     let add_dir  =  opt_add_dir command  &&&  (</> takeBaseName arcname)
-    run_command command { cmd_arcspec      = error "findArchives:cmd_arcspec undefined"  -- cmd_arcspec нам больше не понадобится.
+    run_command command { cmd_arcspec      = error "findArchives:cmd_arcspec undefined"  -- we won't need cmd_arcspec any more.
                         , cmd_arclist      = arclist
                         , cmd_arcname      = arcname
                         , opt_disk_basedir = add_dir (opt_disk_basedir command)
                         }
-  uiDoneCommand command results   -- доложить о результатах выполнения команды над всеми архивами
+  uiDoneCommand command results   -- report the results of running the command over all the archives
 
 
--- |Команды добавления в архив: create, a, f, m, u
+-- |Commands that add to an archive: create, a, f, m, u
 runAdd cmd = do
   msg <- i18n"0246 Found %1 files"
   let diskfiles =  find_and_filter_files (cmd_filespecs cmd) (uiScanning msg) find_criteria
@@ -178,16 +178,16 @@ runAdd cmd = do
                                 , ff_group_f        = opt_find_group       cmd.$Just
                                 , ff_arc_basedir    = opt_arc_basedir      cmd
                                 , ff_disk_basedir   = opt_disk_basedir     cmd}
-  runArchiveAdd cmd{ cmd_diskfiles      = diskfiles     -- файлы, которые нужно добавить с диска
-                   , cmd_archive_filter = const True }  -- фильтр отбора файлов из открываемых архивов
+  runArchiveAdd cmd{ cmd_diskfiles      = diskfiles     -- the files to be added from disk
+                   , cmd_archive_filter = const True }  -- filter selecting files from the archives being opened
 
 
--- |Команда слияния архивов: j
+-- |Archive joining command: j
 runJoin cmd@Command { cmd_filespecs = filespecs
                        , opt_noarcext  = noarcext
                        } = do
   msg <- i18n"0247 Found %1 archives"
-  let arcspecs  =  map (addArcExtension noarcext) filespecs   -- добавим к именам расширение по умолчанию (".arc")
+  let arcspecs  =  map (addArcExtension noarcext) filespecs   -- append the default extension (".arc") to the names
       arcnames  =  map diskName ==<< find_and_filter_files arcspecs (uiScanning msg) find_criteria
       find_criteria  =  FileFind{ ff_ep             = opt_add_exclude_path cmd
                                 , ff_scan_subdirs   = opt_scan_subdirs     cmd
@@ -197,29 +197,29 @@ runJoin cmd@Command { cmd_filespecs = filespecs
                                 , ff_group_f        = Nothing
                                 , ff_arc_basedir    = ""
                                 , ff_disk_basedir   = opt_disk_basedir     cmd}
-  runArchiveAdd cmd{ cmd_added_arcnames = arcnames      -- дополнительные входные архивы
-                   , cmd_archive_filter = const True }  -- фильтр отбора файлов из открываемых архивов
+  runArchiveAdd cmd{ cmd_added_arcnames = arcnames      -- additional input archives
+                   , cmd_archive_filter = const True }  -- filter selecting files from the archives being opened
 
 
--- |Команда модификации архива: принимает archivos de disco opcionales
--- como `runAdd`, pero si no hay filespecs simplemente re-encode el archivo existente.
+-- |Archive modification command: it accepts optional files from disk
+-- like `runAdd`, but if there are no filespecs it simply re-encodes the existing archive.
 runModify cmd | null (cmd_filespecs cmd) || cmd_filespecs cmd == aDEFAULT_FILESPECS
               = runArchiveAdd cmd{cmd_archive_filter = const True}
 runModify cmd = runAdd cmd{cmd_archive_filter = const True}
 
--- |Команды копирования архива с внесением изменений: ch, c, k. s, rr
+-- |Commands that copy an archive while applying changes: ch, c, k. s, rr
 runCopy    = runArchiveAdd                    . setArcFilter fullFileFilter
--- |Команда удаления из архива: d
+-- |Command that deletes from an archive: d
 runDelete  = runArchiveAdd                    . setArcFilter ((not.) . fullFileFilter)
--- |Команды извлечения из архива: e, x
+-- |Commands that extract from an archive: e, x
 runExtract = runArchiveExtract pretestArchive . setArcFilter (test_dirs extractFileFilter)
--- |Команда тестирования архива: t
+-- |Archive testing command: t
 runTest    = runArchiveExtract pretestArchive . setArcFilter (test_dirs fullFileFilter)
--- |Команды получения листинга архива: l, v
+-- |Commands that list an archive: l, v
 runList    = runArchiveList pretestArchive    . setArcFilter (test_dirs fullFileFilter)
--- |Команда записи архивного комментария в файл: cw
+-- |Command that writes the archive comment to a file: cw
 runCw      = runCommentWrite
--- |Команда восстановления архива: r
+-- |Archive recovery command: r
 runRecover = runArchiveRecovery
 
 -- |Just shortcut
@@ -237,36 +237,36 @@ runArchiveAdd  =  runArchiveCreate pretestArchive writeRecoveryBlocks
 
 
 ----------------------------------------------------------------------------------------------------
----- Критерии отбора файлов, подлежащих обработке, для различных типов команд ----------------------
+---- Criteria for selecting the files to be processed, for the various command types ---------------
 ----------------------------------------------------------------------------------------------------
 
--- |Установить в cmd предикат выбора из архива обрабатываемых файлов
+-- |Set in cmd the predicate that selects the files to be processed from the archive
 setArcFilter filter cmd  =  cmd {cmd_archive_filter = filter cmd}
 
--- |Отобрать файлы в соответствии с фильтром opt_file_filter, за исключением
--- обрабатываемых этой командой архивов и временных файлов, создаваемых при архивации
+-- |Select files according to the opt_file_filter filter, excluding
+-- the archives processed by this command and the temporary files created while archiving
 addFileFilter cmd      =  all_functions [opt_file_filter cmd, not . overwriteF cmd]
 
--- |Отобрать файлы в соответствии с фильтром fullFileFilter, за исключением
--- обрабатываемых этой командой архивов и временных файлов, создаваемых при архивации
+-- |Select files according to the fullFileFilter filter, excluding
+-- the archives processed by this command and the temporary files created while archiving
 extractFileFilter cmd  =  all_functions [fullFileFilter cmd, not . overwriteF cmd]
 
--- |Отбирает среди файлов, маски которых указаны в командной строке,
--- соответствующие фильтру opt_file_filter
+-- |Selects, among the files whose wildcards are given on the command line,
+-- those matching the opt_file_filter filter
 fullFileFilter cmd  =  all_functions
                            [  match_filespecs (opt_match_with cmd) (cmd_filespecs cmd) . fiFilteredName
                            ,  opt_file_filter cmd
                            ]
 
--- |Отбирает обрабатываемые архивы и временные файлы, создаваемые при архивации,
--- а также файлы, которые могут их перезаписать при распаковке
+-- |Selects the archives being processed and the temporary files created while archiving,
+-- as well as the files that could overwrite them during extraction
 overwriteF cmd  =  in_arclist_or_temparc . fiDiskName
   where in_arclist_or_temparc filename =
             fpFullname filename `elem` cmd_arclist cmd
             || all_functions [(temparcPrefix `isPrefixOf`), (temparcSuffix `isSuffixOf`)]
                              (fpBasename filename)
 
--- |Добавить в фильтр отбора файлов `filter_f` отбор каталогов в соответствии с опциями команды `cmd`
+-- |Add to the file selection filter `filter_f` the selection of directories according to the options of the command `cmd`
 test_dirs filter_f cmd fi  =  if fiIsDir fi
                                 then opt_x_include_dirs cmd
                                 else filter_f cmd fi

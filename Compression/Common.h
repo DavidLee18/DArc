@@ -30,7 +30,7 @@ extern "C" {
 #endif
 
 /******************************************************************************
-** Базовые определения FREEARC ************************************************
+** Basic FREEARC definitions **************************************************
 ******************************************************************************/
 #if !defined(FREEARC_WIN) && !defined(FREEARC_UNIX)
 #error "You must define OS!"
@@ -63,7 +63,7 @@ extern "C" {
 
 
 /******************************************************************************
-** Синонимы для простых типов, используемых в программе ***********************
+** Synonyms for the simple types used in the program **************************
 ******************************************************************************/
 typedef unsigned long        ulong;
 typedef unsigned int         uint,   UINT;
@@ -90,17 +90,17 @@ typedef          __int8      sint8,  int8;
 typedef unsigned __int8      uint8,  byte, BYTE;
 #endif
 
-typedef unsigned             MemSize;          // объём памяти
-typedef char*                FILENAME;         // имя файла
+typedef unsigned             MemSize;          // amount of memory
+typedef char*                FILENAME;         // file name
 #ifdef FREEARC_WIN
-typedef int64                FILESIZE;         // размер файла
+typedef int64                FILESIZE;         // file size
 #else
 typedef off_t                FILESIZE;
 #endif
 
 
 /******************************************************************************
-** Стандартные определения ****************************************************
+** Standard definitions *******************************************************
 ******************************************************************************/
 #define make4byte(a,b,c,d)       ((a)+256*((b)+256*((c)+256*(((uint32)d)))))
 #define iterate(num, statement)  {for( int i=0; i<(num); i++) {statement;}}
@@ -384,11 +384,11 @@ static inline void setvalue64 (void *p, uint64 x)
 // Exit code used to indicate serious problems in FreeArc utilities
 #define FREEARC_EXIT_ERROR 2
 
-// Переменные, используемые для сигнализации об ошибках из глубоко вложеных процедур
+// Variables used to signal errors from deeply nested procedures
 extern int jmpready;
 extern jmp_buf jumper;
 
-// Процедура сообщения о неожиданных ошибочных ситуациях
+// Procedure for reporting unexpected error situations
 #ifndef CHECK
 #  if defined(FREEARC_WIN) && defined(FREEARC_GUI)
 #    define CHECK(a,b)           {if (!(a))  {if (jmpready) longjmp(jumper,1);  char *s=(char*)malloc(MY_FILENAME_MAX*4);  WCHAR *utf16=(WCHAR*) malloc(MY_FILENAME_MAX*4);  sprintf b;  utf8_to_utf16(s,utf16);  MessageBoxW(NULL, utf16, L"Error encountered", MB_ICONERROR);  ON_CHECK_FAIL();  exit(FREEARC_EXIT_ERROR);}}
@@ -403,16 +403,16 @@ extern jmp_buf jumper;
 #define ON_CHECK_FAIL()
 #endif
 
-// Устанавливает Jump Point с кодом возврата retcode
+// Sets a Jump Point with the return code retcode
 #define SET_JMP_POINT(retcode)                                                         \
 {                                                                                      \
   if (!jmpready && setjmp(jumper) != 0)                                                \
-    /* Сюда мы попадём при возникновении ошибки в одной из вызываемых процедур */      \
+    /* We get here when an error occurs in one of the called procedures */             \
     {jmpready = FALSE; return retcode;}                                                \
   jmpready = TRUE;                                                                     \
 }
 
-// Снимает Jump Point
+// Removes the Jump Point
 #define RESET_JMP_POINT()                                                              \
 {                                                                                      \
   jmpready = FALSE;                                                                    \
@@ -467,12 +467,12 @@ void BigFree(void *address) throw();
 #endif
 
 // ****************************************************************************
-// Функции парсинга и арифметики **********************************************
+// Parsing and arithmetic functions *******************************************
 // ****************************************************************************
-void strncopy (char *to, char *from, int len);   // Копирует строчку from в to, но не более len символов
-int  split (char *str, char splitter, char **result, int result_size);  // Разбить строку str на подстроки, разделённые символом splitter
-char*subst (char *original, char *from, char *to);  // Заменяет в строке original все вхождения from на to
-char*trim_spaces (char *s);                      // Пропускает пробелы в начале строки и убирает их в конце, модифицируя строку
+void strncopy (char *to, char *from, int len);   // Copies the string from into to, but no more than len characters
+int  split (char *str, char splitter, char **result, int result_size);  // Split the string str into substrings separated by the splitter character
+char*subst (char *original, char *from, char *to);  // Replaces in the string original all occurrences of from with to
+char*trim_spaces (char *s);                      // Skips spaces at the start of the string and strips them at the end, modifying the string
 char *str_replace_n (char *orig, char *from, int how_many, char *to);   // Replace from:how_many substring and put result in new allocated area
 char *str_replace   (char *orig, char *from, char *to);    // Replace substring and put result in new allocated area
 #endif // !FREEARC_STANDALONE_TORNADO
@@ -515,8 +515,8 @@ static inline MemSize lb (MemSize n)
     return result;
 }
 
-// Эта процедура округляет число к ближайшей сверху степени
-// базы, например f(13,2)=16
+// This procedure rounds a number up to the nearest power
+// of base, for example f(13,2)=16
 static inline MemSize roundup_to_power_of (MemSize n, MemSize base)
 {
     MemSize result = base;
@@ -530,8 +530,8 @@ static inline MemSize roundup_to_power_of (MemSize n, MemSize base)
     return result;
 }
 
-// Эта процедура округляет число к ближайшей снизу степени
-// базы, например f(13,2)=8
+// This procedure rounds a number down to the nearest power
+// of base, for example f(13,2)=8
 static inline MemSize rounddown_to_power_of (MemSize n, MemSize base)
 {
     MemSize result = 1;
@@ -545,8 +545,8 @@ static inline MemSize rounddown_to_power_of (MemSize n, MemSize base)
     return result;
 }
 
-// Эта процедура округляет число к логарифмически ближайшей степени
-// базы, например f(9,2)=8  f(15,2)=16
+// This procedure rounds a number to the logarithmically nearest power
+// of base, for example f(9,2)=8  f(15,2)=16
 static inline MemSize round_to_nearest_power_of (MemSize n, MemSize base)
 {
     MemSize result;
@@ -556,7 +556,7 @@ static inline MemSize round_to_nearest_power_of (MemSize n, MemSize base)
     return result;
 }
 
-// Превращает число в строку, разделённую точками: "1.234.567"
+// Turns a number into a string separated by dots: "1.234.567"
 static inline char* show3 (uint64 n, char *buf)
 {
     char *p = buf + 27;
@@ -571,7 +571,7 @@ static inline char* show3 (uint64 n, char *buf)
     return p;
 }
 
-// Заменить символы из множества from на символ to
+// Replace characters from the set from with the character to
 static inline char *replace (char *str, char* from, char to)
 {
   char *p;
@@ -581,7 +581,7 @@ static inline char *replace (char *str, char* from, char to)
   return str;
 }
 
-// Возращает числовое значение символа, рассматриваемого как шестнадцатеричная цифра
+// Returns the numeric value of a character treated as a hexadecimal digit
 static inline int char2int(char c) {return isdigit(c)? c-'0' : tolower(c)-'a';}
 
 #ifdef FREEARC_WIN
@@ -593,9 +593,9 @@ char  *oem_to_utf8   (const char  *oem,   char  *utf8);   // Converts OEM string
 #endif
 
 #ifndef FREEARC_NO_TIMING
-// Вывод заголовка окна
-void EnvSetConsoleTitle (CFILENAME title);  // Установить заголовок консольного окна
-void EnvResetConsoleTitle (void);  // Восстановить заголовок, который был в начале работы программы
+// Window title output
+void EnvSetConsoleTitle (CFILENAME title);  // Set the console window title
+void EnvResetConsoleTitle (void);  // Restore the title that was in place when the program started
 
 // Timing execution
 double GetGlobalTime     (void);   // Returns number of wall-clock seconds since some moment

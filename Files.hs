@@ -1,6 +1,6 @@
 {-# LANGUAGE CPP #-}
 ----------------------------------------------------------------------------------------------------
----- Операции с именами файлов, манипуляции с файлами на диске, ввод/вывод.                     ----
+---- File name operations, manipulating files on disk, input/output. -------------------------------
 ----------------------------------------------------------------------------------------------------
 -----------------------------------------------------------------------------
 -- |
@@ -86,7 +86,7 @@ type LPCSTR = CString
 import System.Posix.Files hiding (fileExist)
 #endif
 
--- |Размер одного буфера, используемый в различных операциях
+-- |Size of a single buffer used in various operations
 #ifdef __MHS__
 -- MicroHs: use much larger buffers to reduce pipe iteration count.
 -- Each pipe iteration costs ~0.45s in MHS combinator reduction,
@@ -96,15 +96,15 @@ aBUFFER_SIZE = 8*mb
 aBUFFER_SIZE = 64*kb
 #endif
 
--- |Количество байт, которые должны читаться/записываться за один раз в быстрых методах и при распаковке асимметричных алгоритмов
+-- |Number of bytes that should be read/written at a time by fast methods and when decompressing asymmetric algorithms
 #ifdef __MHS__
 aLARGE_BUFFER_SIZE = 64*mb
 #else
 aLARGE_BUFFER_SIZE = 256*kb
 #endif
 
--- |Количество байт, которые должны читаться/записываться за один раз в очень быстрых методах (storing, tornado и тому подобное)
--- Этот объём минимизирует потери на disk seek operations - при условии, что одновременно не происходит в/в в другом потоке ;)
+-- |Number of bytes that should be read/written at a time by very fast methods (storing, tornado and the like)
+-- This amount minimizes the cost of disk seek operations - provided that no I/O is happening in another thread at the same time ;)
 aHUGE_BUFFER_SIZE = 8*mb
 
 
@@ -112,14 +112,14 @@ aHUGE_BUFFER_SIZE = 8*mb
 ---- Filename manipulations ------------------------------------------------------------------------
 ----------------------------------------------------------------------------------------------------
 
--- |True, если file находится в каталоге `dir`, одном из его подкаталогов, или совпадает с ним
+-- |True if file is inside the directory `dir`, one of its subdirectories, or is the directory itself
 dir `isParentDirOf` file =
   case (startFrom dir file) of
     Just ""    -> True
     Just (x:_) -> isPathSeparator x
     Nothing    -> False
 
--- |Имя файла за минусом каталога dir
+-- |File name with the directory dir stripped off
 file `dropParentDir` dir =
   case (startFrom dir file) of
     Just ""    -> ""
@@ -128,10 +128,10 @@ file `dropParentDir` dir =
 
 
 #if defined(FREEARC_WIN)
--- |Для case-insensitive файловых систем
+-- |For case-insensitive filesystems
 filenameLower = strLower
 #else
--- |Для case-sensitive файловых систем
+-- |For case-sensitive filesystems
 filenameLower = id
 #endif
 
@@ -163,7 +163,7 @@ splitFilenameSuffix str  =  (name, drop 1 ext)
 -- "foo/bar/xyzzy.ext" -> ("foo/bar", "xyzzy.ext")
 splitDirFilename :: String -> (String,String)
 splitDirFilename str  =  case splitFileName str of
-                           x@([d,':',s], name) -> x   -- оставляем ("c:\", name)
+                           x@([d,':',s], name) -> x   -- keep ("c:\", name)
                            (dir, name)         -> (dropTrailingPathSeparator dir, name)
 
 -- "foo/bar/xyzzy.ext" -> ("foo/bar", "xyzzy", "ext")
@@ -181,10 +181,10 @@ updateBaseName f pth  =  dir </> f name <.> ext
 
 
 ----------------------------------------------------------------------------------------------------
----- Поиск конфиг-файлов программы и SFX модулей ---------------------------------------------------
+---- Locating the program's config files and SFX modules -------------------------------------------
 ----------------------------------------------------------------------------------------------------
 
--- |Найти конфиг-файл с заданным именем или возвратить ""
+-- |Find the config file with the given name or return ""
 findFile = findName fileExist
 findDir  = findName dirExist
 findName exist possibleFilePlaces cfgfilename = do
@@ -193,7 +193,7 @@ findName exist possibleFilePlaces cfgfilename = do
     x:xs -> return x
     []   -> return ""
 
--- |Найти конфиг-файл с заданным именем или возвратить имя для создания нового файла
+-- |Find the config file with the given name or return a name for creating a new file
 findOrCreateFile possibleFilePlaces cfgfilename = do
   variants <- possibleFilePlaces cfgfilename
   found    <- Utils.filterM fileExist variants
@@ -203,14 +203,14 @@ findOrCreateFile possibleFilePlaces cfgfilename = do
 
 
 #if defined(FREEARC_WIN) && !defined(__MHS__)
--- Под Windows все дополнительные файлы по умолчанию лежат в одном каталоге с программой
+-- Under Windows all extra files live by default in the same directory as the program
 libraryFilePlaces = configFilePlaces
 configFilePlaces filename  =  do -- dir1 <- getAppUserDataDirectory "FreeArc"
                                  exe  <- getExeName
                                  return [-- dir1              </> filename,
                                          takeDirectory exe </> filename]
 
--- |Имя исполняемого файла программы
+-- |Name of the program's executable file
 getExeName = do
   allocaBytes (long_path_size*4) $ \pOutPath -> do
     c_GetExeName pOutPath (fromIntegral long_path_size*2) >>= peekCWString
@@ -234,23 +234,23 @@ foreign import ccall unsafe "windows.h GetModuleFileNameA"
   c_GetModuleFileNameA :: Ptr () -> CString -> Word32 -> IO Word32
 
 #else
--- |Места для поиска конфиг-файлов
+-- |Places to search for config files
 configFilePlaces  filename  =  do
                                   dir1 <- getAppUserDataDirectory "FreeArc"
                                   return [dir1   </> filename
                                          ,"/etc/FreeArc" </> filename]
 
--- |Места для поиска sfx-модулей
+-- |Places to search for sfx modules
 libraryFilePlaces filename  =  return ["/usr/lib/FreeArc"       </> filename
                                       ,"/usr/local/lib/FreeArc" </> filename]
 #endif
 
 
 ----------------------------------------------------------------------------------------------------
----- Запуск внешних программ и работа с Windows registry -------------------------------------------
+---- Running external programs and working with the Windows registry -------------------------------
 ----------------------------------------------------------------------------------------------------
 
--- |Запустить команду через shell и возвратить её stdout
+-- |Run a command through the shell and return its stdout
 #ifdef __MHS__
 runProgram cmd = readProcess "/bin/sh" ["-c", cmd] ""
 #else
@@ -278,17 +278,17 @@ runFile filename curdir wait_finish = do
 
 
 #if defined(FREEARC_WIN) && !defined(__MHS__)
--- |Создать HKEY и прочитать из Registry значение типа REG_SZ
+-- |Create an HKEY and read a REG_SZ value from the Registry
 registryGetStr root branch key =
   bracket (regCreateKey root branch) regCloseKey
     (\hk -> registryGetStringValue hk key)
 
--- |Создать HKEY и записать в Registry значение типа REG_SZ
+-- |Create an HKEY and write a REG_SZ value to the Registry
 registrySetStr root branch key val =
   bracket (regCreateKey root branch) regCloseKey
     (\hk -> registrySetStringValue hk key val)
 
--- |Прочитать из Registry значение типа REG_SZ
+-- |Read a REG_SZ value from the Registry
 registryGetStringValue :: HKEY -> String -> IO (Maybe String)
 registryGetStringValue hk key = do
 #if __GLASGOW_HASKELL__ >= 900
@@ -298,7 +298,7 @@ registryGetStringValue hk key = do
 #endif
     `catch` (\(e::SomeException) -> return Nothing)
 
--- |Записать в Registry значение типа REG_SZ
+-- |Write a REG_SZ value to the Registry
 registrySetStringValue :: HKEY -> String -> String -> IO ()
 registrySetStringValue hk key val =
   withTString val $ \v ->
@@ -323,11 +323,11 @@ foreign import ccall unsafe "pthread.h pthread_self"
 
 
 ----------------------------------------------------------------------------------------------------
----- Операции с неоткрытыми файлами и каталогами ---------------------------------------------------
+---- Operations on unopened files and directories --------------------------------------------------
 ----------------------------------------------------------------------------------------------------
 
 #if defined(FREEARC_WIN) && !defined(__MHS__)
--- |Список дисков в системе с их типами
+-- |List of drives in the system together with their types
 getDrives = getLogicalDrives >>== unfoldr (\n -> Just (n `mod` 2, n `div` 2))
                              >>== zipWith (\c n -> n>0 &&& [c:":"]) ['A'..'Z']
                              >>== concat
@@ -354,7 +354,7 @@ createDirectoryHierarchy dir = do
       createDirectoryHierarchy (takeDirectory dir)
       dirCreate dir
 
--- |Создать недостающие каталоги на пути к файлу
+-- |Create the missing directories along the path to a file
 buildPathTo filename  =  createDirectoryHierarchy (takeDirectory filename)
 
 -- |Return current directory
@@ -404,7 +404,7 @@ foreign import stdcall unsafe "GetFullPathNameW"
   fmap dropTrailingPathSeparator (canonicalizePath fpath)
 #endif
 
--- |Максимальная длина имени файла (MY_FILENAME_MAX from Common.h is 4096)
+-- |Maximum length of a file name (MY_FILENAME_MAX from Common.h is 4096)
 long_path_size :: Int
 long_path_size  =  4096
 
@@ -420,7 +420,7 @@ clearArchiveBit _ = return ()
 #endif
 
 
--- |Минимальное datetime, которое только может быть у файла. Соответствует 1 января 1970 г.
+-- |The smallest datetime a file can possibly have. Corresponds to January 1, 1970
 aMINIMAL_POSSIBLE_DATETIME = 0 :: CTime
 
 -- |Get file's date/time
@@ -439,17 +439,17 @@ setFileDateTime filename datetime = do
   setFileTimes filename atime datetime
 #endif
 
--- |Пребразование CTime в ClockTime. Используется информация о внутреннем представлении ClockTime в GHC!!!
+-- |Conversion from CTime to ClockTime. Relies on the internal representation of ClockTime in GHC!!!
 convert_CTime_to_ClockTime ctime = TOD (realToInteger ctime) 0
   where realToInteger = round . realToFrac :: Real a => a -> Integer
 
--- |Пребразование ClockTime в CTime
+-- |Conversion from ClockTime to CTime
 convert_ClockTime_to_CTime (TOD secs _) = i secs
 
--- |Текстовое представление времени
+-- |Textual representation of a time
 showtime format t = formatCalendarTime defaultTimeLocale format (unsafePerformIO (toCalendarTime t))
 
--- |Отформатировать CTime в строку с форматом "%Y-%m-%d %H:%M:%S"
+-- |Format a CTime into a string using the format "%Y-%m-%d %H:%M:%S"
 formatDateTime t  =  unsafePerformIO $ do
   ct <- toCalendarTime (convert_CTime_to_ClockTime t)
   return $ formatCalendarTime defaultTimeLocale "%Y-%m-%d %H:%M:%S" ct
@@ -462,7 +462,7 @@ removeFileModes a b  =  a `intersectFileModes` (complement b)
 
 
 ----------------------------------------------------------------------------------------------------
----- Операции с открытыми файлами ------------------------------------------------------------------
+---- Operations on open files ----------------------------------------------------------------------
 ----------------------------------------------------------------------------------------------------
 
 --withMVar  mvar action     =  bracket (takeMVar mvar) (putMVar mvar) action
@@ -471,7 +471,7 @@ liftMVar2  action mvar x   =  withMVar mvar (\a -> action a x)
 liftMVar3  action mvar x y =  withMVar mvar (\a -> action a x y)
 returnMVar action          =  action >>= newMVar
 
--- |Архивный файл, заворачивается в MVar для реализации параллельного доступа из разных тредов ко входным архивам
+-- |Archive file, wrapped in an MVar to allow concurrent access to input archives from different threads
 data Archive = Archive { archiveName :: FilePath
                        , archiveFile :: MVar File
                        }
@@ -501,7 +501,7 @@ archiveWrite         = liftMVar2 fileWrite    . archiveFile
 archiveWriteBuf      = liftMVar3 fileWriteBuf . archiveFile
 archiveClose         = liftMVar1 fileClose    . archiveFile
 
--- |Скопировать данные из одного архива в другой и затем восстановить позицию в исходном архиве
+-- |Copy data from one archive to another and then restore the position in the source archive
 archiveCopyData srcarc pos size dstarc = do
   withMVar (archiveFile srcarc) $ \srcfile ->
     withMVar (archiveFile dstarc) $ \dstfile -> do
@@ -510,9 +510,9 @@ archiveCopyData srcarc pos size dstarc = do
       fileCopyBytes srcfile size dstfile
       fileSeek      srcfile restorePos
 
--- |При работе с одним физическим диском (наиболее частый вариант)
--- нет смысла выполнять несколько I/O операций параллельно,
--- поэтому мы их все проводим через "угольное ушко" одной-единственной MVar
+-- |When working with a single physical disk (the most common case)
+-- there is no point in performing several I/O operations in parallel,
+-- so we funnel them all through the eye of a needle of one single MVar
 oneIOAtTime = unsafePerformIO$ newMVar "oneIOAtTime value"
 fileReadBuf  file buf size = withMVar oneIOAtTime $ \_ -> fileReadBufSimple file buf size
 fileWriteBuf file buf size = withMVar oneIOAtTime $ \_ -> fileWriteBufSimple file buf size
@@ -537,13 +537,13 @@ fileWriteBufSimple = choose3 fWriteBufSimple (\_ _ _ -> err "url_write")   (\_ _
 fileFlush          = choose3 fFlush          (\_     -> err "url_flush")   (\_     -> return ())
 fileClose          = choose3 fClose          url_close volfile_close
 
--- |Проверяет существование файла/URL
+-- |Checks whether a file/URL exists
 fileExist name | isURL name = do url <- withCString name url_open
                                  url_close url
                                  return (url/=nullPtr)
                | otherwise  = fExist name
 
--- |Проверяет, является ли имя url
+-- |Checks whether the name is a url
 isURL name = "://" `isInfixOf` name
 
 {-# NOINLINE choose0 #-}
@@ -602,7 +602,7 @@ foreign import ccall safe "URL.h url_close"  url_close  :: URL -> IO ()
 
 
 ----------------------------------------------------------------------------------------------------
----- Под Windows мне пришлось реализовать библиотеку в/в самому для поддержки файлов >4Gb и Unicode имён файлов
+---- Under Windows I had to implement the I/O library myself in order to support files >4Gb and Unicode file names
 ----------------------------------------------------------------------------------------------------
 #if defined(FREEARC_WIN) && !defined(__MHS__)
 
@@ -765,19 +765,19 @@ fileWrite     file str  = withCStringLen str $ \(buf,size) -> fileWriteBuf file 
 fileGetBinary name      = bracket (fileOpen   name) fileClose (\file -> fileGetSize file >>= fileRead file . i)
 filePutBinary name str  = bracket (fileCreate name) fileClose (`fileWrite` str)
 
--- |Скопировать заданное количество байт из одного открытого файла в другой
+-- |Copy the given number of bytes from one open file to another
 fileCopyBytes srcfile size dstfile = do
-  allocaBytes aHUGE_BUFFER_SIZE $ \buf -> do        -- используем `alloca`, чтобы автоматически освободить выделенный буфер при выходе
-    doChunks size aHUGE_BUFFER_SIZE $ \bytes -> do  -- Скопировать size байт кусками по aHUGE_BUFFER_SIZE
-      bytes <- fileReadBuf srcfile buf bytes        -- Проверим, что прочитано ровно столько байт, сколько затребовано
+  allocaBytes aHUGE_BUFFER_SIZE $ \buf -> do        -- use `alloca` so that the allocated buffer is freed automatically on exit
+    doChunks size aHUGE_BUFFER_SIZE $ \bytes -> do  -- Copy size bytes in chunks of aHUGE_BUFFER_SIZE
+      bytes <- fileReadBuf srcfile buf bytes        -- Check that exactly as many bytes were read as were requested
       fileWriteBuf dstfile buf bytes
 
--- |True, если существует файл или каталог с заданным именем
+-- |True if a file or directory with the given name exists
 fileOrDirExist f  =  mapM ($f) [fileExist, dirExist] >>== or
 
 
 ---------------------------------------------------------------------------------------------------
----- Глобальные настройки перекодировки для использования в глубоко вложенных функциях ------------
+---- Global recoding settings for use in deeply nested functions ----------------------------------
 ---------------------------------------------------------------------------------------------------
 
 -- |Translate filename from filesystem to internal encoding

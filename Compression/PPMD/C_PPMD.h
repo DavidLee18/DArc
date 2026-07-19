@@ -6,27 +6,27 @@ int ppmd_decompress (int order, MemSize mem, int MRMethod, CALLBACK_FUNC *callba
 
 #ifdef __cplusplus
 
-// Реализация стандартного интерфейса методов сжатия COMPRESSION_METHOD
+// Implementation of the standard COMPRESSION_METHOD compression method interface
 class PPMD_METHOD : public COMPRESSION_METHOD
 {
 public:
-  // Параметры этого метода сжатия
-  int     order;     // Порядок модели (по скольким последним сивмолам предсказывается следующий)
-  MemSize mem;       // Объём памяти, используемой для хранения модели
-  int     MRMethod;  // Что делать, когда память, выделенная для хранения модели, исчерпана
+  // Parameters of this compression method
+  int     order;     // Model order (how many preceding symbols are used to predict the next one)
+  MemSize mem;       // Amount of memory used to store the model
+  int     MRMethod;  // What to do when the memory allocated for the model is exhausted
 
-  // Конструктор, присваивающий параметрам метода сжатия значения по умолчанию
+  // Constructor assigning default values to the parameters of the compression method
   PPMD_METHOD();
 
-  // Функции распаковки и упаковки
+  // Decompression and compression functions
   virtual int decompress (CALLBACK_FUNC *callback, void *auxdata);
 #ifndef FREEARC_DECOMPRESS_ONLY
   virtual int compress (CALLBACK_FUNC *callback, void *auxdata);
 
-  // Записать в buf[MAX_METHOD_STRLEN] строку, описывающую метод сжатия и его параметры (функция, обратная к parse_PPMD)
+  // Write into buf[MAX_METHOD_STRLEN] a string describing the compression method and its parameters (the inverse of parse_PPMD)
   virtual void ShowCompressionMethod (char *buf);
 
-  // Получить/установить объём памяти, используемой при упаковке/распаковке, размер словаря или размер блока
+  // Get/set the amount of memory used for compression/decompression, the dictionary size or the block size
   virtual MemSize GetCompressionMem     (void)          {return mem;}
   virtual MemSize GetDecompressionMem   (void)          {return mem;}
   virtual MemSize GetDictionary         (void)          {return 0;}
@@ -38,7 +38,7 @@ public:
 #endif
 };
 
-// Разборщик строки метода сжатия PPMD
+// Parser for the PPMD compression method string
 COMPRESSION_METHOD* parse_PPMD (char** parameters);
 
 #endif  // __cplusplus

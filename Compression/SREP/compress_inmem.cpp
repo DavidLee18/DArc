@@ -37,14 +37,14 @@ struct DictionaryCompressor
   void compress (char *dict, TIndex dictsize, char *buf, TIndex bufsize, TIndex *hashptr, unsigned &literal_bytes, STAT *statbuf, STAT *&stat);
 };
 
-// Находит адрес начала совпадения, идя назад от *p и *q
+// Finds the address of the start of the match, walking backwards from *p and *q
 static inline char* find_match_start (char* p, char* q, char* start)
 {
   while (q>start)   if (*--p != *--q)  return q+1;
   return q;
 }
 
-// Находит адрес первого несовпадающего байта, идя вперёд от *p и *q
+// Finds the address of the first mismatching byte, walking forwards from *p and *q
 static inline char* find_match_end (char* p, char* q, char* end)
 {
   while (q<end && *p==*q) p++,q++;
@@ -91,42 +91,42 @@ void DictionaryCompressor::compress (char *dict, TIndex dictsize, char *buf, TIn
   TIndex last_match_end = bufstart;             // points to the end of last match written, we shouldn't start new match before it
   TIndex DataStart      = (bufstart + dictsize - MAX_DIST) % dictsize;   // first byte that may be included in match because its data was not yet overwritten by the b/g read cycle
 
-  // ОСНОВНОЙ ЦИКЛ, НАХОДЯЩИЙ ПОВТОРЯЮЩИЕСЯ СТРОКИ ВО ВХОДНЫХ ДАННЫХ
+  // MAIN LOOP THAT FINDS REPEATED STRINGS IN THE INPUT DATA
   for (TIndex last_i=bufstart; last_i+2*L<=bufend; last_i+=L)
   {
     prefetch(hasharr[hashptr[INMEM_PREFETCH*2]]);   // Prefetch the hasharr[] by INMEM_PREFETCH cycles ahead
 
-    // Проверяем совпадение в лучшем на следующие L байт блоке тоже длины L
-    TIndex hash = *hashptr++;                   // Считываем хеш и адрес этого блока, уже найденные в prepare_buffer()
+    // Check for a match at the best block of L bytes among the next L bytes
+    TIndex hash = *hashptr++;                   // Read the hash and the address of that block, already computed in prepare_buffer()
     TIndex i    = last_i + (*hashptr++);
-    if (i >= last_match_end)                    // Проверяем совпадение только если предыдущее найденное совпадение уже кончилось
+    if (i >= last_match_end)                    // Only check for a match if the previously found match has already ended
     {
       TIndex match = hasharr[hash];
       if (match)
       {
         Offset match_distance  =  match<i? i-match : dictsize-match+i;
         if (match_distance > MAX_DIST)  goto no_match;
-        // Возможно 6 конфигураций взаимного порядка DataStart, match и i. Первые три из них уже отсечены проверкой match_distance.
-        // В оставшихся трёх конфигурациях важно проследить, чтобы ни match, ни i в процессе сравнения не вышли за область актуальных данных.
-        // Для i это сделать просто: last_match_end<=i<bufend.
-        // Для match ограничение: LowBound_for_match<=match<dictsize,
-        // где LowBound_for_match  =  match>=DataStart? DataStart : 0
-        // и соответственно...
-        // Наименьшее/наибольшее значение, которое может принимать при поиске индекс, базирующийся на i,
-        // чтобы индекс, базирующийся на match, не вышел за пределы буфера и не заглянул в будущие данные
+        // There are 6 possible orderings of DataStart, match and i. The first three of them are already ruled out by the match_distance check.
+        // In the remaining three orderings we must make sure that neither match nor i runs outside the area of valid data while comparing.
+        // For i this is easy: last_match_end<=i<bufend.
+        // For match the constraint is: LowBound_for_match<=match<dictsize,
+        // where LowBound_for_match  =  match>=DataStart? DataStart : 0
+        // and correspondingly...
+        // The smallest/largest value that the i-based index may take during the search,
+        // so that the match-based index stays inside the buffer and does not peek into future data
         TIndex LowBound  = match>=DataStart? (match-DataStart>i? 0 : i-(match-DataStart)) : i-match;
         TIndex HighBound = match<i? dictsize : dictsize-match+i;
-        // Найдём реальные начало и конец совпадения, сравнивая вперёд и назад от dict[i] <=> dict[match]
-        // i ограничено снизу и сверху значениями last_match_end и bufend, соответственно
+        // Find the real start and end of the match by comparing forwards and backwards from dict[i] <=> dict[match]
+        // i is bounded below and above by last_match_end and bufend, respectively
         TIndex start = find_match_start (dict+match, dict+i, dict+mymax(last_match_end,LowBound)) - dict;
         TIndex end   = find_match_end   (dict+match, dict+i, dict+mymin(bufend,HighBound)) - dict;
-        // start и end - границы совпадения вокруг i, match_len - его длина, lit_len - расстояние от конца предыдущего матча до начала этого
+        // start and end are the boundaries of the match around i, match_len is its length, lit_len is the distance from the end of the previous match to the start of this one
         TIndex match_len = end-start,  lit_len = start-last_match_end;
         if (match_len >= MIN_MATCH)
         {
-          // Совпадение найдено! Запишем информацию о нём в выходные буфера
+          // Match found! Write information about it to the output buffers
           ENCODE_LZ_MATCH(stat,false,BASE_LEN, lit_len,match_distance,match_len);
-          // Запомнить позицию конца найденного совпадения и вывести отладочную статистику
+          // Remember the end position of the match found and print debug statistics
           debug ((match_cnt++, matches+=match_len));
           debug (verbose>1 && printf ("Match %d %d %d  (lit %d)\n", -match_distance, start, match_len, lit_len));
           literal_bytes -= match_len;  last_match_end=end;
@@ -134,6 +134,6 @@ void DictionaryCompressor::compress (char *dict, TIndex dictsize, char *buf, TIn
       }
     }
 no_match:
-    hasharr[hash] = i;         // Заносим в хеш-таблицу этот L-байтный блок
+    hasharr[hash] = i;         // Store this L-byte block into the hash table
   }
 }

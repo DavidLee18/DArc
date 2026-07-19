@@ -776,9 +776,9 @@ int count_desc_order (const int *a, const int *b)   { return *b-*a; }
 
 void detect_datatype (BYTE *buf, int bufsize, char *type)
 {
-    // Вычисляем распределение частот символов и одновременно..
+    // Compute the character frequency distribution and at the same time..
     int count[256];  iterate(256, count[i]=0);
-    // ..ищем матчи с помощью простой LZ-схемы и определяем долю REPDIST кодов среди них
+    // ..look for matches using a simple LZ scheme and measure the share of REPDIST codes among them
     int matches=0, repdists=0, sumlen=0, dist[4]={0,0,0,0};
 #define TABLE_SIZE 16384
 #define hash(p)  (value16(p) % TABLE_SIZE)
@@ -786,7 +786,7 @@ void detect_datatype (BYTE *buf, int bufsize, char *type)
     if (bufsize>10) for (BYTE *p=buf; p<buf+bufsize-10; p++) {
        BYTE *q = table[hash(p)];
        if (q && value16(p)==value16(q)) {
-           if (p-q<256) {  // собираем статистику только по матчам с дистанцией <256
+           if (p-q<256) {  // gather statistics only for matches with distance <256
                matches++;
                int x=p-q;
                for (int i=0; i<elements(dist); i++) {
@@ -794,7 +794,7 @@ void detect_datatype (BYTE *buf, int bufsize, char *type)
                    if (x==p-q)  {repdists++; break;}
                }
            }
-           // Пропускаем найденный матч, не забывая обновлять счётчик/поисковый хеш
+           // Skip over the match we found, remembering to update the counters/search hash
            BYTE *o=p;
            while (value32(p)==value32(q)  &&  p<buf+bufsize-10)
               count[p[0]]++, table[hash(p+0)]=p,
@@ -805,7 +805,7 @@ void detect_datatype (BYTE *buf, int bufsize, char *type)
            while (*p==*q  &&  p<buf+bufsize-10)  count[*p]++, table[hash(p)]=p, p++, q++;  count[*p]++;
            if (o-q<256)  sumlen += p-o;
        } else {
-           count[*p]++,  table[hash(p)] = p;    // матч не найден
+           count[*p]++,  table[hash(p)] = p;    // no match found
        }
 
     }
@@ -813,7 +813,7 @@ void detect_datatype (BYTE *buf, int bufsize, char *type)
 #undef TABLE_SIZE
 #undef hash
 
-    // Сжатие order-0 моделью
+    // Compression with an order-0 model
     double order0=0;
     for (int i=0; i<256; i++)
     {
@@ -821,7 +821,7 @@ void detect_datatype (BYTE *buf, int bufsize, char *type)
             order0 += count[i] * log(double(bufsize/count[i]))/log(double(2)) / 8;
     }
 
-    // Кол-во символов, занимающих 90% объёма текста
+    // Number of characters that make up 90% of the text volume
     int sums=0, total=bufsize, normal_chars=256;
     qsort (count, 256, sizeof(*count),
            (int (*)(const void*, const void*)) count_desc_order);
@@ -836,8 +836,8 @@ void detect_datatype (BYTE *buf, int bufsize, char *type)
         }
     }
 
-    // Тип данных: $compressed если не сжимается ни order-0 ни lz77.
-    //             $text если активных символов от 17 до 80, число повторов дистанций невелико и lz-матчи составляют хотя бы 10% данных
+    // Data type: $compressed if it compresses with neither order-0 nor lz77.
+    //            $text if there are 17 to 80 active characters, few repeated distances, and lz matches cover at least 10% of the data
     strcpy (type, buf==NULL                                 ? "$compressed $text" :  // list of data types this procedure is able to recognize
 
                   order0 > 0.95*bufsize
@@ -867,7 +867,7 @@ void detect_datatype (BYTE *buf, int bufsize, char *type)
 // demonstrates more complex technique of gathering statistics
 // while processing file in small chunks
 
-// Вычисление времени работы алгоритма
+// Measuring the algorithm's running time
 #include <io.h>
 #include <windows.h>
 static LARGE_INTEGER Frequency, PerformanceCountStart, PerformanceCountEnd;

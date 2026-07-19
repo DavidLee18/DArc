@@ -6,31 +6,31 @@ int rep_decompress (MemSize BlockSize, int MinCompression, int MinMatchLen, int 
 
 #ifdef __cplusplus
 
-// Реализация стандартного интерфейса методов сжатия COMPRESSION_METHOD
+// Implementation of the standard COMPRESSION_METHOD compression-method interface
 class REP_METHOD : public COMPRESSION_METHOD
 {
 public:
-  // Параметры этого метода сжатия
-  MemSize BlockSize;        // Размер буфера. Совпадения ищутся только в пределах этой дистанции. Расход памяти - BlockSize+BlockSize/4
-  int     MinCompression;   // Минимальный процент сжатия. Если выходные данные больше, то вместо них будут записаны оригинальные (несжатые) данные
-  int     MinMatchLen;      // Минимальная длина строки, при которой она будет заменяться ссылкой на предыдущее вхождение
-  int     Barrier;          // Граница, после которой допускается использовать совпадения меньшего размера (поскольку lzma/ppmd всё равно пропустит их)
-  int     SmallestLen;      // Этот меньший размер
-  int     HashSizeLog;      // Логарифм размера хеша (в 4-байтовых словах). Большие значения увеличивают сжатие, но замедляют его. При нулевом значении оптимальный размер вычисляется автоматически
-  int     Amplifier;        // Коэффициент "усиления" поиска
+  // Parameters of this compression method
+  MemSize BlockSize;        // Buffer size. Matches are searched only within this distance. Memory usage is BlockSize+BlockSize/4
+  int     MinCompression;   // Minimum compression percentage. If the output is larger than that, the original (uncompressed) data is stored instead
+  int     MinMatchLen;      // Minimum string length at which it is replaced by a reference to a previous occurrence
+  int     Barrier;          // Boundary past which smaller matches may be used (since lzma/ppmd would skip them anyway)
+  int     SmallestLen;      // That smaller size
+  int     HashSizeLog;      // Logarithm of the hash size (in 4-byte words). Larger values improve compression but slow it down. When zero, the optimal size is computed automatically
+  int     Amplifier;        // Search "amplification" factor
 
-  // Конструктор, присваивающий параметрам метода сжатия значения по умолчанию
+  // Constructor assigning default values to the compression method parameters
   REP_METHOD();
 
-  // Функции распаковки и упаковки
+  // Decompression and compression functions
   virtual int decompress (CALLBACK_FUNC *callback, void *auxdata);
 #ifndef FREEARC_DECOMPRESS_ONLY
   virtual int compress   (CALLBACK_FUNC *callback, void *auxdata);
 
-  // Записать в buf[MAX_METHOD_STRLEN] строку, описывающую метод сжатия и его параметры (функция, обратная к parse_REP)
+  // Write into buf[MAX_METHOD_STRLEN] a string describing the compression method and its parameters (the inverse of parse_REP)
   virtual void ShowCompressionMethod (char *buf);
 
-  // Получить/установить объём памяти, используемой при упаковке/распаковке, размер словаря или размер блока
+  // Get/set the amount of memory used for compression/decompression, the dictionary size or the block size
   virtual MemSize GetCompressionMem     (void);
   virtual MemSize GetDecompressionMem   (void)         {return BlockSize;}
   virtual MemSize GetDictionary         (void)         {return BlockSize;}
@@ -42,7 +42,7 @@ public:
 #endif
 };
 
-// Разборщик строки метода сжатия REP
+// Parser for the REP compression method string
 COMPRESSION_METHOD* parse_REP (char** parameters);
 
 #endif  // __cplusplus

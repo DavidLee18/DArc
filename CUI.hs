@@ -1,6 +1,6 @@
 {-# LANGUAGE CPP #-}
 ----------------------------------------------------------------------------------------------------
----- Информирование пользователя о ходе выполнения программы (CUI - Console User Interface).  ------
+---- Notifying the user about the program's progress (CUI - Console User Interface).  --------------
 ----------------------------------------------------------------------------------------------------
 module CUI where
 
@@ -32,12 +32,12 @@ import UIBase
 
 
 ----------------------------------------------------------------------------------------------------
----- Отображение индикатора прогресса --------------------------------------------------------------
+---- Progress indicator display --------------------------------------------------------------------
 ----------------------------------------------------------------------------------------------------
 
--- |Запускает background thread для вывода индикатора прогресса
+-- |Starts a background thread that displays the progress indicator
 guiStartProgram = do
-  -- Обновляем индикатор прогресса и заголовок окна раз в N секунд
+  -- Update the progress indicator and the window title once every N seconds
   -- MicroHs: green thread context switching is very expensive (~0.5s per tick),
   -- so use a much longer interval to avoid dominating CPU time.
 #ifdef __MHS__
@@ -49,7 +49,7 @@ guiStartProgram = do
     myFlushStdout
     setConsoleTitle title
 
--- |Вызывается в начале обработки файла
+-- |Called at the start of processing a file
 guiStartFile = do
   command <- val ref_command
   when (opt_indicator command == "2") $ do
@@ -61,14 +61,14 @@ guiStartFile = do
     uiResumeProgressIndicator
     hFlush stdout
 
--- |Приостановить вывод индикатора прогресса и стереть его следы
+-- |Suspend the progress indicator display and erase its traces
 uiSuspendProgressIndicator = do
   aProgressIndicatorEnabled =: False
   (indicator, indType, arcname, direction, b, bytes', total') <- val aProgressIndicatorState
   myPutStr$ clear_percents indicator
   myFlushStdout
 
--- |Возобновить вывод индикатора прогресса и вывести его текущее значение
+-- |Resume the progress indicator display and print its current value
 uiResumeProgressIndicator = do
   (indicator, indType, arcname, direction, b, bytes', total') <- val aProgressIndicatorState
   bytes <- bytes' b;  total <- total'
@@ -83,14 +83,14 @@ uiResumeProgressIndicator = do
 
 
 ----------------------------------------------------------------------------------------------------
----- Запросы к пользователю ("Перезаписать файл?" и т.п.) ------------------------------------------
+---- User prompts ("Overwrite file?" etc.) ---------------------------------------------------------
 ----------------------------------------------------------------------------------------------------
 
--- |Запрос о перезаписи файла
+-- |Prompt asking whether to overwrite a file
 askOverwrite filename _ _ _ =  ask ("Overwrite " ++ filename)
 {-# NOINLINE askOverwrite #-}
 
--- |Общий механизм для выдачи запросов к пользователю
+-- |Generic mechanism for issuing prompts to the user
 ask question ref_answer answer_on_u =  do
   old_answer <- val ref_answer
   new_answer <- case old_answer of
@@ -103,7 +103,7 @@ ask question ref_answer answer_on_u =  do
     "u" -> return answer_on_u
     _   -> return (new_answer `elem` ["y","a"])
 
--- |Собственно общение с пользователем происходит здесь
+-- |The actual interaction with the user happens here
 ask_user question = syncUI $ pauseTiming go  where
   go = do myPutStr$ "\n  "++question++" ("++valid_answers++")? "
           hFlush stdout
@@ -114,7 +114,7 @@ ask_user question = syncUI $ pauseTiming go  where
             then return answer
             else myPutStr askHelp >> go
 
--- |Подсказка, выводимая на экран при недопустимом ответе
+-- |Help text printed on screen when the answer is invalid
 askHelp = unlines [ "  Valid answers are:"
                   , "    y - yes"
                   , "    n - no"
@@ -128,16 +128,16 @@ valid_answers = "y/n/a/s/u/q"
 
 
 ----------------------------------------------------------------------------------------------------
----- Запрос паролей --------------------------------------------------------------------------------
+---- Password prompts ------------------------------------------------------------------------------
 ----------------------------------------------------------------------------------------------------
 
 ask_passwords = (ask_encryption_password, ask_decryption_password, bad_decryption_password)
 
--- |Печатает сообщение о том, что введённый пароль не подходит для дешифрования
+-- |Prints a message saying that the entered password is not suitable for decryption
 bad_decryption_password = myPutStrLn "Incorrect password"
 
--- |Запрос пароля при сжатии. Используется невидимый ввод
--- и запрос повторяется дважды для исключения ошибки при его вводе
+-- |Prompt for the password when compressing. Input is hidden
+-- and the prompt is repeated twice to rule out typing mistakes
 ask_encryption_password opt_parseData = syncUI $ pauseTiming $ do
   withoutEcho $ go where
     go = do myPutStr "\n  Enter encryption password:"
@@ -151,14 +151,14 @@ ask_encryption_password opt_parseData = syncUI $ pauseTiming $ do
                       go
               else return answer
 
--- |Запрос пароля для распаковки. Используется невидимый ввод
+-- |Prompt for the decompression password. Input is hidden
 ask_decryption_password opt_parseData = syncUI $ pauseTiming $ do
   withoutEcho $ do
   myPutStr "\n  Enter decryption password:"
   hFlush stdout
   getHiddenLine >>== opt_parseData 't'
 
--- |Ввести строку, не отображая её на экране
+-- |Read a line without displaying it on screen
 getHiddenLine = go ""
   where go s = do c <- getHiddenChar
                   case c of
@@ -169,9 +169,9 @@ getHiddenLine = go ""
 
 #ifdef FREEARC_WIN
 
--- |Перевести консоль в режим невидимого ввода
+-- |Switch the console into hidden-input mode
 withoutEcho = id
--- |Ввести символ без эха
+-- |Read a character without echo
 getHiddenChar = liftM (chr.fromEnum) c_getch
 foreign import ccall unsafe "conio.h getch"
    c_getch :: IO CInt
@@ -198,15 +198,15 @@ withoutEcho action = do
 
 
 ----------------------------------------------------------------------------------------------------
----- Ввод/вывод комментариев к архиву  -------------------------------------------------------------
+---- Archive comment input/output  -----------------------------------------------------------------
 ----------------------------------------------------------------------------------------------------
 
--- |Вывести на экран комментарий к архиву
+-- |Print the archive comment on screen
 uiPrintArcComment arcComment = do
   when (arcComment>"") $ do
     myPutStrLn arcComment
 
--- |Ввести с stdin комментарий к архиву
+-- |Read the archive comment from stdin
 uiInputArcComment old_comment = syncUI $ pauseTiming $ do
   myPutStrLn "Enter archive comment, ending with \".\" on separate line:"
   hFlush stdout

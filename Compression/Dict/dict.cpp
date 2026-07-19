@@ -1,208 +1,208 @@
 /*
 
-DICT - алгоритм словарной замены. Построение словаря осуществляется
-       во время работы программы, использованный словарь выводится
-       перед закодированными данными
+DICT - a dictionary substitution algorithm. The dictionary is built
+       while the program runs; the dictionary that was used is written
+       out ahead of the encoded data
 
-Макросы, управляющие компиляцией:
-PPMD_VERSION - создать версию программы, нацеленную на лучшее сжатие PPM-алгоритмами
-DEBUG        - включить сбор статистики, печатаемой опциями -v
-DICT_LIBRARY - не включать main() и прочие функции, необходимые только для standalone программы
+Macros controlling compilation:
+PPMD_VERSION - build a version of the program aimed at better compression by PPM algorithms
+DEBUG        - enable collection of the statistics printed by the -v options
+DICT_LIBRARY - omit main() and the other functions needed only by the standalone program
 
 To-do list:
- + эксперименты с GOOD_WORD
- + использовать редкие символы (правда "для exe, doc и т.п." это ни хрена не сработало :()
- + уменьшать требования к словам для "быстрого режима" (NB! сделать это параметризуемым)
- + статистика по словарю/кодированию
- + в 7 раз ускорен FindWord
- + исправлены ошибки типа пустого словаря
- + попробовать слова [a-z]+ - фигушки!
- + сканирование данных - использовать хеш с гарантией нахождения слова (как в кодировании)
- + сортировка словаря для увеличения его сжатия (отдельно 1- и 2-байтовых строк)
- + кодирование словаря: разделитель слов и сколько букв из последнего слова повторять
- + -DDICT_LIBRARY - не определять функцию main()
- - DictDecode() - использовать функции чтения/записи чтобы работать в фиксированном объёме памяти
- - предусмотреть выход если найдено слишком мало слов, слишком мало weak chars и в других пограничных случаях
- - настройка параметров отбора слов в зависимости от входных данных (ghc-src - VERY_GOOD_CNT=8000, rus - option_fast...)
- - кодирование словаря: концы слов
+ + experiments with GOOD_WORD
+ + use rare characters (though "for exe, doc and the like" this didn't work at all :()
+ + relax the word requirements for "fast mode" (NB! make this parameterizable)
+ + dictionary/encoding statistics
+ + FindWord sped up 7-fold
+ + fixed bugs such as an empty dictionary
+ + try [a-z]+ words - no luck!
+ + data scanning - use a hash that guarantees finding the word (as in encoding)
+ + sort the dictionary to improve its compression (1- and 2-byte strings separately)
+ + dictionary encoding: word separator and how many letters to repeat from the previous word
+ + -DDICT_LIBRARY - do not define the main() function
+ - DictDecode() - use read/write functions so it can work in a fixed amount of memory
+ - provide an exit path if too few words are found, too few weak chars, and in other borderline cases
+ - tune the word selection parameters based on the input data (ghc-src - VERY_GOOD_CNT=8000, rus - option_fast...)
+ - dictionary encoding: word endings
  - exe: we love any chars! ;)
- - сделать все переменные локальными и использовать malloc
- - использовать chr+' ' для кодирования украденного chr - impossible
+ - make all variables local and use malloc
+ - use chr+' ' to encode a stolen chr - impossible
 
 
-АЛГОРИТМ РАБОТЫ
+HOW THE ALGORITHM WORKS
 
-1. Пройти по файлу, создавая список слов:
-   * хеш-таблица из 4-байтовых элементов отмечает счётчик слова (2 байта) и хеш его родителя (ещё 2 байта)
-   * хеш родителя используется для тестирования коллизий, при коллизии делается до 13 рехеширований
-   * для каждого слова смотрим его счётчик в таблице:
-       счётчик=0 -> добавить слово в создаваемый список слов и счётчик:=1
-       счётчик<5 -> счётчик++
-       иначе     -> добавить к слову следующую букву из входного текста и повторить цикл
-   * по выходу из цикла начинаем его заново со следующего двухбуквенного слова из входного текста
+1. Walk over the file, building a list of words:
+   * a hash table of 4-byte entries records the word's counter (2 bytes) and its parent's hash (2 more bytes)
+   * the parent hash is used to detect collisions; on a collision up to 13 rehashes are performed
+   * for each word we look at its counter in the table:
+       counter=0 -> add the word to the list being built and set counter:=1
+       counter<5 -> counter++
+       otherwise -> append the next letter from the input text to the word and repeat the loop
+   * on leaving the loop we restart it from the next two-letter word of the input text
 
-2. Пройти по списку слов и отдать счётчики однодетных слов их детям (эти слова легко опознать
-   по их счётчику, имеющему минимальное возможное значение), исходя из предположения, что эти
-   счётчики отмечают вхождения тех же детей до того, как было получено разрешение на их рождение.
-   Затем пройти по списку слов с конца в начало (чтобы сначала обработать производные, более длинные
-   слова) и отдать счётчики слишком редких слов их родителям. Счётчики извлекаются из хеш-таблицы,
-   созданной на первом шаге
+2. Walk the word list and hand the counters of single-child words over to their children (such words are
+   easy to spot by their counter having the minimum possible value), on the assumption that those
+   counters record occurrences of those very children before permission to create them was granted.
+   Then walk the word list from the end to the beginning (so that derived, longer words are handled
+   first) and hand the counters of overly rare words over to their parents. The counters are taken from
+   the hash table built in the first step
 
-3. Теперь мы имеем список наиболее употребительных слов со счётчиками и частоты отдельных символов
-   во входном тексте, которые нетрудно собрать между делом на первом этапе.
-   Отсортировав оба списка по частотам, мы легко узнаем, какие символы можно задействовать для
-   кодирования слов и какие слова будут кодироваться одно-, и какие двух-буквенными сокращениями
+3. Now we have a list of the most frequently used words with their counters, plus the frequencies of the
+   individual characters in the input text, which are easy to gather along the way in the first pass.
+   Having sorted both lists by frequency, we easily learn which characters can be used for encoding
+   words and which words will be encoded by one- and which by two-letter abbreviations
 
-4. Присваиваем коды словам
+4. Assign codes to the words
 
-5. Выводим словарь в выходной поток
+5. Write the dictionary to the output stream
 
-6. Строим небольшой хеш для всех используемых слов и их частичных начал.
-   Этот хеш должен позволить нам просканировать текст до конца слова и определить его код.
-   Поскольку количество слов <10k и их суммарная длина <100k, то этот хеш должен полностью влезать
-   в кеш процессора
+6. Build a small hash for all the words in use and their partial prefixes.
+   This hash must let us scan the text up to the end of a word and determine its code.
+   Since the number of words is <10k and their total length is <100k, this hash should fit entirely
+   into the CPU cache
 
-7. Кодируем текст, используя этот хеш
-
-
-КАК ПРЕДОТВРАТИТЬ ПОЯВЛЕНИЕ ФАНТОМНЫХ СЛОВ С ЧАСТОТОЙ 4?
-
-1. Пройти по списку слов из начала в конец. если родитель имеет минимальную частоту,
-   какую только может иметь слово с ребёнком, то это означает, что текущее слово - его
-   единственный ребёнок и резонно предположить, что все вхождения родительского слова
-   были на самом деле текущим словом. В этом случае забрать её себе с пометкой "фантомная частота".
-   в результате все фантомные частоты должны будут "скатиться" к наиболее длинным словам из этой
-   ветки (РЕАЛИЗОВАНО КАК ПЕРВАЯ ЧАСТЬ ЭТАПА 2)
-
-2. Альтернативно - пройти второй раз по файлу, подсчитывая частоты уже известных слов,
-   но не создавая новых
+7. Encode the text using this hash
 
 
-РАСПРЕДЕЛЕНИЕ СЛОВ МЕЖДУ ОДНОБАЙТОВЫМИ И ДВУХБАЙТОВЫМИ КОДАМИ
+HOW TO PREVENT PHANTOM WORDS WITH FREQUENCY 4 FROM APPEARING?
 
-1. Давать однобайтовые коды наиболее частым словам, безотносительно к их длине (РЕАЛИЗОВАНО)
-2. Отдавать словам коды слишком редких символов (РЕАЛИЗОВАНО)
+1. Walk the word list from beginning to end. If the parent has the minimum frequency that
+   a word with a child can possibly have, that means the current word is its
+   only child, and it is reasonable to assume that all occurrences of the parent word
+   were in fact the current word. In this case take that frequency over, marked as "phantom frequency".
+   As a result all phantom frequencies should "roll down" to the longest words of that
+   branch (IMPLEMENTED AS THE FIRST PART OF STAGE 2)
 
-
-ЗАПИСЫВАТЬ ТЕКСТ ОДНОБАЙТОВЫХ СЛОВ В НАЧАЛЕ ФАЙЛА, А ДВУХБАЙТОВЫХ - ПО МЕСТУ ИХ ПЕРВОГО УПОТРЕБЛЕНИЯ
-
-0x11 0x12 abcde .... 0x11 0x12 (кодирует слово abcde). При этом _длины_ всех слов записывать в начале файла
-
-
-ИСПОЛЬЗОВАТЬ ДЛЯ ПРОВЕРКИ СЛОВ (MIN_VISITS_TO_HAVE_SON, ALLOW_TO_EXTEND_WORD, GOOD_WORD)
-ВЕРОЯТНОСТИ СИМВОЛОВ И БУКВОСОЧЕТАНИЙ, КОТОРЫЕ МОЖНО СОБРАТЬ В ПРЕДВАРИТЕЛЬНОМ ПРОХОДЕ
-
-К примеру, ALLOW_TO_EXTEND_WORD(c1,c2) = True, если вероятность появления c2 после c1 < 10%
-В общем, должен работать принцип антиконтекстного моделирования - запоминать то, что действительно необычно
+2. Alternatively - make a second pass over the file, counting the frequencies of already known words
+   without creating new ones
 
 
-УЛУЧШЕНИЕ СЖАТИЯ
+DISTRIBUTING WORDS BETWEEN ONE-BYTE AND TWO-BYTE CODES
 
-1. Доп. проход для сбора реальной статистики (оптимизация словаря при смягчении критерия GOOD_WORD)
-2. При формировании слова учитывать вероятности p0[-1], p0[0], p[-1], p[0] и отношение cnt/cnt0
-     чтобы максимально избегать формирования слов типа "yteString"
-3. При наличии среди Good_Words слова 'Message' вчетверо уменьшать count для слова 'essage'
-     (при условии, что есть не более 2 слов типа '?essage'). Это позволит избавиться от тонн мусора
-4. Для binary files: использовать больше символов (сейчас там критерий word_count>10*char_count) (РЕАЛИЗОВАНО)
+1. Give one-byte codes to the most frequent words, regardless of their length (IMPLEMENTED)
+2. Hand the codes of overly rare characters over to words (IMPLEMENTED)
 
 
-УЛУЧШЕНИЕ СКОРОСТИ
+WRITE THE TEXT OF ONE-BYTE WORDS AT THE START OF THE FILE, AND OF TWO-BYTE ONES AT THEIR FIRST USE
 
-1. Шагать на 4 байта за раз, начать поиск слова с 2 байтов (РЕАЛИЗОВАНО)
-2. После коллизии искать совпадение сначала в пределах кеш-строки CPU (16/32 байта). Бессмысленно - количество хеш-коллизий не превышает 10-20%
-3. Располагать "abc", "abcd", "abcde" в одной кеш-строке CPU и только по её исчерпании делать полноценный update_hash
-4. Возвратить бинарный поиск, но делать его только после 1-2-4-байтового индексирования. Для того,
-     чтобы сделать его точным, надо сравнивать входной текст с обоими словами, между которыми он
-     оказался, и от более близкого по количеству букв идти назад по цепочке его префиксных слов.
-     Отделить массив бинарного поиска от массива полной информации по словам чтобы позволить
-     ему без мыла залезть в кеш-память (10к слов - 40кб, плюс 100кб их текста)
+0x11 0x12 abcde .... 0x11 0x12 (encodes the word abcde). The _lengths_ of all words are still written at the start of the file
 
 
-УМЕНЬШЕНИЕ РАСХОДА ПАМЯТИ
+FOR THE WORD TESTS (MIN_VISITS_TO_HAVE_SON, ALLOW_TO_EXTEND_WORD, GOOD_WORD) USE
+CHARACTER AND LETTER-PAIR PROBABILITIES THAT CAN BE GATHERED IN A PRELIMINARY PASS
 
-1. Количество создаваемых слов в 50-100 раз меньше размера файла. На каждое слово необходимо
-     16 байт в массиве FirstWord и 4 байта в хеше scan_hash, но в последнем желательно
-     иметь 4-кратный запас элементов для обеспечения высокой производительности.
-     Итого выходит 32 байта на слово, что при кол-ве слов, равном 1/32 от объёма входных данных,
-     займёт столько же памяти, сколько весь входной файл. Кроме того, на случай нетипичных файлов
-     желательно иметь возможность создавать большее количество слов
-2. Хеш-таблицу можно уменьшить вдвое (РЕАЛИЗОВАНО), структуру Word сократить до 9 байт (byte len, byte3 hash, byte hash0_high, cnt_t count)
-     Итого получится 17 байт на слово (вместо 32), с 10-20% деградацией итоговой производительности
-3. FirstWord - использовать список блоков вместо таблицы фиксированного размера
-4. Если вставлять в хеш-таблицу только слова чётной (или кратной 4) длины,
-     то можно вдвое-вчетверо сократить их количество
+For instance, ALLOW_TO_EXTEND_WORD(c1,c2) = True if the probability of c2 following c1 is < 10%
+In general, the anti-context modelling principle should apply - remember what is genuinely unusual
+
+
+IMPROVING COMPRESSION
+
+1. An extra pass to gather real statistics (dictionary optimization with a relaxed GOOD_WORD criterion)
+2. When forming a word, take into account the probabilities p0[-1], p0[0], p[-1], p[0] and the cnt/cnt0 ratio
+     so as to avoid forming words like "yteString" as much as possible
+3. If the word 'Message' is among Good_Words, reduce the count for the word 'essage' fourfold
+     (provided there are no more than 2 words of the form '?essage'). This gets rid of tons of garbage
+4. For binary files: use more characters (the criterion there is currently word_count>10*char_count) (IMPLEMENTED)
+
+
+IMPROVING SPEED
+
+1. Step 4 bytes at a time, start the word search at 2 bytes (IMPLEMENTED)
+2. After a collision, look for a match within the CPU cache line first (16/32 bytes). Pointless - the number of hash collisions never exceeds 10-20%
+3. Place "abc", "abcd", "abcde" in a single CPU cache line and only do a full update_hash once it is exhausted
+4. Bring back the binary search, but perform it only after 1-2-4-byte indexing. To make it
+     exact, the input text has to be compared against both words it fell between, and from the
+     one closer in letter count we walk back along the chain of its prefix words.
+     Separate the binary search array from the array of full word information so that
+     it can slide into the cache with ease (10k words - 40kb, plus 100kb of their text)
+
+
+REDUCING MEMORY CONSUMPTION
+
+1. The number of words created is 50-100 times smaller than the file size. Each word requires
+     16 bytes in the FirstWord array and 4 bytes in the scan_hash hash, but in the latter it is desirable
+     to have a 4-fold surplus of entries to keep performance high.
+     That comes to 32 bytes per word, which with a word count equal to 1/32 of the input data volume
+     takes as much memory as the entire input file. Besides, for atypical files it is desirable
+     to be able to create a larger number of words
+2. The hash table can be halved (IMPLEMENTED), the Word structure shrunk to 9 bytes (byte len, byte3 hash, byte hash0_high, cnt_t count)
+     That gives 17 bytes per word (instead of 32), with 10-20% degradation of overall performance
+3. FirstWord - use a list of blocks instead of a fixed-size table
+4. If only words of even (or multiple-of-4) length are inserted into the hash table,
+     their number can be cut by half or by a factor of four
 
 */
 
 
-// ЭВРИСТИКИ ДЛЯ ОТБОРА СТРОК **********************************************************************
-// Количество повторов слова перед добавлением в словарь его "детей" (зависит от его длины)
+// HEURISTICS FOR SELECTING STRINGS ****************************************************************
+// Number of repetitions of a word before its "children" are added to the dictionary (depends on its length)
 #define MIN_VISITS_TO_HAVE_SON(len)  ((len)>10? 2 : 5)
 
-// Философский вопрос - может ли слово, заканчиваюшееся символом c1, завести ребёнка от символа c2?
+// A philosophical question - may a word ending with character c1 have a child by character c2?
 #define ALLOW_TO_EXTEND_WORD(c1,c2)  (char_class(c1)==char_class(c2))
-// Для решения этого вопроса все символы разбиваются на классы (как в любом уважающем себя обществе).
-// Каждое порядочное слово должно состоять только из символов, принадлежащих одному классу.
-// Сейчас классов два: управляющие символы плюс пробел, и все остальные
+// To settle this question all characters are split into classes (as in any self-respecting society).
+// Every decent word must consist only of characters belonging to a single class.
+// There are currently two classes: control characters plus space, and everything else
 
-// Оставлять при очистке словаря только слова, выигрыш от использования которых будет достаточно велик.
-// Здесь cnt/len - счётчик/длина слова, cnt0 - счётчик его родителя
+// When cleaning up the dictionary, keep only the words whose use yields a large enough gain.
+// Here cnt/len are the word's counter/length, cnt0 is its parent's counter
 #define GOOD_WORD(cnt,cnt0,len)  (cnt>MinLargeCnt                                     \
                                   || (cnt0?  cnt>MinMediumCnt && cnt>cnt0*MinRatio    \
                                           :  cnt>MinSmallCnt))                        \
 
-// Это слово годится для кодирования даже двумя байтами?
+// Is this word worth encoding even with two bytes?
 #define GOOD_2BYTE_WORD(len,cnt)  (len>=4)
 
 
-// КОНСТАНТЫ АЛГОРИТМА ****************************************************************
-// Условная длина однобайтовой строки для тех байтов, с которых начинаются двухбайтовые строки
+// ALGORITHM CONSTANTS ****************************************************************
+// Nominal one-byte-string length for those bytes that start two-byte strings
 #define USE_DICT2                    1
-// Этот символ никогда не используется для кодов слов, вместо этого он трактуется специальным образом
+// This character is never used for word codes; instead it is treated specially
 #define RESERVED_CHAR                ' '
-// Иакс. длина кодируемого слова
+// Max. length of an encodable word
 #define MAX_WORD_LEN                 254
 
 
-// ХОЗЧАСТЬ ************************************************************************
+// HOUSEKEEPING ********************************************************************
 #include <stdio.h>
 #include <ctype.h>
 #include <limits.h>
 
 #include "../Compression.h"
 
-typedef int            count_t;  // Счётчики слов
+typedef int            count_t;  // Word counters
 
 #ifdef PPMD_VERSION
-// Полновесные счётчики, на 0.2% улучшают сжатие в PPMD
+// Full-size counters, improve PPMD compression by 0.2%
 #define SCNT_MAX INT_MAX
 typedef int      scnt_t;
 typedef unsigned hash0_t;
 #else
-// Для экономии памяти и лучшего/более быстрого сжатия в lzma/ppmonstr
+// To save memory and get better/faster compression with lzma/ppmonstr
 #define SCNT_MAX SHRT_MAX
 typedef short  scnt_t;
 typedef ushort hash0_t;
-// Если кому-нибудь когда-нибудь понадобится версия, способная сжимать и для ppmd, и для lzma,
-// то для неё эти определения должны выглядеть как:
+// If anyone ever needs a version able to compress for both ppmd and lzma,
+// then for it these definitions should look like:
 //#define SCNT_MAX (option_ppmd? INT_MAX : SHRT_MAX)
 //typedef int scnt_t;
 #endif
 
 #ifdef DEBUG
-// Немного статистики
-int FindWord_calls     // количество вызовов FindWord
-  , OutByte            // количество выведенных байт
-  , OutByte2           // количество байт, закодированных двумя байтами
-  , OutWord            // количество выведенных слов
-  , used_hash1[13+1]   // количество хеш-коллизий при парсинге
-  , used_hash2[13+1]   // количество хеш-коллизий при кодировании
-  , depth_cnt[MAX_WORD_LEN+2]      // количество поисков в хеше на глубине (длине слова) n
-  , matrix_cnt[MAX_WORD_LEN+2][MAX_WORD_LEN+2]   // количество отходов из позиции i на j шагов назад
-  , mc[MAX_WORD_LEN+2]                           // суммарные значения по столбцам matrix_cnt
-  , increment_cnt[MAX_WORD_LEN+2]  // количество операций инкремента слишком малого счётчика для слов с разными длинами в phase1
-  , addword_cnt[MAX_WORD_LEN+2]    // количество операций AddWord для слов с разными длинами в phase1
-  , badword_cnt[MAX_WORD_LEN+2]    // количество инкрементов счтчика в bad_word для слов с разными длинами в phase1
+// A bit of statistics
+int FindWord_calls     // number of FindWord calls
+  , OutByte            // number of bytes written out
+  , OutByte2           // number of bytes encoded with two bytes
+  , OutWord            // number of words written out
+  , used_hash1[13+1]   // number of hash collisions during parsing
+  , used_hash2[13+1]   // number of hash collisions during encoding
+  , depth_cnt[MAX_WORD_LEN+2]      // number of hash lookups at depth (word length) n
+  , matrix_cnt[MAX_WORD_LEN+2][MAX_WORD_LEN+2]   // number of retreats from position i by j steps back
+  , mc[MAX_WORD_LEN+2]                           // column sums of matrix_cnt
+  , increment_cnt[MAX_WORD_LEN+2]  // number of increments of a too-small counter for words of various lengths in phase1
+  , addword_cnt[MAX_WORD_LEN+2]    // number of AddWord operations for words of various lengths in phase1
+  , badword_cnt[MAX_WORD_LEN+2]    // number of counter increments in bad_word for words of various lengths in phase1
   ;
 #endif
 
@@ -215,29 +215,29 @@ void stat2 (char *nextmsg);
 #endif
 
 
-// ОПЦИИ КОМАНДНОЙ СТРОКИ **********************************************************************
-// Объем информации, выдаваемой на stdout
-//   0   только ошибки
-//   1   суммарная статистика каждого шага процесса
-//   2   информация только о выживших словах
-//   3   информация о всех словах и каждом этапе их жизни
-//   4   + информация о процессе кодирования
+// COMMAND-LINE OPTIONS ************************************************************************
+// Amount of information printed to stdout
+//   0   errors only
+//   1   summary statistics for each step of the process
+//   2   information about the surviving words only
+//   3   information about all words and every stage of their life
+//   4   + information about the encoding process
 static int verbose = 0;
 
-// Печатать время выполнения каждого шага алгоритма
+// Print the execution time of each step of the algorithm
 int print_timings = 0;
 
-// Использовать для слов только однобайтовые коды
+// Use only one-byte codes for words
 int use_plain_dictionary = 0;
 
 
 #ifndef FREEARC_DECOMPRESS_ONLY
 
 
-// СТРУКТУРЫ ДАННЫХ **********************************************************************
-count_t char_counts[UCHAR_MAX+1];   // Счётчики встречаемости отдельных сисмволов в исходном тексте
+// DATA STRUCTURES ***********************************************************************
+count_t char_counts[UCHAR_MAX+1];   // Occurrence counters for individual characters in the source text
 
-// Разбить все символы на несколько классов. Слово должно состоять из символов только одного класса
+// Split all characters into several classes. A word must consist of characters of a single class only
 char char_class_table[UCHAR_MAX+1] = {
     0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,  // 0-15
     0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,  // 16-31
@@ -248,7 +248,7 @@ char char_class_table[UCHAR_MAX+1] = {
     1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,  // PQRSTUVWXYZ[\]^_
     1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,  // `abcdefghijklmno
     1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,  // pqrstuvwxyz{|}~
-#else  // Альтернативный вариант, дает выигрыш на 4dos.doc и ДОЧЕРИ МОНТЕСУМЫ
+#else  // Alternative variant, gives a gain on 4dos.doc and Montezuma's Daughter
     0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,  //  !"#$%&'()*+,-./
     1,1,1,1,1,1,1,1,1,1,0,0,0,0,0,0,  // 0123456789:;<=>?
     0,1,1,1,1,1,1,1,1,1,1,1,1,1,1,1,  // @ABCDEFGHIJKLMNO
@@ -275,51 +275,51 @@ char char_class_table[UCHAR_MAX+1] = {
     2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,
     2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2
 #else
-    2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,  // АБВГДЕЖЗИЙКЛМНОП      CP-866
-    2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,  // РСТУФХЦЧШЩЪЫЬЭЮЯ
-    2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,  // абвгдежзийклмноп
+    2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,  // Cyrillic capitals A..P    CP-866
+    2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,  // Cyrillic capitals R..YA
+    2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,  // Cyrillic small letters a..p
     0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,  // 176-191 -
-    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,  // 192-207  - псевдографика
+    0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,  // 192-207  - box-drawing characters
     0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,  // 208-223 -
-    2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,  // рстуфхцчшщъыьэюя
-    2,2,2,2,2,2,2,2,0,0,0,0,0,0,0,0   // ЙО, йо, 6 украинских букв, затем всякая фигня
+    2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,2,  // Cyrillic small letters r..ya
+    2,2,2,2,2,2,2,2,0,0,0,0,0,0,0,0   // YO/yo, 6 Ukrainian letters, then assorted junk
 #endif
 };
 
 #define char_class(c)   (char_class_table[(unsigned)(c)])
 
 
-// ВСПОМОГАТЕЛЬНЫЕ ПРОЦЕДУРЫ ***************************************************************
+// HELPER PROCEDURES ***********************************************************************
 
-// Структура, хранящая информацию об одном слове из словаря
+// Structure holding the information about a single dictionary word
 struct Word
 {
-    unsigned len;     // длина слова
-    byte    *ptr;     // начало слова
+    unsigned len;     // word length
+    byte    *ptr;     // start of the word
 union {
-struct {              // Эти значения используются при построении и очистке словаря:
-    unsigned hash;    //   хеш слова, используется для поиска его счётчика в cnt[]
-    unsigned hash0;   //   хеш родительского слова
+struct {              // These values are used while building and cleaning up the dictionary:
+    unsigned hash;    //   hash of the word, used to find its counter in cnt[]
+    unsigned hash0;   //   hash of the parent word
 };
-struct {              // Эти значения используются после очистки словаря:
-    count_t  count;   //   количество использований этого слова
-    byte chr, chr2;   //   байт(ы), которыми будет кодироваться это слово
+struct {              // These values are used after the dictionary cleanup:
+    count_t  count;   //   number of uses of this word
+    byte chr, chr2;   //   byte(s) this word will be encoded with
 };};
 #ifdef DEBUG
-    count_t use_count;  // количество использований этого слова при кодировании
+    count_t use_count;  // number of uses of this word during encoding
 #endif
 };
 
-// Массив слов, найденных в тексте
+// Array of the words found in the text
 Word *FirstWord;
 
-// Адрес первого свободного элемента в FirstWord
+// Address of the first free entry in FirstWord
 Word *NextWord;
 
-// Адрес конца словаря. На следующих шагах алгоритма отражает конец используемой части таблицы
+// Address of the end of the dictionary. In the later steps of the algorithm it marks the end of the used part of the table
 Word *LastWord;
 
-// Добавить очередное слово в словарь
+// Add the next word to the dictionary
 inline void AddWord (byte *ptr, unsigned len, unsigned hash, unsigned hash0)
 {
     NextWord->ptr   = ptr;
@@ -329,7 +329,7 @@ inline void AddWord (byte *ptr, unsigned len, unsigned hash, unsigned hash0)
     NextWord++;
 }
 
-// Возвращает длину совпадающего префикса двух слов
+// Returns the length of the common prefix of two words
 int common_prefix_length (Word *a, Word *b)
 {
     int len = mymin (a->len, b->len), i;
@@ -337,15 +337,15 @@ int common_prefix_length (Word *a, Word *b)
     return i;
 }
 
-// Функция сравнения для сортировки слов по убыванию частоты
+// Comparison function for sorting words by descending frequency
 int __cdecl count_desc_order (const Word *a, const Word *b)   { return b->count - a->count; }
 
 #ifdef DEBUG
-// Функция сравнения для сортировки слов по убыванию частоты актуального использования
+// Comparison function for sorting words by descending actual usage frequency
 int __cdecl use_count_desc_order (const Word *a, const Word *b)   { return b->use_count - a->use_count; }
 #endif
 
-// Функция лексикографического сравнения слов. Слово, являющееся префиксом другого, считается меньшим
+// Lexicographic word comparison function. A word that is a prefix of another is considered smaller
 int lexicographical_order (const Word *a, const Word *b)
 {
   unsigned alen = a->len, blen = b->len;
@@ -355,29 +355,29 @@ int lexicographical_order (const Word *a, const Word *b)
 
 
 
-// Этот байт используется как префикс для тех символов, которые стали жертвой слов
+// This byte is used as a prefix for those characters that fell victim to words
 byte PREFIX_FOR_WEAK_CHARS;
 
 
 
-// Статистика символов
+// Character statistics
 struct char_stats {
-    byte     chr;     // сам символ
-    count_t  count;   // счётчик его частоты
+    byte     chr;     // the character itself
+    count_t  count;   // its frequency counter
 };
 
-// Функция сравнения для сортировки символов по возрастанию частот
+// Comparison function for sorting characters by ascending frequency
 int char_count_asc_order (const char_stats *a, const char_stats *b)   { return a->count - b->count; }
 
 
 
-// Пересчитать хеш слова с добавлением очередной буквы: hash("ab"),'c' -> hash("abc")
+// Recompute a word's hash when the next letter is appended: hash("ab"),'c' -> hash("abc")
 inline unsigned update_hash (unsigned hash, byte c)
 {
     return hash*137 + c + 219;
 }
 
-// Рехеширование, используемое при обнаружении коллизий
+// Rehashing used when a collision is detected
 inline unsigned rehash (unsigned hash, byte c)
 {
     return hash + c*256 + 317;
@@ -385,36 +385,36 @@ inline unsigned rehash (unsigned hash, byte c)
 
 
 
-// ПЕРВАЯ ЧАСТЬ УПАКОВКИ: ПОСТРОЕНИЕ СЛОВАРЯ ****************************************************
+// FIRST PART OF COMPRESSION: BUILDING THE DICTIONARY *******************************************
 
-// Хеш-таблица, используемая при построении словаря
+// Hash table used while building the dictionary
 struct stats {
-    scnt_t  count;   // счётчик частоты
-    hash0_t hash0;   // хеш родительского слова
+    scnt_t  count;   // frequency counter
+    hash0_t hash0;   // hash of the parent word
 }
 *scan_hash;
 
-// Найти слот в хеш-массиве, хранящий информацию о слове hash c родителем phash
+// Find the slot in the hash array holding the information about the word hash with parent phash
 #define SEARCH_IN_HASH(hash,phash,c,x,on_found,on_long_hash_chain)                                                       \
 {                                                                                                                        \
     hash0_t h; int n=13; debug ((used_hash1[n]++, depth_cnt[p+x-p0]++));                                                 \
     debug (verbose>3 && printf( "Hash   %08x %08x %08x c=%02x %d\n", phash, hash, scan_hash[hash&mask].hash0, c, x));    \
     while ((h = scan_hash[hash&mask].hash0) != 0) {                                                                      \
-        if (h == (hash0_t)phash)   goto on_found;  /* Хеш-слот, соответствующий слову [p0..p), найден */                 \
+        if (h == (hash0_t)phash)   goto on_found;  /* Hash slot corresponding to the word [p0..p) found */               \
         debug (used_hash1[n-1]++);                                                                                       \
-        if (--n == 0)  goto on_long_hash_chain;  /* Защита от зацикливания и просто слишком длинных хеш-цепочек */       \
+        if (--n == 0)  goto on_long_hash_chain;  /* Protection against infinite loops and simply overlong hash chains */ \
         hash = rehash (hash, c);                                                                                         \
         debug (verbose>3 && printf( "Rehash %08x %08x %08x\n", phash, hash, scan_hash[hash&mask].hash0));                \
     }                                                                                                                    \
 }
 
-// Добавить слово [p0,p) с хешем hash и родителем phash в словарь и хеш-таблицу
+// Add the word [p0,p) with hash hash and parent phash to the dictionary and the hash table
 #define ADDWORD(hash,phash)                                                                                        \
 {                                                                                                                  \
     unsigned len = p-p0;                                                                                           \
     debug (verbose>2 && printf( "AddWord '%.*s' len=%d %08x %08x\n", len, p0, len, hash, phash));                  \
                                                                                                                    \
-    /* Проверка переполнения словаря, "переполнения" слова и обнуления младших 16 бит хеша */                      \
+    /* Check for dictionary overflow, word "overflow" and zeroing of the low 16 bits of the hash */                \
     if (NextWord<LastWord && len<=MAX_WORD_LEN && (hash0_t)hash!=0) {                                              \
         unsigned h = hash&mask, ph = phash&mask;                                                                   \
         scan_hash[ph].count++;                                                                                     \
@@ -427,107 +427,107 @@ struct stats {
 
 #define WORD_STEP 4
 
-// время работы различных вариантов phase1
+// running times of the various phase1 variants
 //         old d:1 e:4 e-h2 f-h1 f:WS8 WS4 WS2 WS1 f3:WS4 WS1 g:WS1   g4  WS1
 //ghc-src  2.7 2.0 2.0 2.2  2.4    2.3 2.1 2.2 2.7    1.9 2.2   2.1   1.8 1.9
 //javadoc  6.1 5.0 2.9 3.0  3.3    2.8 3.0 4.0 6.5    2.8 5.3   5.1   2.4 3.7
 
-// Первый проход - создание списка слов через AddWord и подсчёт их частот в хеш-таблице scan_hash.
-// Между делом также производится подсчёт частот байтов во входных данных.
+// First pass - building the word list via AddWord and counting the word frequencies in the scan_hash hash table.
+// Along the way the byte frequencies of the input data are counted as well.
 //
-// Словарь растёт динамически в lzw-стиле: если в нём уже есть слово "abc"
-// с MIN_VISITS_TO_HAVE_SON(length) количеством повторов, то в словарь заносится слово "abcd".
-// Для поиска слова максимальной длины, начинающегося с текущей позиции во входном потоке,
-// и уже занесённого в словарь, используется trie (дерево цифрового поиска),
-// отображаемое в хеш-таблицу с закрытым хешированием scan_hash. Новое значение хеша
-// при добавлении к слову символа вычисляется функцией update_hash.
+// The dictionary grows dynamically in lzw style: if it already contains the word "abc"
+// with MIN_VISITS_TO_HAVE_SON(length) repetitions, then the word "abcd" is added to the dictionary.
+// To find the longest word starting at the current position in the input stream
+// and already present in the dictionary, a trie (digital search tree) is used,
+// mapped onto the closed-hashing hash table scan_hash. The new hash value
+// when a character is appended to a word is computed by the update_hash function.
 //
-// Поиск ведётся спекулятивно - вместо того, чтобы последовательно проверять слова длины 2, 3, 4
-// и т.д., мы ищем предполагаемый конец слова, тестируя предикат ALLOW_TO_EXTEND_WORD.
-// Пока он возвращает истину, мы проверяем только каждое WORD_STEP = 4-е слово
-// (с длинами 2, 6, 10...). И только убедившись, что очередного проверяемого слова не оказалось
-// в словаре, мы начинаем проверять слова меньшей длины (например, 2, 6, 10 - не найдено, 7, 8, 9;
-// или другой сценарий: 2, 6, 9 - ! ALLOW_TO_EXTEND_WORD, 7, 8).
-// Отключение спекулятивности поиска (WORD_STEP = 1) чуть-чуть улучшит сжатие ценой скорости
+// The search is speculative - instead of sequentially checking words of length 2, 3, 4
+// and so on, we look for the presumed end of the word by testing the ALLOW_TO_EXTEND_WORD predicate.
+// While it returns true we check only every WORD_STEP = 4th word
+// (with lengths 2, 6, 10...). Only once we are sure that the word just checked is not
+// in the dictionary do we start checking shorter words (for example, 2, 6, 10 - not found, 7, 8, 9;
+// or another scenario: 2, 6, 9 - ! ALLOW_TO_EXTEND_WORD, 7, 8).
+// Disabling the speculative search (WORD_STEP = 1) improves compression a little at the cost of speed
 int phase1 (byte *buf, unsigned bufsize)
 {
-    // Максимально допустимое количество слов - 1/32 от объёма входных данных
+    // Maximum allowed number of words - 1/32 of the input data volume
     unsigned max_words = roundup_to_power_of (mymax(bufsize/32,32768), 2);
     FirstWord = (Word*) malloc (max_words * sizeof (Word));
     LastWord = FirstWord+max_words;
     NextWord = FirstWord;
 
-    // Для уменьшения числа коллизий объём хеша - вдвое больше максимального количества слов
+    // To reduce the number of collisions the hash size is twice the maximum number of words
     unsigned scanhash_size = max_words*2, mask = scanhash_size-1;
     scan_hash = (stats*) calloc (scanhash_size, sizeof (stats));
-    // Не дадим словам использовать нулевой элемент хеша, поскольку это сделает невозможным поиск их детей
-    // То же самое применимо к элементам хеша, чей индекс кратен 2^16 (при 16 битах, используемых для хранения значения хеш-функции в scan_hash)
+    // Do not let words use hash entry zero, since that would make finding their children impossible
+    // The same applies to hash entries whose index is a multiple of 2^16 (with 16 bits used to store the hash function value in scan_hash)
     for (int i=0; i<scanhash_size; i+= 1<<(sizeof(hash0_t)*8)) {
         scan_hash[i].hash0 = 1;
-        if (sizeof(hash0_t) >= sizeof(int))    break;   // Без этой проверки мы можем зациклиться на нулевом элементе ;)
+        if (sizeof(hash0_t) >= sizeof(int))    break;   // Without this check we could loop forever on entry zero ;)
     }
 
-    byte *p = buf,                  // указатель на следующий обрабатываемый символ
-         *endbuf = buf+bufsize-WORD_STEP-1;  // конец обрабатываемой части буфера
+    byte *p = buf,                  // pointer to the next character to process
+         *endbuf = buf+bufsize-WORD_STEP-1;  // end of the part of the buffer being processed
 
     do {
-        byte *p0 = p;             // указатель начала текущего обрабатываемого слова
-        unsigned c1 = *p++;  unsigned c = *p;  // предпоследний и последний символы
-        unsigned hash0;           // здесь будет храниться хеш слова [p0,p)
-        // Если в этой позиции нельзя сформировать даже двухбайтовое слово - сразу ставим паруса и отчаливаем :)
+        byte *p0 = p;             // pointer to the start of the word currently being processed
+        unsigned c1 = *p++;  unsigned c = *p;  // the next-to-last and last characters
+        unsigned hash0;           // the hash of the word [p0,p) will be kept here
+        // If not even a two-byte word can be formed at this position - hoist the sails and cast off right away :)
         if (! ALLOW_TO_EXTEND_WORD (c1, c))   {debug (badword_cnt[1]++); goto end;}
         p++;
         hash0 = (c1 << 8) + c + 16;
 
-        // Найдём 2-байтовое слово
+        // Let's find the 2-byte word
         SEARCH_IN_HASH (hash0, hash0, hash0, 0, found2, end);
-        // Слово не найдено, добавим его в словарь
+        // Word not found, let's add it to the dictionary
         ADDWORD (hash0, hash0);  goto end;
 
     found2:
-        // Найти минимальное слово, начинающееся с текущей позиции,
-        // и ещё не занесённое в словарь (делаем ADDWORD),
-        // или имеющее слишком малый счётчик (делаем INCWORD)
-        // Маленькое замечание - в комментариях внутри этого цикла n-байтовым словом я
-        // называю слово длины p-p0+n. Это просто для краткости. И вообще,
-        // каждый шаг этого цикла имеет дело со словами длины от p-p0 до p-p0+WORD_STEP-1
+        // Find the shortest word starting at the current position
+        // that is either not yet in the dictionary (we do ADDWORD)
+        // or has too small a counter (we do INCWORD)
+        // A small note - in the comments inside this loop, by an n-byte word I
+        // mean a word of length p-p0+n. That is purely for brevity. And in general,
+        // each step of this loop deals with words of length from p-p0 to p-p0+WORD_STEP-1
         do {
             unsigned hash=hash0, hash1=hash0; int i;
 
-            // Сначала первый проход - расширяем слово пока нам встречаются приличные символы :)
-            // Обновляем значение хеш-функции, но пока не предпринимаем никаких
-            // попыток проверить, что эти слова действительно есть в словаре.
-            // Можете назвать это в мою честь спекулятивным поиском :)
-            // Такой подход оказывается выгоднее, поскольку на практике слова
-            // как правило ограничены именно несовместимыми символами, а не чем-либо ещё
+            // First the initial pass - we extend the word while we keep meeting decent characters :)
+            // We update the hash function value, but so far make no
+            // attempt to verify that these words are actually in the dictionary.
+            // You may name this speculative search after me :)
+            // This approach turns out to pay off, since in practice words
+            // are as a rule bounded precisely by incompatible characters and not by anything else
             for (i=0; i<WORD_STEP; i++) {
                 c1 = c; c = p[i];
                 if (! ALLOW_TO_EXTEND_WORD (c1,c))  goto search_max;
                 hash = update_hash (hash1=hash, c);
             }
 
-            // Звёзды нам благоприятствуют - слово максимально возможной длины состоит сплошь из хороших и отличных букв
+            // The stars are in our favour - a word of the maximum possible length made up entirely of good and excellent letters
             debug (matrix_cnt [p-p0+i] [0] ++);
             SEARCH_IN_HASH (hash, hash1, c1, i, next_cycle, found_max);  goto search_less;
-    next_cycle: // Слово максимальной длины (WORD_STEP) найдено - надо поискать слова ещё длиннее!
+    next_cycle: // A word of the maximum length (WORD_STEP) was found - we must look for even longer words!
             { p += i;
               scnt_t *counter_p = &scan_hash[hash&mask].count;
-              int counter = *counter_p;   // счётчик этого слова
+              int counter = *counter_p;   // this word's counter
               if (counter>=MIN_VISITS_TO_HAVE_SON(p-p0))  {hash0=hash; continue;}
               if (counter>0) {*counter_p = counter+1; debug (increment_cnt[p-p0]++); break;}
               ADDWORD (hash, hash1);
               break;
             }
 
-    search_max:  // Ищем слово длины i - максимально возможной (дальше идут непотребные символы)
+    search_max:  // We look for a word of length i - the maximum possible one (unsuitable characters follow)
             if (i>0)  {
                 debug (matrix_cnt [p-p0+i] [0] ++);
                 SEARCH_IN_HASH (hash, hash1, c1, i, found_max, found_max);
                 goto search_less;
             }
-    found_max:  // Слово найдено, но расширить его мы не можем из-за того, что дальше идут
-                // негодные символы (млм мы наткнулись на слишком длинную цепочку в хеше)
-                // - остаётся только увеличить его счётчик
+    found_max:  // The word was found, but we cannot extend it because what follows are
+                // unsuitable characters (or we ran into an overly long chain in the hash)
+                // - all that is left is to increment its counter
             { p += i;
               scnt_t *counter_p = &scan_hash[hash&mask].count;
               int counter = *counter_p;
@@ -537,11 +537,11 @@ int phase1 (byte *buf, unsigned bufsize)
               break;
             }
 
-    search_less: int maxi = i;  // Индекс последнего заполненного элемента в массиве hash
-            // А теперь второй проход - установив максимальную теоретически возможную длину слова выше
-            // (поскольку дальше уже идут несовместимые символы), но удостоверившись, что столь длинное
-            // слово в словаре отсутствует, мы перебираем слова с начала, отыскивая самое длинное, которое
-            // всё же присутствует в словаре
+    search_less: int maxi = i;  // Index of the last filled entry in the hash array
+            // And now the second pass - having established the maximum theoretically possible word length above
+            // (since incompatible characters follow it), but having made sure that a word that long
+            // is absent from the dictionary, we go through the words from the beginning, looking for the longest one
+            // that is nevertheless present in the dictionary
             unsigned h0=hash0,h1,h2,h3=hash0;
             for (i=1; i<maxi; i++) {
                 byte c = *p++;
@@ -552,31 +552,31 @@ int phase1 (byte *buf, unsigned bufsize)
             }
             h2 = hash;
 
-    found:  // Слово длины i есть в словаре, i+1 - нет. 0<=i<WORD_STEP
+    found:  // A word of length i is in the dictionary, one of length i+1 is not. 0<=i<WORD_STEP
             scnt_t *counter_p = &scan_hash[h3&mask].count;
-            int counter = *counter_p;   // счётчик этого слова
+            int counter = *counter_p;   // this word's counter
             if (counter>=MIN_VISITS_TO_HAVE_SON(p-p0)) {
-                // У найденного слова уже достаточно посещений. Мы должны добавить в словарь
-                // новое слово, расширенное на один символ по сравнению с этим
+                // The word found already has enough visits. We must add to the dictionary
+                // a new word extended by one character compared to this one
                 p++;  ADDWORD (h2, h0);
             } else {
-                // Счётчик посещений этого слова ещё слишком мал - просто увеличим его
+                // This word's visit counter is still too small - just increment it
                 *counter_p = counter+1;
                 debug (increment_cnt[p-p0]++);
             }
             break;
         } while (p < endbuf);
 
-    end:while (p0<p)  char_counts[*p0++]++;  // подсчёт частот байтов во входных данных
+    end:while (p0<p)  char_counts[*p0++]++;  // counting byte frequencies in the input data
 
     } while (p < endbuf);
 
     while (p<buf+bufsize)  char_counts[*p++]++;
 
-    LastWord = NextWord;  // теперь это - конец словаря
+    LastWord = NextWord;  // this is now the end of the dictionary
 
 #ifdef DEBUG
-    // Печать отладочной статистики
+    // Printing the debug statistics
     debug (verbose>1 && printf( "                 depth                                 increment addword badword\n") );
     int dc=0, ic=0, ac=0, bc=0;
     for (int n=0; n<=MAX_WORD_LEN+1; n++) {
@@ -595,32 +595,32 @@ int phase1 (byte *buf, unsigned bufsize)
 }
 
 
-// Пройти по списку слов сначала из начала в конец, отдавая счётчики однодетных родителей их детям.
-// А затем с конца в начало (чтобы сначала обработать производные, более длинные слова)
-// отдавая счётчики слишком редких слов их родителям. Счётчики извлекаются из всё той же хеш-таблицы
+// Walk the word list first from the beginning to the end, handing the counters of single-child parents to their children.
+// And then from the end to the beginning (so that derived, longer words are handled first),
+// handing the counters of overly rare words to their parents. The counters are taken from the very same hash table
 int phase2 (unsigned bufsize, int MinLargeCnt, int MinMediumCnt, int MinSmallCnt, int MinRatio)
 {
-    debug (int PromotedWords=0);  // Счётчик для вывода статистики при отладке
+    debug (int PromotedWords=0);  // Counter for printing statistics while debugging
 
-    // Отдать счётчики слов, имеющих только одного ребёнка, их детям.
-    // Такие слова появляются в словаре только из-за пошаговой процедуры его построения
-    stat2 ("Отдать счётчики однодетных родителей их детям");
+    // Hand the counters of words having only one child over to their children.
+    // Such words appear in the dictionary only because of the step-by-step procedure used to build it
+    stat2 ("Hand the counters of single-child parents to their children");
     for (Word *p=FirstWord; p<LastWord; p++) {
-        // Перенести данные о текущем слове в локальные переменные
+        // Move the data about the current word into local variables
         debug (byte *ptr = p->ptr);  unsigned len = p->len, hash = p->hash, hash0 = p->hash0;
-        // Счётчики текущего слова и его родителя
+        // Counters of the current word and of its parent
         count_t cnt = scan_hash[hash].count, cnt0 = scan_hash[hash0].count;
 
-        // Если слово-родитель имеет стандартную минимальную частоту, свидетельствующую о том,
-        // что у него только один "ребёнок", или отрицательную частоту, свидетельствующую о том же самом
-        // то отдадим частоту родительского слова текущему
+        // If the parent word has the standard minimum frequency, indicating
+        // that it has only one "child", or a negative frequency, indicating the same thing,
+        // then hand the parent word's frequency over to the current one
         if (cnt0 == MIN_VISITS_TO_HAVE_SON(len-1)+1 || cnt0 < 0) {
-            scan_hash[hash0].count = 0;              // исключим слово-родителя
-            count_t sumcnt = mymin(abs(cnt) + abs(cnt0), SCNT_MAX);  // отдав его частоту текущему слову
-            // Если текущее слово имеет только одного ребёнка (об этом можно судить по его счётчику,
-            // равному минимальному значению, при котором можно завести ребёнка, плюс 1),
-            // то мы пометим его счётчик отрицательным знаком, чтобы его единственный ребёнок
-            // дальше забрал себе эту частоту
+            scan_hash[hash0].count = 0;              // exclude the parent word
+            count_t sumcnt = mymin(abs(cnt) + abs(cnt0), SCNT_MAX);  // handing its frequency over to the current word
+            // If the current word has only one child (which can be judged from its counter
+            // being equal to the minimum value at which a child may be created, plus 1),
+            // then we mark its counter with a minus sign so that its only child
+            // takes this frequency over later on
             scan_hash[hash].count  =  (cnt == MIN_VISITS_TO_HAVE_SON(len)+1) ?  -sumcnt : sumcnt;
             debug (verbose>2 && printf( "Promoted '%.*s' %d -> %d (%d)\n", len, ptr, cnt, scan_hash[hash].count, cnt0));
             debug (PromotedWords++);
@@ -628,28 +628,28 @@ int phase2 (unsigned bufsize, int MinLargeCnt, int MinMediumCnt, int MinSmallCnt
     }
     debug (verbose>0 && printf( " Promoted words: %d\n", PromotedWords));
 
-    // Отдать счётчики плохих, негодных слов их родителям
-    stat2 ("Отдать счётчики плохих детей их родителям");  Word *q=LastWord;
+    // Hand the counters of bad, useless words over to their parents
+    stat2 ("Hand the counters of bad children to their parents");  Word *q=LastWord;
     for (Word *p=LastWord; --p>=FirstWord;) {
-        // Перенести данные о текущем слове в локальные переменные
+        // Move the data about the current word into local variables
         debug (byte *ptr = p->ptr; unsigned len = p->len);  unsigned hash = p->hash, hash0 = p->hash0;
-        // Счётчики текущего слова и его родителя
+        // Counters of the current word and of its parent
         count_t cnt = abs(scan_hash[hash].count), cnt0 = abs(scan_hash[hash0].count);
         debug (verbose>1 && cnt >= 2000 && printf( "INTERESTING_WORD '%.*s' %d (%d)\n", len, ptr, cnt, cnt0));
 
-        // Если текущее слово имеет достаточное количество повторений/длину
+        // If the current word has a sufficient number of repetitions/length
         if (GOOD_WORD (cnt, cnt0, len)) {
-            p->count = cnt;   // избавимся от возможного знака минус в счётчике
-            *--q = *p;        // и перенесём слово в список выживших после страшной чистки :)
+            p->count = cnt;   // get rid of the possible minus sign in the counter
+            *--q = *p;        // and move the word into the list of those that survived the dreadful purge :)
             debug (verbose>1 && printf( "GOOD_WORD '%.*s' %d (%d)\n", len, ptr, cnt, cnt0));
         } else {
-            scan_hash[hash0].count = mymin(cnt+cnt0,SCNT_MAX);  // отдав его частоту слову-родителю
+            scan_hash[hash0].count = mymin(cnt+cnt0,SCNT_MAX);  // handing its frequency over to the parent word
             debug (verbose>2 && printf( "BadWord '%.*s' %d (%d)\n", len, ptr, cnt, cnt0));
         }
     }
-    FreeAndNil (scan_hash);  // Скрипач больше не нужен :)
+    FreeAndNil (scan_hash);  // The fiddler is no longer needed :)
 
-    // Перенесём выжившие слова в начало массива FirstWord и уменьшим его, чтобы оставить только их
+    // Move the surviving words to the start of the FirstWord array and shrink it to keep only them
     int good_words = LastWord-q;
     memmove (FirstWord, q, good_words*sizeof(Word));  LastWord = FirstWord + good_words;
     FirstWord = (Word*) realloc (FirstWord, good_words*sizeof(Word));
@@ -659,19 +659,19 @@ int phase2 (unsigned bufsize, int MinLargeCnt, int MinMediumCnt, int MinSmallCnt
 }
 
 
-// Теперь мы имеем список наиболее употребительных слов с их частотами и частоты отдельных символов
-// во входном тексте, которые также были собраны на первом этапе.
-// Отсортировав оба списка по частотам, мы легко узнаем, какие символы можно задействовать для
-// кодирования слов и какие слова будут кодироваться одно-, и какие двух-буквенными сокращениями.
-// Значение *nodes, возвращаемое функцией - количество слов в начале массива FirstWord, которые должны
-// быть закодированы одним байтом. LastWord-FirstWord определяет общее количество кодируемых слов
+// Now we have a list of the most frequently used words with their frequencies, plus the frequencies of
+// the individual characters in the input text, which were also collected in the first stage.
+// Having sorted both lists by frequency, we easily learn which characters can be used for
+// encoding words and which words will be encoded by one- and which by two-letter abbreviations.
+// The *nodes value returned by the function is the number of words at the start of the FirstWord array that must
+// be encoded with a single byte. LastWord-FirstWord gives the total number of encodable words
 int phase3 (int MinWeakChars, int *nodes)
 {
-    // Отсортируем выжившие слова в порядке убывания частоты употребления
+    // Sort the surviving words in order of decreasing usage frequency
     qsort( FirstWord, LastWord-FirstWord, sizeof(Word),
            (int (__cdecl *)(const void*, const void*)) count_desc_order);
 
-    // Отсортируем символы в порядке возрастания частоты употребления
+    // Sort the characters in order of increasing usage frequency
     char_stats chars[UCHAR_MAX+1];
     for (int c=0; c<=UCHAR_MAX; c++) {
         chars[c].chr   = c;
@@ -681,51 +681,51 @@ int phase3 (int MinWeakChars, int *nodes)
     qsort( chars, UCHAR_MAX+1, sizeof(char_stats),
            (int (__cdecl *)(const void*, const void*)) char_count_asc_order);
 
-    // Определим, сколько слов можно закодировать однобайтовыми символами
+    // Determine how many words can be encoded with one-byte characters
     int n=0;
     for (Word *p=FirstWord; p<LastWord && n<=UCHAR_MAX; p++, n++) {
-        // Ищем первый символ с достаточно большой частотой, который нет смысла отдавать под кодирование слов
+        // We look for the first character with a large enough frequency that it makes no sense to give away for encoding words
         debug (verbose>1 && printf("Ccnt=%d, Wcnt=%d\n", chars[n].count, p->count) );
         if (chars[n].count >= p->count)  break;
-        char_counts[chars[n].chr] = 0;  // делаем этот символ "условно-свободным", чтоб он мог использоваться для кодирования слов
+        char_counts[chars[n].chr] = 0;  // make this character "conditionally free" so it can be used for encoding words
     }
-    if (n<=MinWeakChars)  return -1;  // Если для кодирования слов удалось высвободить так мало символов, то этот файл - скорей всего бинарный
+    if (n<=MinWeakChars)  return -1;  // If so few characters could be freed up for encoding words, this file is most likely binary
 
-    // Отдадим последний из освобождённых символов под префикс для тех символов, чьи коды были отданы словам
+    // Give the last of the freed characters away as the prefix for those characters whose codes were handed to words
     byte c = chars[--n].chr;
     char_counts[c] = 1;
     PREFIX_FOR_WEAK_CHARS = c;
 
-    // Теперь мы знаем, сколько символов можно использовать для кодирования слов
+    // Now we know how many characters can be used for encoding words
     int avail_count = n;
     debug (verbose>0 && printf( " Weak chars: %d\n", avail_count) );
 
-    // Возвратим количество слов, которые должны кодироваться одним байтом
-    // Оно может быть меньше avail_count, поскольку мы используем эти коды и для
-    // двухбайтовых слов. Это не совсем правильно, но с практической точки зрения
-    // большого значения иметь не должно
+    // Return the number of words that must be encoded with a single byte
+    // It may be less than avail_count, since we use these codes for
+    // two-byte words as well. That is not entirely correct, but from a practical point of view
+    // it should not matter much
     int word_count = LastWord-FirstWord;
     *nodes = (use_plain_dictionary || word_count<=avail_count)
-                ? mymin (word_count, avail_count)                   // если должны использоваться только однобайтовые слова или для всех найденных слов места достаточно (хм, маловероятно ;)
-                : mymax (avail_count - (word_count+259)/256, 0);    // если используются и такие, и такие слова
+                ? mymin (word_count, avail_count)                   // if only one-byte words are to be used, or there is enough room for all the words found (hmm, unlikely ;)
+                : mymax (avail_count - (word_count+259)/256, 0);    // if both kinds of words are used
     return 0;  // All right
 }
 
 
-// Назначить коды оставшимся в словаре словам
+// Assign codes to the words remaining in the dictionary
 int phase4 (int nodes)
 {
-    Word *p = FirstWord;           // указатель текущего обрабатываемого слова
-    Word *TwoByteWords = p+nodes;  // первое слово, которому нужно дать двухбайтовый код
+    Word *p = FirstWord;           // pointer to the word currently being processed
+    Word *TwoByteWords = p+nodes;  // the first word that needs to be given a two-byte code
 
-    // Отсортируем отдельно одно- и двухбайтовые слова в лексикографическом порядке
-    // для улучшения степени сжатия самого словаря
+    // Sort the one- and two-byte words separately in lexicographic order
+    // to improve the compression ratio of the dictionary itself
     qsort( FirstWord, nodes, sizeof(Word),
-           (int (__cdecl *)(const void*, const void*)) lexicographical_order);  // NB! Быстрее будет patricia-qsort
+           (int (__cdecl *)(const void*, const void*)) lexicographical_order);  // NB! A patricia-qsort would be faster
     qsort( TwoByteWords, LastWord-FirstWord-nodes, sizeof(Word),
-           (int (__cdecl *)(const void*, const void*)) lexicographical_order);  // NB! Быстрее будет patricia-qsort
+           (int (__cdecl *)(const void*, const void*)) lexicographical_order);  // NB! A patricia-qsort would be faster
 
-    // Первый цикл - назначить однобайтовые коды наиболее полезным словам
+    // First loop - assign one-byte codes to the most useful words
     int c;
     for( c=0; c<=UCHAR_MAX && p<TwoByteWords; c++ ) {
         if( !char_counts[c] && c!=RESERVED_CHAR ) {
@@ -735,12 +735,12 @@ int phase4 (int nodes)
         }
     }
 
-    // Второй цикл - назначить двухбайтовые коды всем остальным словам
+    // Second loop - assign two-byte codes to all the remaining words
     for (; c<=UCHAR_MAX && p<LastWord; c++) {
-        if (char_counts[c] || c==RESERVED_CHAR)  continue;    // Этот символ нельзя использовать - он встречается в тексте или является зарезервированным
+        if (char_counts[c] || c==RESERVED_CHAR)  continue;    // This character cannot be used - it occurs in the text or is reserved
         for (int c2=0; c2<=UCHAR_MAX && p<LastWord; c2++) {
-            if (c2 == RESERVED_CHAR)  continue;               // Этот символ нельзя использовать
-            while (p<LastWord && !GOOD_2BYTE_WORD(p->len, p->count))  (*p++).count=0;   // Пропустим те слова, которые имело смысл кодировать только однобайтными кодами
+            if (c2 == RESERVED_CHAR)  continue;               // This character cannot be used
+            while (p<LastWord && !GOOD_2BYTE_WORD(p->len, p->count))  (*p++).count=0;   // Skip the words that were only worth encoding with one-byte codes
             if (p<LastWord) {
                 debug (verbose>1 && printf( "Word2 %02x %02x '%.*s' %d\n", c, c2, p->len, p->ptr, p->count));
                 p->chr = (byte)c;
@@ -748,9 +748,9 @@ int phase4 (int nodes)
             }
         }
     }
-    LastWord = p;  // Теперь LastWord указывает на последнее закодированное слово
+    LastWord = p;  // LastWord now points to the last encoded word
 
-    // А сейчас можно зафигачить однобайтовые коды ещё нескольким словам (за счёт тех сотен очень маленьких слов, которые отказались от двухбайтовых кодов - см. !GOOD_2BYTE_WORD выше)
+    // And now we can slap one-byte codes onto a few more words (thanks to those hundreds of very small words that turned down two-byte codes - see !GOOD_2BYTE_WORD above)
     for ( p=TwoByteWords; c<=UCHAR_MAX && p<LastWord; c++) {
         if (!char_counts[c] && c!=RESERVED_CHAR) {
             debug (verbose>1 && printf( "Word1 %02x '%.*s' %d\n", c, p->len, p->ptr, p->count));
@@ -759,19 +759,19 @@ int phase4 (int nodes)
         }
     }
 #ifdef DEBUG
-    int nodes1 = p-TwoByteWords;  // количество доп. однобайтовых слов для статистики
-    int sumcnt1=0, sumcnt2=0;     // суммарная частота одно/двухбайтовых слов для статистики
+    int nodes1 = p-TwoByteWords;  // number of extra one-byte words, for statistics
+    int sumcnt1=0, sumcnt2=0;     // total frequency of one/two-byte words, for statistics
 #endif
 
-    // Избавимся от слов, так и не получивших коды:
-    //   Для этого отсортируем слова в порядке убывания частоты
+    // Get rid of the words that never received codes:
+    //   To do so, sort the words in order of decreasing frequency
     qsort( FirstWord, LastWord-FirstWord, sizeof(Word),
            (int (__cdecl *)(const void*, const void*)) count_desc_order);
-    //   И найдём последнее слово с ненулевой частотой
+    //   And find the last word with a non-zero frequency
     for (p = FirstWord; p<LastWord && p->count; p++) {
         debug (p->chr2 == RESERVED_CHAR?  sumcnt1 += p->count : sumcnt2 += p->count);
     }
-    LastWord = p;   // Вот теперь все слова от FirstWord до LastWord имеют коды
+    LastWord = p;   // Now all the words from FirstWord to LastWord have codes
     debug (verbose>0 && printf( " Final words: %d = %d+%d + %d\n", LastWord-FirstWord, nodes, nodes1, LastWord-FirstWord-nodes-nodes1) );
     debug (verbose>0 && printf( " Counts: %dw1 + %dw2\n", sumcnt1, sumcnt2) );
     return 0;  // All right
@@ -788,52 +788,52 @@ int phase4 (int nodes)
 #define dict2_ptr(i,j)   (dict2(i,j)->ptr)
 #ifndef FREEARC_DECOMPRESS_ONLY
 
-// Выделить память под выходной буфер и записать словарь в его начало
+// Allocate memory for the output buffer and write the dictionary at its start
 int phase5 (byte **outbuf, unsigned *outsize, unsigned bufsize)
 {
-    // Если окажется, что кодирование невозможно, в эту переменную будет занесён код ошибки
+    // If it turns out that encoding is impossible, an error code will be stored in this variable
     int retcode = 0;
 
-    // Выделим память для матрицы слов
+    // Allocate memory for the word matrix
     Word **dict      = (Word**) calloc ( UCHAR_MAX+1,                sizeof (Word*));
     Word **dict2_var = (Word**) calloc ((UCHAR_MAX+1)*(UCHAR_MAX+1), sizeof (Word*));
     byte *char_in_use = (byte*) calloc ( UCHAR_MAX+1,                sizeof (byte));
 
-    // Заполнить матрицу слов для упрощения вывода словаря в выходной поток
+    // Fill in the word matrix to simplify writing the dictionary to the output stream
     Word USE_DICT2_WORD[1]; USE_DICT2_WORD->len = USE_DICT2;
     for (Word *p = FirstWord; p<LastWord; p++) {
         if (p->chr2 == RESERVED_CHAR) {
-            dict[p->chr] = p;               // Занести слово в словарь первого уровня
+            dict[p->chr] = p;               // Put the word into the first-level dictionary
         } else {
-            dict2(p->chr,p->chr2) = p;      // Занести слово в словарь второго уровня
-            dict[p->chr] = USE_DICT2_WORD;  // Отметить в словаре первого уровня использование этого кода для двухбайтовых слов
-            // Отметим в массиве char_in_use все символы, используемые в этом слове
+            dict2(p->chr,p->chr2) = p;      // Put the word into the second-level dictionary
+            dict[p->chr] = USE_DICT2_WORD;  // Mark in the first-level dictionary that this code is used for two-byte words
+            // Mark in the char_in_use array all the characters used in this word
             for (int c=0; c < p->len; c++) {
                 char_in_use[ p->ptr[c] ] = 1;
             }
         }
     }
-    // Найдём не встречающийся ни в одном слове символ. Он будет использоваться
-    // как разделитель при кодировании слов
+    // Find a character that does not occur in any word. It will be used
+    // as the separator when encoding words
     byte word_sep;
     for (int c=UCHAR_MAX; c>=0; c--) {
         if (!char_in_use[c])  {word_sep=c; goto found;}
     }
-    retcode = -1;  // В словах задействованы все символы, что делает невозможным кодирование словаря
+    retcode = -1;  // All characters are used up by the words, which makes encoding the dictionary impossible
     goto done;
 found:
     {
-    // Выделить под упакованные данные размер входного файла
-    // плюс 200 кб - должно хватить при любом раскладе :)
+    // Allocate for the packed data the size of the input file
+    // plus 200 kb - that should be enough in any case :)
     *outbuf = (byte*) malloc (bufsize+200000);
-    byte *outptr = *outbuf;        // текущий указатель в выходном буфере
+    byte *outptr = *outbuf;        // current pointer in the output buffer
 
-    // Вывести словарь в выходной поток в 5 приёмов:
-    //   длины однобайтовых слов, длины префиксов двухбайтовых слов,
-    //   содержимое однобайтовых слов, остатки содержимого двухбайтовых слов,
-    //   спецсимвол используемый как префикс для кодирования "украденных" символов
-    // При этом длины выводятся сразу для всех 256 возможных кодов (или субкодов),
-    //   где 0 означает неиспользуемые коды, а 1 (USE_DICT2) - коды начала двухбайтовых слов
+    // Write the dictionary to the output stream in 5 rounds:
+    //   lengths of the one-byte words, prefix lengths of the two-byte words,
+    //   contents of the one-byte words, remaining contents of the two-byte words,
+    //   the special character used as the prefix for encoding "stolen" characters
+    // The lengths are written for all 256 possible codes (or subcodes) at once,
+    //   where 0 means unused codes and 1 (USE_DICT2) means codes starting two-byte words
     for (int i=0; i<=UCHAR_MAX; i++) {
         put_byte (dict_len(i));
     }
@@ -860,7 +860,7 @@ found:
     }
     debug (verbose>1 && printf( "  Dict1 strings: %d\n", outptr-*outbuf) );
     prev_word = NULL;
-    put_byte (word_sep);  // Сообщим декодеру разделитель слов
+    put_byte (word_sep);  // Tell the decoder the word separator
     for (int i=0; i<=UCHAR_MAX; i++) {
         if (dict[i] == USE_DICT2_WORD) {
             for (int j=0; j<=UCHAR_MAX; j++) {
@@ -868,26 +868,26 @@ found:
                 if (dict2(i,j) && prev_word) {
                     n = common_prefix_length (dict2(i,j), prev_word);
                 }
-                // Выведем текст слова минус префикс, который должен быть скопирован из предыдущего слова
+                // Write the word's text minus the prefix that is to be copied from the previous word
                 for (int c=n; c < dict2_len(i,j); c++) {
                     put_byte (dict2_ptr(i,j)[c]);
                 }
-                put_byte (word_sep);  // Сообщим декодеру, что очередное слово закончилось
+                put_byte (word_sep);  // Tell the decoder that the current word has ended
                 prev_word = dict2(i,j);
             }
         }
     }
     debug (verbose>1 && printf( "  Dict2 strings: %d\n", outptr-*outbuf) );
 
-    // Выведем код символа, используемого как префикс для бездомных символов
+    // Write the code of the character used as the prefix for homeless characters
     put_byte (PREFIX_FOR_WEAK_CHARS);
-    // Статистика - общий размер словаря
+    // Statistics - the total size of the dictionary
     debug (verbose==1 && printf( " Dictionary: %d bytes  ", outptr-*outbuf) );
 
-    // Возвратить длину закодированного словаря
+    // Return the length of the encoded dictionary
     *outsize = outptr - *outbuf;
     }
-    // Освободить внутренние массивы и выйти с кодом возможной ошибки
+    // Free the internal arrays and exit with the code of a possible error
 done:
     FreeAndNil (dict);
     FreeAndNil (dict2_var);
@@ -897,24 +897,24 @@ done:
 
 
 
-// УПАКОВКА: КОДИРОВАНИЕ ПО ВЫШЕПОСТРОЕННОМУ СЛОВАРЮ **********************************************
+// COMPRESSION: ENCODING WITH THE DICTIONARY BUILT ABOVE ******************************************
 
-// Макс. длина слова, которое можно сохранить непосредственно в структуре CodeWord
+// Max. length of a word that can be stored directly inside the CodeWord structure
 #define DIRECT_CHARS 12
 
-// Структура, хранящая информацию о слове при кодировании
+// Structure holding the information about a word during encoding
 struct CodeWord
 {
 union {
-    byte str[DIRECT_CHARS]; // содержимое слова если его длина <= 12
-    byte *ptr;              // содержимое слова при длине > 12
+    byte str[DIRECT_CHARS]; // contents of the word if its length is <= 12
+    byte *ptr;              // contents of the word if its length is > 12
 };
-    byte len;               // длина слова
-    byte chr, chr2;         // байт(ы), которыми кодируется это слово
+    byte len;               // word length
+    byte chr, chr2;         // byte(s) this word is encoded with
 #ifdef DEBUG
-    count_t count;          // количество использований этого слова при разборе текста
-    count_t use_count;      // количество использований этого слова при кодировании
-    Word   *orig_word;      // ссылка на оригинал слова, необходима для подсчёта общего количества его использований
+    count_t count;          // number of uses of this word while parsing the text
+    count_t use_count;      // number of uses of this word during encoding
+    Word   *orig_word;      // reference to the original word, needed to count its total number of uses
 #endif
 };
 
@@ -924,34 +924,34 @@ CodeWord *codewords_hash;
 ushort   *hashbits;
 byte     *words_text;
 
-// Строим небольшой хеш для всех используемых слов и их частичных начал.
-// Этот хеш должен позволить нам просканировать текст до конца слова и определить его код.
-// Поскольку, как правило, количество слов <10k и их суммарная длина <100k, то этот хеш должен
-// полностью влезать в кеш CPU (размер хеша, куда происходит обращение для каждого байта
-// входного текста = hashsize*2 = количество уникальных байт в словаре*8, округлённое вверх до степени двух;
-// размер хеша, куда происходит однократное обращение для каждого слова = hashsize*16).
-// Типично это 128-512 кб и 1-4 мб, соответственно; причём из второй таблицы используются всего 100-200 кб.
-// Плюс ещё 10-50 кб для хранения текста слишком длинных слов (с длиной >12)
-// Таким образом, кодирование должно обходиться кешем в 256-1024 кб, в зависимости от объёма словаря
+// We build a small hash for all the words in use and their partial prefixes.
+// This hash must let us scan the text up to the end of a word and determine its code.
+// Since the number of words is normally <10k and their total length is <100k, this hash should
+// fit entirely into the CPU cache (the size of the hash accessed for every byte of the
+// input text = hashsize*2 = the number of unique bytes in the dictionary*8, rounded up to a power of two;
+// the size of the hash accessed once per word = hashsize*16).
+// Typically that is 128-512 kb and 1-4 mb respectively; and only 100-200 kb of the second table is actually used.
+// Plus another 10-50 kb for storing the text of overly long words (with length >12)
+// Thus encoding should get by with 256-1024 kb of cache, depending on the size of the dictionary
 int phase6 ()
 {
-    // Отсортируем слова в лексикографическом порядке для обеспечения создания
-    // ссылок на родительские слова (скажем, если в словаре есть слова из 5 и 8 пробелов,
-    // то индексы в хеше слов, соответствующие строкам из 6 и 7 пробелов, будут также содержать
-    // информацию для кодирования 5-пробельного слова. Таким образом, при входной строке, например,
-    // из 7 пробелов и табуляции, мы в последней записи из нашей хеш-цепочки (соответствующей
-    // 7 пробелам) будем иметь ссылку на представление 5-пробельного слова)
+    // Sort the words in lexicographic order to ensure that references
+    // to parent words get created (say, if the dictionary contains words of 5 and 8 spaces,
+    // then the word hash indices corresponding to strings of 6 and 7 spaces will also contain
+    // the information for encoding the 5-space word. Thus, for an input string of, for example,
+    // 7 spaces and a tab, the last entry of our hash chain (the one corresponding to
+    // 7 spaces) will hold a reference to the representation of the 5-space word)
     qsort( FirstWord, LastWord-FirstWord, sizeof(Word),
-           (int (__cdecl *)(const void*, const void*)) lexicographical_order);  // NB! Быстрее будет patricia-qsort
+           (int (__cdecl *)(const void*, const void*)) lexicographical_order);  // NB! A patricia-qsort would be faster
 
-    // Статистика: напечатать список слов в лексикографическом порядке
+    // Statistics: print the list of words in lexicographic order
     for (Word *p = FirstWord; p<LastWord; p++) {
         debug (verbose>3 && printf( "SortedWord '%.*s' %d\n", p->len, p->ptr, p->count));
     }
 
-    // Подсчитаем кол-во уникальных байт в словах. Это значение определяет общее количество записей,
-    // которые будут созданы в хеш-таблице. Создадим хеш-таблицу как минимум вчетверо
-    // большего размера для обеспечения высокой производительности поиска (шоб было <20% коллизий)
+    // Count the number of unique bytes in the words. This value determines the total number of entries
+    // that will be created in the hash table. We create a hash table at least four times
+    // larger to keep lookup performance high (so that there are <20% collisions)
     unsigned unique_bytes = 0, words_len = 0;
     for (Word *p = FirstWord; p<LastWord; p++) {
         unique_bytes +=  p->len - (p==FirstWord? 0 : common_prefix_length (p, p-1));
@@ -962,13 +962,13 @@ int phase6 ()
     hashbits = (ushort*) calloc (hashsize, sizeof(ushort));
     codewords_hash = (CodeWord*) calloc (hashsize, sizeof(CodeWord));
 
-    // Этот буфер будет использоваться для хранения текста длинных слов
-    // (текст коротких слов заносится непосредственно в запись CodeWord)
+    // This buffer will be used to store the text of long words
+    // (the text of short words is placed directly into the CodeWord entry)
     words_text = (byte*) malloc (words_len);
     byte *wordsptr = words_text;
 
-    // Заполняем хеш-таблицу codewords_hash словами
-    // и создаём хеш-цепочки в hashbits для побуквенного поиска этих слов
+    // We fill the codewords_hash hash table with words
+    // and build the hash chains in hashbits for letter-by-letter lookup of those words
     for (Word *p = FirstWord; p<LastWord; p++) {
         unsigned hash = hashsize + p->ptr[0];
         CodeWord *longest_word_so_far = NULL;
@@ -977,27 +977,27 @@ int phase6 ()
             unsigned hash0 = hash;
             hash = update_hash (hash, c);  int n=13;
             while (hashbits [hash & hashmask]  &&  hashbits[hash&hashmask] != (ushort)hash0) {
-                if (--n == 0)  goto NextWord;  // Защита от зацикливания
+                if (--n == 0)  goto NextWord;  // Protection against infinite loops
                 hash = rehash (hash, c);
             }
             hashbits [hash & hashmask] = hash0;
 
-            // Размножение слов-префиксов текущего вдоль его хеш-цепочки
+            // Propagating the prefix words of the current one along its hash chain
             CodeWord *newp = &codewords_hash [hash & hashmask];
             if (newp->len) {
-                longest_word_so_far = newp;     // Запомним наиболее длинное so far слово, являющееся префиксом текущего
+                longest_word_so_far = newp;     // Remember the longest word so far that is a prefix of the current one
             } else if (longest_word_so_far) {
-                *newp = *longest_word_so_far;   // Максимальное слово, которое можно закодировать в этой ситуации
+                *newp = *longest_word_so_far;   // The longest word that can be encoded in this situation
                 debug (newp->count = -newp->count);
             }
         }
-        {   // Занесём слово в хеш-таблицу слов
+        {   // Put the word into the word hash table
             CodeWord *newp = &codewords_hash [hash & hashmask];
             newp->len  = p->len;
             newp->chr  = p->chr;
             newp->chr2 = p->chr2;
-            // Текст слова или целиком запоминается в этой записи (если он не превышает 12 байт)
-            // или переносится в words_text, куда мы делаем ссылку
+            // The word's text is either stored entirely in this entry (if it does not exceed 12 bytes)
+            // or moved into words_text, to which we keep a reference
             if (p->len <= DIRECT_CHARS)  memcpy (newp->str, p->ptr, p->len);
             else newp->ptr = wordsptr, memcpy (wordsptr, p->ptr, p->len), wordsptr += p->len;
             debug (newp->count = p->count);
@@ -1010,45 +1010,45 @@ NextWord: ;
 }
 
 
-// Найти в словаре самое длинное слово, с которого начинается текст, указываемый p0
-// NB! Алгоритм FindWord должен в точности соответствовать алгоритму хеширования словаря в phase6,
-// иначе мы рискуем не отыскать часть слов
+// Find in the dictionary the longest word that the text pointed to by p0 starts with
+// NB! The FindWord algorithm must exactly match the dictionary hashing algorithm in phase6,
+// otherwise we risk failing to find some of the words
 inline CodeWord *FindWord (byte *p0, byte *endbuf)
 {
     debug (verbose>3 && printf( "FindWord '%.50s'\n", p0));
     debug (FindWord_calls++);
 
-    // Начав с двухбайтового слова из входного текста, мы увеличиваем его размер байт за байтом,
-    // проверяя, что это слово всё ещё отмечено в хеше как входящее в словарь.
-    // По окончанию этой процедуры hash0 содержит хеш самого длинного слова из входного текста,
-    // имеющегося в словаре (если в словаре есть 5- и 8-пробельные слова, а входные данные
-    // содержат только 7 пробелов, то hash0 будет хешем от 7 пробелов и по этому адресу в code_words
-    // будет 5-пробельное слово - хошь-верь, хошь-нет)
+    // Starting from a two-byte word of the input text, we grow its size byte by byte,
+    // checking that the word is still marked in the hash as belonging to the dictionary.
+    // When this procedure ends, hash0 holds the hash of the longest word of the input text
+    // present in the dictionary (if the dictionary contains 5- and 8-space words while the input data
+    // contains only 7 spaces, then hash0 will be the hash of 7 spaces and at that address in code_words
+    // there will be the 5-space word - believe it or not)
     byte *p = p0;
     unsigned hash0 = hashsize + *p++;
     do {
-        // Вычислим hash для слова [p0,p)
+        // Compute the hash of the word [p0,p)
         byte c = *p++;
         unsigned hash = update_hash (hash0, c);
 
-        // Цикл рехеширования. h=0 означает, что слот в хеш-таблице пуст,
-        // то есть слова [p0..p) нет в словаре. h!=hash0 означает хеш-коллизию - слот не пуст,
-        // но и занят не нами. Надо продолжить поиск путём вторичного рехеширования
+        // The rehashing loop. h=0 means the slot in the hash table is empty,
+        // i.e. the word [p0..p) is not in the dictionary. h!=hash0 means a hash collision - the slot is not empty,
+        // but it is not occupied by us either. The search must continue with a secondary rehash
         ushort h; int n=13;  debug (used_hash2[n]++);
         while ((h = hashbits [hash & hashmask]) != 0) {
-            if (h == (ushort)hash0)   goto found;  // Хеш-слот, соответствующий слову [p0..p), найден
+            if (h == (ushort)hash0)   goto found;  // Hash slot corresponding to the word [p0..p) found
             hash = rehash (hash, c);
             debug (used_hash2[n-1]++);
-            if (--n == 0)  break;  // Защита от зацикливания и просто слишком длинных хеш-цепочек
+            if (--n == 0)  break;  // Protection against infinite loops and simply overlong hash chains
         }
-        // Сюда мы попадаем если слова нет в словаре (или, очень редко,
-        // при слишком длинной хеш-цепочке). Подходящий момент, чтобы выйти из цикла :)
+        // We end up here if the word is not in the dictionary (or, very rarely,
+        // when the hash chain is too long). A fine moment to leave the loop :)
         break;
 
-found:  hash0 = hash;    // Слово найдено, переходим к поиску слова на один символ больше
-    } while (p<endbuf);  // Но за конец буфера лучше всё же не выходить :D
+found:  hash0 = hash;    // The word was found, we move on to looking for a word one character longer
+    } while (p<endbuf);  // But it is still better not to run past the end of the buffer :D
 
-    p--; // Слова, заканчивающегося на p, не нашлось, и теперь мы проверяем слово на один байт меньше
+    p--; // No word ending at p was found, so now we check the word that is one byte shorter
     CodeWord *word = &codewords_hash [hash0 & hashmask];
     int len = word->len;
     if (len==0 || len>endbuf-p)  return NULL;
@@ -1061,29 +1061,29 @@ found:  hash0 = hash;    // Слово найдено, переходим к п�
 #define put_Word(word)   (put_Byte (word->chr),  \
                          (word->chr2 != RESERVED_CHAR)  &&  put_Byte (word->chr2))
 
-// Кодируем текст, используя вышепостроенный хеш
+// We encode the text using the hash built above
 int phase7 (byte *buf, unsigned bufsize, byte *outbuf, unsigned *outsize)
 {
-    byte *p = buf,                // текущий указатель во входном буфере
-         *endbuf = buf+bufsize,   // конец входного буфера
-         *outptr = outbuf;        // текущий указатель в выходном буфере
+    byte *p = buf,                // current pointer in the input buffer
+         *endbuf = buf+bufsize,   // end of the input buffer
+         *outptr = outbuf;        // current pointer in the output buffer
     do {
-        // Найти в словаре слово максимальной длины, начинающееся с текущей позиции
+        // Find in the dictionary the longest word starting at the current position
         CodeWord *word = FindWord (p,endbuf);
-        // И уж если верное слово найдено..
+        // And once the right word has been found..
         if (word) {
-            put_Word (word);   // Вывести 1 или 2 байта - код найденного слова
-            p += word->len;    // Пропустить слово во входном тексте
+            put_Word (word);   // Write 1 or 2 bytes - the code of the word found
+            p += word->len;    // Skip the word in the input text
             debug (OutWord++);
             debug (word->use_count++);
             debug (word->orig_word->use_count++);
             debug (verbose>3 && printf( "OutWord %02x %02x '%.*s' %d\n", word->chr, word->chr2, word->len, word->len>DIRECT_CHARS? word->ptr : word->str, word->count));
         } else {
-            // Слово не найдено - скопировать один символ из входного потока в выходной
+            // No word found - copy a single character from the input stream to the output
             byte c = *p++;
             if (! char_counts[c] || c==PREFIX_FOR_WEAK_CHARS) {
-                // Этому символу не повезло - он отдал свой код словам
-                // и теперь вынужден идентифицировать себя спец-префиксом, бедняга
+                // This character was out of luck - it gave its code away to words
+                // and now, poor thing, has to identify itself with a special prefix
                 put_Byte (PREFIX_FOR_WEAK_CHARS);
                 debug (OutByte2++);
             }
@@ -1091,10 +1091,10 @@ int phase7 (byte *buf, unsigned bufsize, byte *outbuf, unsigned *outsize)
             debug (OutByte++);
             debug (verbose>3 && printf( "OutByte %02x '%c'\n", c, c));
         }
-    } while (p < endbuf);  // Повторять до конца входного буфера
+    } while (p < endbuf);  // Repeat until the end of the input buffer
 
 #ifdef DEBUG
-    // Отладочная статистика: частота использования слов при кодировании, в порядке её убывания
+    // Debug statistics: word usage frequency during encoding, in decreasing order
     debug (qsort( FirstWord, LastWord-FirstWord, sizeof(Word),
                   (int (__cdecl *)(const void*, const void*)) use_count_desc_order));
     int short_count=0, long_count=0;
@@ -1116,13 +1116,13 @@ int phase7 (byte *buf, unsigned bufsize, byte *outbuf, unsigned *outsize)
     FreeAndNil (codewords_hash);
     FreeAndNil (words_text);
 
-    // Возвратить длину закодированного текста
+    // Return the length of the encoded text
     *outsize = outptr - outbuf;
     return 0;  // All right
 }
 
 
-// Вызвать заданную функцию и, если она возвратила код ошибки, - выйти из DictEncode(), освободив всю память
+// Call the given function and, if it returned an error code, leave DictEncode() after freeing all memory
 #define check(call)  { int code = call;                   \
                        if (code) {                        \
                            FreeAndNil (scan_hash);        \
@@ -1135,25 +1135,25 @@ int phase7 (byte *buf, unsigned bufsize, byte *outbuf, unsigned *outsize)
                        }                                  \
                      }                                    \
 
-// Упаковать входные данные buf[bufsize] и возвратить адрес выходного буфера и размер упакованных данных
+// Compress the input data buf[bufsize] and return the address of the output buffer and the size of the packed data
 int DictEncode (byte *buf, unsigned bufsize, byte **outbuf, unsigned *outsize, int MinWeakChars, int MinLargeCnt, int MinMediumCnt, int MinSmallCnt, int MinRatio)
 {
     unsigned dictlen, datalen; int nodes; *outbuf = NULL;
-    stat1 ("1. Построить словарь, найти частоты слов и отдельных символов");
+    stat1 ("1. Build the dictionary, find the frequencies of words and individual characters");
     check (phase1 (buf, bufsize));
-    stat1 ("2. Удалить из словаря слишком редкие слова");
+    stat1 ("2. Remove the overly rare words from the dictionary");
     check (phase2 (bufsize,MinLargeCnt,MinMediumCnt,MinSmallCnt,MinRatio));
-    stat1 ("3. Определить байты, которые можно использовать для кодирования слов");
+    stat1 ("3. Determine the bytes that can be used for encoding words");
     check (phase3 (MinWeakChars, &nodes));
-    stat1 ("4. Назначить коды оставшимся в словаре словам");
+    stat1 ("4. Assign codes to the words remaining in the dictionary");
     check (phase4 (nodes));
-    stat1 ("5. Записать словарь в файл");
-    check (phase5 (outbuf, &dictlen, bufsize));  // Выходной буфер создаётся именно здесь
-    stat1 ("6. Создать хеш для быстрого поиска среди оставшихся слов");
+    stat1 ("5. Write the dictionary to the file");
+    check (phase5 (outbuf, &dictlen, bufsize));  // The output buffer is created right here
+    stat1 ("6. Create a hash for fast lookup among the remaining words");
     check (phase6 ());
-    stat1 ("7. Закодировать текст");
+    stat1 ("7. Encode the text");
     check (phase7 (buf, bufsize, *outbuf+dictlen, &datalen));
-    // Возвратить размер и адрес выходного буфера
+    // Return the size and the address of the output buffer
     *outsize = dictlen + datalen;
     *outbuf  = (byte*) realloc (*outbuf, *outsize);
     return 0;  // All right
@@ -1162,13 +1162,13 @@ int DictEncode (byte *buf, unsigned bufsize, byte **outbuf, unsigned *outsize, i
 #endif // FREEARC_DECOMPRESS_ONLY
 
 
-// РАСПАКОВКА *****************************************************************************
+// DECOMPRESSION **************************************************************************
 
-// Словарь-матрица, используемый для декодирования
+// Matrix dictionary used for decoding
 struct dict_entry
 {
-    unsigned len;     // длина слова
-    byte *ptr;        // начало слова
+    unsigned len;     // word length
+    byte *ptr;        // start of the word
 }
 dict[UCHAR_MAX+1];
 
@@ -1176,26 +1176,26 @@ dict[UCHAR_MAX+1];
 #define put_byte(c)      (*outptr++ = (c))
 #define put_word(p,len)  (memcpy (outptr, (p), (len)), outptr += (len))
 
-// Распаковать входные данные buf[bufsize] в outbuf и возвратить размер распакованных данных
+// Decompress the input data buf[bufsize] into outbuf and return the size of the decompressed data
 int DictDecode (byte *buf, unsigned bufsize, byte *outbuf, unsigned *outsize)
 {
     int retcode = 0;
     byte *ptr = buf,
          *end = buf+bufsize,
-         *outptr = outbuf;     // текущий указатель в выходном буфере
+         *outptr = outbuf;     // current pointer in the output buffer
 
-    // Словарь-матрица, используемый для декодирования 2-байтовых слов
+    // Matrix dictionary used for decoding 2-byte words
     dict_entry *dict2_var = (dict_entry*) calloc ((UCHAR_MAX+1)*(UCHAR_MAX+1), sizeof (dict_entry));
 
-    stat1 ("ЧТЕНИЕ СЛОВАРЯ");
-    // Состоит из 5 циклов:
-    //   1. Прочесть 256 байт - это длины всех слов, кодируемых одним байтом
-    //        (0 означает, что этот байт слов не кодирует, 1 означает, что с этого байта начинаются коды 256 слов)
-    //   2. Прочесть длины всех слов, кодируемых двумя байтами
-    //        (256*n байт, где n - количество единиц, прочитанных на предыдущем этапе)
-    //   3. Прочесть текст всех однобайтовых слов
-    //   4. Прочесть текст всех двухбайтовых слов
-    //   5. Создать псевдо-слова для декодирования тех символов, которые отдали свои коды словам
+    stat1 ("READING THE DICTIONARY");
+    // Consists of 5 loops:
+    //   1. Read 256 bytes - these are the lengths of all the words encoded with a single byte
+    //        (0 means this byte encodes no word, 1 means that the codes of 256 words start with this byte)
+    //   2. Read the lengths of all the words encoded with two bytes
+    //        (256*n bytes, where n is the number of ones read in the previous stage)
+    //   3. Read the text of all the one-byte words
+    //   4. Read the text of all the two-byte words
+    //   5. Create pseudo-words for decoding those characters that gave their codes away to words
     int dictsize = 0, words2 = 0;
     for( int i=0; i<=UCHAR_MAX; i++ ) {
         dictsize += dict[i].len = get_byte();
@@ -1208,7 +1208,7 @@ int DictDecode (byte *buf, unsigned bufsize, byte *outbuf, unsigned *outsize)
             }
         }
     }
-    // Буфер для хранения текста слов (память для него сейчас выделяется на авось, но с большим запасом :)
+    // Buffer for storing the text of the words (memory for it is currently allocated by guesswork, but with a big margin :)
     byte *words = (byte*) malloc (dictsize+UCHAR_MAX+1+words2*20+100000), *wordptr = words;
     for( int i=0; i<=UCHAR_MAX; i++ ) {
         if (dict[i].len == USE_DICT2)  continue;
@@ -1224,12 +1224,12 @@ int DictDecode (byte *buf, unsigned bufsize, byte *outbuf, unsigned *outsize)
         if( dict[i].len==USE_DICT2 ) {
             for( int j=0; j<=UCHAR_MAX; j++ ) {
                 dict2(i,j).ptr = wordptr;
-                // Скопируем начало слова из предыдущего
+                // Copy the start of the word from the previous one
                 for( int k=0; k<dict2(i,j).len; k++ ) {
-                    if (prevptr==NULL)  {retcode = -1; goto done;}  // Ошибка во входных данных - копирование данных из предыдущего слова, которого нет :)
+                    if (prevptr==NULL)  {retcode = -1; goto done;}  // Error in the input data - copying data from a previous word that does not exist :)
                     *wordptr++ = *prevptr++;
                 }
-                // И прочитаем остаток слова из входного потока
+                // And read the rest of the word from the input stream
                 for(;;) {
                     byte c = get_byte();
                     if (c==word_sep) break;
@@ -1240,10 +1240,10 @@ int DictDecode (byte *buf, unsigned bufsize, byte *outbuf, unsigned *outsize)
             }
         }
     }
-    // Префикс, используемый для кодирования украденных символов
+    // The prefix used for encoding the stolen characters
     byte prefix = get_byte();
     dict[prefix].len = USE_DICT2;
-    // Создадим псевдо-слова, кодирующие украденные символы
+    // Create the pseudo-words that encode the stolen characters
     for (int j=0; j<=UCHAR_MAX; j++) {
         dict2(prefix,j).len = 1;
         dict2(prefix,j).ptr = wordptr;
@@ -1251,22 +1251,22 @@ int DictDecode (byte *buf, unsigned bufsize, byte *outbuf, unsigned *outsize)
     }
 
 
-    stat1 ("ДЕКОДИРОВАТЬ ТЕКСТ, ИСПОЛЬЗУЯ ПРОЧИТАННЫЙ ВЫШЕ СЛОВАРЬ");
+    stat1 ("DECODE THE TEXT USING THE DICTIONARY READ ABOVE");
     while( ptr<end ) {
         byte c = get_byte();
         dict_entry &d = dict[c];
 
-        // Если этот байт не кодирует никаких слов, то вывести его сам по себе
+        // If this byte encodes no word, then output it as is
         if (d.len == 0) {
             put_byte(c);
 
-        // Если этот байт - начало кода двухбайтового слова, то вывести это слово
+        // If this byte is the start of a two-byte word code, then output that word
         } else if( d.len == USE_DICT2 ) {
             byte c2 = get_byte();
             dict_entry &d = dict2(c,c2);
             put_word (d.ptr, d.len);
 
-        // Иначе этот байт - начало кода однобайтового слова
+        // Otherwise this byte is the start of a one-byte word code
         } else {
             put_word (d.ptr, d.len);
         }
@@ -1276,7 +1276,7 @@ done:
     FreeAndNil (words);
     FreeAndNil (dict2_var);
 
-    // Записать длину декодированного текста и вернуть код (без)успешного завершения
+    // Store the length of the decoded text and return the (un)successful completion code
     *outsize = outptr-outbuf;
     return retcode;
 }
@@ -1284,12 +1284,12 @@ done:
 
 
 #ifndef DICT_LIBRARY
-// ХОЗЧАСТЬ ************************************************************************
+// HOUSEKEEPING ********************************************************************
 #include <windows.h>
 #include <io.h>
 #include "../Common.cpp"
 
-// Вывести время выполнения очередного шага алгоритма и запомнить название следующего шага
+// Print the execution time of the current step of the algorithm and remember the name of the next step
 void stat1 (char *nextmsg)
 {
     if (! print_timings) return;
@@ -1315,7 +1315,7 @@ void stat1 (char *nextmsg)
     QueryPerformanceCounter (&PerformanceCountStart);
 }
 
-// Аналогично stat1(), но для учёта времени выполнения подшагов алгоритма
+// Same as stat1(), but for measuring the execution time of the algorithm's substeps
 void stat2 (char *nextmsg)
 {
     if (! print_timings) return;
@@ -1336,17 +1336,17 @@ void stat2 (char *nextmsg)
 }
 
 
-// Разбор командной строки, чтение входных данных, вызов DictEncode/DictDecode, и запись выходных данных
+// Command-line parsing, reading the input data, calling DictEncode/DictDecode, and writing the output data
 int main (int argc, char **argv)
 {
-    // Распаковка вместо упаковки?
+    // Decompression instead of compression?
     int unpack = 0;
 
-    // Параметры отбора слов, используемые по умолчанию
-    int MinLargeCnt  = 2048;    // Минимальный "большой" счётчик
-    int MinMediumCnt = 100;     // Минимальный "средний" счётчик
-    int MinSmallCnt  = 50;      // Минимальный "маленький" счётчик
-    int MinRatio     = 4;       // Минимальная "пропорция"
+    // Word selection parameters used by default
+    int MinLargeCnt  = 2048;    // Minimum "large" counter
+    int MinMediumCnt = 100;     // Minimum "medium" counter
+    int MinSmallCnt  = 50;      // Minimum "small" counter
+    int MinRatio     = 4;       // Minimum "ratio"
 
     if( argv[1] && argv[1][0] == '-' ) {
         char *p = argv[1]+1;
@@ -1387,7 +1387,7 @@ int main (int argc, char **argv)
         exit(2);
     }
 
-    // Буфер, куда будут помещены входные данные, и их размер
+    // The buffer where the input data will be placed, and its size
     unsigned bufsize = filelength(fileno(fin));
     byte *buf = (byte*) malloc(bufsize);
     if (buf == NULL) {
@@ -1395,7 +1395,7 @@ int main (int argc, char **argv)
         exit(4);
     }
 
-    // Прочитать входные данные
+    // Read the input data
     unsigned bytes = file_read (fin, buf, bufsize);
     if (bytes != bufsize) {
         printf( "\n Can't read entire input file");
@@ -1405,29 +1405,29 @@ int main (int argc, char **argv)
 
     byte *outbuf; unsigned outsize; int ret;
     if (!unpack) {
-        // Произвести кодирование и получить адрес выходного буфера и размер выходных данных
+        // Perform the encoding and obtain the address of the output buffer and the size of the output data
         ret = DictEncode (buf, bufsize, &outbuf, &outsize, 0, MinLargeCnt, MinMediumCnt, MinSmallCnt, MinRatio);
     } else {
-        // Прочитать размер исходных данных из начала входного буфера
-        // и использовать его для выделения памяти под выходной буфер
+        // Read the size of the original data from the start of the input buffer
+        // and use it to allocate memory for the output buffer
         outsize = *(unsigned*)buf;
         buf += sizeof(unsigned); bufsize -= sizeof(unsigned);
         outbuf = (byte*) malloc (outsize);
-        // Произвести декодирование и получить размер выходных данных
+        // Perform the decoding and obtain the size of the output data
         ret = DictDecode (buf, bufsize, outbuf, &outsize);
     }
 
-    // Напечатать последнюю строку статистики
+    // Print the last line of statistics
     stat1 (NULL);
 
-    // Записать выходные данные, если всё ОК и был указан выходной файл
+    // Write the output data if everything is OK and an output file was specified
     if (!ret  &&  argc == 3) {
         FILE *fout = fopen( argv[2], "wb" );
         if (fout == NULL) {
             printf( "\n Can't open %s for write\n", argv[2]);
             exit(3);
         }
-        if (!unpack)  file_write (fout, &bufsize, sizeof(bufsize));  // Добавим размер исходного файла в начало закодированных данных
+        if (!unpack)  file_write (fout, &bufsize, sizeof(bufsize));  // Prepend the size of the original file to the encoded data
         file_write (fout, outbuf, outsize);
     }
 

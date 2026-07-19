@@ -5,7 +5,7 @@
 // Used in 4x4 only: read entire input buffer before compression begins, allocate output buffer large enough to hold entire compressed output
 int compress_all_at_once = 0;
 
-// Для обработки ошибок во вложенных процедурах - longjmp сигнализирует процедуре верхнего уровня о произошедшей ошибке
+// For error handling in nested procedures - longjmp signals the top-level procedure that an error has occurred
 int jmpready = FALSE;
 jmp_buf jumper;
 
@@ -114,19 +114,19 @@ void BigFree(void *address) throw()
 
 
 // ****************************************************************************
-// Функции парсинга и арифметики **********************************************
+// Parsing and arithmetic functions *******************************************
 // ****************************************************************************
 
-// Копирует строчку from в to, но не более len символов
+// Copies the string from into to, but no more than len characters
 void strncopy( char *to, char *from, int len ) {
   for (int i = len; --i && *from; )     *to++ = *from++;
   *to = '\0';
 }
 
-// Разбить строку str на подстроки, разделённые символом splitter.
-// Результат - в строке str splitter заменяется на '\0'
-//   и массив result заполняется ссылками на выделенные в str подстроки + NULL (аналогично argv)
-// Возвращает число найденных подстрок
+// Split the string str into substrings separated by the splitter character.
+// Result - inside str every splitter is replaced with '\0'
+//   and the result array is filled with pointers to the substrings found in str + NULL (like argv)
+// Returns the number of substrings found
 int split (char *str, char splitter, char **result_base, int result_size)
 {
   char **result      = result_base;
@@ -144,8 +144,8 @@ int split (char *str, char splitter, char **result_base, int result_size)
   return result-result_base;
 }
 
-// Заменяет в строке original все вхождения from на to,
-// возвращая вновь выделенную new строку и освобождая оригинал, если была хоть одна замена
+// Replaces every occurrence of from with to in the string original,
+// returning a newly allocated string and freeing the original if at least one replacement was made
 char *subst (char *original, char *from, char *to)
 {
   while(1) {
@@ -160,7 +160,7 @@ char *subst (char *original, char *from, char *to)
   }
 }
 
-// Пропускает пробелы в начале строки и убирает их в конце, модифицируя строку
+// Skips leading whitespace and strips trailing whitespace, modifying the string in place
 char *trim_spaces(char *s)
 {
   while(isspace(*s)) s++;
@@ -297,7 +297,7 @@ char *oem_to_utf8 (const char  *oem, char *utf8)
 #ifndef FREEARC_NO_TIMING
 
 //*****************************************************************************
-// Вывод заголовка окна *******************************************************
+// Window title output ********************************************************
 //*****************************************************************************
 
 #ifdef FREEARC_WIN
@@ -306,7 +306,7 @@ char *oem_to_utf8 (const char  *oem, char *utf8)
 TCHAR Saved_Title[MY_FILENAME_MAX];
 bool Saved = FALSE;
 
-// Установить заголовок консольного окна
+// Set the console window title
 void EnvSetConsoleTitle (TCHAR *title)
 {
   if (!Saved) {
@@ -316,7 +316,7 @@ void EnvSetConsoleTitle (TCHAR *title)
   SetConsoleTitle (title);
 }
 
-// Восстановить заголовок, который был в начале работы программы
+// Restore the title that was in place when the program started
 void EnvResetConsoleTitle (void)
 {
   if (Saved) {

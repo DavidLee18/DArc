@@ -7,13 +7,13 @@ extern "C" {
 
 int external_program (bool IsCompressing, CALLBACK_FUNC *callback, void *auxdata, char *infile, char *outfile, char *cmd, char *name, int MinCompression, double *addtime)
 {
-    BYTE* Buf = (BYTE*) BigAlloc(LARGE_BUFFER_SIZE);  // буфер, используемый для чтения/записи данных
+    BYTE* Buf = (BYTE*) BigAlloc(LARGE_BUFFER_SIZE);  // buffer used for reading/writing data
     if (!Buf)  {return FREEARC_ERRCODE_NOT_ENOUGH_MEMORY;}
-    int x;                                            // код, возвращённый последней операцией чтения/записи
-    int ExitCode = 0;                                 // код возврата внешней программы
-    bool useHeader = !strequ(name,"tempfile");        // TRUE, если в начало сжатого потока записывается 0/1 - данные несжаты/сжаты
+    int x;                                            // code returned by the last read/write operation
+    int ExitCode = 0;                                 // exit code of the external program
+    bool useHeader = !strequ(name,"tempfile");        // TRUE if a 0/1 byte is written at the start of the compressed stream - data uncompressed/compressed
 
-    // Перепишем входные данные во временный файл
+    // Copy the input data into a temporary file
     remove (infile);
     FILE *f = NULL;
     uint64 bytes = 0;
@@ -21,10 +21,10 @@ int external_program (bool IsCompressing, CALLBACK_FUNC *callback, void *auxdata
     if (!IsCompressing && useHeader)  checked_read (&runCmd, 1);
     while ( (x = callback ("read", Buf, LARGE_BUFFER_SIZE, auxdata)) > 0 )
     {
-        if (f==NULL)  {f = fopen (infile, "wb");  // Не открываем файл пока не прочтём хоть сколько-нибудь данных (для решения проблем с перепаковкой солид-блоков)
+        if (f==NULL)  {f = fopen (infile, "wb");  // Don't open the file until we have read at least some data (to solve problems with recompressing solid blocks)
         	       if (!f)  {x=FREEARC_ERRCODE_IO; break;}
                        registerTemporaryFile (infile,f);}
-        if (runCmd!=0 && runCmd!=1) {            // Для совместимости со старыми версиями FreeArc, которые не добавляли 1 перед сжатыми данными (убрать из FreeArc 0.80!)
+        if (runCmd!=0 && runCmd!=1) {            // For compatibility with old FreeArc versions that did not prepend a 1 before the compressed data (remove in FreeArc 0.80!)
             outfile = "data7777";
             bytes += 1;
             if (file_write(f,&runCmd,1) != 1)   {x=FREEARC_ERRCODE_IO; break;}
@@ -36,10 +36,10 @@ int external_program (bool IsCompressing, CALLBACK_FUNC *callback, void *auxdata
     BigFree(Buf);  Buf = NULL;
     unregisterTemporaryFile (infile);
     fclose (f);    f = NULL;
-    if (x)  {remove (infile); return x;}   // Если при чтении/записи произошла ошибка - выходим
+    if (x)  {remove (infile); return x;}   // If an error occurred while reading/writing - exit
 
-    // Если cmd пусто - диск используется просто для буферизации данных перед дальнейшим сжатием.
-    // Если runCmd==0 - данные были скопированы без сжатия
+    // If cmd is empty - the disk is used simply to buffer the data before further compression.
+    // If runCmd==0 - the data was copied without compression
     remove (outfile);
     registerTemporaryFile (infile);
     registerTemporaryFile (outfile);
@@ -54,7 +54,7 @@ int external_program (bool IsCompressing, CALLBACK_FUNC *callback, void *auxdata
         rename (infile, outfile);
     }
 
-    // Откроем выходной файл, если команда завершилась успешно и его можно открыть
+    // Open the output file if the command finished successfully and the file can be opened
     if(ExitCode==0)    f = fopen (outfile, "rb" );
     if (f) {
         registerTemporaryFile (outfile,f);
@@ -76,7 +76,7 @@ int external_program (bool IsCompressing, CALLBACK_FUNC *callback, void *auxdata
         if (IsCompressing)                  checked_write(uncompressed,1);
     }
 
-    // Прочитаем выходные данные из файла
+    // Read the output data from the file
     QUASIWRITE (get_flen(f));
     Buf = (BYTE*) BigAlloc(LARGE_BUFFER_SIZE);
     while ((x = file_read (f, Buf, LARGE_BUFFER_SIZE)) > 0)
@@ -88,12 +88,12 @@ finished:
     fclose (f);
     remove (outfile);
     BigFree(Buf);
-    return x;         // 0, если всё в порядке, и код ошибки иначе
+    return x;         // 0 if everything is fine, an error code otherwise
 }
 
 
 /*-------------------------------------------------*/
-/* Реализация класса EXTERNAL_METHOD               */
+/* Implementation of the EXTERNAL_METHOD class     */
 /*-------------------------------------------------*/
 
 char *prepare_cmd (EXTERNAL_METHOD *p, char *cmd)
@@ -156,7 +156,7 @@ char *prepare_cmd (EXTERNAL_METHOD *p, char *cmd)
 }
 
 
-// Функция распаковки
+// Decompression function
 int EXTERNAL_METHOD::decompress (CALLBACK_FUNC *callback, void *auxdata)
 {
     char *cmd = prepare_cmd (this, unpackcmd);
@@ -167,7 +167,7 @@ int EXTERNAL_METHOD::decompress (CALLBACK_FUNC *callback, void *auxdata)
 
 #ifndef FREEARC_DECOMPRESS_ONLY
 
-// Функция упаковки
+// Compression function
 int EXTERNAL_METHOD::compress (CALLBACK_FUNC *callback, void *auxdata)
 {
     char *cmd = prepare_cmd (this, packcmd);
@@ -176,7 +176,7 @@ int EXTERNAL_METHOD::compress (CALLBACK_FUNC *callback, void *auxdata)
     return result;
 }
 
-// Записать в buf[MAX_METHOD_STRLEN] строку, описывающую метод сжатия и его параметры (функция, обратная к parse_EXTERNAL)
+// Write into buf[MAX_METHOD_STRLEN] a string describing the compression method and its parameters (the inverse of parse_EXTERNAL)
 void EXTERNAL_METHOD::ShowCompressionMethod (char *buf)
 {
     if (strequ (name, "pmm")) {
@@ -193,7 +193,7 @@ void EXTERNAL_METHOD::ShowCompressionMethod (char *buf)
     }
 }
 
-// Изменить потребность в памяти, заодно оттюнинговав order
+// Change the memory requirements, tuning order along the way
 void EXTERNAL_METHOD::SetCompressionMem (MemSize _mem)
 {
     if (can_set_mem && _mem>0) {
@@ -205,13 +205,13 @@ void EXTERNAL_METHOD::SetCompressionMem (MemSize _mem)
 #endif  // !defined (FREEARC_DECOMPRESS_ONLY)
 
 
-// Конструирует объект типа EXTERNAL_METHOD/PPMonstr с заданными параметрами упаковки
-// или возвращает NULL, если это другой метод сжатия или допущена ошибка в параметрах
+// Constructs an object of type EXTERNAL_METHOD/PPMonstr with the given compression parameters
+// or returns NULL if this is a different compression method or an error was made in the parameters
 COMPRESSION_METHOD* parse_PPMONSTR (char** parameters)
 {
-  // Если название метода (нулевой параметр) - "pmm", то разберём остальные параметры
+  // If the method name (parameter zero) is "pmm", then parse the remaining parameters
   if (strcmp (parameters[0], "pmm") == 0) {
-    // Дефолтные значения параметров для метода сжатия PPMonstr
+    // Default parameter values for the PPMonstr compression method
     EXTERNAL_METHOD *p = new EXTERNAL_METHOD;
     p->name           = "pmm";
     p->MinCompression = 100;
@@ -223,33 +223,33 @@ COMPRESSION_METHOD* parse_PPMONSTR (char** parameters)
     p->datafile       = "$$arcdatafile$$.tmp";
     p->packedfile     = "$$arcdatafile$$.pmm";
 
-    int error = 0;  // Признак того, что при разборе параметров произошла ошибка
+    int error = 0;  // Flag indicating that an error occurred while parsing the parameters
 
-    // Переберём все параметры метода (или выйдем раньше при возникновении ошибки при разборе очередного параметра)
+    // Iterate over all parameters of the method (or exit early if an error occurs while parsing one of them)
     while (*++parameters && !error)
     {
       char *param = *parameters;
       if (start_with (param, "mem")) {
-        param+=2;  // Обработать "mem..." как "m..."
+        param+=2;  // Treat "mem..." as "m..."
       }
-      if (strlen(param)==1) switch (*param) {    // Однобуквенные параметры
+      if (strlen(param)==1) switch (*param) {    // Single-letter parameters
         case 'r':  p->MRMethod = 1; continue;
       }
-      else switch (*param) {                    // Параметры, содержащие значения
+      else switch (*param) {                    // Parameters carrying a value
         case 'm':  p->cmem = p->dmem = parseMem (param+1, &error); continue;
         case 'o':  p->order          = parseInt (param+1, &error); continue;
         case 'r':  p->MRMethod       = parseInt (param+1, &error); continue;
       }
-      // Сюда мы попадаем, если в параметре не указано его название
-      // Если этот параметр удастся разобрать как целое число (т.е. в нём - только цифры),
-      // то присвоим его значение полю order, иначе попробуем разобрать его как mem
+      // We get here if the parameter does not specify its name
+      // If this parameter can be parsed as an integer (i.e. it contains only digits),
+      // then assign its value to the order field, otherwise try to parse it as mem
       int n = parseInt (param, &error);
       if (!error) p->order = n;
       else        error=0, p->cmem = p->dmem = parseMem (param, &error);
     }
-    if (error)  {delete p; return NULL;}  // Ошибка при парсинге параметров метода
+    if (error)  {delete p; return NULL;}  // Error while parsing the method parameters
 
-    // Создаёт packcmd/unpackcmd для PPMonstr
+    // Builds packcmd/unpackcmd for PPMonstr
     char cmd[100];
     sprintf (cmd, "ppmonstr e -o%d -m%d -r%d %s", p->order, p->cmem>>20, p->MRMethod, p->datafile);
     p->packcmd = strdup_msg(cmd);
@@ -258,26 +258,26 @@ COMPRESSION_METHOD* parse_PPMONSTR (char** parameters)
 
     return p;
   } else {
-    return NULL;   // Это не метод PPMONSTR
+    return NULL;   // This is not the PPMONSTR method
   }
 }
 
-static int PPMONSTR_x = AddCompressionMethod (parse_PPMONSTR);   // Зарегистрируем парсер метода PPMONSTR
+static int PPMONSTR_x = AddCompressionMethod (parse_PPMONSTR);   // Register the parser for the PPMONSTR method
 
 
 
 
-// ПОДДЕРЖКА ПРОИЗВОЛЬНЫХ ВНЕШНИХ УПАКОВЩИКОВ **********************************************************************
+// SUPPORT FOR ARBITRARY EXTERNAL COMPRESSORS **********************************************************************
 
-// Конструирует объект типа EXTERNAL_METHOD с заданными параметрами упаковки
-// или возвращает NULL, если это другой метод сжатия или допущена ошибка в параметрах
+// Constructs an object of type EXTERNAL_METHOD with the given compression parameters
+// or returns NULL if this is a different compression method or an error was made in the parameters
 COMPRESSION_METHOD* parse_EXTERNAL (char** parameters, void *method_template)
 {
   if (strequ (parameters[0], ((EXTERNAL_METHOD*)method_template)->name)) {
-    // Если название метода (нулевой параметр) соответствует названию проверяемого EXTERNAL метода, то разберём остальные параметры
+    // If the method name (parameter zero) matches the name of the EXTERNAL method being checked, then parse the remaining parameters
     EXTERNAL_METHOD *p = new EXTERNAL_METHOD (*(EXTERNAL_METHOD*)method_template);
 
-    // Копируем параметры метода внутрь нашего объекта
+    // Copy the method parameters into our object
     char **param = parameters+1, **opt = p->options, *place = p->option_strings;
     while (*param)
     {
@@ -289,14 +289,14 @@ COMPRESSION_METHOD* parse_EXTERNAL (char** parameters, void *method_template)
 
     return p;
   } else {
-    return NULL;   // Это не метод EXTERNAL
+    return NULL;   // This is not the EXTERNAL method
   }
 }
 
 
-// Добавить в таблицу методов сжатия описанный пользователем в arc.ini внешний упаковщик.
-// params содержит описание упаковщика из arc.ini. Возвращает 1, если описание корректно.
-// Пример описания:
+// Add to the table of compression methods an external compressor described by the user in arc.ini.
+// params contains the compressor description from arc.ini. Returns 1 if the description is valid.
+// Example of a description:
 //   [External compressor: ccm123, ccmx123, ccm125, ccmx125]
 //   mem = 276
 //   packcmd   = {compressor} c $$arcdatafile$$.tmp $$arcpackedfile$$.tmp
@@ -306,28 +306,28 @@ COMPRESSION_METHOD* parse_EXTERNAL (char** parameters, void *method_template)
 //
 int AddExternalCompressor (char *params)
 {
-    // Разобьём описание метода сжатия на отдельные строки, хранящие его заголовок и параметры
+    // Split the compression method description into separate lines holding its header and parameters
     char  local_method [MAX_EXTERNAL_COMPRESSOR_SECTION_LENGTH];
     strncopy (local_method, params, MAX_METHOD_STRLEN);
     char* parameters [MAX_PARAMETERS];
     split (local_method, '\n', parameters, MAX_PARAMETERS);
 
-    // Проверим, что первая строка - заголовок секции [External compressor]
+    // Check that the first line is the header of an [External compressor] section
     if (last_char(parameters[0])=='\r')  last_char(parameters[0]) = '\0';
     if (! (start_with (parameters[0], "[External compressor:")
            && end_with (parameters[0], "]")))
       return 0;
 
-    // Извлечём из заголовка секции имена версий программы
+    // Extract the names of the program versions from the section header
     char *versions_list = strdup_msg (strchr(parameters[0],':')+1);
     last_char(versions_list) = '\0';
     char* version_name [MAX_COMPRESSION_METHODS];
     int versions_count = split (versions_list, ',', version_name, MAX_COMPRESSION_METHODS);
 
-    // Для каждой версии создаём отдельный объект EXTERNAL_METHOD
+    // For each version we create a separate EXTERNAL_METHOD object
     EXTERNAL_METHOD *version  =  new EXTERNAL_METHOD[versions_count];
     for (int i=0; i<versions_count; i++) {
-        // Инициализируем шаблон EXTERNAL_METHOD именем очередной версии и параметрами по умолчанию
+        // Initialize the EXTERNAL_METHOD template with the name of the current version and default parameters
         version[i].name           = trim_spaces(version_name[i]);
         version[i].MinCompression = 100;
         version[i].can_set_mem    = FALSE;
@@ -341,33 +341,33 @@ int AddExternalCompressor (char *params)
     }
 
 
-    // Теперь заполним эти шаблоны по описанию упаковщика, предоставленному пользователем
-    // (команды упаковки/распаковки, требования к памяти и так далее).
+    // Now fill in these templates from the compressor description supplied by the user
+    // (compression/decompression commands, memory requirements and so on).
     for (char **param=parameters;  *++param; ) {
-        // Обработаем строку описания, разбив её на левую часть до '='
-        // c названием параметра и правую часть с его значением
+        // Process the description line, splitting it into the left part before '='
+        // holding the parameter name and the right part holding its value
         char *s = *param;
-        if (last_char(s)=='\r')  last_char(s) = '\0';  // На случай обработки файла с '\r\n' разделителями
-        if (*s=='\0' || *s==';')  continue;  // Пропустим целиком пустую строку / строку комментариев
-        while (*s && isspace(*s))  s++;   // Пропустим начальные пробелы в строке
-        char *left = s;                   // Заякорим начало левой части (имени) параметра
-        while (*s && !isspace(*s) && *s!='=')  s++;   // Найдём конец имени
+        if (last_char(s)=='\r')  last_char(s) = '\0';  // In case a file with '\r\n' separators is being processed
+        if (*s=='\0' || *s==';')  continue;  // Skip a completely empty line / a comment line
+        while (*s && isspace(*s))  s++;   // Skip the leading spaces in the line
+        char *left = s;                   // Anchor the start of the left part (the name) of the parameter
+        while (*s && !isspace(*s) && *s!='=')  s++;   // Find the end of the name
         if (*s=='\0')  return 0;
-        if (*s!='=') {                         // Пропустим пробелы после имени, если нужно
+        if (*s!='=') {                         // Skip the spaces after the name, if needed
             *s++ = '\0';
             while (*s && isspace(*s))  s++;
             if (*s!='=')  return 0;
         }
-        *s++ = '\0';                           // Поставим '\0' после имени
-        while (*s && isspace(*s))  s++;        // Пропустим пробелы в начале правой части (значении)
+        *s++ = '\0';                           // Put a '\0' after the name
+        while (*s && isspace(*s))  s++;        // Skip the spaces at the start of the right part (the value)
         if (*s=='\0')  return 0;
-        char *right = s;                       // Заякорим начало значения
+        char *right = s;                       // Anchor the start of the value
 
-        // Теперь left содержит левую часть строки (до '=') без пробелов,
-        // а right - правую часть без начальных пробелов.
-        // Переберём все версии компрессора и обновим в них соответствующее поле
+        // Now left holds the left part of the line (before '=') without spaces,
+        // and right holds the right part without leading spaces.
+        // Iterate over all compressor versions and update the corresponding field in each of them
         for (int i=0; i<versions_count; i++) {
-            int error = 0;  // Признак того, что при разборе параметров произошла ошибка
+            int error = 0;  // Flag indicating that an error occurred while parsing the parameters
                  if (strequ (left, "mem"))         version[i].cmem = version[i].dmem = parseInt (right,&error)*mb;
             else if (strequ (left, "cmem"))        version[i].cmem        = parseInt (right,&error)*mb;
             else if (strequ (left, "dmem"))        version[i].dmem        = parseInt (right,&error)*mb;
@@ -383,17 +383,17 @@ int AddExternalCompressor (char *params)
     }
 
 
-    // Наконец, зарегистрируем парсер EXTERNAL метода сжатия, использующий эти шаблоны
-    // для распознавания новых методов сжатия и получения всех необходимых сведений
-    // о том, какие команды нужно вызывать для его реализации, через какие файлы
-    // передавать данные и т.д.
+    // Finally, register the parser for the EXTERNAL compression method, which uses these templates
+    // to recognize new compression methods and to obtain all the information needed
+    // about which commands must be invoked to implement it, through which files
+    // the data is passed, and so on.
     for (int i=0; i<versions_count; i++) {
         AddExternalCompressionMethod (parse_EXTERNAL, &version[i]);
     }
     return 1;
 }
 
-// Псевдо-метод сжатия, записывающий все получаемые им данные в файл, и затем считывающий его.
-// Автоматически вставляется между жрущими много памяти алгоритмами, например REP и LZMA
-static int TEMPFILE_x = AddExternalCompressor ("[External compressor:tempfile]");   // Зарегистрируем парсер метода TEMPFILE
+// A pseudo compression method that writes all the data it receives to a file and then reads it back.
+// Automatically inserted between memory-hungry algorithms, for example REP and LZMA
+static int TEMPFILE_x = AddExternalCompressor ("[External compressor:tempfile]");   // Register the parser for the TEMPFILE method
 

@@ -516,17 +516,17 @@ LZ77 model:
     -save into hash record 4 bits of p[5] - would be useful to skip trying second..fourth hash records
     +save into hash record 4 bytes of data
     +lazy search (and return of 3-byte strings) for highest compression mode
-+l8... - добавило 1 лишнюю секунду на обработку каждых 280 мб
++l8... - added 1 extra second per 280 mb processed
 +compare with ideal hash function crc+crc+..
     (((CRCTab[(x)&255] ^ _rotr(CRCTab[((x)>>8)&255],8) ^ _rotr(CRCTab[((x)>>16)&255],16) ^ _rotr(CRCTab[((x)>>24)&255],24)) >> HashShift) & HashMask)
 +store unused hash bits + a few more chars in hash   (1.5x speedup)
     491->367 (340 for hash4x), 91->68, 51->43 secs
-    +использовать первый байт под хеш 4х байтов
-    +отдельные циклы для len=3,4,5,6
-    +используя t, быстро проверять матчи длины до 7 в циклах len3..5 и при проверке первой строки
-    проверить заново длины совпадений строк в хеш-цепочке
+    +use the first byte for a hash of 4 bytes
+    +separate loops for len=3,4,5,6
+    +using t, quickly check matches up to length 7 in the len3..5 loops and when checking the first string
+    re-check the match lengths of the strings in the hash chain
 +fast arithmetics! total=2^n
-    отдельный буфер для чтения битовых полей; или лучше bits+arith в одном потоке данных
+    a separate buffer for reading bit fields; or better, bits+arith in a single data stream
 +lazy matches                                        (+3.5% compression)
     unsuccessfully tried:
       ush good_length; - reduce lazy search above this match length
@@ -535,17 +535,17 @@ LZ77 model:
 +arith / huffman / bitio                         (+10% compresion for bit i/o, +20% for huffman)
     byte i/o -> class: +0.3 sec on !all
 +3-byte strings
-+выкидывать короткие далёкие строки
-    +можно улучшить сжатие на 0.3% если выкидывать ещё и 6-байтовые строки
++drop short distant strings
+    +compression can be improved by 0.3% by also dropping 6-byte strings
 +better hash multiplier
 -5% less compression of src (l4 h22) compared to mmdet. strange?
 -several encoding tables: after char, after small string, large string
 -add custom MF for l=4/8 (3/6?) what means -1 sec. on !all
     don't have much meaning because caching MF isn't any worser
-+FIXED: MatchFinder2 несовместим с 3-байтовыми словами / lazy matching (update_hash рассчитано на обновления как минимум в 3 байта)
++FIXED: MatchFinder2 is incompatible with 3-byte words / lazy matching (update_hash assumes updates of at least 3 bytes)
 +FAST_COMPILE - only 4 models actually used by -1..-12
-+сделать hash_row_width частью класса MatchFinder
-+FIXED: caching MF - нечётные слова должны инициализироваться содержимым начала буфера
++make hash_row_width part of the MatchFinder class
++FIXED: caching MF - odd words must be initialized with the contents of the start of the buffer
 +sliding window for higher modes (-4/-5 - m.buffer/2, -6 and up - m.buffer/4)
 +write data to outstreams in 16mb chunks
 +64k-1m non-sliding window for -1..-3
@@ -556,29 +556,29 @@ LZ77 model:
 +[almost] full hash_update for highest modes
 +IMPOSSIBLE_LEN/IMPOSSIBLE_DIST for EOF encoding, encode() for first 2 chars
 +FIXED: -s- -p2 problem (was returning len==0 instead of MINLEN-1)
--при lazy поиске учитывать длину пред. матча, пропуская 3-байтовый и часть 4-байтового поиска
+-in the lazy search, take the previous match length into account, skipping the 3-byte and part of the 4-byte search
 +TOO_FAR checks moved into caching MF
 +output buffer now flushed only when reading next input chunk
 +tor_(de)compress - returns error code or FREEARC_OK
-+freearc: блокировать тред чтения при записи данных
++freearc: block the reading thread while data is being written
 +7z's lazy heuristic
-  +при поиске строки - if newlen=len+1 and newdist>dist*64 - ignore it
+  +when searching for a string - if newlen=len+1 and newdist>dist*64 - ignore it
 +2-byte strings, +repdist, +repboth, +repchar
-+обработка маленьких файлов!
-+восстановить bytecoder
++handling of small files!
++restore the bytecoder
   +large len - a few bytes representation to ensure no overflows
 +auto-decrease hash (and buf) for small files
-+удлинять назад next match в lazy matcher
--repdistN+-delta - 0.4% на текстах
++extend the next match backwards in the lazy matcher
+-repdistN+-delta - 0.4% on texts
 +HuffmanEncoder::encode2
-+fixed: использование в проверке на REPCHAR инициализационного значения repdist0=1
-        использование псевдодистанции от MMx для проверки на REPCHAR (учти: декодер должен иметь ту же очередь последних дистанций)
-        переход diffed table через сдвиг буфера
-          восстановление данных должно делаться после обратного diff, иначе этот diff запишет мусор в элемент, следующий за восстановленным
-        использование p->table_len вместо обрезанного len
-        write_end мог выходить за границу буфера
-        read_next_chunk должен возвращать 0 если больше сжимать нечего (последний матч добил до конца уже прочитанных данных и новых прочесть не удалось)
-        101..104 не совсем аккуратно использовался для data table codes
++fixed: use of the initial value repdist0=1 in the REPCHAR check
+        use of the pseudo-distance from MMx for the REPCHAR check (note: the decoder must have the same queue of recent distances)
+        a diffed table crossing a buffer shift
+          data restoration must be done after the reverse diff, otherwise that diff will write garbage into the element following the restored one
+        use of p->table_len instead of the truncated len
+        write_end could run past the buffer boundary
+        read_next_chunk must return 0 if there is nothing left to compress (the last match ran to the end of the already-read data and no new data could be read)
+        101..104 was used somewhat sloppily for data table codes
 -context-based char encoding
   separate coder table after \0 or after \0..\31
 +diffing tables
@@ -587,15 +587,15 @@ LZ77 model:
   +cyclic hash for large N
 +ChangePair in MFN
   -ChangePair for len1-len2>1
-при достаточно длинном и далёком матче выкидывать его из хеша в предположении, что текущая строка его прекрасно заменит
-  -делать сдвиг отдельно, после цикла поиска матчей (попробовано при неразделённом CMF)
+for a sufficiently long and distant match, drop it from the hash on the assumption that the current string will replace it perfectly well
+  -do the shift separately, after the match search loop (tried with a non-split CMF)
 block-static arithmetic coder - may improve compression by 1-2%
-? caching MF для -l2
+? caching MF for -l2
 + 5/6-byte main hash for highest modes (-7 and up)
-hash3+lazy - скомбинировать в другом порядке, поскольку нет смысла искать 3-байтовую строку после матча?
-заполнить конец буфера случайными данными и убрать проверки p+len<bufend
-  заменить проверки p+len<=bufend одной в compress0()
-ограничить проверяемую дистанцию в -1/-2/-3? чтобы не вылезать за размер кеша
+hash3+lazy - combine in a different order, since there is no point searching for a 3-byte string after a match?
+fill the end of the buffer with random data and remove the p+len<bufend checks
+  replace the p+len<=bufend checks with a single one in compress0()
+limit the distance checked in -1/-2/-3? so as not to exceed the cache size
 rolz 1+2+3+4
 minor thoughts:
   small outbuf for -5 and higher modes
@@ -609,38 +609,38 @@ use only one bit for flag in bytecoder
 bitcoder: 30-bit length encoding - make it a part of 8-bit encoding
 huf/ari - improve "first block" encoding, adaptation (currently, up to 1/64 of codespace is wasted),
   +EOB code
-? выводить данные блоками, соответствующими входным chunks, storing несжавшихся блоков
+? output data in blocks matching the input chunks, storing blocks that did not compress
     header = 1 byte flags + 3 bytes len
-более детализированные disttables для маленьких len
+more fine-grained disttables for small len
 -1,-2,-3?: +no MM, no REP*
-huf/ari: вместо cnt++ делать cnt+=10 - должно увеличить точность кодирования (это увеличивает размер таблиц, что замедляет кодирование; возмсожно, проблему можно решить использованием 3-уровневых таблиц кодирования)
+huf/ari: use cnt+=10 instead of cnt++ - should increase coding precision (this increases the table size, which slows coding down; possibly the problem can be solved by using 3-level coding tables)
 ST4/BWT sorting for exhaustive string searching
 
-ускорение tor:5
-  -ускорение lazy поиска (Кадач)
-  ускорение сравнения матчей (идея автора QuickLZ)
-  -искать MM tables by rep* codes
-  оптимизировать huf и перейти на него
-  для текстов:
-    не использовать 2/3-byte matches
-    использовать huf c большим блоком вместо арифметики
-    не проверять на repchar/repdist/repboth
-    не искать MM tables
+speeding up tor:5
+  -speeding up the lazy search (Kadach)
+  speeding up match comparison (idea from the QuickLZ author)
+  -look for MM tables by rep* codes
+  optimize huf and switch to it
+  for texts:
+    don't use 2/3-byte matches
+    use huf with a large block instead of arithmetic coding
+    don't check for repchar/repdist/repboth
+    don't look for MM tables
 
-ускорение/улучшение сжатия tor:7-12
-  +использовать бессдвиговую технологию хеширования и -u1
-  +2/3hash: увеличить размер, вставлять все строки
-  +искать в большом хеше строки длины >=6/7, спихнув меньшие во вспомогат. хэш
-  пропускать символы 0/' ' при хешировании
+speeding up / improving compression for tor:7-12
+  +use the shift-free hashing technique and -u1
+  +2/3hash: increase the size, insert all strings
+  +search the large hash for strings of length >=6/7, pushing shorter ones into the auxiliary hash
+  skip the characters 0/' ' when hashing
   check matches at repdist distances
 
 
 +-h1mb in cmdline
 +-z/-d options, by default auto depending on file extension
-+-h1m -9 == -9 -h1m (учитывать сначала выбор пресета, затем уточняющие его опции)
++-h1m -9 == -9 -h1m (apply the preset selection first, then the options that refine it)
 +-odir/ -odir\ -od:
 +64-bit insize/outsize
-+-b128k, m.hashsize вместо hashlog, print block/hashsize in help with k/m suffix
++-b128k, m.hashsize instead of hashlog, print block/hashsize in help with k/m suffix
 +CHECK mallocs
 +dir_exists=file_exists(dir\.) || end_with(:/\)
 +progress indicator in console title
@@ -650,11 +650,11 @@ make non-inline as much functions as possible (optimize .exe size): +MatchFinder
 ****-1: 16kb hash1...: done 5%
 ****-1: 16kb hash1...: 17876 kb (12.7%), 23.333 sec, 88.6 mb/s
 .tor signature, version, flags, crc
-? записывать сжатые данные перед чтением следующего chunk и использовать storing при отсутствии сжатия (обнулять huf/ari-table)
-? уменьшить хеш назад вдвое (сначала проверить эффект на других файлах, 200-300 kb на all)
+? write the compressed data before reading the next chunk and use storing when there is no compression (zero out the huf/ari table)
+? halve the hash back down (first check the effect on other files, 200-300 kb on all)
 +print predefined methods definitions in help screen
--mem должно демонстрировать режимы сжатия от -1 до -9?  -bench для моих внутренних тестов
-tor_compress: при сжатии файла ==buffer происходит лишний перенос данных перед тем, как прочесть 0 байт :)
+-mem should demonstrate compression modes from -1 to -9?  -bench for my internal tests
+tor_compress: when compressing a file ==buffer there is a redundant data move before reading 0 bytes :)
 
 Changes in 0.2:
     lazy parsing

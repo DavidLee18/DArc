@@ -37,7 +37,7 @@ static inline unsigned ROR(unsigned word, int i)
 
 
 /*------------------------------------------------------------------------------------*/
-/* Методы упаковки/распаковки, получающие и возвращающие данные через буфера в памяти */
+/* Compression/decompression methods that take and return data via memory buffers     */
 /*------------------------------------------------------------------------------------*/
 
 /*                          tuned for PPMd
@@ -123,18 +123,18 @@ int LZPDecode(BYTE* In,UINT Size,BYTE* Out,int MinLen,int HashSize,int Barrier,i
 
 
 /*-------------------------------------------------------------------------*/
-/* Методы упаковки/распаковки, использующие callbacks для ввода/вывода     */
+/* Compression/decompression methods that use callbacks for I/O            */
 /*-------------------------------------------------------------------------*/
 
 #ifndef FREEARC_DECOMPRESS_ONLY
 int lzp_compress (MemSize BlockSize, int MinCompression, int MinMatchLen, int HashSizeLog, int Barrier, int SmallestLen, CALLBACK_FUNC *callback, void *auxdata)
 {
     int errcode = FREEARC_OK;   // Error code returned by last operation or FREEARC_OK
-    BYTE* In = NULL;  // указатель на входные данные
-    BYTE* Out= NULL;  // указатель на выходные данные
+    BYTE* In = NULL;  // pointer to the input data
+    BYTE* Out= NULL;  // pointer to the output data
     while (1)
     {
-        int InSize, OutSize;     // количество байт во входном и выходном буфере, соответственно
+        int InSize, OutSize;     // number of bytes in the input and output buffers, respectively
         MALLOC (BYTE, In, BlockSize+2);
     	READ_LEN_OR_EOF (InSize, In, BlockSize);
         In = (BYTE*) realloc(In,InSize);
@@ -142,14 +142,14 @@ int lzp_compress (MemSize BlockSize, int MinCompression, int MinMatchLen, int Ha
         OutSize = LZPEncode (In, InSize, Out, MinMatchLen, 1<<HashSizeLog, Barrier, SmallestLen);
         if (OutSize<0)  {errcode=OutSize; goto finished;}
         if (OutSize==0 || MinCompression>0 && OutSize/MinCompression>=InSize/100) {
-            // Упаковать данные [достаточно хорошо] не удалось, запишем вместо них исходные данные
+            // Failed to compress the data [well enough], so store the original data instead
             FreeAndNil(Out);
-            WRITE4 (-InSize);      // Отрицательное число в качестве длины блока - признак Stored блока
+            WRITE4 (-InSize);      // A negative number as the block length marks a Stored block
             WRITE  (In, InSize);
             FreeAndNil(In);
         } else {
-            // Данные успешно упакованы, можно освободить входной буфер прежде чем записывать их
-            // (чтобы освободить больше памяти для следующего алгоритма в цепочке алгоритмов сжатия)
+            // The data was compressed successfully; we can free the input buffer before writing it out
+            // (to free up more memory for the next algorithm in the compression chain)
             FreeAndNil(In);
             WRITE4 (OutSize);
             WRITE  (Out, OutSize);
@@ -166,20 +166,20 @@ finished:
 int lzp_decompress (MemSize BlockSize, int MinCompression, int MinMatchLen, int HashSizeLog, int Barrier, int SmallestLen, CALLBACK_FUNC *callback, void *auxdata)
 {
     int errcode = FREEARC_OK;   // Error code returned by last operation or FREEARC_OK
-    BYTE* In = NULL;  // указатель на входные данные
-    BYTE* Out= NULL;  // указатель на выходные данные
+    BYTE* In = NULL;  // pointer to the input data
+    BYTE* Out= NULL;  // pointer to the output data
     for(;;) {
-        int InSize, OutSize;     // количество байт во входном и выходном буфере, соответственно
+        int InSize, OutSize;     // number of bytes in the input and output buffers, respectively
         READ4_OR_EOF (InSize);
         if (InSize<0) {
-            // скопируем неупакованные данные
+            // copy the uncompressed data
             InSize = -InSize;
             MALLOC (BYTE, In, InSize);
             READ  (In, InSize);
             WRITE (In, InSize);
             FreeAndNil(In);
         } else {
-            // Произвести декодирование и получить размер выходных данных
+            // Decode and obtain the size of the output data
             MALLOC (BYTE, In,  InSize);
             MALLOC (BYTE, Out, BlockSize);
             READ  (In, InSize);
@@ -197,10 +197,10 @@ finished:
 
 
 /*-------------------------------------------------*/
-/* Реализация класса LZP_METHOD                    */
+/* LZP_METHOD class implementation                 */
 /*-------------------------------------------------*/
 
-// Конструктор, присваивающий параметрам метода сжатия значения по умолчанию
+// Constructor that assigns default values to the compression method's parameters
 LZP_METHOD::LZP_METHOD()
 {
   BlockSize      = 8*mb;
@@ -211,7 +211,7 @@ LZP_METHOD::LZP_METHOD()
   SmallestLen    = 32;
 }
 
-// Функция распаковки
+// Decompression function
 int LZP_METHOD::decompress (CALLBACK_FUNC *callback, void *auxdata)
 {
   // Use faster function from DLL if possible
@@ -224,7 +224,7 @@ int LZP_METHOD::decompress (CALLBACK_FUNC *callback, void *auxdata)
 
 #ifndef FREEARC_DECOMPRESS_ONLY
 
-// Функция упаковки
+// Compression function
 int LZP_METHOD::compress (CALLBACK_FUNC *callback, void *auxdata)
 {
   // Use faster function from DLL if possible
@@ -235,7 +235,7 @@ int LZP_METHOD::compress (CALLBACK_FUNC *callback, void *auxdata)
             (BlockSize, MinCompression, MinMatchLen, HashSizeLog, Barrier, SmallestLen, callback, auxdata);
 }
 
-// Установить размер блока и уменьшить размер хэша, если он слишком велик для такого маленького блока
+// Set the block size and reduce the hash size if it's too large for such a small block
 void LZP_METHOD::SetBlockSize (MemSize bs)
 {
   if (bs>0) {
@@ -244,7 +244,7 @@ void LZP_METHOD::SetBlockSize (MemSize bs)
   }
 }
 
-// Записать в buf[MAX_METHOD_STRLEN] строку, описывающую метод сжатия и его параметры (функция, обратная к parse_LZP)
+// Write into buf[MAX_METHOD_STRLEN] a string describing the compression method and its parameters (the inverse of parse_LZP)
 void LZP_METHOD::ShowCompressionMethod (char *buf)
 {
     LZP_METHOD defaults; char BlockSizeStr[100], MinCompressionStr[100], BarrierTempStr[100], BarrierStr[100], SmallestLenStr[100];
@@ -256,11 +256,11 @@ void LZP_METHOD::ShowCompressionMethod (char *buf)
     sprintf (buf, "lzp:%s%s:%d:h%d%s%s", BlockSizeStr, MinCompressionStr, MinMatchLen, HashSizeLog, BarrierStr, SmallestLenStr);
 }
 
-// Устанавливает количество памяти, которое должно использоваться при упаковке и распаковке
+// Sets the amount of memory that should be used for compression and decompression
 void LZP_METHOD::SetCompressionMem (MemSize mem)
 {
   MemSize hashsize = (1<<HashSizeLog) * sizeof(BYTE*);
-  // Если хеш занимает слишком много места - укоротим сначала его. Этого может оказаться достаточно
+  // If the hash takes up too much space, shrink it first. That may turn out to be enough
   if (hashsize > mem/4) {
     HashSizeLog = lb(mem/16);
     if (GetCompressionMem() <= mem)  return;
@@ -272,45 +272,45 @@ void LZP_METHOD::SetCompressionMem (MemSize mem)
 
 #endif  // !defined (FREEARC_DECOMPRESS_ONLY)
 
-// Конструирует объект типа LZP_METHOD с заданными параметрами упаковки
-// или возвращает NULL, если это другой метод сжатия или допущена ошибка в параметрах
+// Constructs an LZP_METHOD object with the given compression parameters,
+// or returns NULL if this is a different compression method or the parameters are invalid
 COMPRESSION_METHOD* parse_LZP (char** parameters)
 {
   if (strcmp (parameters[0], "lzp") == 0) {
-    // Если название метода (нулевой параметр) - "lzp", то разберём остальные параметры
+    // If the method name (parameter zero) is "lzp", parse the remaining parameters
 
     LZP_METHOD *p = new LZP_METHOD;
-    int error = 0;  // Признак того, что при разборе параметров произошла ошибка
+    int error = 0;  // Flag indicating that an error occurred while parsing the parameters
 
-    // Переберём все параметры метода (или выйдем раньше при возникновении ошибки при разборе очередного параметра)
+    // Iterate over all the method's parameters (or bail out early if parsing one of them fails)
     while (*++parameters && !error)
     {
       char* param = *parameters;
-      switch (*param) {                    // Параметры, содержащие значения
+      switch (*param) {                    // Parameters that carry values
         case 'b':  p->BlockSize   = parseMem (param+1, &error); continue;
         case 'l':  p->MinMatchLen = parseInt (param+1, &error); continue;
         case 'h':  p->HashSizeLog = parseInt (param+1, &error); continue;
         case 'd':  p->Barrier     = parseMem (param+1, &error); continue;
         case 's':  p->SmallestLen = parseInt (param+1, &error); continue;
       }
-      // Если параметр заканчивается знаком процента. то попробуем распарсить его как "N%"
+      // If the parameter ends with a percent sign, try to parse it as "N%"
       if (last_char(param) == '%') {
         char str[100]; strcpy(str,param); last_char(str) = '\0';
         int n = parseInt (str, &error);
         if (!error) { p->MinCompression = n; continue; }
         error=0;
       }
-      // Сюда мы попадаем, если в параметре не указано его название
-      // Если этот параметр удастся разобрать как целое число (т.е. в нём - только цифры),
-      // то присвоим его значение полю MinMatchLen, иначе попробуем разобрать его как BlockSize
+      // We get here if the parameter doesn't specify its name.
+      // If this parameter can be parsed as an integer (i.e. it contains only digits),
+      // assign its value to the MinMatchLen field, otherwise try to parse it as BlockSize
       int n = parseInt (param, &error);
       if (!error) p->MinMatchLen = n;
       else        error=0, p->BlockSize = parseMem (param, &error);
     }
-    if (error)  {delete p; return NULL;}  // Ошибка при парсинге параметров метода
+    if (error)  {delete p; return NULL;}  // Error while parsing the method's parameters
     return p;
   } else
-    return NULL;   // Это не метод lzp
+    return NULL;   // This is not the lzp method
 }
 
-static int LZP_x = AddCompressionMethod (parse_LZP);   // Зарегистрируем парсер метода LZP
+static int LZP_x = AddCompressionMethod (parse_LZP);   // Register the LZP method parser

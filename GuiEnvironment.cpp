@@ -19,7 +19,7 @@ static int CALLBACK BrowseCallbackProc(HWND hwnd, UINT uMsg, LPARAM lParam, LPAR
   return 0;
 }
 
-// Дать пользователю выбрать каталог
+// Let the user pick a directory
 int BrowseForFolder(TCHAR *prompt, TCHAR *in_filename, TCHAR *out_filename)
 {
   BROWSEINFO bi;
@@ -50,7 +50,7 @@ int BrowseForFolder(TCHAR *prompt, TCHAR *in_filename, TCHAR *out_filename)
 }
 
 
-// Дать пользователю выбрать файл
+// Let the user pick a file
 int BrowseForFile(TCHAR *prompt, TCHAR *filters, TCHAR *in_filename, TCHAR *out_filename)
 {
   OPENFILENAME ofn;
@@ -83,10 +83,10 @@ int BrowseForFile(TCHAR *prompt, TCHAR *filters, TCHAR *in_filename, TCHAR *out_
   return GetOpenFileName(&ofn)? 1 : 0;
 }
 
-// Превратить время/дату файла в строку в соответствии с настройками locale или заданными форматами времени и даты
+// Convert a file's time/date into a string according to the locale settings or the given time and date formats
 void GuiFormatDateTime (time_t t, char *buf, int bufsize, char *date_format, char *time_format)
 {
-  if (t==-1)  t=0;  // Иначе получим вылет :(
+  if (t==-1)  t=0;  // Otherwise we'd crash :(
 
   FILETIME ft1, ft2;
   UnixTimeToFileTime (t, &ft1);

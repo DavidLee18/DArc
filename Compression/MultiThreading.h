@@ -181,7 +181,7 @@ void MTCompressor<Job>::WriterThread()
             break;
         // Wait until (de)compression will be finished
         job->OperationFinished.Lock();
-        // Записать сжатый блок и выйти, если при записи произошла ошибка/больше данных не нужно
+        // Write the compressed block and exit if a write error occurred / no more data is needed
         if (SetErrCode(callback("write", job->OutBuf, job->OutSize, auxdata)) < 0)
             break;
         // After-write cleanup

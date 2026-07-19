@@ -18,12 +18,12 @@ int __cdecl grzip_decompress (CALLBACK_FUNC *callback,
 
 #ifdef __cplusplus
 
-// Реализация стандартного интерфейса методов сжатия COMPRESSION_METHOD
+// Implementation of the standard COMPRESSION_METHOD compression method interface
 class GRZIP_METHOD : public COMPRESSION_METHOD
 {
 public:
-  // Параметры этого метода сжатия
-  MemSize BlockSize;        // Размер блока данных, обрабатываемых совместно
+  // Parameters of this compression method
+  MemSize BlockSize;        // Size of the data block processed as a unit
   int     Method;
   int     EnableLZP;
   int     MinMatchLen;
@@ -32,18 +32,18 @@ public:
   int     AdaptiveBlockSize;
   int     DeltaFilter;
 
-  // Конструктор, присваивающий параметрам метода сжатия значения по умолчанию
+  // Constructor that assigns default values to the compression method parameters
   GRZIP_METHOD();
 
-  // Функции распаковки и упаковки
+  // Decompression and compression functions
   virtual int decompress (CALLBACK_FUNC *callback, void *auxdata);
 #ifndef FREEARC_DECOMPRESS_ONLY
   virtual int compress   (CALLBACK_FUNC *callback, void *auxdata);
 
-  // Записать в buf[MAX_METHOD_STRLEN] строку, описывающую метод сжатия и его параметры (функция, обратная к parse_GRZIP)
+  // Write into buf[MAX_METHOD_STRLEN] a string describing the compression method and its parameters (the inverse of parse_GRZIP)
   virtual void ShowCompressionMethod (char *buf);
 
-  // Получить/установить объём памяти, используемой при упаковке/распаковке, размер словаря или размер блока
+  // Get/set the amount of memory used for compression/decompression, the dictionary size or the block size
   virtual MemSize GetCompressionMem     (void)         {return BlockSize*9*GetCompressionThreads();}
   virtual MemSize GetDecompressionMem   (void)         {return BlockSize*5*GetCompressionThreads();}
   virtual MemSize GetDictionary         (void)         {return BlockSize;}
@@ -55,7 +55,7 @@ public:
 #endif
 };
 
-// Разборщик строки метода сжатия GRZIP
+// Parser for the GRZIP compression method string
 COMPRESSION_METHOD* parse_GRZIP (char** parameters);
 
 #endif  // __cplusplus

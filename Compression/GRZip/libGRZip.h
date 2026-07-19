@@ -54,9 +54,9 @@
 #define GRZ_MaxBlockSize             (8*1024*1024-512)
 #define GRZ_Log2MaxBlockSize         23
 
-// Кодирование Mode: младший байт - флаги
-//                   второй байт  - величина хеш-таблицы для LZP
-//                   третий-четвёртый байт (без старшего бита) - мин. длина строки для LZP
+// Mode encoding: low byte    - flags
+//                second byte - LZP hash table size
+//                third-fourth bytes (excluding the high bit) - minimum LZP match length
 
 #define GRZ_Enable_DeltaFlt          0x0
 #define GRZ_Disable_DeltaFlt         0x1

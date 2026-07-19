@@ -1,5 +1,5 @@
-// Обработка архивов, созданных FreeArc:
-//   чтение и декодирование Footer блока и блоков оглавления
+// Handling of archives created by FreeArc:
+//   reading and decoding the Footer block and the directory blocks
 
 
 #include <stdlib.h>
@@ -12,24 +12,24 @@
 #include "../Environment.h"
 #include "../Compression/Compression.h"
 
-#define aSIGNATURE make4byte(65,114,67,1)  /* Сигнатура архивов FreeArc: ArC */
-#define MAX_FOOTER_DESCRIPTOR_SIZE 4096    /* Максимальный размер дескриптора блока архива */
+#define aSIGNATURE make4byte(65,114,67,1)  /* Signature of FreeArc archives: ArC */
+#define MAX_FOOTER_DESCRIPTOR_SIZE 4096    /* Maximum size of an archive block descriptor */
 
 /******************************************************************************
-** Класс, реализующий массивы, знающие свой размер :) *************************
+** Class implementing arrays that know their own size :) **********************
 ******************************************************************************/
 #ifdef __cplusplus
 template <typename T> class ARRAY
 {
 public:
-  int size;                         // Кол-во элементов в массиве
-  T  *data;                         // Данные, хранящиеся в массиве
-  bool autodelete;                  // Автоматически удалять data при удалении самого массива
+  int size;                         // Number of elements in the array
+  T  *data;                         // Data stored in the array
+  bool autodelete;                  // Automatically delete data when the array itself is deleted
 
   void setsize (int _size)          {size = _size; data = size? new T[size] : NULL; autodelete=TRUE;}
-  void resize (int _size)           {if(autodelete) delete data; setsize(_size);}   // Изменить длину уже существующего массива
-  void set (int _size, void* ptr)   {resize(0); size=_size, data=(T*)ptr, autodelete=FALSE;}  // Использовать в качестве содержимого массива указанный кусок в памяти
-  ARRAY (int _size=0)               {setsize (_size);}       // Создать массив с длиной _size
+  void resize (int _size)           {if(autodelete) delete data; setsize(_size);}   // Change the length of an already existing array
+  void set (int _size, void* ptr)   {resize(0); size=_size, data=(T*)ptr, autodelete=FALSE;}  // Use the given chunk of memory as the array contents
+  ARRAY (int _size=0)               {setsize (_size);}       // Create an array of length _size
   ~ARRAY()                          {resize(0);}
   T& operator[] (int i)             {return data[i];}
   T& operator() (int i)             {return data[i];}
@@ -38,11 +38,11 @@ public:
 
 
 /******************************************************************************
-** Класс, абстрагирующий работу с файлами *************************************
+** Class abstracting work with files ******************************************
 ******************************************************************************/
 #ifdef __cplusplus
 
-enum MODE {READ_MODE, WRITE_MODE}; // режим открытия файла
+enum MODE {READ_MODE, WRITE_MODE}; // file opening mode
 class MYFILE
 {
 public:
@@ -92,12 +92,12 @@ public:
                                            free(oemname); free(utf8name);}
   bool   exists (void)                    {return file_exists(filename);}
 
-  MYFILE& open (FILENAME _filename, MODE mode)    // Открывает файл для чтения или записи
+  MYFILE& open (FILENAME _filename, MODE mode)    // Opens the file for reading or writing
   {
     setname (_filename);
     return open (mode);
   }
-  MYFILE& open (MODE mode)    // Открывает файл для чтения или записи
+  MYFILE& open (MODE mode)    // Opens the file for reading or writing
   {
     if (mode==WRITE_MODE)  BuildPathTo (filename);
 #ifdef FREEARC_WIN
@@ -108,8 +108,8 @@ public:
     CHECK (handle>=0, (s,"ERROR: can't open file %s", utf8name));
     return *this;
   }
-  void SetFileDateTime (time_t mtime)   {::SetFileDateTime (filename, mtime);}   // Устанавливает mtime файла
-  void close()    // Закрывает файл
+  void SetFileDateTime (time_t mtime)   {::SetFileDateTime (filename, mtime);}   // Sets the file mtime
+  void close()    // Closes the file
   {
     CHECK (::close(handle)==0, (s,"ERROR: can't close file %s", utf8name));
     handle = -1;
@@ -117,17 +117,17 @@ public:
   bool isopen()  {return handle>=0;}
 
 #ifdef FREEARC_WIN
-  FILESIZE size    ()                {return _filelengthi64 (handle);}            // Возвращает размер файла
-  FILESIZE curpos  ()                {return _lseeki64 (handle, 0,   SEEK_CUR);}  // Текущая позиция в файле
-  void     seek    (FILESIZE pos)    {CHECK( _lseeki64 (handle, pos, SEEK_SET) == pos, (s,"ERROR: file seek operation failed"));}       // Переходит на заданную позицию в файле
+  FILESIZE size    ()                {return _filelengthi64 (handle);}            // Returns the file size
+  FILESIZE curpos  ()                {return _lseeki64 (handle, 0,   SEEK_CUR);}  // Current position in the file
+  void     seek    (FILESIZE pos)    {CHECK( _lseeki64 (handle, pos, SEEK_SET) == pos, (s,"ERROR: file seek operation failed"));}       // Moves to the given position in the file
 #else
   FILESIZE size    ()                {return myfilelength (handle);}
   FILESIZE curpos  ()                {return lseek (handle, 0,   SEEK_CUR);}
   void     seek    (FILESIZE pos)    {CHECK( lseek (handle, pos, SEEK_SET) == pos, (s,"ERROR: file seek operation failed"));}
 #endif
 
-  FILESIZE tryRead (void *buf, FILESIZE size)   {int result = ::read (handle, buf, size); CHECK(result>=0, (s,"ERROR: file read operation failed")); return result;}           // Возвращает кол-во прочитанных байт, которое может быть меньше запрошенного
-  void     read    (void *buf, FILESIZE size)   {CHECK (tryRead (buf, size) == size, (s,"ERROR: can't read %lu bytes", (unsigned long)size));}         // Возбуждает исключение, если не удалось прочесть указанное число байт
+  FILESIZE tryRead (void *buf, FILESIZE size)   {int result = ::read (handle, buf, size); CHECK(result>=0, (s,"ERROR: file read operation failed")); return result;}           // Returns the number of bytes read, which may be less than requested
+  void     read    (void *buf, FILESIZE size)   {CHECK (tryRead (buf, size) == size, (s,"ERROR: can't read %lu bytes", (unsigned long)size));}         // Raises an exception if the given number of bytes could not be read
   void     write   (void *buf, FILESIZE size)   {CHECK (::write (handle, buf, size) == size, (s,"ERROR: file write operation failed"));}
 };
 
@@ -135,16 +135,16 @@ public:
 
 
 /******************************************************************************
-** Синонимы для простых типов, используемых в программе ***********************
+** Synonyms for the simple types used in the program **************************
 ******************************************************************************/
-typedef time_t   XFILETIME;        // дата/время файла
-typedef int      BOOL;             // булевский тип
-typedef uint32   CRC;              // CRC файла
-typedef char*    COMPRESSOR;       // метод сжатия
-typedef int      BLOCKTYPE;        // тип архивного блока:
+typedef time_t   XFILETIME;        // file date/time
+typedef int      BOOL;             // boolean type
+typedef uint32   CRC;              // file CRC
+typedef char*    COMPRESSOR;       // compression method
+typedef int      BLOCKTYPE;        // archive block type:
 enum {DESCR_BLOCK=0, HEADER_BLOCK, DATA_BLOCK, DIR_BLOCK, FOOTER_BLOCK, RECOVERY_BLOCK};
 
-struct BLOCK                       // информация о блоке архива
+struct BLOCK                       // information about an archive block
 {
   BLOCKTYPE  type;
   COMPRESSOR compressor;
@@ -154,27 +154,27 @@ struct BLOCK                       // информация о блоке арх�
   CRC        crc;
 };
 
-struct BLOCK_DESCRIPTOR : BLOCK {};// дескриптор блока архива
+struct BLOCK_DESCRIPTOR : BLOCK {};// archive block descriptor
 
 
 /******************************************************************************
-** Чтение потока данных *******************************************************
+** Reading a data stream ******************************************************
 ******************************************************************************/
 class MEMORY_BUFFER
 {
 public:
-    char *buf;         // адрес начала буфера, необходим для освобождения памяти
-    char *bufend;      // адрес после буфера, используется для проверки выхода за его пределы
-    char *p;           // текущий указатель чтения
+    char *buf;         // address of the buffer start, needed to free the memory
+    char *bufend;      // address just past the buffer, used to check for overrunning it
+    char *p;           // current read pointer
 
     MEMORY_BUFFER () {buf = NULL;}
     ~MEMORY_BUFFER() {free (buf);}
 
-    // Использовать буфер для чтения данных из файла `file` с позиции `pos` длины `len`
+    // Use the buffer to read data from file `file` at position `pos` of length `len`
     MEMORY_BUFFER& open (MYFILE &file, FILESIZE pos, FILESIZE size)
     {
-      free (buf);                      // Освободим предыдущий использованный буфер
-      buf = (char*) malloc (size+8);   // Мы выделяем 8 лишних байт, чтобы можно было быстро декодировать целые числа, не опасаясь выйти за границу буфера
+      free (buf);                      // Free the previously used buffer
+      buf = (char*) malloc (size+8);   // We allocate 8 extra bytes so that integers can be decoded quickly without fear of running past the buffer boundary
       CHECK (buf, (s,"ERROR: can't alloc %lu memory bytes", (unsigned long)(size+8)));
       file.seek (pos);
       file.read (buf, size);
@@ -182,11 +182,11 @@ public:
       return *this;
     }
 
-    // Прочитать данные из файла в буфер, распаковать их и проверить их CRC
+    // Read the data from the file into the buffer, decompress it and check its CRC
     MEMORY_BUFFER& openCompressedCheckCRC (COMPRESSOR compressor, FILESIZE origsize, MYFILE &file, FILESIZE pos, FILESIZE compsize, CRC right_crc)
     {
       open (file, pos, compsize);
-      char *origbuf = (char*) malloc (origsize+8);  // Лишние 8 байт для запаса при выполнении readInteger
+      char *origbuf = (char*) malloc (origsize+8);  // 8 extra bytes as a safety margin when performing readInteger
       int result = DecompressMem (compressor, buf, compsize, origbuf, origsize);
       CHECK (result!=FREEARC_ERRCODE_INVALID_COMPRESSOR, (s,"ERROR: unsupported compression method \"%s\"", compressor));
       CHECK (result==origsize, (s,"ERROR: archive structure corrupted (decompression of control block failed)"));
@@ -196,7 +196,7 @@ public:
       return *this;
     }
 
-    // Прочитать данные из файла в буфер и проверить соответствие их CRC значению, записанному в последних байтах этих данных
+    // Read the data from the file into the buffer and check that its CRC matches the value stored in the last bytes of that data
     MEMORY_BUFFER& openWithCRCAtEnd (MYFILE &file, FILESIZE pos, FILESIZE size)
     {
       open (file, pos, size);
@@ -208,12 +208,12 @@ public:
     }
 
 
-    // Достигнут конец буфера?
+    // Has the end of the buffer been reached?
     bool eof ()         {return p>=bufend;}
-    // Продвинуть указатель чтения на n байтов вперёд и проверить, что мы не вышли за конец буфера :)
+    // Advance the read pointer n bytes forward and check that we have not run past the end of the buffer :)
     void skip (int n)   {p+=n; CHECK(p<=bufend, (s,"ERROR: archive structure corrupted (bad data)"));}
 
-    // Прочитать целое число в формате с переменной длиной
+    // Read an integer in the variable-length format
     uint64 readInteger()
     {
       uint32 x = *(uint32*)p;
@@ -234,21 +234,21 @@ public:
     template <typename T> MEMORY_BUFFER &read2(T *x)   {*x = *(uint16*)p & ((1u<<16)-1); skip(2); return *this;}
     template <typename T> MEMORY_BUFFER &read4(T *x)   {*x = *(uint32*)p               ; skip(4); return *this;}
 
-    // Прочитать `n` значений и создать из них структурированный массив
+    // Read `n` values and build a structured array out of them
     template <typename T> MEMORY_BUFFER &read (int n, ARRAY<T> *array)
     {
       array->resize(n);
       iterate (n, read( &((*array)[i]) ));
       return *this;
     }
-    // Аналогично предыдущему, но читаются однобайтовые значения
+    // Same as the previous one, but one-byte values are read
     template <typename T> MEMORY_BUFFER &read1 (int n, ARRAY<T> *array)
     {
       array->resize(n);
       iterate (n, read1( &((*array)[i]) ));
       return *this;
     }
-    // Аналогично предыдущему, но читаются четырёхбайтовые значения
+    // Same as the previous one, but four-byte values are read
     template <typename T> MEMORY_BUFFER &read4 (int n, ARRAY<T> *array)
     {
       array->resize(n);
@@ -256,30 +256,30 @@ public:
       return *this;
     }
 
-    // Прочитать из буфера кол-во элементов в массиве и затем его содержимое
+    // Read the number of elements in the array from the buffer and then its contents
     template <typename T> MEMORY_BUFFER &read( ARRAY<T> *array)
     {
-      int n; read (&n);        // прочитать количество элементов в массиве
-      return read (n, array);  // перейти к чтению элементов массива
+      int n; read (&n);        // read the number of elements in the array
+      return read (n, array);  // proceed to reading the array elements
     }
 
-    MEMORY_BUFFER &read (char *x)     // Прочитать символ
+    MEMORY_BUFFER &read (char *x)     // Read a character
     {
       *x = *(char*)p;
       skip(1);
       return *this;
     }
 
-    MEMORY_BUFFER &read (char* *x)    // Прочитать строку
+    MEMORY_BUFFER &read (char* *x)    // Read a string
     {
       char *end = (char*) memchr( p, '\0', (uint8*)bufend - (uint8*)p);
       CHECK(end, (s,"ERROR: archive structure corrupted (bad string)"));
-      *x = (char*)p;         // Прочитанная строка будет указывать непосредственно в буфер
+      *x = (char*)p;         // The string read will point directly into the buffer
       p = end+1;
       return *this;
     }
 
-    MEMORY_BUFFER &read (BLOCK_DESCRIPTOR *x)    // Прочитать дескриптор блока архива
+    MEMORY_BUFFER &read (BLOCK_DESCRIPTOR *x)    // Read an archive block descriptor
     {
       read (&x->type);
       read (&x->compressor);
@@ -293,14 +293,14 @@ public:
 
 
 /*****************************************************************************************************
-** Локальный дескриптор блока архива, т.е. находящийся в архиве непосредственно после самого блока ***
+** Local archive block descriptor, i.e. the one located in the archive right after the block itself **
 *****************************************************************************************************/
 
 struct LOCAL_BLOCK_DESCRIPTOR : BLOCK
 {
-  MEMORY_BUFFER buffer;  // Буфер, используемый для чтения дескриптора. Прочитанное значение compressor будет указывать на строку в этом буфере
+  MEMORY_BUFFER buffer;  // Buffer used to read the descriptor. The compressor value read will point to a string in this buffer
 
-  // Прочитать из архива локальный дескриптор блока
+  // Read the local block descriptor from the archive
   LOCAL_BLOCK_DESCRIPTOR (MYFILE &arcfile, FILESIZE descr_pos)
   {
     FILESIZE descr_size  =  mymin (arcfile.size()-descr_pos, MAX_FOOTER_DESCRIPTOR_SIZE);
@@ -318,69 +318,69 @@ struct LOCAL_BLOCK_DESCRIPTOR : BLOCK
   }
 };
 
-// Локальный дескриптор FOOTER BLOCK
+// Local descriptor of the FOOTER BLOCK
 struct FOOTER_BLOCK_LOCAL_DESCRIPTOR : LOCAL_BLOCK_DESCRIPTOR
 {
-  // Прочитать локальный дескриптор блока и выполнить дополнительные проверки, имеющие смысл только для FOOTER BLOCK
+  // Read the local block descriptor and perform the additional checks that only make sense for the FOOTER BLOCK
   FOOTER_BLOCK_LOCAL_DESCRIPTOR (MYFILE &arcfile, FILESIZE descr_pos)  :  LOCAL_BLOCK_DESCRIPTOR (arcfile, descr_pos)
   {
     CHECK (type==FOOTER_BLOCK, (s,"ERROR: archive structure corrupted (footer block not found)"));
   }
 };
 
-// Найти в архивном файле дескриптор FOOTER BLOCK и возвратить его позицию
+// Find the FOOTER BLOCK descriptor in the archive file and return its position
 FILESIZE FindFooterDescriptor (MYFILE &arcfile)
 {
   char buf[MAX_FOOTER_DESCRIPTOR_SIZE];
   FILESIZE arcsize = arcfile.size();
-  FILESIZE size = mymin (arcsize, MAX_FOOTER_DESCRIPTOR_SIZE);  // мы будем искать сигнатуру в последних size байтах архива
+  FILESIZE size = mymin (arcsize, MAX_FOOTER_DESCRIPTOR_SIZE);  // we will look for the signature in the last size bytes of the archive
   arcfile.seek (arcsize-size);
   arcfile.read (buf, size);
   for (char *ptr=buf+size-sizeof(uint32); ; ptr--) {
-    if (*(uint32*)ptr == aSIGNATURE)    return (arcsize-size)+(ptr-buf);   // Позиция в файле сигнатуры, с которой начинается дескриптор FOOTER BLOCK
-    CHECK (ptr>buf, (s,"ERROR: this is not FreeArc archive or this archive is corrupt"));   // Сигнатура не найдена в последних MAX_FOOTER_DESCRIPTOR_SIZE байтах архива
+    if (*(uint32*)ptr == aSIGNATURE)    return (arcsize-size)+(ptr-buf);   // Position in the file of the signature at which the FOOTER BLOCK descriptor starts
+    CHECK (ptr>buf, (s,"ERROR: this is not FreeArc archive or this archive is corrupt"));   // The signature was not found in the last MAX_FOOTER_DESCRIPTOR_SIZE bytes of the archive
   }
 }
 
 
 /******************************************************************************
-** Информация о структуре архива (т.е. всех служебных блоках) *****************
+** Information about the archive structure (i.e. all the service blocks) ******
 ******************************************************************************/
 class ARCHIVE
 {
 private:
-  MEMORY_BUFFER buffer;  // Буфер, хранящий содержимое FOOTER BLOCK. Уничтожается только при закрытии архива, поскольку мы используем ссылки на хранящиеся в нём данные
+  MEMORY_BUFFER buffer;  // Buffer holding the contents of the FOOTER BLOCK. It is destroyed only when the archive is closed, since we use references to the data stored in it
 public:
-  MYFILE arcfile;        // Файл архива. Открывается при создании ARCHIVE и закрывается при его уничтожении
-  ARRAY <BLOCK_DESCRIPTOR> control_blocks_descriptors;   // Дескрипторы служебных блоков архива, читаемые из FOOTER BLOCK
-  int                      arcLocked;  // Признак того, что архив закрыт от изменений
-  ARRAY <char>             arcComment; // Комментарий к архиву. Может содержать нулевые символы
-  FILESIZE                 SFXSize;    // Размер SFX-модуля перед архивом
+  MYFILE arcfile;        // Archive file. Opened when the ARCHIVE is created and closed when it is destroyed
+  ARRAY <BLOCK_DESCRIPTOR> control_blocks_descriptors;   // Descriptors of the archive service blocks, read from the FOOTER BLOCK
+  int                      arcLocked;  // Flag indicating that the archive is locked against modification
+  ARRAY <char>             arcComment; // Archive comment. May contain null characters
+  FILESIZE                 SFXSize;    // Size of the SFX module preceding the archive
 
-  ARCHIVE (FILENAME arcname) : arcfile (arcname, READ_MODE) {}   // Открывает файл архива
-  void read_structure();               // Считывает описания служебных блоков
+  ARCHIVE (FILENAME arcname) : arcfile (arcname, READ_MODE) {}   // Opens the archive file
+  void read_structure();               // Reads the descriptions of the service blocks
 };
 
-// Считывает из FOOTER BLOCK описания служебных блоков
+// Reads the descriptions of the service blocks from the FOOTER BLOCK
 void ARCHIVE::read_structure()
 {
-  FILESIZE pos = FindFooterDescriptor (arcfile);            // Найти в архиве дескриптор FOOTER BLOCK
-  FOOTER_BLOCK_LOCAL_DESCRIPTOR arcFooter (arcfile, pos);   // Прочитать этот дескриптор и расшифровать его
-  buffer.openCompressedCheckCRC (arcFooter.compressor, arcFooter.origsize, arcfile, arcFooter.pos, arcFooter.compsize, arcFooter.crc); // Прочитать в буфер содержимое FOOTER BLOCK
-  buffer.read (&control_blocks_descriptors);                // Декодировать из буфера дескрипторы служебных блоков архива
+  FILESIZE pos = FindFooterDescriptor (arcfile);            // Find the FOOTER BLOCK descriptor in the archive
+  FOOTER_BLOCK_LOCAL_DESCRIPTOR arcFooter (arcfile, pos);   // Read this descriptor and decode it
+  buffer.openCompressedCheckCRC (arcFooter.compressor, arcFooter.origsize, arcfile, arcFooter.pos, arcFooter.compsize, arcFooter.crc); // Read the contents of the FOOTER BLOCK into the buffer
+  buffer.read (&control_blocks_descriptors);                // Decode the descriptors of the archive service blocks from the buffer
   iterate_array (i, control_blocks_descriptors) {
-    control_blocks_descriptors[i].pos  =  arcFooter.pos - control_blocks_descriptors[i].pos; // Заменим относительные адреса блоков (хранящиеся как смещение относительно начала ЭТОГО блока) на абсолютные
+    control_blocks_descriptors[i].pos  =  arcFooter.pos - control_blocks_descriptors[i].pos; // Replace the relative block addresses (stored as an offset from the start of THIS block) with absolute ones
     //printf("%d %d\n", control_blocks_descriptors[i].pos, control_blocks_descriptors[i].compsize);
   }
-  SFXSize = control_blocks_descriptors[0].pos;   // всё, что находится перед первым блоком архива, можно смело считать SFX-модулем :)
-  buffer.read1 (&arcLocked);                     // 1 байт: 1 - архив заблокирован от дальнейших изменений, 0 - нет
-  int cmtlen;  buffer.read (&cmtlen);            // Комментарий старого образца - в UCS4
+  SFXSize = control_blocks_descriptors[0].pos;   // everything located before the first archive block can safely be considered the SFX module :)
+  buffer.read1 (&arcLocked);                     // 1 byte: 1 - the archive is locked against further changes, 0 - it is not
+  int cmtlen;  buffer.read (&cmtlen);            // Old-style comment - in UCS4
   arcComment.set (cmtlen, buffer.p);
   for (int i=0; i<cmtlen; i++)  arcComment[i] = buffer.p[i*4];
   buffer.skip (cmtlen*4);
   char *rr_settings; if (!buffer.eof())  buffer.read (&rr_settings);
   if (!buffer.eof()) {
-    buffer.read (&cmtlen);                       // Комментарий кодируется как массив символов с явно заданной длиной
+    buffer.read (&cmtlen);                       // The comment is encoded as a character array with an explicitly given length
     if (cmtlen>0)  arcComment.set (cmtlen, buffer.p);
   }
   //printf("%d %d %*.*s\n", arcLocked, arcComment.size, arcComment.size, arcComment.size, &arcComment[0]);
@@ -388,72 +388,72 @@ void ARCHIVE::read_structure()
 
 
 /******************************************************************************
-** Блок каталога **************************************************************
+** Directory block ************************************************************
 ******************************************************************************/
 class DIRECTORY_BLOCK
 {
 public:
-  MYFILE &arcfile;                     // Файл архива, которому принадлежит сей славный блок каталога
+  MYFILE &arcfile;                     // Archive file this glorious directory block belongs to
 private:
-  MEMORY_BUFFER buffer;                // Буфер, хранящий весь каталог в бинарном виде. Раскодированные имена файлов ссылаются на этот буфер, поэтому он не удаляется до завершения работы с каталогом
+  MEMORY_BUFFER buffer;                // Buffer holding the entire directory in binary form. The decoded file names refer to this buffer, so it is not deleted until work with the directory is finished
 
-  int               dirs_in_block;     // Количество каталогов, записанных в этом DIRECTORY BLOCK
-  ARRAY <FILENAME>  dirs;              // Имена каталогов
-  ARRAY <int>       dir_numbers;       // Номер каталога для каждого из файлов
+  int               dirs_in_block;     // Number of directories recorded in this DIRECTORY BLOCK
+  ARRAY <FILENAME>  dirs;              // Directory names
+  ARRAY <int>       dir_numbers;       // Directory number for each of the files
 public:
-  FILENAME  dirname (int i)  {return dirs[dir_numbers[i]];}  // Имя каталога для i-го файла
-  FILENAME  fullname(int i, char buffer[]);                  // Полное имя i-го файла
-  int               total_files;       // Количество файлов, описанных в этом блоке каталога
-  ARRAY <FILENAME>  name;              // Имена файлов (без имени каталога)
-  ARRAY <FILESIZE>  size;              // Размеры файлов
-  ARRAY <XFILETIME> time;              // Время модификации файлов
-  ARRAY <BOOL>      isdir;             // Булевские флаги "это каталог?"
-  ARRAY <CRC>       crc;               // CRC файлов
+  FILENAME  dirname (int i)  {return dirs[dir_numbers[i]];}  // Directory name of the i-th file
+  FILENAME  fullname(int i, char buffer[]);                  // Full name of the i-th file
+  int               total_files;       // Number of files described in this directory block
+  ARRAY <FILENAME>  name;              // File names (without the directory name)
+  ARRAY <FILESIZE>  size;              // File sizes
+  ARRAY <XFILETIME> time;              // File modification times
+  ARRAY <BOOL>      isdir;             // Boolean "is this a directory?" flags
+  ARRAY <CRC>       crc;               // File CRCs
 
-  int                       num_of_blocks;  // Кол-во блоков данных
-  ARRAY <int>               num_of_files;   // Кол-во файлов в каждом блоке данных, которое после чтения заголовка заменяется на номер первого файла В СЛЕДУЮЩЕМ блоке для block_start()/block_end()
-  ARRAY <BLOCK_DESCRIPTOR>  data_block;     // Описания блоков данных (компрессор, позиция в архиве, длина)
+  int                       num_of_blocks;  // Number of data blocks
+  ARRAY <int>               num_of_files;   // Number of files in each data block, which after the header is read is replaced by the number of the first file IN THE NEXT block, for block_start()/block_end()
+  ARRAY <BLOCK_DESCRIPTOR>  data_block;     // Descriptions of the data blocks (compressor, position in the archive, length)
 
-  int block_start (int block_num)  {return block_num>0? num_of_files[block_num-1] : 0;}  // Номер первого файла в блоке данных block_num
-  int block_end   (int block_num)  {return num_of_files[block_num];}                     // Номер первого файла в следующем блоке данных (т.е. последнего в этом + 1)
+  int block_start (int block_num)  {return block_num>0? num_of_files[block_num-1] : 0;}  // Number of the first file in data block block_num
+  int block_end   (int block_num)  {return num_of_files[block_num];}                     // Number of the first file in the next data block (i.e. the last one in this block + 1)
 
-  DIRECTORY_BLOCK (ARCHIVE &arc, BLOCK &block_info);   // Читает из архива содержимое блока каталога и декодирует его так, чтобы обеспечить быстрый доступ к описанию любого файла и любого блока данных
+  DIRECTORY_BLOCK (ARCHIVE &arc, BLOCK &block_info);   // Reads the contents of the directory block from the archive and decodes it so as to provide fast access to the description of any file and any data block
 };
 
 DIRECTORY_BLOCK::DIRECTORY_BLOCK (ARCHIVE &arc, BLOCK &block_info) : arcfile (arc.arcfile)
 {
-  // Прочитам в буфер содержимое каталога, распакуем его и проверим CRC
+  // Read the directory contents into the buffer, decompress it and check the CRC
   CHECK (block_info.type == DIR_BLOCK, (s,"INTERNAL ERROR: must be dir block"));
   buffer.openCompressedCheckCRC (block_info.compressor, block_info.origsize, arcfile, block_info.pos, block_info.compsize, block_info.crc);
 
-  // Прочитать общее кол-во solid-блоков и информацию о каждом из них - кол-во файлов, компрессор,
-  // смещение начала solid-блока относительно блока каталога, и упакованный размер
+  // Read the total number of solid blocks and the information about each of them - number of files, compressor,
+  // the offset of the solid block start relative to the directory block, and the compressed size
   buffer.read  (&num_of_blocks);    buffer.read  (num_of_blocks, &num_of_files);
   ARRAY <COMPRESSOR> compressors;   buffer.read  (num_of_blocks, &compressors);
   ARRAY <FILESIZE>   offsets;       buffer.read  (num_of_blocks, &offsets);
   ARRAY <FILESIZE>   compsizes;     buffer.read  (num_of_blocks, &compsizes);
 
-  // Реконструируем data_block[] по прочитанным данным
+  // Reconstruct data_block[] from the data we read
   data_block.setsize (num_of_blocks);
   iterate_array (i, data_block)
   {
     data_block[i].type       = DATA_BLOCK;
     data_block[i].compressor = compressors[i];
-    data_block[i].pos        = block_info.pos - offsets[i];    // Вычислим абсолютный адрес блока в архиве исходя из его смещения относительно блока каталога
-    data_block[i].origsize   = 0;               // А оно кому надо?
+    data_block[i].pos        = block_info.pos - offsets[i];    // Compute the absolute address of the block in the archive from its offset relative to the directory block
+    data_block[i].origsize   = 0;               // And who needs that anyway?
     data_block[i].compsize   = compsizes[i];
-    data_block[i].crc        = 0;               // CRC блоков данных не хранится - это ни к чему
+    data_block[i].crc        = 0;               // The CRC of data blocks is not stored - there is no point in it
     //printf("datablock %s %d %d\n", data_block[i].compressor, data_block[i].pos, data_block[i].compsize);
   }
 
-  // Посчитаем общее кол-во файлов в этом каталоге и изменим num_of_files[block_num] так, чтобы этот массив можно было использовать для определения файлов, принадлежащих блоку данных block_num
+  // Count the total number of files in this directory and change num_of_files[block_num] so that this array can be used to determine the files belonging to data block block_num
   total_files=0;  iterate (num_of_blocks, (total_files += num_of_files[i], num_of_files[i] = total_files));
 
-  // Прочитаем имена каталогов и приведём символы-разделители каталогов к принятым на данной платформе
+  // Read the directory names and convert the directory separator characters to the ones used on this platform
   buffer.read  (&dirs);
   iterate_array (i, dirs)    replace (dirs[i], UNSUPPORTED_PATH_DELIMITERS, PATH_DELIMITER);
 
-  // Прочитаем информацию об отдельных файлах
+  // Read the information about the individual files
   buffer.read  (total_files, &name);
   buffer.read  (total_files, &dir_numbers);
   buffer.read  (total_files, &size);
@@ -465,7 +465,7 @@ DIRECTORY_BLOCK::DIRECTORY_BLOCK (ARCHIVE &arc, BLOCK &block_info) : arcfile (ar
   //printf("%d files\n", total_files);
 }
 
-// Полное имя i-го файла
+// Full name of the i-th file
 FILENAME DIRECTORY_BLOCK::fullname (int i, char buffer[])
 {
   strcpy (buffer, dirname(i));

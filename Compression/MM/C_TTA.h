@@ -5,11 +5,11 @@
 
 #ifdef __cplusplus
 
-// Реализация стандартного интерфейса методов сжатия COMPRESSION_METHOD
+// Implementation of the standard COMPRESSION_METHOD compression-method interface
 class TTA_METHOD : public COMPRESSION_METHOD
 {
 public:
-  // Параметры этого метода сжатия
+  // Parameters of this compression method
   int level;        // Compression level (1..3, higher means tighter and slower compression)
   int skip_header;  // Skip WAV header detection
   int is_float;     // Floating-point data format
@@ -18,18 +18,18 @@ public:
   int offset;       // File offset where MM data start (header is copied intact)
   int raw_data ;    // Write raw predictor's output without using entropy encoder
 
-  // Конструктор, присваивающий параметрам метода сжатия значения по умолчанию
+  // Constructor that assigns default values to the compression method's parameters
   TTA_METHOD();
 
-  // Функции распаковки и упаковки
+  // Decompression and compression functions
   virtual int decompress (CALLBACK_FUNC *callback, void *auxdata);
 #ifndef FREEARC_DECOMPRESS_ONLY
   virtual int compress   (CALLBACK_FUNC *callback, void *auxdata);
 
-  // Записать в buf[MAX_METHOD_STRLEN] строку, описывающую метод сжатия и его параметры (функция, обратная к parse_TTA)
+  // Write into buf[MAX_METHOD_STRLEN] the string describing the compression method and its parameters (inverse of parse_TTA)
   virtual void ShowCompressionMethod (char *buf);
 
-  // Получить/установить объём памяти, используемой при упаковке/распаковке, размер словаря или размер блока
+  // Get/set the amount of memory used for compression/decompression, the dictionary size or the block size
   virtual MemSize GetCompressionMem     (void)         {return 2*mb;}
   virtual MemSize GetDecompressionMem   (void)         {return 1*mb;}
   virtual MemSize GetDictionary         (void)         {return 0;}
@@ -41,7 +41,7 @@ public:
 #endif
 };
 
-// Разборщик строки метода сжатия TTA
+// Parser for the TTA compression method string
 COMPRESSION_METHOD* parse_TTA (char** parameters);
 
 #endif  // __cplusplus

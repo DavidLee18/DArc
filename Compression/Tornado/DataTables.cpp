@@ -74,7 +74,7 @@ static void undiff_table (int N, BYTE *table_start, int table_len)
 #ifndef FREEARC_DECOMPRESS_ONLY
 // Check the following data for presence of table which will be better compressed
 // after subtraction of subsequent elements
-// ¬ычитание начинаетс€ со следующего элемента чтобы сохранить валидными данные в match finders
+// The subtraction starts from the next element in order to keep the data in the match finders valid
 static uint64 table_count=0, table_sumlen=0;     // Total stats for sucessfully processed tables
 #define value16s(t)  ((int16) value16(t))
 static bool check_for_data_table (int N, int &type, int &items, byte *p, byte *bufend, byte *&table_end, byte *buf, uint64 &offset, byte *(&last_checked)[MAX_TABLE_ROW][MAX_TABLE_ROW])

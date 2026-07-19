@@ -4,13 +4,13 @@
 
 #ifdef __cplusplus
 
-// Реализация стандартного интерфейса методов сжатия COMPRESSION_METHOD
+// Implementation of the standard COMPRESSION_METHOD compression method interface
 class CLS_METHOD : public COMPRESSION_METHOD
 {
 public:
-  // Параметры этого метода сжатия
-  char     name[100];            // Имя метода (pmm, ccm...)        ////
-  char     params[100];          // Доп. параметры метода           ////
+  // Parameters of this compression method
+  char     name[100];            // Method name (pmm, ccm...)       ////
+  char     params[100];          // Additional method parameters    ////
   CLS_MAIN *ClsMain;
   CALLBACK_FUNC *callback;
   void *auxdata;
@@ -18,15 +18,15 @@ public:
   CLS_METHOD(char *_name, CLS_MAIN *_ClsMain)
     { strcpy(name, _name); ClsMain = _ClsMain; strcpy(params, ""); }
 
-  // Функции распаковки и упаковки
+  // Decompression and compression functions
   virtual int decompress (CALLBACK_FUNC *callback, void *auxdata);
 #ifndef FREEARC_DECOMPRESS_ONLY
   virtual int compress   (CALLBACK_FUNC *callback, void *auxdata);
 
-  // Записать в buf[MAX_METHOD_STRLEN] строку, описывающую метод сжатия и его параметры (функция, обратная к parse_CLS)
+  // Write into buf[MAX_METHOD_STRLEN] a string describing the compression method and its parameters (the inverse of parse_CLS)
   virtual void ShowCompressionMethod (char *buf);
 
-  // Получить/установить объём памяти, используемой при упаковке/распаковке, размер словаря или размер блока
+  // Get/set the amount of memory used for compression/decompression, the dictionary size or the block size
   virtual MemSize GetCompressionMem     (void)          {return 0;}
   virtual MemSize GetDecompressionMem   (void)          {return 0;}
   virtual MemSize GetDictionary         (void)          {return 0;}
@@ -38,7 +38,7 @@ public:
 #endif
 };
 
-// Разборщик строки препроцессора CLS
+// Parser for the CLS preprocessor string
 COMPRESSION_METHOD* parse_CLS (char** parameters);
 
 #endif  // __cplusplus
