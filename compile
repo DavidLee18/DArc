@@ -33,22 +33,25 @@ chmod +x compile
 ./compile
 cd ..
 make ALL DEFINES="-DFREEARC_UNIX -DFREEARC_INTEL_BYTE_ORDER $bit64 -D__MHS__"
-if [ "$(uname -s)" = "Darwin" ] && command -v brew >/dev/null 2>&1; then
-  # Homebrew keeps lua@5.1 keg-only, so its pkgconfig dir is not searched by
-  # default. Add it if present rather than making the user export it.
-  _lua_prefix=$(brew --prefix lua@5.1 2>/dev/null || true)
-  [ -n "$_lua_prefix" ] && [ -d "$_lua_prefix/lib/pkgconfig" ] && \
-    export PKG_CONFIG_PATH="$_lua_prefix/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
-fi
-lua_libs=$(pkg-config --libs lua5.1 2>/dev/null || pkg-config --libs lua-5.1 2>/dev/null || echo "-llua5.1")
+# Lua 5.1 is built from the copy vendored in HsLua/src rather than linked from
+# the system. Distributions have been dropping Lua 5.1 for years -- Homebrew
+# removed lua@5.1 entirely -- and the vendored copy is the version HsLua's
+# bindings were written against, so using it removes an external dependency and
+# a version-skew risk at the same time.
+lua_libs=""
 if pkg-config --exists libcurl 2>/dev/null; then
   curl_libs=$(pkg-config --libs libcurl)
 else
   curl_libs=""
   defines="$defines -DFREEARC_NOURL"
 fi
-clang -std=c99 -c HsLua/src/ntrljmp.c -IHsLua/src $(pkg-config --cflags lua5.1 2>/dev/null) -o $ctempdir/ntrljmp.o
-c_objs="$ctempdir/Environment.o $ctempdir/URL.o $ctempdir/Common.o $ctempdir/CompressionLibrary.o $ctempdir/C_PPMD.o $ctempdir/C_LZP.o $ctempdir/C_LZMA.o $ctempdir/C_LZMA2.o $ctempdir/LzmaEnc.o $ctempdir/LzmaDec.o $ctempdir/Lzma2Enc.o $ctempdir/Lzma2Dec.o $ctempdir/MtCoder.o $ctempdir/MtDec.o $ctempdir/7zStream.o $ctempdir/LzFind.o $ctempdir/LzFindMt.o $ctempdir/Threads.o $ctempdir/LzFindOpt.o $ctempdir/CpuArch.o $ctempdir/C_LZ4.o $ctempdir/C_BCJ.o $ctempdir/C_GRZip.o $ctempdir/C_BSC.o $ctempdir/C_DisPack.o $ctempdir/C_Zstd.o $ctempdir/C_7z.o $ctempdir/C_Dict.o $ctempdir/C_REP.o $ctempdir/C_MM.o $ctempdir/C_TTA.o $ctempdir/C_Tornado.o $ctempdir/C_4x4.o $ctempdir/C_Delta.o $ctempdir/C_External.o $ctempdir/C_Encryption.o $ctempdir/ntrljmp.o"
+lua_objs=""
+for src in HsLua/src/*.c; do
+  obj="$ctempdir/hslua_$(basename "${src%.c}").o"
+  clang -std=c99 -O2 -w -c "$src" -IHsLua/src -o "$obj"
+  lua_objs="$lua_objs $obj"
+done
+c_objs="$ctempdir/Environment.o $ctempdir/URL.o $ctempdir/Common.o $ctempdir/CompressionLibrary.o $ctempdir/C_PPMD.o $ctempdir/C_LZP.o $ctempdir/C_LZMA.o $ctempdir/C_LZMA2.o $ctempdir/LzmaEnc.o $ctempdir/LzmaDec.o $ctempdir/Lzma2Enc.o $ctempdir/Lzma2Dec.o $ctempdir/MtCoder.o $ctempdir/MtDec.o $ctempdir/7zStream.o $ctempdir/LzFind.o $ctempdir/LzFindMt.o $ctempdir/Threads.o $ctempdir/LzFindOpt.o $ctempdir/CpuArch.o $ctempdir/C_LZ4.o $ctempdir/C_BCJ.o $ctempdir/C_GRZip.o $ctempdir/C_BSC.o $ctempdir/C_DisPack.o $ctempdir/C_Zstd.o $ctempdir/C_7z.o $ctempdir/C_Dict.o $ctempdir/C_REP.o $ctempdir/C_MM.o $ctempdir/C_TTA.o $ctempdir/C_Tornado.o $ctempdir/C_4x4.o $ctempdir/C_Delta.o $ctempdir/C_External.o $ctempdir/C_Encryption.o"
 # -lgomp is GNU's OpenMP runtime and does not exist on macOS. Nothing in this
 # build actually uses OpenMP (see the note in unix-common.mak), so it is simply
 # omitted there rather than substituting Apple's -lomp.
@@ -62,7 +65,7 @@ if [[ -n $gui_flag ]]; then c_objs="$c_objs $ctempdir/GuiEnvironment.o"; fi
 optc_defines=""
 for d in $defines $gui_flag; do optc_defines="$optc_defines -optc${d}"; done
 # Collect optimization flag (-O2 by default) -- already parsed above
-lua_cflags=$(pkg-config --cflags lua5.1 2>/dev/null || pkg-config --cflags lua-5.1 2>/dev/null || echo "-I/usr/include/lua5.1")
+lua_cflags="-IHsLua/src"   # vendored Lua 5.1 headers
 rm -f $exe
 if ! command -v mhs >/dev/null 2>&1; then
   echo "error: mhs (MicroHs) is required for Haskell compilation but was not found in PATH" >&2
@@ -89,7 +92,7 @@ fi
 optc_args="-optc -I. -optc -ICompression -optc -IHsLua/src -optc -Wno-incompatible-function-pointer-types"
 for f in $lua_cflags; do optc_args="$optc_args -optc $f"; done
 optl_args=""
-for o in $c_objs; do optl_args="$optl_args -optl $o"; done
+for o in $c_objs $lua_objs; do optl_args="$optl_args -optl $o"; done
 for l in $c_libs; do optl_args="$optl_args -optl $l"; done
 mhs Arc \
   -iCompression -icompat-ghc -icompat-oldtime -iHsLua/src \
