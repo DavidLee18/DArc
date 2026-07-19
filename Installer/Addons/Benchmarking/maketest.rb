@@ -250,10 +250,6 @@ end
 ########################################################
 
 # File the benchmark report is written to
-### Benchmark report generation subroutines ############
-########################################################
-
-# File the benchmark report is written to
 $outfile = File.open(*$reportfile)
 $outfile.sync = true
 
