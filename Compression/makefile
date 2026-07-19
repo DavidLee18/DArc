@@ -2,10 +2,12 @@ include ../common.mak
 
 ALL: $(TEMPDIR)/Common.o $(TEMPDIR)/CompressionLibrary.o
 
-CODE_FLAGS = -fno-exceptions -fno-rtti \
-                -Wno-unknown-pragmas -Wno-sign-compare -Wno-conversion
+# See the top-level makefile for why -fno-strict-aliasing is required and why
+# -ffast-math and the -Wno-sign-compare/-Wno-conversion suppressions are gone.
+CODE_FLAGS = -fno-exceptions -fno-rtti -Wall -Wextra \
+                -Wno-unknown-pragmas
 OPT_FLAGS = -Os -fomit-frame-pointer \
-                 -ffast-math -fstrict-aliasing
+                 -fno-strict-aliasing
 DEBUG_FLAGS = -g0
 CFLAGS = $(CODE_FLAGS) $(OPT_FLAGS) $(DEBUG_FLAGS) $(DEFINES)
 

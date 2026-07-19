@@ -4,7 +4,7 @@ ALL: $(TEMPDIR)/C_4x4.o
 
 CODE_FLAGS  = -fno-exceptions -fno-rtti \
               -Wno-unknown-pragmas -Wno-sign-compare -Wno-conversion
-OPT_FLAGS   = -O3 -fomit-frame-pointer -fstrict-aliasing
+OPT_FLAGS   = -O3 -fomit-frame-pointer -fno-strict-aliasing
 DEBUG_FLAGS = -g0
 CFLAGS = $(CODE_FLAGS) $(OPT_FLAGS) $(DEBUG_FLAGS) $(DEFINES)
 

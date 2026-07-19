@@ -17,10 +17,13 @@ LINK_FLAGS = -L$(LIBDIR) -Xlinker --large-address-aware -lstdc++ -s
 UNIX_LINK_FLAGS = -L$(LIBDIR) -lstdc++ -lrt -lpthread -s
 
 
-CODE_FLAGS  = -fno-exceptions -fno-rtti -Wall \
-              -Wno-unknown-pragmas -Wno-sign-compare -Wno-conversion
-OPT_FLAGS   = -ffast-math \
-              -fomit-frame-pointer -fstrict-aliasing
+# This builds unarc and the SFX modules, which parse attacker-supplied archives
+# as standalone binaries with no surrounding process to contain a fault. It is
+# the most exposed code in the tree, so it gets the strictest settings:
+# signedness and conversion diagnostics stay on, and aliasing is not assumed.
+CODE_FLAGS  = -fno-exceptions -fno-rtti -Wall -Wextra \
+              -Wno-unknown-pragmas
+OPT_FLAGS   = -fomit-frame-pointer -fno-strict-aliasing
 DEBUG_FLAGS = -g0
 CFLAGS = $(CODE_FLAGS) $(OPT_FLAGS) -O2 $(DEBUG_FLAGS) $(DEFINES) $(Extractor_DEFINES)
 CFLAGS1= $(CODE_FLAGS) $(OPT_FLAGS) -O1 $(DEBUG_FLAGS) $(DEFINES) $(Extractor_DEFINES)

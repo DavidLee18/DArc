@@ -5,7 +5,7 @@ ALL: $(TEMPDIR)/C_Encryption.o
 CODE_FLAGS  = -fno-exceptions -fno-rtti -Wall \
               -Wno-unknown-pragmas -Wno-sign-compare -Wno-conversion
 OPT_FLAGS   = -O3 \
-              -fomit-frame-pointer -fstrict-aliasing \
+              -fomit-frame-pointer -fno-strict-aliasing \
               -funroll-loops
 DEBUG_FLAGS = -g0
 CFLAGS = $(CODE_FLAGS) $(OPT_FLAGS) $(DEBUG_FLAGS) $(DEFINES)

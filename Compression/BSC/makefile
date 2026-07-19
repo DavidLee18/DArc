@@ -7,7 +7,7 @@ ALL: $(TEMPDIR)/C_BSC.o
 CODE_FLAGS  = -fno-exceptions -fno-rtti \
               -Wno-unknown-pragmas -Wno-sign-compare -Wno-conversion -Wno-unused-function -Wno-unused-variable
 OPT_FLAGS   = -O3 \
-              -fomit-frame-pointer -fstrict-aliasing -funroll-loops
+              -fomit-frame-pointer -fno-strict-aliasing -funroll-loops
 DEBUG_FLAGS = -g0
 # libbsc/libsais use OpenMP for parallelism when available.
 OMP_FLAGS   = -fopenmp

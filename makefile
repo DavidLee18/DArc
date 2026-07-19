@@ -6,11 +6,20 @@ all: microhs
 
 ALL: $(TEMPDIR)/Environment.o $(TEMPDIR)/GuiEnvironment.o $(TEMPDIR)/URL.o
 
-CODE_FLAGS = -fno-exceptions -fno-rtti -Wall \
-                -Wno-unknown-pragmas -Wno-sign-compare -Wno-conversion
+# -Wno-unknown-pragmas is kept: the vendored codecs carry MSVC pragmas.
+# -Wno-sign-compare and -Wno-conversion were dropped deliberately; they were
+# hiding exactly the integer-width and signedness bugs worth knowing about.
+CODE_FLAGS = -fno-exceptions -fno-rtti -Wall -Wextra \
+                -Wno-unknown-pragmas
+# -fno-strict-aliasing is REQUIRED, not a preference. The codecs read and write
+# buffers through value32()/setvalue32()-style punning macros (4x4, DisPack,
+# mmdet, Tornado/EntropyCoder, ...). Under -fstrict-aliasing at -O3 the compiler
+# is entitled to assume those accesses never alias and reorder them, which is a
+# miscompile waiting to happen rather than a theoretical concern.
+# -ffast-math was removed: there is no float hot path worth it in an archiver,
+# and it licenses transforms that break IEEE semantics.
 OPT_FLAGS   = -O3 \
-              -fomit-frame-pointer -fstrict-aliasing \
-              -ffast-math
+              -fomit-frame-pointer -fno-strict-aliasing
 DEBUG_FLAGS = -g0
 CFLAGS = $(CODE_FLAGS) $(OPT_FLAGS) $(DEBUG_FLAGS) $(DEFINES) $(EXTRA_CFLAGS)
 

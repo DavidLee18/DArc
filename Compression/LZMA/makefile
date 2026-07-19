@@ -8,7 +8,7 @@ ALL: $(TEMPDIR)/C_LZMA.o $(TEMPDIR)/C_LZMA2.o $(TEMPDIR)/C_BCJ.o \
      $(TEMPDIR)/CpuArch.o  $(TEMPDIR)/LzFindMt.o $(TEMPDIR)/Threads.o
 
 CODE_FLAGS = -Wall -Wno-unknown-pragmas -Wno-sign-compare -Wno-conversion
-OPT_FLAGS  = -O2 -fomit-frame-pointer -fstrict-aliasing -ffast-math -funroll-loops
+OPT_FLAGS  = -O2 -fomit-frame-pointer -fno-strict-aliasing -funroll-loops
 DEBUG_FLAGS = -g0
 CFLAGS = $(CODE_FLAGS) $(OPT_FLAGS) $(DEBUG_FLAGS) $(DEFINES) -I7z24
 
