@@ -77,20 +77,28 @@ while IFS= read -r line; do
   opts="${line%%:*}"; label="${line##*:}"
   arc="$WORK/$label.arc"; out="$WORK/out-$label"
 
+  # Show why a step failed, right here. A harness that says "see some.log"
+  # is useless on CI, where that file is never seen by anyone.
+  show_fail () {  # show_fail <stage> <logfile>
+    printf '%-24s %-10s %-10s %s\n' "$label" FAIL - "$1 failed"
+    echo "    command: $2"
+    sed 's/^/    | /' "$3" | head -12
+  }
+
   # --nodates is what makes the archive bytes reproducible.
-  if ! "$ARC" a --nodates -r -y "$arc" "$CORPUS" >"$WORK/$label.create.log" 2>&1; then
-    printf '%-24s %-10s %-10s %s\n' "$label" FAIL - "create failed (see $label.create.log)"
+  if ! "$ARC" a --nodates -r -y $opts "$arc" "$CORPUS" >"$WORK/$label.create.log" 2>&1; then
+    show_fail create "$ARC a --nodates -r -y $opts $arc $CORPUS" "$WORK/$label.create.log"
     fail=$((fail+1)); continue
   fi
 
   if ! "$ARC" t -y "$arc" >"$WORK/$label.test.log" 2>&1; then
-    printf '%-24s %-10s %-10s %s\n' "$label" FAIL - "integrity test failed"
+    show_fail "integrity test" "$ARC t -y $arc" "$WORK/$label.test.log"
     fail=$((fail+1)); continue
   fi
 
   mkdir -p "$out"
   if ! "$ARC" x -y -dp"$out" "$arc" >"$WORK/$label.extract.log" 2>&1; then
-    printf '%-24s %-10s %-10s %s\n' "$label" FAIL - "extract failed"
+    show_fail extract "$ARC x -y -dp$out $arc" "$WORK/$label.extract.log"
     fail=$((fail+1)); continue
   fi
 
