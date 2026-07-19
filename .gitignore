@@ -30,3 +30,7 @@ common.mak
 *.tar.gz
 
 .DS_Store
+
+# generated test corpus and scratch
+Tests/corpus/
+Tests/.work/

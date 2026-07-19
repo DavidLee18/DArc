@@ -1,0 +1,154 @@
+#!/usr/bin/env bash
+# Round-trip and archive-format regression tests.
+#
+# Two separate questions are being asked here, and they fail for different
+# reasons:
+#
+#   1. ROUND-TRIP  -- does "create, test, extract" return the original bytes?
+#      Catches ordinary bugs. A failure means data loss.
+#
+#   2. FINGERPRINT -- do we still emit the *same archive bytes* as before?
+#      Catches format drift. A change here is not necessarily a bug, but it
+#      means archives written by this build may not be readable by other
+#      builds of DArc/FreeArc, which is the highest-risk failure mode in this
+#      project because everything still compiles and every round-trip passes.
+#
+# Fingerprints depend on --nodates: without it the archive embeds mtimes and
+# the bytes differ on every run.
+#
+# Usage:
+#   ./run-tests.sh [path-to-arc]          run the suite
+#   ./run-tests.sh [path-to-arc] --bless  regenerate fingerprints.txt
+set -u
+
+HERE="$(cd "$(dirname "$0")" && pwd)"
+ARC="${1:-$HERE/arc}"
+BLESS="${2:-}"
+CORPUS="$HERE/corpus"
+WORK="$HERE/.work"
+FP="$HERE/fingerprints.txt"
+
+[ -x "$ARC" ] || { echo "error: archiver not found or not executable: $ARC" >&2; exit 2; }
+
+command -v sha256sum >/dev/null && SHA=sha256sum || SHA="shasum -a 256"
+hash_of () { $SHA "$1" | cut -d' ' -f1; }
+
+# Hash a directory tree by content AND relative path, so a file landing in the
+# wrong place fails even if its bytes are intact.
+tree_hash () {
+  ( cd "$1" && find . -type f -print0 | LC_ALL=C sort -z |
+    while IFS= read -r -d '' f; do printf '%s  %s\n' "$(hash_of "$f")" "$f"; done ) | $SHA | cut -d' ' -f1
+}
+
+[ -d "$CORPUS" ] || "$HERE/make-corpus.sh" "$CORPUS" >/dev/null
+EXPECTED_TREE="$(tree_hash "$CORPUS")"
+
+# method:label pairs. Labels are used as filenames and fingerprint keys, so
+# they must stay stable even if the switch spelling changes.
+CASES="
+-m0:store
+-m1:m1
+-m4:m4
+-m9:m9
+-m4x:m4x
+-mtor:tor
+-mlzma:lzma
+-mppmd:ppmd
+-mgrzip:grzip
+-mrep+lzma:chain-rep-lzma
+-mdelta+lzma:chain-delta-lzma
+-m4 -s-:nonsolid
+-m4 -s:fullsolid
+-m4 -se:solid-by-ext
+-m4 -ms:store-compressed
+-m4 -mt1:single-thread
+"
+
+pass=0; fail=0; drift=0
+declare -a NEWFP=()
+
+rm -rf "$WORK"; mkdir -p "$WORK"
+
+printf '%-24s %-10s %-10s %s\n' TEST ROUNDTRIP FORMAT DETAIL
+printf '%s\n' "------------------------------------------------------------------"
+
+while IFS= read -r line; do
+  [ -z "$line" ] && continue
+  opts="${line%%:*}"; label="${line##*:}"
+  arc="$WORK/$label.arc"; out="$WORK/out-$label"
+
+  # --nodates is what makes the archive bytes reproducible.
+  if ! "$ARC" a --nodates -r -y "$arc" "$CORPUS" >"$WORK/$label.create.log" 2>&1; then
+    printf '%-24s %-10s %-10s %s\n' "$label" FAIL - "create failed (see $label.create.log)"
+    fail=$((fail+1)); continue
+  fi
+
+  if ! "$ARC" t -y "$arc" >"$WORK/$label.test.log" 2>&1; then
+    printf '%-24s %-10s %-10s %s\n' "$label" FAIL - "integrity test failed"
+    fail=$((fail+1)); continue
+  fi
+
+  mkdir -p "$out"
+  if ! "$ARC" x -y -dp"$out" "$arc" >"$WORK/$label.extract.log" 2>&1; then
+    printf '%-24s %-10s %-10s %s\n' "$label" FAIL - "extract failed"
+    fail=$((fail+1)); continue
+  fi
+
+  # The extracted tree is rooted wherever the corpus path put it; find the
+  # directory that actually contains the payload rather than assuming a layout.
+  root="$(find "$out" -type d -name "$(basename "$CORPUS")" | head -1)"
+  [ -n "$root" ] || root="$out"
+  got="$(tree_hash "$root")"
+
+  if [ "$got" != "$EXPECTED_TREE" ]; then
+    printf '%-24s %-10s %-10s %s\n' "$label" FAIL - "extracted tree differs from corpus"
+    fail=$((fail+1)); continue
+  fi
+
+  # Round-trip is good; now check format stability.
+  afp="$(hash_of "$arc")"
+  NEWFP+=("$label $afp")
+  if [ -n "$BLESS" ]; then
+    printf '%-24s %-10s %-10s %s\n' "$label" ok blessed "${afp:0:16}"
+    pass=$((pass+1))
+  elif [ -f "$FP" ]; then
+    want="$(awk -v k="$label" '$1==k{print $2}' "$FP")"
+    if [ -z "$want" ]; then
+      printf '%-24s %-10s %-10s %s\n' "$label" ok NEW "no baseline yet: ${afp:0:16}"
+      pass=$((pass+1))
+    elif [ "$want" = "$afp" ]; then
+      printf '%-24s %-10s %-10s %s\n' "$label" ok ok "${afp:0:16}"
+      pass=$((pass+1))
+    else
+      printf '%-24s %-10s %-10s %s\n' "$label" ok DRIFT "${want:0:16} -> ${afp:0:16}"
+      drift=$((drift+1))
+    fi
+  else
+    printf '%-24s %-10s %-10s %s\n' "$label" ok "no-baseline" "${afp:0:16}"
+    pass=$((pass+1))
+  fi
+done <<< "$CASES"
+
+if [ -n "$BLESS" ]; then
+  printf '%s\n' "${NEWFP[@]}" > "$FP"
+  echo
+  echo "wrote $(wc -l < "$FP" | tr -d ' ') fingerprints to $FP"
+  exit 0
+fi
+
+echo
+echo "round-trip: $pass passed, $fail failed"
+[ "$drift" -gt 0 ] && cat <<EOF
+
+$drift archive(s) changed format.
+
+This is not automatically a bug -- a codec improvement legitimately changes
+output. But it does mean archives from this build differ byte-for-byte from
+the baseline, so verify old builds can still read them before accepting.
+Re-bless with:  ./run-tests.sh <arc> --bless
+EOF
+
+[ "$fail" -gt 0 ] && exit 1
+[ "$drift" -gt 0 ] && exit 3
+echo "all good"
+exit 0

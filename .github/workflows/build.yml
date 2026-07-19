@@ -67,6 +67,17 @@ jobs:
         chmod +x compile*
         ./compile-O2
 
+    # Round-trip every compression method and solid mode over a deterministic
+    # corpus, then compare each archive against a recorded fingerprint.
+    # The round-trip half catches data loss; the fingerprint half catches
+    # archive-format drift, which is the failure mode that otherwise builds
+    # cleanly and passes every other check.
+    - name: Test (Linux)
+      if: runner.os == 'Linux'
+      run: |
+        chmod +x Tests/*.sh
+        Tests/run-tests.sh Tests/arc
+
     # ── Windows steps ──────────────────────────────────────────────────────────
     - name: Set up MSYS2 (Windows)
       if: runner.os == 'Windows'
