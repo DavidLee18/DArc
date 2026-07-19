@@ -42,7 +42,10 @@ jobs:
       if: runner.os == 'Linux'
       run: |
         sudo apt-get update
-        sudo apt-get install -y liblua5.1-dev libncurses-dev libcurl4-openssl-dev
+        # cpphs is required by mhs to preprocess {-# LANGUAGE CPP #-} modules.
+        # Its absence is why the build silently failed on every platform while
+        # CI still reported success.
+        sudo apt-get install -y liblua5.1-dev libncurses-dev libcurl4-openssl-dev cpphs
     - name: Install MicroHs (Linux)
       if: runner.os == 'Linux'
       run: |
@@ -66,6 +69,22 @@ jobs:
       run: |
         chmod +x compile*
         ./compile-O2
+
+    # A build step that cannot fail is not a check. Assert the artifact exists
+    # and actually runs before anything downstream is allowed to claim success.
+    - name: Verify binary (Linux)
+      if: runner.os == 'Linux'
+      run: |
+        test -f Tests/arc || { echo "::error::build produced no Tests/arc"; exit 1; }
+        test -s Tests/arc || { echo "::error::Tests/arc is empty"; exit 1; }
+        chmod +x Tests/arc
+        # Exercise it for real: a binary that exists but cannot list its own
+        # help is not a working archiver.
+        ./Tests/arc --help > /tmp/arc-help.txt 2>&1 || true
+        grep -qi 'command' /tmp/arc-help.txt || {
+          echo "::error::Tests/arc did not produce recognisable help output"
+          head -20 /tmp/arc-help.txt; exit 1; }
+        echo "binary verified: $(wc -c < Tests/arc) bytes"
 
     # Round-trip every compression method and solid mode over a deterministic
     # corpus, then compare each archive against a recorded fingerprint.
@@ -111,6 +130,22 @@ jobs:
         make minstall
       env:
         MSYSTEM: MSYS
+    # mhs needs cpphs for {-# LANGUAGE CPP #-} modules. MicroHs' own install may
+    # place it in ~/.mcabal/bin; if not, try pacman. Failure here is not fatal
+    # on its own -- the compile script checks for cpphs explicitly and reports
+    # a clear error -- but this gives it the best chance of being present.
+    - name: Ensure cpphs (Windows)
+      if: runner.os == 'Windows'
+      shell: msys2 {0}
+      run: |
+        export PATH="$HOME/.mcabal/bin:$PATH"
+        if command -v cpphs >/dev/null 2>&1; then
+          echo "cpphs already available: $(command -v cpphs)"
+        else
+          pacman -S --noconfirm --needed cpphs 2>/dev/null \
+            || echo "note: cpphs not installable via pacman; compile will report if it is required"
+        fi
+
     - name: Build (Windows)
       if: runner.os == 'Windows'
       shell: msys2 {0}
@@ -119,3 +154,13 @@ jobs:
         cd "$GITHUB_WORKSPACE"
         chmod +x compile*
         ./compile-O2
+
+    - name: Verify binary (Windows)
+      if: runner.os == 'Windows'
+      shell: msys2 {0}
+      run: |
+        cd "$GITHUB_WORKSPACE"
+        bin=Tests/arc; [ -f Tests/arc.exe ] && bin=Tests/arc.exe
+        test -f "$bin" || { echo "::error::build produced no $bin"; exit 1; }
+        test -s "$bin" || { echo "::error::$bin is empty"; exit 1; }
+        echo "binary verified: $bin ($(wc -c < "$bin") bytes)"

@@ -1,4 +1,12 @@
 #!/usr/bin/env bash
+# Build the console (or GUI) binary with MicroHs.
+#
+# set -e is deliberate and load-bearing. Without it this script ran to
+# completion and exited 0 even when the C build and the mhs link had both
+# failed, so CI reported success for builds that produced nothing at all.
+# Every failure must stop the build here.
+set -euo pipefail
+
 exe=Tests/arc
 gui_flag=""
 for option; do
@@ -43,6 +51,18 @@ if ! command -v mhs >/dev/null 2>&1; then
   echo "error: mhs (MicroHs) is required for Haskell compilation but was not found in PATH" >&2
   exit 1
 fi
+# mhs shells out to cpphs for modules carrying {-# LANGUAGE CPP #-}, and most
+# of this codebase does. When cpphs is absent mhs dies with a bare
+# "callCommand: failed 32512", which is exit 127 (command not found) shifted
+# into wait() encoding -- not an obvious message. Check for it up front and
+# say so plainly instead.
+if ! command -v cpphs >/dev/null 2>&1; then
+  echo "error: cpphs was not found in PATH." >&2
+  echo "       mhs requires it to preprocess {-# LANGUAGE CPP #-} modules." >&2
+  echo "       Debian/Ubuntu: sudo apt-get install cpphs" >&2
+  echo "       Otherwise:     cabal install cpphs   (or add ~/.mcabal/bin to PATH)" >&2
+  exit 1
+fi
 # Build -optc and -optl flags for the mhs C backend
 optc_args="-optc -I. -optc -ICompression -optc -IHsLua/src"
 for f in $lua_cflags; do optc_args="$optc_args -optc $f"; done
@@ -56,3 +76,12 @@ mhs Arc \
   $optl_args \
   -o$exe
 rm -f Compression/CompressionLib_stub.?
+
+# Prove the build actually produced something before claiming success. mhs can
+# exit non-zero in ways set -e catches, but a script that reports success
+# without ever checking for its own output is how this build stayed silently
+# broken across every platform for months.
+[ -f "$exe" ] || { echo "error: build reported success but $exe does not exist" >&2; exit 1; }
+[ -s "$exe" ] || { echo "error: $exe was produced but is empty" >&2; exit 1; }
+chmod +x "$exe"
+echo "Built: $exe ($(wc -c <"$exe" | tr -d ' ') bytes)"
