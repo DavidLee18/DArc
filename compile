@@ -39,12 +39,33 @@ else
   curl_libs=""
   defines="$defines -DFREEARC_NOURL"
 fi
+# Optional sanitizer build: DARC_SANITIZE=address ./compile
+#
+# Every makefile here spells its flags as
+#     CFLAGS = $(CODE_FLAGS) $(OPT_FLAGS) $(DEBUG_FLAGS) $(DEFINES)
+# so overriding DEBUG_FLAGS on the make command line reaches all of them --
+# make gives command-line variables priority over assignments in the file.
+#
+# Only DArc's own C/C++ is instrumented; the MicroHs runtime is left alone.
+# That is deliberate rather than a limitation: ASan intercepts malloc/free
+# process-wide, so heap errors are still caught everywhere, and instrumenting
+# the generated runtime only adds noise (it has a known misaligned store).
+#
+# -fno-omit-frame-pointer is required for usable stack traces because the
+# OPT_FLAGS above pass -fomit-frame-pointer.
+san_make=()
+if [ -n "${DARC_SANITIZE:-}" ]; then
+  san_cflags="-g -fsanitize=${DARC_SANITIZE} -fno-omit-frame-pointer"
+  san_make=(DEBUG_FLAGS="$san_cflags")
+  export DARC_DEBUG_FLAGS="$san_cflags"
+  echo "sanitizer build: -fsanitize=${DARC_SANITIZE}"
+fi
 cp unix-common.mak common.mak
 cd Compression
 chmod +x compile
 ./compile
 cd ..
-make ALL DEFINES="$defines -D__MHS__"
+make ALL DEFINES="$defines -D__MHS__" "${san_make[@]}"
 # Lua 5.1 is built from the copy vendored in HsLua/src rather than linked from
 # the system. Distributions have been dropping Lua 5.1 for years -- Homebrew
 # removed lua@5.1 entirely -- and the vendored copy is the version HsLua's
@@ -66,6 +87,8 @@ case "$(uname -s)" in
   *)      omp_libs="-lgomp" ;;
 esac
 c_libs="-lstdc++ -lncurses -lpthread $omp_libs $curl_libs $lua_libs"
+# The sanitizer runtime has to reach the final link too, not just compilation.
+if [ -n "${DARC_SANITIZE:-}" ]; then c_libs="-fsanitize=${DARC_SANITIZE} $c_libs"; fi
 if [[ -n $gui_flag ]]; then c_objs="$c_objs $ctempdir/GuiEnvironment.o"; fi
 # Build -optc defines for C files compiled by the Haskell compiler
 optc_defines=""

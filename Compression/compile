@@ -19,12 +19,18 @@ CODECS=(
 
 fail () { echo "ERROR: $*" >&2; exit 1; }
 
+# Sanitizer flags arrive from the top-level compile script as DARC_DEBUG_FLAGS
+# and override each makefile's own DEBUG_FLAGS. Passing it on the make command
+# line is what gives it priority over the assignment inside the makefile.
+make_args=()
+[ -n "${DARC_DEBUG_FLAGS:-}" ] && make_args=(DEBUG_FLAGS="$DARC_DEBUG_FLAGS")
+
 # Common.o / CompressionLibrary.o first -- the codecs include their headers.
-make || fail "failed to build Compression/ (Common.o, CompressionLibrary.o)"
+make "${make_args[@]}" || fail "failed to build Compression/ (Common.o, CompressionLibrary.o)"
 
 for c in "${CODECS[@]}"; do
   [ -d "$c" ] || fail "codec directory missing: Compression/$c"
-  make -C "$c" || fail "failed to build codec: Compression/$c"
+  make -C "$c" "${make_args[@]}" || fail "failed to build codec: Compression/$c"
 done
 
 echo "Compression: all ${#CODECS[@]} codecs built"

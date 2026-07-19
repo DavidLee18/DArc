@@ -219,3 +219,76 @@ jobs:
         test -f "$bin" || { echo "::error::build produced no $bin"; exit 1; }
         test -s "$bin" || { echo "::error::$bin is empty"; exit 1; }
         echo "binary verified: $bin ($(wc -c < "$bin") bytes)"
+
+  # ── Diagnostic: AddressSanitizer on x86-64 ──────────────────────────────────
+  # The "nonsolid" configuration (-m4 -s-) dies at create with glibc
+  # "double free or corruption (out)" on ubuntu-latest only. It does not
+  # reproduce on ubuntu-24.04-arm, on macOS, or in a local x86-64 container, so
+  # it depends on this runner's allocator and has to be diagnosed here.
+  #
+  # continue-on-error: this job is expected to fail while that bug is open. It
+  # must not mask the real matrix result, but its log carries the ASan report
+  # (address, allocation site, and stack) that says where to look.
+  #
+  # Delete this job once the double-free is fixed -- it roughly doubles CI time
+  # for the Linux path and has no value as a permanent check in its current
+  # form.
+  asan-x86_64:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+    - uses: actions/checkout@v6.0.2
+      with:
+        lfs: false
+    - name: Install LLVM and Clang
+      uses: KyleMayes/install-llvm-action@v2
+      with:
+        version: "21.1.8"
+    - name: Install packages
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y liblua5.1-dev libncurses-dev libcurl4-openssl-dev cpphs
+    - name: Install MicroHs
+      run: |
+        microhs_sha="05a3fbd5d73ae6a37111a6ced5b57bb1717b8975"
+        microhs_tar="/tmp/microhs.tar.gz"
+        microhs_expected_sha256="a1f85821cbae877d0ea3e173235d45c833d9145b2ca9e92e77d284b6730c63b6"
+        curl -fsSL "https://github.com/augustss/MicroHs/archive/$microhs_sha.tar.gz" -o "$microhs_tar"
+        echo "$microhs_expected_sha256  $microhs_tar" | sha256sum -c -
+        tar -xzf "$microhs_tar" -C /tmp
+        cd "/tmp/MicroHs-$microhs_sha"
+        make minstall
+        echo "$HOME/.mcabal/bin" >> "$GITHUB_PATH"
+    - name: Build with AddressSanitizer
+      run: |
+        chmod +x compile* Compression/compile
+        DARC_SANITIZE=address ./compile
+    # detect_leaks=0: this is a hunt for a specific heap-corruption bug, and
+    # LeakSanitizer would otherwise bury the report under leaks inherited from
+    # a codebase that has never been leak-clean.
+    # abort_on_error=1 makes the first report terminate rather than letting a
+    # corrupted process wander on and produce a confusing second failure.
+    - name: Run suite under ASan
+      env:
+        ASAN_OPTIONS: detect_leaks=0:abort_on_error=1:print_stacktrace=1
+      run: |
+        chmod +x Tests/*.sh
+        Tests/run-tests.sh Tests/arc
+    # The suite hides per-case output on success, so surface any ASan report
+    # that landed in a per-configuration log even when the case was recorded
+    # as a failure rather than a crash.
+    - name: Surface ASan reports
+      if: always()
+      run: |
+        work="${TMPDIR:-/tmp}/darc-tests-work"
+        found=0
+        for f in "$work"/*.log; do
+          [ -f "$f" ] || continue
+          if grep -q "AddressSanitizer" "$f"; then
+            found=1
+            echo "::group::$(basename "$f")"
+            cat "$f"
+            echo "::endgroup::"
+          fi
+        done
+        [ "$found" = 1 ] || echo "no AddressSanitizer reports found in $work"
