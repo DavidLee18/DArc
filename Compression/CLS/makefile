@@ -5,7 +5,7 @@ ALL: $(TEMPDIR)/C_CLS.o
 CODE_FLAGS = -fno-rtti -Wall \
                 -Wno-unknown-pragmas -Wno-sign-compare -Wno-conversion
 OPT_FLAGS   = -Os \
-              -fomit-frame-pointer -fno-strict-aliasing \
+              -fomit-frame-pointer -fno-strict-aliasing
 DEBUG_FLAGS = -g0
 CFLAGS = $(CODE_FLAGS) $(OPT_FLAGS) $(DEBUG_FLAGS) $(DEFINES)
 

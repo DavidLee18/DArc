@@ -5,7 +5,8 @@ ALL: $(TEMPDIR)/C_GRZip.o
 CODE_FLAGS = -fno-exceptions -fno-rtti \
                 -Wno-unknown-pragmas -Wno-sign-compare -Wno-conversion
 OPT_FLAGS   = -O2 \
-              -fomit-frame-pointer \ -fno-strict-aliasing -funroll-loops
+              -fomit-frame-pointer \
+ -fno-strict-aliasing -funroll-loops
 DEBUG_FLAGS = -g0
 CFLAGS = $(CODE_FLAGS) $(OPT_FLAGS) $(DEBUG_FLAGS) $(DEFINES)
 
