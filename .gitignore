@@ -34,3 +34,7 @@ common.mak
 # generated test corpus and scratch
 Tests/corpus/
 Tests/.work/
+
+# Left in the working tree when arc dies mid-write (common while testing crashes)
+$$temparc$$*.tmp
+#.arc

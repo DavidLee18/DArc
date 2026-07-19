@@ -59,6 +59,17 @@ EXPECTED_TREE="$(tree_hash "$CORPUS")"
 
 # method:label pairs. Labels are used as filenames and fingerprint keys, so
 # they must stay stable even if the switch spelling changes.
+#
+# This block is data, not script: every non-blank line is parsed as a case, so
+# it cannot carry "#" comments. Explain entries here instead.
+#
+# "-mdict -s-" earns its place: it is the only configuration that drives the
+# Dict codec over an incompressible block on its own, which is what leaves
+# phase2 with good_words==0. That branch used to realloc to size zero, keep the
+# pointer realloc had already freed, and free it again. Instrumenting the
+# branch showed zero hits across every other configuration here -- which is why
+# the double-free only ever appeared on a CI runner, whose longer checkout
+# paths change the stored block contents, and never reproduced locally.
 CASES="
 -m0:store
 -m1:m1
@@ -69,6 +80,7 @@ CASES="
 -mlzma:lzma
 -mppmd:ppmd
 -mgrzip:grzip
+-mdict -s-:dict-nonsolid
 -mrep+lzma:chain-rep-lzma
 -mdelta+lzma:chain-delta-lzma
 -m4 -s-:nonsolid

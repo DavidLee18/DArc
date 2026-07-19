@@ -467,10 +467,21 @@ int phase1 (byte *buf, unsigned bufsize)
         if (sizeof(hash0_t) >= sizeof(int))    break;   // Without this check we could loop forever on entry zero ;)
     }
 
-    byte *p = buf,                  // pointer to the next character to process
-         *endbuf = buf+bufsize-WORD_STEP-1;  // end of the part of the buffer being processed
+    byte *p = buf;                  // pointer to the next character to process
+    // End of the part of the buffer being processed.
+    //
+    // bufsize is unsigned, so for a block shorter than WORD_STEP+2 bytes this
+    // subtraction does not go negative -- it walks off the front of the buffer.
+    // Clamped to buf so the scan below is skipped outright instead of reading
+    // outside the block.
+    byte *endbuf = bufsize > (unsigned)(WORD_STEP+1) ? buf+bufsize-WORD_STEP-1 : buf;
 
-    do {
+    // Tested before the first iteration, not after it. As a do/while the body
+    // ran once no matter how short the block was, and its opening
+    // "c1 = *p++; c = *p" then read past the end. Reachable from any solid
+    // block smaller than six bytes -- with -s- every file is its own block, so
+    // the corpus's empty.txt and one-byte.txt hit it immediately.
+    while (p < endbuf) {
         byte *p0 = p;             // pointer to the start of the word currently being processed
         unsigned c1 = *p++;  unsigned c = *p;  // the next-to-last and last characters
         unsigned hash0;           // the hash of the word [p0,p) will be kept here
@@ -569,7 +580,7 @@ int phase1 (byte *buf, unsigned bufsize)
 
     end:while (p0<p)  char_counts[*p0++]++;  // counting byte frequencies in the input data
 
-    } while (p < endbuf);
+    }
 
     while (p<buf+bufsize)  char_counts[*p++]++;
 
@@ -658,8 +669,17 @@ int phase2 (unsigned bufsize, int MinLargeCnt, int MinMediumCnt, int MinSmallCnt
     // qsort ran with an element count computed from two unrelated pointers and
     // read past the end of the array. Fatal on ARM64 (SIGBUS); on x86-64 it
     // silently produced a corrupt dictionary instead.
-    Word *shrunk = (Word*) realloc (FirstWord, good_words*sizeof(Word));
-    if (shrunk)  FirstWord = shrunk;      // keep the old block if realloc fails
+    //
+    // The good_words==0 case must skip the realloc entirely. realloc(p,0) is
+    // not a failed resize: glibc frees p and returns NULL, so the "keep the old
+    // block if realloc fails" branch below would keep a pointer that had just
+    // been freed. phase2 then returns -1, and DictEncode's check() cleanup
+    // frees it a second time -- an actual double free, which is how this was
+    // found ("attempting double-free ... freed by realloc in phase2").
+    if (good_words > 0) {
+      Word *shrunk = (Word*) realloc (FirstWord, good_words*sizeof(Word));
+      if (shrunk)  FirstWord = shrunk;    // a genuine failed resize: keep the old block
+    }
     LastWord = FirstWord + good_words;
     debug (verbose>0 && printf( " Good words: %d                ", good_words) );
 
