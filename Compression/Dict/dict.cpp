@@ -1033,8 +1033,16 @@ inline CodeWord *FindWord (byte *p0, byte *endbuf)
     // contains only 7 spaces, then hash0 will be the hash of 7 spaces and at that address in code_words
     // there will be the 5-space word - believe it or not)
     byte *p = p0;
+    if (p >= endbuf)  return NULL;      // nothing to read at all
     unsigned hash0 = hashsize + *p++;
-    do {
+    // The end-of-buffer test has to happen BEFORE the read, not after it.
+    // This was a do/while, so "byte c = *p++" below ran once unconditionally:
+    // when p0 addressed the final byte of the buffer the initial read above
+    // already left p == endbuf, and that read went one byte past the end.
+    // ASan reports it as "READ of size 1 ... 0 bytes to the right" of the
+    // input block. Every subsequent iteration was already guarded, so hoisting
+    // the test only adds the missing first check.
+    while (p<endbuf) {
         // Compute the hash of the word [p0,p)
         byte c = *p++;
         unsigned hash = update_hash (hash0, c);
@@ -1054,7 +1062,7 @@ inline CodeWord *FindWord (byte *p0, byte *endbuf)
         break;
 
 found:  hash0 = hash;    // The word was found, we move on to looking for a word one character longer
-    } while (p<endbuf);  // But it is still better not to run past the end of the buffer :D
+    }
 
     p--; // No word ending at p was found, so now we check the word that is one byte shorter
     CodeWord *word = &codewords_hash [hash0 & hashmask];
