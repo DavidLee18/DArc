@@ -328,6 +328,19 @@ Options that take a parameter use `-<opt><value>` or `--<option>=<value>`.
 | `--save-bad-ranges=FILE` | Save list of broken archive parts to FILE |
 | `--cache=N`       | Use N MB for read-ahead cache |
 
+### Reproducibility and Advanced
+
+| Short | Long              | Description |
+|-------|-------------------|-------------|
+|       | `--nodates`       | Don't store file timestamps in the archive. Makes archive bytes reproducible for a given input |
+|       | `--create-in-workdir` | Create the archive in the work directory, then move it to its final location |
+|       | `--queue`         | Serialize operations across multiple concurrent DArc processes |
+| `-ioff` | `--shutdown`    | Shut the computer down when the operation completes |
+|       | `--pause-before-exit` | Pause just before closing the program window |
+|       | `--arc-32bit-legacy` | Read archives produced by 32-bit FreeArc/Arc.exe |
+|       | `--nodata`        | Don't store file data in the archive (directory only) |
+|       | `--crconly`       | Save and check CRCs, but don't store file data |
+
 ### Charset
 
 | Short | Long              | Description |

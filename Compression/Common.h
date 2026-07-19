@@ -203,7 +203,16 @@ typedef char  TCHAR;
 typedef int (*FARPROC) (void);
 
 static inline void delete_file (char *name)     {remove(name);}
+// The Windows CI jobs build this FREEARC_UNIX path under MSYS2, where the
+// toolchain is MinGW/UCRT rather than a POSIX libc. There mkdir comes from
+// <direct.h> and takes only a path, so the two-argument POSIX form does not
+// compile -- which is why the Windows build has never produced a binary.
+#if defined(__MINGW32__) || defined(__MINGW64__)
+#include <direct.h>
+static inline void create_dir  (char *name)     {_mkdir(name);}
+#else
 static inline void create_dir  (char *name)     {mkdir(name,0777);}
+#endif
 static inline int  file_exists (char *name)     {return access(name,0) == 0;}
 #define get_flen(stream)                        (myfilelength( fileno (stream)))
 #define set_binary_mode(file)
