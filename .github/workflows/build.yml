@@ -64,6 +64,10 @@ jobs:
         make minstall
         cp "$HOME/.mcabal/bin/mhs" "$HOME/.local/bin/mhs"
         echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+        # MicroHs also installs cpphs here, and mhs shells out to it for every
+        # {-# LANGUAGE CPP #-} module. Copying only mhs left cpphs unreachable,
+        # which is what broke the build while CI still reported success.
+        echo "$HOME/.mcabal/bin" >> "$GITHUB_PATH"
     - name: Build (Linux)
       if: runner.os == 'Linux'
       run: |

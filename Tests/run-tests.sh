@@ -105,15 +105,28 @@ probe "-ld-  no decompression limit"    "$WORK/tiny" -ld-
 probe "-mt1  single thread"             "$WORK/tiny" -mt1
 probe "-s-   non-solid"                 "$WORK/tiny" -s-
 
-# Does any command work at all, or only archive creation break?
+# Partition the remaining space. No stage flag helped, and `l` fails with a
+# path error rather than an overflow, so the fault is specific to creation.
+# These separate container setup from per-file work, and I/O from pure setup.
+raw () {  # raw <label> <args...>
+  local label="$1"; shift
+  if "$ARC" "$@" >"$WORK/probe.log" 2>&1; then
+    printf '  %-38s ok\n' "$label"
+  else
+    printf '  %-38s %s\n' "$label" \
+      "$(grep -iE 'overflow|exception|error' "$WORK/probe.log" | head -1 | cut -c1-58)"
+  fi
+}
+
+mkdir -p "$WORK/empty"
 echo
-echo "preflight (other commands):"
-if "$ARC" l "$WORK/tiny" >"$WORK/probe.log" 2>&1; then
-  printf '  %-38s ok\n' "l on a directory (expect usage err)"
-else
-  printf '  %-38s %s\n' "l on a directory" \
-    "$(grep -iE 'exception|error' "$WORK/probe.log" | head -1 | cut -c1-60)"
-fi
+echo "preflight (partition):"
+raw "--print-config (no archive at all)"  --print-config
+raw "a on an EMPTY dir"                   a -y -m0 "$WORK/e0.arc" "$WORK/empty"
+raw "a on ONE named file (no dir scan)"   a -y -m0 "$WORK/e1.arc" "$WORK/tiny/one.txt"
+raw "a writing to /tmp"                   a -y -m0 /tmp/e2.arc "$WORK/tiny/one.txt"
+raw "t on a non-archive"                  t -y "$WORK/tiny/one.txt"
+raw "lb on a non-archive"                 lb "$WORK/tiny/one.txt"
 echo
 
 printf '%-24s %-10s %-10s %s\n' TEST ROUNDTRIP FORMAT DETAIL
