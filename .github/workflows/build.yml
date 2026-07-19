@@ -222,22 +222,22 @@ jobs:
         test -s "$bin" || { echo "::error::$bin is empty"; exit 1; }
         echo "binary verified: $bin ($(wc -c < "$bin") bytes)"
 
-  # ── Diagnostic: AddressSanitizer on x86-64 ──────────────────────────────────
-  # The "nonsolid" configuration (-m4 -s-) dies at create with glibc
-  # "double free or corruption (out)" on ubuntu-latest only. It does not
-  # reproduce on ubuntu-24.04-arm, on macOS, or in a local x86-64 container, so
-  # it depends on this runner's allocator and has to be diagnosed here.
+  # ── AddressSanitizer on x86-64 ──────────────────────────────────────────────
+  # Added to diagnose a double free that only appeared on this runner. It found
+  # that one and an out-of-bounds read in Dict/phase1 on its first two runs, and
+  # now passes, so it is kept as a real check rather than deleted.
   #
-  # continue-on-error: this job is expected to fail while that bug is open. It
-  # must not mask the real matrix result, but its log carries the ASan report
-  # (address, allocation site, and stack) that says where to look.
+  # It is deliberately NOT continue-on-error. That flag was right while the job
+  # was expected to fail, but on a green job it would swallow exactly the
+  # regressions this exists to catch.
   #
-  # Delete this job once the double-free is fixed -- it roughly doubles CI time
-  # for the Linux path and has no value as a permanent check in its current
-  # form.
+  # Cost: roughly doubles the Linux CI time. The memory bugs in this codebase
+  # have consistently been invisible at every warning level, produced different
+  # symptoms per platform, and in two cases corrupted the heap silently on
+  # x86-64 while crashing elsewhere -- so the trade is worth it. If the time
+  # becomes a problem, narrow the case list before dropping the job.
   asan-x86_64:
     runs-on: ubuntu-latest
-    continue-on-error: true
     steps:
     - uses: actions/checkout@v6.0.2
       with:
