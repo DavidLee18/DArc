@@ -651,8 +651,16 @@ int phase2 (unsigned bufsize, int MinLargeCnt, int MinMediumCnt, int MinSmallCnt
 
     // Move the surviving words to the start of the FirstWord array and shrink it to keep only them
     int good_words = LastWord-q;
-    memmove (FirstWord, q, good_words*sizeof(Word));  LastWord = FirstWord + good_words;
-    FirstWord = (Word*) realloc (FirstWord, good_words*sizeof(Word));
+    memmove (FirstWord, q, good_words*sizeof(Word));
+    // LastWord must be derived from the pointer realloc returns, not the one
+    // passed in: realloc is free to move the block, and it does here. Setting
+    // LastWord first left it dangling into the old allocation, so phase3's
+    // qsort ran with an element count computed from two unrelated pointers and
+    // read past the end of the array. Fatal on ARM64 (SIGBUS); on x86-64 it
+    // silently produced a corrupt dictionary instead.
+    Word *shrunk = (Word*) realloc (FirstWord, good_words*sizeof(Word));
+    if (shrunk)  FirstWord = shrunk;      // keep the old block if realloc fails
+    LastWord = FirstWord + good_words;
     debug (verbose>0 && printf( " Good words: %d                ", good_words) );
 
     return good_words>0? 0 : -1;  // All right if there is at least one good word
