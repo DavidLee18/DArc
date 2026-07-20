@@ -1,0 +1,10 @@
+//! Rust ports of DArc's codecs, exposed under the original C ABI.
+//!
+//! Each codec is swapped in individually: the Rust symbol replaces the C one at
+//! link time, everything else in the build stays put, and the archive
+//! fingerprint suite proves the output is byte-identical before the C version
+//! is removed. Bit-exactness is not optional -- a codec that compresses
+//! "correctly" but differently produces archives older builds cannot read,
+//! which is the highest-risk failure mode in this repository.
+
+pub mod ffi;

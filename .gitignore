@@ -41,3 +41,6 @@ $$temparc$$*.tmp
 
 # Cross-built Windows binaries
 Tests/*.exe
+
+# Rust build output
+rust/*/target/
