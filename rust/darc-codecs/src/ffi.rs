@@ -1,54 +1,55 @@
-//! The C ABI boundary.
+//! The C ABI boundary, generated from DArc's own headers.
 //!
-//! This is the one part of a Rust port that the compiler does NOT make safe.
-//! Rust checks these declarations against nothing: if the signature here
-//! disagrees with the C caller, it miscompiles exactly as C would. DArc has
-//! already been bitten by this twice on the C side -- 41 helpers with no
-//! `extern "C"` declaration, 8 of which returned `long` and were truncated to
-//! `int` at every call site.
+//! This is the one part of a Rust port the compiler does NOT make safe on its
+//! own: an `extern "C"` declaration is checked against nothing, so a wrong
+//! signature miscompiles exactly as it would in C. This codebase has already
+//! been bitten by that -- 41 helpers whose declarations were missing entirely,
+//! 8 of them truncating a `long` return to `int` at every call site.
 //!
-//! So the types below are transcribed deliberately, not guessed:
+//! So the declarations are not written here at all. build.rs runs bindgen over
+//! Compression/Common.h and Compression/Compression.h -- the same headers the C
+//! side compiles against -- and the result is included below. Hand-transcribing
+//! worked, but only until a header changes and nobody re-transcribes.
 //!
-//!   Compression/Common.h:93       typedef unsigned MemSize;
-//!   Compression/Compression.h:62  typedef int CALLBACK_FUNC
-//!                                     (const char *what, void *data,
-//!                                      int size, void *auxdata);
-//!
-//! `overflow-checks = true` is set even for release builds in Cargo.toml.
-//! Release Rust wraps on overflow by default, which would silently reproduce
-//! the class of bug found in `filenameHash` and in GRZip's hash table rather
-//! than trapping on it. Codec work is not hot enough for the check to matter.
+//! Generating them paid for itself immediately: the hand-written version
+//! declared the callback as a plain `fn` pointer, while bindgen types it as
+//! `Option<fn>`, because C permits a null function pointer there -- and
+//! C_Delta.cpp does check for one. That null case is handled in `Io::new`
+//! rather than being undefined behaviour.
 
-use core::ffi::{c_char, c_int, c_uint, c_void};
+#![allow(non_camel_case_types, non_upper_case_globals, dead_code)]
 
-/// Matches `CALLBACK_FUNC` exactly.
-pub type CallbackFunc =
-    unsafe extern "C" fn(*const c_char, *mut c_void, c_int, *mut c_void) -> c_int;
+use core::ffi::{c_char, c_int, c_void};
 
-/// Matches `MemSize`.
-pub type MemSize = c_uint;
+include!(concat!(env!("OUT_DIR"), "/darc_abi.rs"));
 
-/// Error codes from Compression/Compression.h.
-pub const FREEARC_OK: c_int = 0;
-pub const FREEARC_ERRCODE_GENERAL: c_int = -1;
-pub const FREEARC_ERRCODE_IO: c_int = -6;
+/// `FREEARC_OK` arrives from bindgen as `u32` while every error code is `i32`,
+/// a consequence of how the macros are written C-side. Codec entry points
+/// return `c_int`, so expose it at the type actually used instead of casting at
+/// every comparison.
+pub const OK: c_int = FREEARC_OK as c_int;
 
-/// Safe-ish wrapper over the read/write callback protocol.
+/// Safe wrapper over the read/write callback protocol.
 ///
-/// The C side drives compression by calling back for input and output:
+/// The C side drives a codec by calling back for input and output:
 ///   callback("read",  buf, len, aux) -> bytes actually read
 ///   callback("write", buf, len, aux) -> bytes actually written
+/// See the `checked_read` / `checked_write` macros at Compression.h:65-66.
 pub struct Io {
-    callback: CallbackFunc,
+    callback: unsafe extern "C" fn(*const c_char, *mut c_void, c_int, *mut c_void) -> c_int,
     auxdata: *mut c_void,
 }
 
 impl Io {
+    /// Returns `None` when the C caller passed a null callback, which the ABI
+    /// permits. Calling through it would be undefined behaviour, so codec entry
+    /// points turn this into `FREEARC_ERRCODE_GENERAL` instead.
+    ///
     /// # Safety
-    /// `callback` and `auxdata` must be exactly what the C caller passed in,
-    /// and must stay valid for the lifetime of this `Io`.
-    pub unsafe fn new(callback: CallbackFunc, auxdata: *mut c_void) -> Self {
-        Io { callback, auxdata }
+    /// `callback` and `auxdata` must be exactly what the C caller supplied, and
+    /// must remain valid for the lifetime of this `Io`.
+    pub unsafe fn new(callback: CALLBACK_FUNC, auxdata: *mut c_void) -> Option<Self> {
+        callback.map(|callback| Io { callback, auxdata })
     }
 
     fn call(&self, what: &[u8], buf: *mut c_void, size: c_int) -> c_int {
@@ -70,29 +71,26 @@ impl Io {
             return 0;
         }
         // The callback takes a non-const pointer even for "write"; the C code
-        // does the same cast.
+        // casts the same way.
         self.call(b"write\0", buf.as_ptr() as *mut c_void, clamp_len(buf.len()))
     }
 
-    /// Write the whole buffer, mapping a short write to an IO error the way
-    /// `checked_write` does in Compression/Compression.h.
+    /// Write the whole buffer, mapping a short write to an IO error exactly as
+    /// `checked_write` does in Compression.h.
     pub fn write_all(&self, buf: &[u8]) -> Result<(), c_int> {
         let want = clamp_len(buf.len());
-        let got = self.write(buf);
-        if got == want {
-            Ok(())
-        } else if got >= 0 {
-            Err(FREEARC_ERRCODE_IO)
-        } else {
-            Err(got)
+        match self.write(buf) {
+            got if got == want => Ok(()),
+            got if got >= 0 => Err(FREEARC_ERRCODE_IO),
+            got => Err(got),
         }
     }
 }
 
-/// The callback takes an `int` length. Anything above `c_int::MAX` cannot be
-/// expressed, and silently truncating is how a 16 GB value became 0 in
-/// `GetPhysicalMemory`. Callers never pass buffers that large, so clamp
-/// explicitly and make the boundary visible rather than casting with `as`.
+/// The callback takes an `int` length; anything past `c_int::MAX` cannot be
+/// expressed. Rust's `as` truncates every bit as silently as C's implicit
+/// conversion -- that is how 16 GB became 0 in GetPhysicalMemory -- so the one
+/// place a length crosses into an `int` is explicit and asserts in debug.
 fn clamp_len(n: usize) -> c_int {
     debug_assert!(n <= c_int::MAX as usize, "buffer longer than c_int can express");
     core::cmp::min(n, c_int::MAX as usize) as c_int

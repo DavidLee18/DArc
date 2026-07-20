@@ -13,4 +13,5 @@ crate-type = ["staticlib", "rlib"]   # staticlib to link; rlib so tests can use 
 [profile.release]
 overflow-checks = true   # see the note in src/ffi.rs
 
-[dev-dependencies]
+[build-dependencies]
+bindgen = "0.72"
