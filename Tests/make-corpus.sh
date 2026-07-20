@@ -11,6 +11,25 @@
 # --nodates on the archiver side it makes archive bytes reproducible.
 set -eu
 
+# LC_ALL=C is REQUIRED, not tidiness. The binary files below are written with
+# awk's printf "%c", and in a UTF-8 locale gawk treats the argument as a
+# character rather than a byte: every value >= 0x80 comes out as a two-byte
+# UTF-8 sequence. mawk (Ubuntu's default awk) and BSD awk emit a single byte
+# regardless, so the corpus differed only on machines that had gawk installed
+# *and* a UTF-8 locale -- which is exactly the GitHub runner image, LANG set
+# to C.UTF-8.
+#
+# The sizes make it unmistakable: pattern.bin is all bytes >= 0x80 and doubled,
+# 80000 -> 160000; random1.bin has about half its bytes >= 0x80 and grew
+# 65536 -> 98332; zeros.bin comes from /dev/zero and was unaffected. CI was
+# therefore building its archives over a different corpus than every local run,
+# and the files meant to be incompressible were UTF-8 text.
+#
+# This predates the fingerprint baseline and was invisible until the format
+# check was actually enforced, at which point it presented as "the archiver is
+# not deterministic on Linux".
+export LC_ALL=C
+
 DIR="${1:-corpus}"
 rm -rf "$DIR"
 mkdir -p "$DIR"
@@ -50,7 +69,13 @@ prng 98765 32768  > "$DIR/binary/random2.bin"
 
 # --- highly compressible binary ---------------------------------------------
 head -c 100000 /dev/zero > "$DIR/binary/zeros.bin"
-awk 'BEGIN{for(i=0;i<20000;i++) printf "%c%c%c%c", 0xDE,0xAD,0xBE,0xEF}' > "$DIR/binary/pattern.bin"
+# Decimal, not 0xDE/0xAD/0xBE/0xEF: hex literals are a gawk extension. mawk and
+# BSD awk parse "0xDE" as 0, and printf "%c" with 0 emits the character "0", so
+# on those awks this file was 80000 bytes of ASCII 0x30 -- highly compressible,
+# and the exact opposite of the repeating binary pattern it is here to provide.
+# gawk produced the intended bytes, so the corpus depended on which awk was
+# installed. 222,173,190,239 are the same values, spelled portably.
+awk 'BEGIN{for(i=0;i<20000;i++) printf "%c%c%c%c", 222,173,190,239}' > "$DIR/binary/pattern.bin"
 
 # --- table-structured data --------------------------------------------------
 # Exercises the multimedia/delta/table detectors (mm, tta, delta, dispack).
