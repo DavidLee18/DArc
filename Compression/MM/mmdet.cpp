@@ -456,7 +456,22 @@ Model& Model::rolz_run (int hashlog, int hash_row_width)
             if (i == value(p)  &&  value32(p+MinLen-4) == value32(In+MinLen-4)) {
                 len=MinLen;
                 while (In+len <= InEnd  &&  value32(p+len) == value32(In+len))  len+=4;
-                while (In[len] == p[len])  len++;
+                // The byte-refinement loop needs the same InEnd guard the
+                // 4-byte loop above has. Without it, on data where In[len]
+                // keeps matching p[len] to the end of the block (a long run of
+                // identical bytes is enough), len walks past InEnd and reads
+                // beyond buf. Every sibling scanner bounds this the same way --
+                // lzp_run "In+i<InEnd && In[i]==p[i]" (:410), lz77_run
+                // "p+len<bufend && p[len]==q[len]" (:509); rolz_run was the lone
+                // outlier that dropped the guard. p is always an earlier stored
+                // position than In, so bounding In+len bounds p+len too.
+                //
+                // rolz_run is currently dead in the archiver: its only caller
+                // sits behind "#ifndef MMD_LIBRARY" (:1064) and mm.cpp defines
+                // MMD_LIBRARY before including this file, so this fires only in
+                // the standalone mmdet analysis tool. Fixed for correctness and
+                // to keep it from becoming a live bug if it is ever wired in.
+                while (In+len < InEnd  &&  In[len] == p[len])  len++;
                 if (len>best_len)  {best_len=len; best_j=j;}
             }
         }
