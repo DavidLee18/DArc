@@ -100,6 +100,31 @@ enum Search {
     Empty(u32),
 }
 
+/// The initial two-byte lookup is written as
+///     SEARCH_IN_HASH (hash0, hash0, hash0, 0, found2, end);
+/// where `hash`, `phash` and `c` are all the SAME variable. Because the macro
+/// assigns `hash = rehash(hash, c)`, every rehash changes the comparison target
+/// and the rehash input too -- they are not fixed at their entry values the way
+/// a function call would fix them. Modelling this as an ordinary call silently
+/// searches a different chain.
+fn search_in_hash_aliased(scan: &[Stats], mask: u32, mut hash: u32) -> Search {
+    let mut n = 13;
+    loop {
+        let h = scan[(hash & mask) as usize].hash0;
+        if h == 0 {
+            return Search::Empty(hash);
+        }
+        if h == hash as u16 {
+            return Search::Found(hash);
+        }
+        n -= 1;
+        if n == 0 {
+            return Search::LongChain(hash);
+        }
+        hash = rehash(hash, hash as u8);
+    }
+}
+
 fn search_in_hash(scan: &[Stats], mask: u32, mut hash: u32, phash: u32, c: u8) -> Search {
     let mut n = 13;
     loop {
@@ -186,8 +211,14 @@ impl Encoder {
         // a very short block; clamped, as the C was after the fix.
         let endbuf = if bufsize > WORD_STEP + 1 { bufsize - WORD_STEP - 1 } else { 0 };
 
+        // Trace hook for the per-phase comparison; the lookup is hoisted so the
+        // scan loop pays nothing when it is unset.
+        let trace_at: Option<usize> = std::env::var("DARC_TRACE_AT").ok()
+            .and_then(|v| v.parse::<usize>().ok());
+
         while p < endbuf {
             let p0 = p;
+            let tracing = trace_at == Some(p0);
             let mut c1 = buf[p];
             p += 1;
             let mut c = buf[p];
@@ -198,10 +229,18 @@ impl Encoder {
                 p += 1;
                 let mut hash0 = ((c1 as u32) << 8) + c as u32 + 16;
 
-                match search_in_hash(&self.scan, self.mask, hash0, hash0, hash0 as u8) {
-                    Search::Found(_) => {}                    // -> found2
+                // SEARCH_IN_HASH takes `hash` by reference in effect: the macro
+                // assigns `hash = rehash(hash, c)` on the caller's variable, so
+                // hash0 holds the REHASHED value afterwards. Both the ADDWORD
+                // below and the found2 loop's `hash = hash0` then use it.
+                // Discarding it and reusing the original hash0 stores the word
+                // at the unrehashed slot -- C writes "W 21739 2 57816 57816"
+                // where this port wrote 17819, one rehash behind.
+                match search_in_hash_aliased(&self.scan, self.mask, hash0) {
+                    Search::Found(h) => hash0 = h,            // -> found2
                     Search::LongChain(_) => break 'word,      // -> end, no word added
-                    Search::Empty(_) => {                     // fall through -> ADDWORD, end
+                    Search::Empty(h) => {                     // fall through -> ADDWORD, end
+                        hash0 = h;
                         self.add_word(p0, p - p0, hash0, hash0);
                         break 'word;
                     }
@@ -246,6 +285,12 @@ impl Encoder {
                         }
                     };
 
+                    if tracing {
+                        eprintln!("TRACE p0={} i={} hash={} hash1={} branch={}", p0, i, hash, hash1,
+                                  match &next { Next::NextCycle(_) => "next_cycle",
+                                                Next::FoundMax(_) => "found_max",
+                                                Next::SearchLess(_) => "search_less" });
+                    }
                     match next {
                         Next::NextCycle(h) => {
                             p += i;
@@ -319,10 +364,19 @@ impl Encoder {
                                 j += 1;
                             }
                             if !settled {
-                                h2 = hash;
+                                // C's `h2 = hash` after the loop uses the OUTER
+                                // hash -- which SEARCH_IN_HASH already rehashed
+                                // on its way to search_less. `hash` here is the
+                                // pre-search value; the rehashed one arrives as
+                                // the SearchLess payload.
+                                h2 = h;
                             }
                             let idx = (h3 & self.mask) as usize;
                             let counter = self.scan[idx].count as i32;
+                            if tracing {
+                                eprintln!("TRACE search_less p0={} maxi={} h3={} idx={} counter={} min={} len={} h2={} h0={} settled={}",
+                                          p0, maxi, h3, idx, counter, min_visits(p - p0), p - p0, h2, h0, settled);
+                            }
                             if counter >= min_visits(p - p0) {
                                 p += 1;
                                 self.add_word(p0, p - p0, h2, h0);
