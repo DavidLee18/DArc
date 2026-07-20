@@ -30,11 +30,37 @@ int main (void)
     len += n;
   }
 
-  if (phase1 (in, (unsigned) len) != 0) { fprintf (stderr, "phase1 failed\n"); return 4; }
+  // Which phase to stop after; default 1.
+  int upto = 1;
+  if (getenv("DICT_PHASE")) upto = atoi(getenv("DICT_PHASE"));
 
-  printf ("words %ld\n", (long)(NextWord - FirstWord));
-  for (Word *p = FirstWord; p < NextWord; p++)
-    printf ("W %ld %u %u %u\n", (long)(p->ptr - in), p->len, p->hash, p->hash0);
+  if (phase1 (in, (unsigned) len) != 0) { fprintf (stderr, "phase1 failed\n"); return 4; }
+  if (upto == 1) {
+    printf ("words %ld\n", (long)(NextWord - FirstWord));
+    for (Word *p = FirstWord; p < NextWord; p++)
+      printf ("W %ld %u %u %u\n", (long)(p->ptr - in), p->len, p->hash, p->hash0);
+    for (int c = 0; c <= UCHAR_MAX; c++)
+      if (char_counts[c]) printf ("C %d %d\n", c, char_counts[c]);
+    return 0;
+  }
+
+  LastWord = NextWord;
+  int rc2 = phase2 ((unsigned) len, 200, 200, 200, 0);
+  if (rc2) { printf ("phase2 rejected\n"); return 0; }
+  if (upto == 2) {
+    printf ("words %ld\n", (long)(LastWord - FirstWord));
+    for (Word *p = FirstWord; p < LastWord; p++)
+      printf ("W %ld %u %d\n", (long)(p->ptr - in), p->len, p->count);
+    return 0;
+  }
+
+  int nodes = 0;
+  int rc3 = phase3 (0, &nodes);
+  if (rc3) { printf ("phase3 rejected\n"); return 0; }
+  printf ("nodes %d prefix %d\n", nodes, PREFIX_FOR_WEAK_CHARS);
+  printf ("words %ld\n", (long)(LastWord - FirstWord));
+  for (Word *p = FirstWord; p < LastWord; p++)
+    printf ("W %ld %u %d\n", (long)(p->ptr - in), p->len, p->count);
   for (int c = 0; c <= UCHAR_MAX; c++)
     if (char_counts[c]) printf ("C %d %d\n", c, char_counts[c]);
   return 0;

@@ -148,6 +148,26 @@ impl Encoder {
         Encoder { words: Vec::new(), scan: Vec::new(), mask: 0, max_words: 0,
                   char_counts: [0; 256], prefix_for_weak_chars: 0 }
     }
+    pub fn prefix(&self) -> u8 { self.prefix_for_weak_chars }
+
+    /// Words after phase2/phase3, matching the C dumper's "W <at> <len> <count>".
+    pub fn dump_words(&self) -> String {
+        let mut out = String::new();
+        out.push_str(&format!("words {}\n", self.words.len()));
+        for w in &self.words {
+            out.push_str(&format!("W {} {} {}\n", w.at, w.len, w.count));
+        }
+        out
+    }
+
+    pub fn dump_char_counts(&self) -> String {
+        let mut out = String::new();
+        for (c, n) in self.char_counts.iter().enumerate() {
+            if *n != 0 { out.push_str(&format!("C {} {}\n", c, n)); }
+        }
+        out
+    }
+
     /// Dump phase1's result in the same format as rust/difftest/dict_phase1_ref.cpp,
     /// so the two can be diffed directly.
     pub fn dump_phase1(&self) -> String {
@@ -402,8 +422,89 @@ impl Encoder {
     }
 }
 
-/// Entry point placeholder: the remaining phases (2-7) are not ported yet, so
-/// this deliberately reports failure rather than producing a wrong archive.
-pub fn encode(_buf: &[u8]) -> Result<Vec<u8>, c_int> {
-    Err(FREEARC_ERRCODE_GENERAL)
+impl Encoder {
+    /// phase2: promote single-child counters, then prune words that do not earn
+    /// their place. Returns Err when nothing survives, exactly as the C returns
+    /// -1 and lets DictEncode store the block instead.
+    pub fn phase2(&mut self, min_large: i32, min_medium: i32, min_small: i32, min_ratio: i32) -> Result<(), c_int> {
+        // Hand a single-child parent's counter down to the child. A parent with
+        // exactly the minimum-plus-one, or a negative count, has only one child.
+        for i in 0..self.words.len() {
+            let w = self.words[i];
+            let len = w.len as usize;
+            let cnt = self.scan[w.hash as usize].count as i32;
+            let cnt0 = self.scan[w.hash0 as usize].count as i32;
+            if cnt0 == min_visits(len - 1) + 1 || cnt0 < 0 {
+                self.scan[w.hash0 as usize].count = 0;
+                let sumcnt = core::cmp::min(cnt.abs() + cnt0.abs(), SCNT_MAX);
+                // A negative count marks "this one also has a single child", so
+                // its own child can claim the total later.
+                self.scan[w.hash as usize].count =
+                    if cnt == min_visits(len) + 1 { (-sumcnt) as i16 } else { sumcnt as i16 };
+            }
+        }
+
+        // Walk backwards handing bad children's counters to their parents, and
+        // compact the survivors to the end of the array.
+        let mut kept: Vec<Word> = Vec::new();
+        for i in (0..self.words.len()).rev() {
+            let w = self.words[i];
+            let cnt = (self.scan[w.hash as usize].count as i32).abs();
+            let cnt0 = (self.scan[w.hash0 as usize].count as i32).abs();
+            // GOOD_WORD(cnt,cnt0,len)
+            let good = cnt > min_large
+                || if cnt0 != 0 { cnt > min_medium && cnt > cnt0 * min_ratio } else { cnt > min_small };
+            if good {
+                let mut k = w;
+                k.count = cnt;
+                kept.push(k);
+            } else {
+                self.scan[w.hash0 as usize].count = core::cmp::min(cnt + cnt0, SCNT_MAX) as i16;
+            }
+        }
+        kept.reverse(); // built back-to-front, as the C fills downward from LastWord
+        self.scan = Vec::new(); // FreeAndNil(scan_hash)
+        self.words = kept;
+        if self.words.is_empty() { Err(FREEARC_ERRCODE_GENERAL) } else { Ok(()) }
+    }
+
+    /// phase3: choose which characters can be spent on word codes, and how many
+    /// words get a one-byte code. Returns `nodes`.
+    pub fn phase3(&mut self, min_weak_chars: i32) -> Result<usize, c_int> {
+        // Words by descending frequency. See the note at the top of this file on
+        // why a stable sort is safe here.
+        self.words.sort_by(|a, b| b.count.cmp(&a.count));
+
+        // Characters by ascending frequency.
+        let mut chars: Vec<(u8, i32)> = (0..=UCHAR_MAX).map(|c| (c as u8, self.char_counts[c])).collect();
+        chars.sort_by(|a, b| a.1.cmp(&b.1));
+
+        let mut n = 0usize;
+        while n < self.words.len() && n <= UCHAR_MAX {
+            if chars[n].1 >= self.words[n].count {
+                break;
+            }
+            self.char_counts[chars[n].0 as usize] = 0; // conditionally free
+            n += 1;
+        }
+        if n as i32 <= min_weak_chars {
+            return Err(FREEARC_ERRCODE_GENERAL); // most likely a binary file
+        }
+
+        // The last freed character becomes the prefix for characters whose codes
+        // were given away.
+        n -= 1;
+        let c = chars[n].0;
+        self.char_counts[c as usize] = 1;
+        self.prefix_for_weak_chars = c;
+
+        let avail = n;
+        let word_count = self.words.len();
+        let nodes = if word_count <= avail {
+            core::cmp::min(word_count, avail)
+        } else {
+            core::cmp::max(avail as i64 - ((word_count + 259) / 256) as i64, 0) as usize
+        };
+        Ok(nodes)
+    }
 }
