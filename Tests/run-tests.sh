@@ -79,9 +79,6 @@ tree_hash () {
 # cheap (218 small files) and makes the suite hermetic.
 "$HERE/make-corpus.sh" "$CORPUS" >/dev/null
 
-# An explicit, sorted file list -- the input side of making archive bytes
-# reproducible. See the create step for why scanning a directory is not enough.
-LIST="$WORK/filelist.txt"
 EXPECTED_TREE="$(tree_hash "$CORPUS")"
 
 # method:label pairs. Labels are used as filenames and fingerprint keys, so
@@ -121,7 +118,6 @@ pass=0; fail=0; drift=0
 declare -a NEWFP=()
 
 rm -rf "$WORK"; mkdir -p "$WORK"
-( cd "$CORPUS" && find . -type f | LC_ALL=C sort ) > "$LIST"
 
 # ---------------------------------------------------------------------------
 # Preflight. When every configuration fails identically the useful question is
@@ -233,44 +229,33 @@ while IFS= read -r line; do
     sed 's/^/    | /' "$3" | head -12
   }
 
-  # Three things together make these archive bytes reproducible, and all three
-  # are required. Dropping any one of them silently reintroduces a baseline
-  # that only matches on the machine that recorded it.
+  # Two things make these archive bytes reproducible:
   #
-  #   --nodates       no mtimes in the archive.
+  #   --nodates     no mtimes in the archive.
   #
-  #   cd "$CORPUS"    entries are stored corpus-relative. Archiving by absolute
-  #                   path stores each path with the leading "/" stripped, so
-  #                   the checkout location ends up in the archive bytes: the
-  #                   same corpus at the same commit fingerprinted differently
-  #                   under /home/runner/... on CI and /src/Tests/... in a
-  #                   container.
+  #   cd "$CORPUS"  entries are stored corpus-relative. Archiving by absolute
+  #                 path stores each path with the leading "/" stripped, so the
+  #                 checkout location ends up in the archive bytes: the same
+  #                 corpus at the same commit fingerprinted differently under
+  #                 /home/runner/... on CI and /src/Tests/... in a container.
   #
-  #   --sort=epn      a deterministic file order. THIS IS THE SUBTLE ONE. The
-  #   with "@$LIST"   archiver's default sort order is "" which maps to `id`
-  #                   (ArhiveFileList.hs:38) -- it does not sort at all, and
-  #                   stores files in the order the filesystem hands them back.
-  #                   readdir order is filesystem-specific: APFS returned
-  #                   random2, zeros, pattern, random1 where ext4 returned
-  #                   random1, random2, zeros, pattern, for a byte-identical
-  #                   corpus. Every fingerprint therefore differed between
-  #                   macOS and Linux.
+  # A plain recursive scan is used deliberately, with no explicit sort order
+  # and no file list. This is the path a user gets, and file order used to come
+  # straight from readdir -- filesystem-specific, so the same tree produced
+  # different archives on APFS and ext4. That is fixed in the archiver now
+  # (getDirectoryContents_FileInfo in FileInfo.hs sorts by name), and archiving
+  # this way is what holds it fixed: these fingerprints fail if the scan ever
+  # stops being deterministic.
   #
-  # An explicit "@$LIST" is not on its own enough: the archiver ignores the
-  # list's order (reversing the list produced a byte-identical archive), so
-  # --sort=epn is what actually fixes the order -- extension, directory,
-  # basename, a total order over distinct paths. The list still matters,
-  # because it also means no directory entries are stored, and
-  # "filelist = dirs ++ sortBy sort_order files" (ArhiveFileList.hs:33) never
-  # sorts the directories. The corpus has no empty directories, so nothing is
-  # lost by omitting them.
-  #
-  # Verified: identical bytes on macOS/APFS and Linux/ext4 despite different
-  # readdir order, and identical for a reversed input list.
-  ( cd "$CORPUS" && "$ARC" a --nodates -y --sort=epn $opts "$arc" "@$LIST" ) >"$WORK/$label.create.log" 2>&1
+  # An earlier version of this suite worked around the problem here instead,
+  # with "--sort=epn" and an explicit "@listfile". That produced a stable
+  # baseline while leaving the actual defect in place and untested, and it
+  # stored no directory entries, so the directory half of the layout was never
+  # fingerprinted at all.
+  ( cd "$CORPUS" && "$ARC" a --nodates -r -y $opts "$arc" . ) >"$WORK/$label.create.log" 2>&1
   st=$?
   if [ $st -ne 0 ]; then
-    show_fail create "(cd $CORPUS && $ARC a --nodates -y --sort=epn $opts $arc @$LIST)" "$WORK/$label.create.log" "$st"
+    show_fail create "(cd $CORPUS && $ARC a --nodates -r -y $opts $arc .)" "$WORK/$label.create.log" "$st"
     fail=$((fail+1)); continue
   fi
 

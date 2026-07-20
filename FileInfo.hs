@@ -265,12 +265,32 @@ getDirectoryContents_FileInfo ff parent{-parent FileInfo structure-} = do
                             (packFilePathPacked3 (fiStoredName   parent_or_root)  packedStored    name lcext)
                           where lcext  =  packext$ filenameLower$ getFileSuffix name
 
+-- The sort is what makes archives reproducible, and it is the reason this
+-- function is worth reading before changing.
+--
+-- readdir returns entries in whatever order the filesystem keeps them, which
+-- differs between filesystems for identical trees: for one byte-identical
+-- directory APFS returned random2, zeros, pattern, random1 where ext4 returned
+-- random1, random2, zeros, pattern. Nothing downstream restored an order --
+-- the default sort order is "" which maps to `id` (ArhiveFileList.hs:38), and
+-- even an explicit -ds order leaves the *directories* in scan order
+-- (ArhiveFileList.hs:33). So the same tree archived on two machines produced
+-- different bytes, and neither was wrong.
+--
+-- Sorting here rather than in sortFiles fixes it once for both files and
+-- directories, makes the recursion order deterministic too (processDir returns
+-- these subdirectories), and leaves every -ds order still meaningful: they now
+-- sort a deterministic input, so their ties break the same way everywhere
+-- instead of falling back to readdir.
+--
+-- Basenames are unique within a directory, so this is a total order.
 #if !defined(FREEARC_WIN) || defined(__MHS__)
   (dirList (diskDirName|||".")) .$handleFindErrors diskDirName  -- Get the list of files in the directory, handling directory read errors,
     >>== filter exclude_special_names                           -- Exclude "." and ".." from the list
+    >>== sort                                                   -- Sort by name, so the order does not depend on the filesystem
     >>= (mapMaybeM $! make_names getFileInfo)                   -- Turn the file names into FileInfo structures and drop the files that `stat` choked on
 #else
-  withList $ \list -> do
+  dirContents <- withList $ \list -> do
     handleFindErrors diskDirName $ do
       wfindfiles (diskDirName </> reANY_FILE) $ \find -> do
         name <- w_find_name find
@@ -280,6 +300,9 @@ getDirectoryContents_FileInfo ff parent{-parent FileInfo structure-} = do
           fiTime  <- w_find_time_write find
           fiIsDir <- w_find_isDir      find
           (list <<=) $! make_names FileInfo name fiSize fiTime fiAttr fiIsDir fiUndefinedGroup
+  -- FindFirstFile/FindNextFile has the same property as readdir. Sorted after
+  -- the fact because the names arrive one at a time through a callback.
+  return (sortOn' (fpBasename . fiDiskName) dirContents)
 #endif
 
 
