@@ -9,6 +9,7 @@
 
 pub mod delta;
 pub mod dict;
+pub mod dict_encode;
 pub mod lzp;
 pub mod ffi;
 
