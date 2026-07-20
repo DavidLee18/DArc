@@ -159,3 +159,30 @@ pub unsafe extern "C" fn darc_rs_lzp_compress(
         None => FREEARC_ERRCODE_GENERAL,
     }
 }
+
+/// Drop-in under the archiver's own symbol names; see the note above on why the
+/// switch is an exclusion in C_LZP.cpp rather than a redeclaration.
+///
+/// # Safety
+/// `callback` and `auxdata` must be what the C caller supplied.
+#[cfg(feature = "dropin")]
+#[no_mangle]
+#[allow(clippy::too_many_arguments)]
+pub unsafe extern "C" fn lzp_compress(
+    block_size: u32, a: c_int, b: c_int, c: c_int, d: c_int, e: c_int,
+    callback: CALLBACK_FUNC, auxdata: *mut c_void,
+) -> c_int {
+    darc_rs_lzp_compress(block_size, a, b, c, d, e, callback, auxdata)
+}
+
+/// # Safety
+/// `callback` and `auxdata` must be what the C caller supplied.
+#[cfg(feature = "dropin")]
+#[no_mangle]
+#[allow(clippy::too_many_arguments)]
+pub unsafe extern "C" fn lzp_decompress(
+    block_size: u32, a: c_int, b: c_int, c: c_int, d: c_int, e: c_int,
+    callback: CALLBACK_FUNC, auxdata: *mut c_void,
+) -> c_int {
+    darc_rs_lzp_decompress(block_size, a, b, c, d, e, callback, auxdata)
+}
