@@ -214,6 +214,81 @@ jobs:
         chmod +x Tests/win-test.sh
         Tests/win-test.sh
 
+  # ── Rust codec ports ────────────────────────────────────────────────────────
+  # Two things are checked, and they are not the same thing:
+  #
+  #   1. The ported codec produces byte-identical output to the C original, over
+  #      inputs built to exercise its heuristics (rust/difftest).
+  #   2. The archiver built against it produces byte-identical archives, and the
+  #      whole suite still passes.
+  #
+  # The second is what actually protects the archive format, and it is the check
+  # that caught the port being linked in name only: an earlier wiring produced a
+  # binary byte-identical to the C build because both defined the same symbol and
+  # the linker never pulled the Rust one.
+  rust-codecs:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v6.0.2
+      with:
+        lfs: false
+    - name: Install LLVM and Clang
+      uses: KyleMayes/install-llvm-action@v2
+      with:
+        version: "21.1.8"
+    - name: Install packages
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y liblua5.1-dev libncurses-dev libcurl4-openssl-dev cpphs
+    - name: Install MicroHs
+      run: |
+        microhs_sha="05a3fbd5d73ae6a37111a6ced5b57bb1717b8975"
+        microhs_tar="/tmp/microhs.tar.gz"
+        microhs_expected_sha256="a1f85821cbae877d0ea3e173235d45c833d9145b2ca9e92e77d284b6730c63b6"
+        curl -fsSL "https://github.com/augustss/MicroHs/archive/$microhs_sha.tar.gz" -o "$microhs_tar"
+        echo "$microhs_expected_sha256  $microhs_tar" | sha256sum -c -
+        tar -xzf "$microhs_tar" -C /tmp
+        cd "/tmp/MicroHs-$microhs_sha"
+        make minstall
+        echo "$HOME/.mcabal/bin" >> "$GITHUB_PATH"
+
+    - name: Codec differential test (Rust vs C)
+      run: |
+        chmod +x rust/difftest/run.sh
+        rust/difftest/run.sh diff
+
+    # A differential test that has never failed proves nothing. This mutates the
+    # port and asserts every mutation is caught by at least one input; it also
+    # aborts if a mutation pattern no longer matches, because a mutation that
+    # silently fails to apply reports as "0 detected" and reads like coverage.
+    - name: Prove the differential test can fail
+      run: rust/difftest/run.sh sabotage
+
+    # Build the archiver twice and require identical archives. This is the check
+    # that actually guards the format.
+    - name: Archives identical with and without the Rust codecs
+      run: |
+        chmod +x compile* Tests/*.sh
+        ./compile > /tmp/build-c.log 2>&1 || { tail -30 /tmp/build-c.log; exit 1; }
+        cp Tests/arc /tmp/arc-c
+        Tests/run-tests.sh /tmp/arc-c > /tmp/suite-c.log 2>&1 || { tail -40 /tmp/suite-c.log; exit 1; }
+
+        rm -rf /tmp/out/FreeArc
+        DARC_RUST=1 ./compile > /tmp/build-rs.log 2>&1 || { tail -30 /tmp/build-rs.log; exit 1; }
+        # If the Rust library were not really linked the binary would be
+        # unchanged, which is exactly how this went wrong once.
+        cmp -s /tmp/arc-c Tests/arc && { echo "::error::DARC_RUST build is byte-identical to the C build -- the Rust codecs were not linked"; exit 1; }
+        Tests/run-tests.sh Tests/arc > /tmp/suite-rs.log 2>&1 || { tail -40 /tmp/suite-rs.log; exit 1; }
+
+        grep -E "^[a-z0-9-]+ +(ok|FAIL) " /tmp/suite-c.log  | awk '{print $1, $NF}' | sort > /tmp/fp-c.txt
+        grep -E "^[a-z0-9-]+ +(ok|FAIL) " /tmp/suite-rs.log | awk '{print $1, $NF}' | sort > /tmp/fp-rs.txt
+        test -s /tmp/fp-c.txt || { echo "::error::no fingerprints parsed from the C run"; exit 1; }
+        if ! diff -u /tmp/fp-c.txt /tmp/fp-rs.txt; then
+          echo "::error::archives differ between the C and Rust codec builds"
+          exit 1
+        fi
+        echo "archives identical across $(wc -l < /tmp/fp-c.txt) configurations"
+
   # ── AddressSanitizer on x86-64 ──────────────────────────────────────────────
   # Added to diagnose a double free that only appeared on this runner. It found
   # that one and an out-of-bounds read in Dict/phase1 on its first two runs, and
