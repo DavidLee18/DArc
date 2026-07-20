@@ -9,6 +9,7 @@
 
 pub mod delta;
 pub mod dict;
+pub mod lzp;
 pub mod ffi;
 
 mod exports;

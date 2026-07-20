@@ -8,7 +8,7 @@
 //! what wires them together; until then these are exercised by the differential
 //! harness rather than by the archiver.
 
-use crate::{delta, dict};
+use crate::{delta, dict, lzp};
 use crate::ffi::{Io, CALLBACK_FUNC, FREEARC_ERRCODE_GENERAL};
 use core::ffi::{c_int, c_void};
 
@@ -118,4 +118,24 @@ pub unsafe extern "C" fn dict_decompress(
     auxdata: *mut c_void,
 ) -> c_int {
     darc_rs_dict_decompress(block_size, a, b, c, d, e, f, callback, auxdata)
+}
+
+/// # Safety
+/// `callback` and `auxdata` must be what the C caller supplied.
+#[no_mangle]
+#[allow(clippy::too_many_arguments)]
+pub unsafe extern "C" fn darc_rs_lzp_decompress(
+    block_size: u32,
+    _min_compression: c_int,
+    min_match_len: c_int,
+    hash_size_log: c_int,
+    barrier: c_int,
+    smallest_len: c_int,
+    callback: CALLBACK_FUNC,
+    auxdata: *mut c_void,
+) -> c_int {
+    match Io::new(callback, auxdata) {
+        Some(io) => lzp::decompress(&io, block_size, min_match_len, hash_size_log, barrier, smallest_len),
+        None => FREEARC_ERRCODE_GENERAL,
+    }
 }
