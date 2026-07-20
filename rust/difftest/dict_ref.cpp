@@ -28,6 +28,8 @@ int dict_decompress (MemSize BlockSize, int MinCompression, int MinWeakChars, in
 }
 
 #ifdef USE_RUST
+extern "C" int darc_rs_dict_compress   (MemSize BlockSize, int, int, int, int, int, int,
+                                        CALLBACK_FUNC *callback, void *auxdata);
 extern "C" int darc_rs_dict_decompress (MemSize BlockSize, int, int, int, int, int, int,
                                         CALLBACK_FUNC *callback, void *auxdata);
 #endif
@@ -40,6 +42,7 @@ extern "C" int darc_rs_dict_decompress (MemSize BlockSize, int, int, int, int, i
 struct Buffers {
   const unsigned char *in; size_t in_len, in_pos;
   unsigned char *out; size_t out_len, out_cap;
+  size_t chunk;   // max bytes one "read" may return; 0 = no limit
 };
 
 static int io_callback (const char *what, void *data, int size, void *auxdata)
@@ -49,6 +52,13 @@ static int io_callback (const char *what, void *data, int size, void *auxdata)
   if (strcmp(what, "read") == 0) {
     size_t avail = b->in_len - b->in_pos;
     size_t n = (size_t)size < avail ? (size_t)size : avail;
+    // A short read is not an error here, and getting this wrong hid a real
+    // divergence for a long time. dict_compress loops on "read", so in the
+    // archiver the codec sees a *sequence* of pipeline-sized buffers, and the
+    // block boundaries decide which words each DictEncode call ever sees.
+    // Returning the whole input in one read -- what this driver used to do --
+    // exercises exactly one block and can never reproduce that.
+    if (b->chunk && n > b->chunk)  n = b->chunk;
     memcpy (data, b->in + b->in_pos, n);  b->in_pos += n;  return (int) n;
   }
   if (strcmp(what, "write") == 0) {
@@ -67,10 +77,40 @@ static int io_callback (const char *what, void *data, int size, void *auxdata)
   return FREEARC_ERRCODE_NOT_IMPLEMENTED;
 }
 
+/* Mode 'v': mimic dict_compress's read loop but call DictEncode directly and
+ * report what each block decided. dict_compress only reports a total, so a
+ * per-block disagreement between implementations is invisible in it -- which
+ * is how a block that compresses standalone but declines mid-stream went
+ * unexplained. C++ linkage, matching dict.cpp (see the note at the top). */
+#ifndef DARC_RUST
+int DictEncode (byte *buf, unsigned bufsize, byte **outbuf, unsigned *outsize,
+                int MinWeakChars, int MinLargeCnt, int MinMediumCnt, int MinSmallCnt, int MinRatio);
+
+static void verbose_stream (const unsigned char *in, size_t len, size_t chunk,
+                            int MinCompression, int MinWeakChars, int MinLargeCnt,
+                            int MinMediumCnt, int MinSmallCnt, int MinRatio)
+{
+  size_t pos = 0;  int blk = 0;
+  while (pos < len) {
+    unsigned InSize = (unsigned) ((len - pos < chunk) ? len - pos : chunk);
+    byte *In = (byte*) malloc (InSize);
+    memcpy (In, in + pos, InSize);
+    byte *Out = NULL;  unsigned OutSize = 0;
+    int x = DictEncode (In, InSize, &Out, &OutSize, MinWeakChars, MinLargeCnt,
+                        MinMediumCnt, MinSmallCnt, MinRatio);
+    int declined = (x || OutSize/MinCompression >= InSize/100);
+    fprintf (stderr, "block %2d  in=%-7u rc=%-3d out=%-7u %s\n",
+             blk++, InSize, x, OutSize, declined ? "DECLINED" : "engaged");
+    FreeAndNil (Out);  FreeAndNil (In);
+    pos += InSize;
+  }
+}
+#endif
+
 int main (int argc, char **argv)
 {
-  if (argc < 2 || (argv[1][0] != 'c' && argv[1][0] != 'd')) {
-    fprintf (stderr, "usage: %s c|d [blocksize] <in >out\n", argv[0]);  return 2;
+  if (argc < 2 || (argv[1][0] != 'c' && argv[1][0] != 'd' && argv[1][0] != 'v')) {
+    fprintf (stderr, "usage: %s c|d|v [blocksize] <in >out\n", argv[0]);  return 2;
   }
   MemSize blocksize = argc > 2 ? (MemSize) strtoul (argv[2], NULL, 0) : 8*1024*1024;
 
@@ -85,13 +125,42 @@ int main (int argc, char **argv)
   }
 
   Buffers b; b.in = in; b.in_len = len; b.in_pos = 0; b.out = NULL; b.out_len = 0; b.out_cap = 0;
+  const char *chunk_env = getenv ("DICT_CHUNK");
+  b.chunk = chunk_env ? (size_t) strtoul (chunk_env, NULL, 0) : 0;
 
-  // Defaults taken from C_Dict.cpp's parse_DICT.
-  const int MinCompression = 100, MinWeakChars = 0, MinLargeCnt = 200, MinMediumCnt = 200,
-            MinSmallCnt = 200, MinRatio = 0;
+  // These MUST match DICT_METHOD's constructor (C_Dict.cpp:111-116), which is
+  // what the archiver actually runs. An earlier version of this driver used
+  // MinWeakChars=0, MinLargeCnt=200, MinMediumCnt=200, MinSmallCnt=200,
+  // MinRatio=0 under a comment claiming they came from parse_DICT. They did
+  // not: five of the six were wrong. The port was declared byte-identical on a
+  // parameter set the archiver never uses, and the first whole-archive
+  // comparison found a 9200-byte divergence the phase harness could not see.
+  // If these drift from C_Dict.cpp again the suite goes quietly green on
+  // nothing, so they are overridable below only to *widen* coverage.
+  int MinCompression = 100, MinWeakChars = 20, MinLargeCnt = 2048, MinMediumCnt = 100,
+      MinSmallCnt = 50, MinRatio = 4;
+  if (argc > 3)  MinCompression = atoi (argv[3]);
+  if (argc > 4)  MinWeakChars   = atoi (argv[4]);
+  if (argc > 5)  MinLargeCnt    = atoi (argv[5]);
+  if (argc > 6)  MinMediumCnt   = atoi (argv[6]);
+  if (argc > 7)  MinSmallCnt    = atoi (argv[7]);
+  if (argc > 8)  MinRatio       = atoi (argv[8]);
+
+#ifndef DARC_RUST
+  if (argv[1][0] == 'v') {
+    verbose_stream (in, len, b.chunk ? b.chunk : len, MinCompression, MinWeakChars,
+                    MinLargeCnt, MinMediumCnt, MinSmallCnt, MinRatio);
+    free (in);  return 0;
+  }
+#endif
+
   int rc;
   if (argv[1][0] == 'c')
+#ifdef USE_RUST
+    rc = darc_rs_dict_compress (blocksize, MinCompression, MinWeakChars, MinLargeCnt, MinMediumCnt, MinSmallCnt, MinRatio, io_callback, &b);
+#else
     rc = dict_compress (blocksize, MinCompression, MinWeakChars, MinLargeCnt, MinMediumCnt, MinSmallCnt, MinRatio, io_callback, &b);
+#endif
   else
 #ifdef USE_RUST
     rc = darc_rs_dict_decompress (blocksize, MinCompression, MinWeakChars, MinLargeCnt, MinMediumCnt, MinSmallCnt, MinRatio, io_callback, &b);

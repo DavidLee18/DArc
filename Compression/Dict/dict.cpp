@@ -478,6 +478,25 @@ struct stats {
 // Disabling the speculative search (WORD_STEP = 1) improves compression a little at the cost of speed
 int phase1 (byte *buf, unsigned bufsize)
 {
+    // char_counts is a global and DictEncode is called once per block, so it
+    // has to be cleared here or every block inherits the character statistics
+    // of every block before it in the same process. phase3 then sees no
+    // characters free for encoding, returns -1, and the block is stored
+    // uncompressed.
+    //
+    // This is not theoretical, and it is not a small effect. Compressing the
+    // binary corpus as one stream of 64KB blocks, the tail block compresses
+    // 48160 -> 40573 on its own but is declined outright when four unrelated
+    // binary blocks precede it -- the whole stream is stored, 310324 bytes
+    // instead of 301127.
+    //
+    // It also made dict's output depend on how the pipeline happened to chunk
+    // the data, which varies with buffer sizes and -mt, so the same input
+    // could compress differently between runs. phase3 additionally *writes*
+    // into char_counts (marking characters conditionally free), so the state
+    // that leaked forward was already corrupted, not merely stale.
+    memset (char_counts, 0, sizeof(char_counts));
+
     // Maximum allowed number of words - 1/32 of the input data volume
     unsigned max_words = roundup_to_power_of (mymax(bufsize/32,32768), 2);
     FirstWord = (Word*) malloc (max_words * sizeof (Word));
