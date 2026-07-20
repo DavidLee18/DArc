@@ -44,3 +44,38 @@ pub unsafe extern "C" fn darc_rs_delta_decompress(
         None => FREEARC_ERRCODE_GENERAL,
     }
 }
+
+// ---------------------------------------------------------------------------
+// Drop-in replacements under the archiver's own symbol names.
+//
+// Delta.cpp defines delta_compress/delta_decompress with C++ linkage, so these
+// C-linkage symbols do not collide with it: they are distinct names as far as
+// the linker is concerned. Which one the archiver calls is decided entirely by
+// how C_Delta.h declares them -- `extern "C"` picks these, the default picks
+// the C++ originals. That is what makes the swap reversible with a build flag
+// rather than a source deletion.
+// ---------------------------------------------------------------------------
+
+/// # Safety
+/// `callback` and `auxdata` must be what the C caller supplied.
+#[no_mangle]
+pub unsafe extern "C" fn delta_compress(
+    block_size: u32,
+    extended_tables: c_int,
+    callback: CALLBACK_FUNC,
+    auxdata: *mut c_void,
+) -> c_int {
+    darc_rs_delta_compress(block_size, extended_tables, callback, auxdata)
+}
+
+/// # Safety
+/// `callback` and `auxdata` must be what the C caller supplied.
+#[no_mangle]
+pub unsafe extern "C" fn delta_decompress(
+    block_size: u32,
+    extended_tables: c_int,
+    callback: CALLBACK_FUNC,
+    auxdata: *mut c_void,
+) -> c_int {
+    darc_rs_delta_decompress(block_size, extended_tables, callback, auxdata)
+}

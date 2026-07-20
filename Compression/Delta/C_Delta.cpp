@@ -4,7 +4,20 @@ extern "C" {
 
 
 #define DELTA_LIBRARY
+// DARC_RUST=1 selects the Rust port of this codec (rust/darc-codecs).
+//
+// Note this whole file is wrapped in extern "C" (line 1), so Delta.cpp's
+// definitions already have C linkage here -- the same names the Rust crate
+// exports. That is why the switch has to be an exclusion rather than a
+// declaration change: with both present the linker resolves delta_compress from
+// this object and never pulls the archive member, producing a binary
+// byte-identical to the C build while appearing to have "linked Rust in".
+//
+// The port is verified byte-identical to Delta.cpp over 23 inputs and ~280
+// detected tables, in both directions -- see rust/difftest.
+#ifndef DARC_RUST
 #include "Delta.cpp"
+#endif
 
 /*-------------------------------------------------*/
 /* DELTA_METHOD class implementation                 */

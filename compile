@@ -57,6 +57,36 @@ if [ -n "${DARC_SANITIZE:-}" ]; then
   export DARC_DEBUG_FLAGS="-g -fsanitize=${DARC_SANITIZE} -fno-omit-frame-pointer"
   echo "sanitizer build: -fsanitize=${DARC_SANITIZE}"
 fi
+# Optional Rust codecs: DARC_RUST=1 ./compile
+#
+# This must run BEFORE any C is compiled. C_Delta.h keys off DARC_RUST, and
+# C_Delta.cpp is built by Compression/compile below -- adding the define after
+# that point would leave the C++ symbols bound while the Rust library sat
+# unused in the link. Exactly the mistake the libcurl probe above documents.
+#
+# Builds rust/darc-codecs and links it, and defines DARC_RUST so the affected
+# headers declare their codec entry points extern "C" -- which is what makes the
+# archiver bind to the Rust symbols instead of the C++ ones. Off by default
+# while the port is partial.
+#
+# Keeping it a switch rather than a replacement is deliberate: it makes the two
+# implementations directly comparable through the real archiver, so the test
+# suite's archive fingerprints can prove they produce identical bytes.
+rust_lib=""
+if [ -n "${DARC_RUST:-}" ]; then
+  command -v cargo >/dev/null 2>&1 || {
+    echo "error: DARC_RUST is set but cargo was not found in PATH" >&2; exit 1; }
+  echo "building Rust codecs"
+  ( cd rust/darc-codecs && cargo build --release ) || {
+    echo "error: cargo build failed" >&2; exit 1; }
+  rust_lib="$PWD/rust/darc-codecs/target/release/libdarc_codecs.a"
+  [ -f "$rust_lib" ] || { echo "error: cargo produced no $rust_lib" >&2; exit 1; }
+  defines="$defines -DDARC_RUST"
+  # Reaches the per-codec makefiles through unix-common.mak, which appends
+  # DARC_EXTRA_DEFINES to DEFINES; make imports it from the environment.
+  export DARC_EXTRA_DEFINES="-DDARC_RUST"
+fi
+
 cp unix-common.mak common.mak
 cd Compression
 chmod +x compile
@@ -125,7 +155,7 @@ fi
 optc_args="-optc -I. -optc -ICompression -optc -IHsLua/src -optc -Wno-incompatible-function-pointer-types"
 for f in $lua_cflags; do optc_args="$optc_args -optc $f"; done
 optl_args=""
-for o in $c_objs $lua_objs; do optl_args="$optl_args -optl $o"; done
+for o in $c_objs $lua_objs $rust_lib; do optl_args="$optl_args -optl $o"; done
 for l in $c_libs; do optl_args="$optl_args -optl $l"; done
 mhs Arc \
   -iCompression -icompat-ghc -icompat-oldtime -iHsLua/src \

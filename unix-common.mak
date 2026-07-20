@@ -3,6 +3,9 @@ DEFINES  = -DFREEARC_UNIX -DFREEARC_INTEL_BYTE_ORDER
 ifeq ($(shell getconf LONG_BIT 2>/dev/null),64)
 DEFINES  += -DFREEARC_64BIT
 endif
+# Extra defines threaded in from the compile script (e.g. -DDARC_RUST, which
+# selects the Rust port of a codec). make imports this from the environment.
+DEFINES += $(DARC_EXTRA_DEFINES)
 TEMPDIR  = /tmp/out/FreeArc
 GCC      = clang++ -std=c++17
 ifeq ($(shell pkg-config --exists libcurl 2>/dev/null && echo yes),yes)
