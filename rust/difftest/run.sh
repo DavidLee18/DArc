@@ -4,6 +4,7 @@
 #   rust/difftest/run.sh build      build the C reference driver
 #   rust/difftest/run.sh selftest   round-trip the C original over sample inputs
 #   rust/difftest/run.sh diff       compare C vs Rust output byte for byte
+#   rust/difftest/run.sh sabotage   prove the comparison can actually fail
 #
 # The C original is the oracle. These codecs define the archive format, so a
 # port has to be bit-exact, not merely correct: output that decompresses fine
@@ -19,6 +20,7 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
 cd "$ROOT"
 REF=${REF:-/tmp/darc-delta-ref}
+RS=${RS:-/tmp/darc-delta-rs}
 WORK=${WORK:-${TMPDIR:-/tmp}/darc-difftest.$$}
 
 build_ref () {
@@ -46,22 +48,7 @@ make_inputs () {
   : > "$WORK/in/empty.bin"
   printf 'x'                             > "$WORK/in/one-byte.bin"
   head -c 7 /dev/urandom                 > "$WORK/in/tiny.bin"
-  python3 -c "
-import struct,sys
-out=bytearray()
-for i in range(5000):
-    out += struct.pack('<IIII', i*4, i*7+100, 0xAABBCCDD, i)
-sys.stdout.buffer.write(bytes(out))"    > "$WORK/in/table16.bin"
-  python3 -c "
-import struct,sys
-out=bytearray()
-for i in range(20000):
-    out += struct.pack('<IIII', i*4, i*8+1000, i*2, 0x11223344)
-sys.stdout.buffer.write(bytes(out))"    > "$WORK/in/table16-wide.bin"
-  python3 -c "
-import sys
-sys.stdout.buffer.write(bytes((i*3+7) % 251 for i in range(100000)))" \
-                                         > "$WORK/in/sawtooth.bin"
+  python3 "$HERE/make_inputs.py" "$WORK/in"
 }
 
 selftest () {
@@ -87,18 +74,88 @@ selftest () {
                     || { echo "reference self-test: $fail failed" >&2; return 1; }
 }
 
-# Placeholder until a Rust Delta exists. Deliberately fails rather than
-# reporting success on a comparison it never made -- a check that cannot fail
-# is how this branch's Windows CI went green on a binary that did not work.
+# Build the same driver against the Rust port and diff it with the C original.
+build_rs () {
+  ( cd "$ROOT/rust/darc-codecs" && cargo build --release ) >/dev/null 2>&1 \
+    || { echo "error: cargo build failed" >&2; return 1; }
+  clang++ -std=c++17 -O2 -w \
+    -DUSE_RUST -DDELTA_LIBRARY -DFREEARC_UNIX -DFREEARC_INTEL_BYTE_ORDER -DFREEARC_64BIT \
+    -I Compression -I . \
+    -o "$RS" "$HERE/delta_ref.cpp" Compression/Delta/Delta.cpp Compression/Common.cpp \
+    "$ROOT/rust/darc-codecs/target/release/libdarc_codecs.a" \
+    || { echo "error: failed to build the Rust driver" >&2; return 1; }
+}
+
+# Compare C and Rust decompression of the same C-produced stream. `$1` names the
+# Rust binary so the sabotage check can point this at a deliberately broken one.
+#
+# Contract: per-file detail goes to stderr, and stdout carries ONLY "<n> <fail>".
+# The caller captures stdout, so anything else printed there is parsed as a
+# count -- which silently produced an empty tally the first time round.
+compare_with () {
+  local rs="$1" quiet="${2:-}" fail=0 n=0
+  for f in "$WORK"/in/*; do
+    "$REF" c >| "$WORK/packed" < "$f" 2>/dev/null || continue
+    "$REF" d >| "$WORK/c_out"  < "$WORK/packed" 2>/dev/null || continue
+    n=$((n+1))
+    "$rs" d >| "$WORK/r_out" < "$WORK/packed" 2>/dev/null || true
+    if cmp -s "$WORK/c_out" "$WORK/r_out" && cmp -s "$f" "$WORK/r_out"; then
+      [ -n "$quiet" ] || printf "  %-18s %9s bytes  C==Rust, round-trips\n" \
+        "$(basename "$f")" "$(wc -c <"$f" | tr -d ' ')" >&2
+    else
+      [ -n "$quiet" ] || printf "  %-18s DIFFERS FROM C\n" "$(basename "$f")" >&2
+      fail=$((fail+1))
+    fi
+  done
+  echo "$n $fail"
+}
+
 diff_impls () {
-  echo "error: no Rust Delta implementation to compare against yet." >&2
-  echo "       Port it, expose it under the same ABI, then run this." >&2
-  return 1
+  [ -x "$REF" ] || build_ref || return 1
+  build_rs || return 1
+  make_inputs
+  local res n fail
+  res=$(compare_with "$RS"); n=${res%% *}; fail=${res##* }
+  echo "delta: $n inputs, $fail differing"
+  rm -rf "$WORK"
+  [ "$fail" -eq 0 ] || { echo "PORT DIFFERS FROM THE C ORIGINAL" >&2; return 1; }
+  echo "delta port matches the C original byte for byte"
+}
+
+# A differential test that has never been seen to fail is not evidence. Break
+# the port on purpose and confirm the comparison notices.
+#
+# This is not ceremony: the first input set here looked like a thorough pass at
+# 8/8 matching, but only 1 of those 8 could detect a deliberately broken carry.
+# For random and binary data the compressor finds almost no tables, so
+# undiff_table barely runs and a wrong answer is invisible. The table-shaped
+# inputs in make_inputs.py exist because of that measurement.
+sabotage () {
+  [ -x "$REF" ] || build_ref || return 1
+  build_rs || return 1
+  make_inputs
+  local src="$ROOT/rust/darc-codecs/src/delta.rs" bak="$WORK/delta.rs.bak"
+  cp "$src" "$bak"
+  sed -i.tmp 's|carry = sum >> 8;|carry = 0;|' "$src" && rm -f "$src.tmp"
+  local broken="$RS.broken" res n caught
+  if ( cd "$ROOT/rust/darc-codecs" && cargo build --release ) >/dev/null 2>&1; then
+    clang++ -std=c++17 -O2 -w -DUSE_RUST -DDELTA_LIBRARY -DFREEARC_UNIX \
+      -DFREEARC_INTEL_BYTE_ORDER -DFREEARC_64BIT -I Compression -I . \
+      -o "$broken" "$HERE/delta_ref.cpp" Compression/Delta/Delta.cpp Compression/Common.cpp \
+      "$ROOT/rust/darc-codecs/target/release/libdarc_codecs.a" 2>/dev/null
+  fi
+  res=$(compare_with "$broken" quiet); n=${res%% *}; caught=${res##* }
+  cp "$bak" "$src"
+  ( cd "$ROOT/rust/darc-codecs" && cargo build --release ) >/dev/null 2>&1
+  rm -rf "$WORK"
+  echo "sabotage check: $caught of $n inputs detect a broken carry"
+  [ "$caught" -gt 0 ] || { echo "the differential test cannot detect a broken port" >&2; return 1; }
 }
 
 case "${1:-selftest}" in
   build)    build_ref ;;
   selftest) selftest ;;
   diff)     diff_impls ;;
-  *) echo "usage: $0 build|selftest|diff" >&2; exit 2 ;;
+  sabotage) sabotage ;;
+  *) echo "usage: $0 build|selftest|diff|sabotage" >&2; exit 2 ;;
 esac
