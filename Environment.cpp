@@ -46,7 +46,7 @@ LargestMemoryBlock::LargestMemoryBlock() : p(NULL)
 void LargestMemoryBlock::test()
 {
   if ((size>>20)>0) {
-    printf("Allocated %4d mb, addr=%p\n", size>>20, p);
+    printf("Allocated %4zu mb, addr=%p\n", (size_t)(size>>20), p);
     LargestMemoryBlock next;
     next.test();
   } else {
@@ -231,13 +231,40 @@ void RunFile (const CFILENAME filename, const CFILENAME curdir, int wait_finish)
 
 
 #include <unistd.h>
+#if defined(__APPLE__) || defined(__FreeBSD__) || defined(__OpenBSD__) || defined(__NetBSD__)
+// sys/sysinfo.h and get_nprocs() are glibc extensions. The BSDs expose the
+// same facts through sysctl and sysconf.
+#include <sys/sysctl.h>
+#else
 #include <sys/sysinfo.h>
+#endif
+
+// These return `unsigned`, which is 32 bits, so anything at or above 4 GB
+// cannot be represented. Saturate rather than truncate: reporting a 16 GB
+// machine as having 379 MB (the low bits of 16000000000) would make the
+// memory-limit arithmetic downstream produce nonsense, whereas reporting
+// 4 GB - 1 merely makes it conservative.
+static unsigned saturate_to_unsigned (unsigned long long bytes)
+{
+  return bytes > (unsigned long long)UINT_MAX ? UINT_MAX : (unsigned)bytes;
+}
 
 unsigned GetPhysicalMemory (void)
 {
+#if defined(__APPLE__) || defined(__FreeBSD__) || defined(__OpenBSD__) || defined(__NetBSD__)
+  uint64_t memsize = 0;
+  size_t   len     = sizeof(memsize);
+#if defined(__APPLE__)
+  if (sysctlbyname("hw.memsize", &memsize, &len, NULL, 0) != 0)  return 0;
+#else
+  if (sysctlbyname("hw.physmem", &memsize, &len, NULL, 0) != 0)  return 0;
+#endif
+  return saturate_to_unsigned(memsize);
+#else
   struct sysinfo si;
-    sysinfo(&si);
-  return si.totalram*si.mem_unit;
+    if (sysinfo(&si) != 0)  return 0;
+  return saturate_to_unsigned((unsigned long long)si.totalram * si.mem_unit);
+#endif
 }
 
 unsigned GetMaxMemToAlloc (void)
@@ -249,14 +276,37 @@ unsigned GetMaxMemToAlloc (void)
 
 unsigned GetAvailablePhysicalMemory (void)
 {
+#if defined(__APPLE__)
+  // macOS does not define _SC_AVPHYS_PAGES. vm.page_free_count is the nearest
+  // equivalent. It understates what is usable, because macOS keeps most of RAM
+  // in reclaimable cache rather than "free", so the resulting memory limit is
+  // conservative rather than optimistic -- the safe direction to be wrong in.
+  unsigned free_pages = 0;
+  size_t   len        = sizeof(free_pages);
+  if (sysctlbyname("vm.page_free_count", &free_pages, &len, NULL, 0) != 0)  return 0;
+  long pagesize = sysconf(_SC_PAGESIZE);
+  if (pagesize <= 0)  return 0;
+  return saturate_to_unsigned((unsigned long long)free_pages * (unsigned long long)pagesize);
+#elif defined(__FreeBSD__) || defined(__OpenBSD__) || defined(__NetBSD__)
+  long pages    = sysconf(_SC_AVPHYS_PAGES);
+  long pagesize = sysconf(_SC_PAGESIZE);
+  if (pages <= 0 || pagesize <= 0)  return 0;
+  return saturate_to_unsigned((unsigned long long)pages * (unsigned long long)pagesize);
+#else
   struct sysinfo si;
-    sysinfo(&si);
-  return si.freeram*si.mem_unit;
+    if (sysinfo(&si) != 0)  return 0;
+  return saturate_to_unsigned((unsigned long long)si.freeram * si.mem_unit);
+#endif
 }
 
 int GetProcessorsCount (void)
 {
+#if defined(__APPLE__) || defined(__FreeBSD__) || defined(__OpenBSD__) || defined(__NetBSD__)
+  long n = sysconf(_SC_NPROCESSORS_ONLN);
+  return n > 0 ? (int)n : 1;
+#else
   return get_nprocs();
+#endif
 }
 
 void SetFileDateTime(const CFILENAME Filename, time_t mtime)

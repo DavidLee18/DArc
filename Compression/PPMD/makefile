@@ -5,7 +5,7 @@ ALL: $(TEMPDIR)/C_PPMD.o
 CODE_FLAGS  = -fno-exceptions -fno-rtti -Wall \
               -Wno-unknown-pragmas -Wno-sign-compare -Wno-conversion
 OPT_FLAGS   = -O1 \
-              -fomit-frame-pointer -fstrict-aliasing \
+              -fomit-frame-pointer -fno-strict-aliasing \
               -funroll-loops
 DEBUG_FLAGS = -g0
 CFLAGS = $(CODE_FLAGS) $(OPT_FLAGS) $(DEBUG_FLAGS) $(DEFINES)

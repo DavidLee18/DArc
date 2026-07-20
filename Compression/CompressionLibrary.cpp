@@ -439,6 +439,13 @@ void __cdecl SetCompressionThreads (int threads)
   CompressionThreads = threads==0? 1 : threads;
 #ifndef FREEARC_DLL
   static FARPROC f = LoadFromDLL ("SetCompressionThreads");
+  // -Wcast-function-type-mismatch fires here and the diagnostic is correct:
+  // calling through a function pointer of a different type is UB by the
+  // letter of the standard. It is also unavoidable for dynamic symbol
+  // lookup -- LoadFromDLL hands back a generic FARPROC and the real
+  // signature is only known here. Routing the cast through void* would
+  // silence the warning without removing the UB, which is worse than
+  // leaving it visible. Left deliberately; every real ABI defines it.
   if (f)  ((void (__cdecl *)(int)) f) (threads);
 #endif
 }

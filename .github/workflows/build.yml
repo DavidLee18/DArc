@@ -21,12 +21,7 @@ jobs:
         include:
           - os: ubuntu-latest
           - os: ubuntu-24.04-arm
-          - os: windows-latest
-            msys2_sys: UCRT64
-            msys2_pkg_prefix: mingw-w64-ucrt-x86_64
-          - os: windows-11-arm
-            msys2_sys: UCRT64
-            msys2_pkg_prefix: mingw-w64-ucrt-x86_64
+          - os: macos-latest
     steps:
     - uses: actions/checkout@v6.0.2
       with:
@@ -42,7 +37,10 @@ jobs:
       if: runner.os == 'Linux'
       run: |
         sudo apt-get update
-        sudo apt-get install -y liblua5.1-dev libncurses-dev libcurl4-openssl-dev
+        # cpphs is required by mhs to preprocess {-# LANGUAGE CPP #-} modules.
+        # Its absence is why the build silently failed on every platform while
+        # CI still reported success.
+        sudo apt-get install -y liblua5.1-dev libncurses-dev libcurl4-openssl-dev cpphs
     - name: Install MicroHs (Linux)
       if: runner.os == 'Linux'
       run: |
@@ -61,32 +59,134 @@ jobs:
         make minstall
         cp "$HOME/.mcabal/bin/mhs" "$HOME/.local/bin/mhs"
         echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+        # MicroHs also installs cpphs here, and mhs shells out to it for every
+        # {-# LANGUAGE CPP #-} module. Copying only mhs left cpphs unreachable,
+        # which is what broke the build while CI still reported success.
+        echo "$HOME/.mcabal/bin" >> "$GITHUB_PATH"
     - name: Build (Linux)
       if: runner.os == 'Linux'
       run: |
         chmod +x compile*
         ./compile-O2
 
-    # ── Windows steps ──────────────────────────────────────────────────────────
-    - name: Set up MSYS2 (Windows)
-      if: runner.os == 'Windows'
-      uses: msys2/setup-msys2@v2
-      with:
-        msystem: ${{ matrix.msys2_sys }}
-        update: true
-        path-type: inherit
-        install: >-
-          ${{ matrix.msys2_pkg_prefix }}-clang
-          ${{ matrix.msys2_pkg_prefix }}-lua51
-          curl
-          make
-    - name: Install MicroHs (Windows)
-      if: runner.os == 'Windows'
-      shell: msys2 {0}
+    # A build step that cannot fail is not a check. Assert the artifact exists
+    # and actually runs before anything downstream is allowed to claim success.
+    - name: Verify binary (Linux)
+      if: runner.os == 'Linux'
       run: |
-        # Install MSYS2 development tools needed for MicroHs compilation
-        pacman -S --noconfirm --needed msys2-devel
+        test -f Tests/arc || { echo "::error::build produced no Tests/arc"; exit 1; }
+        test -s Tests/arc || { echo "::error::Tests/arc is empty"; exit 1; }
+        chmod +x Tests/arc
+        # Exercise it for real: a binary that exists but cannot list its own
+        # help is not a working archiver.
+        ./Tests/arc --help > /tmp/arc-help.txt 2>&1 || true
+        grep -qi 'command' /tmp/arc-help.txt || {
+          echo "::error::Tests/arc did not produce recognisable help output"
+          head -20 /tmp/arc-help.txt; exit 1; }
+        echo "binary verified: $(wc -c < Tests/arc) bytes"
 
+    # Vendored third-party sources must still be what vendor.lock says they are.
+    # Offline mode only -- cheap, no network. The stronger --upstream check
+    # (re-download the pinned release and compare) is left for manual runs.
+    - name: Verify vendored libraries (Linux)
+      if: runner.os == 'Linux'
+      run: |
+        chmod +x Tests/verify-vendor.sh
+        Tests/verify-vendor.sh
+
+    # Round-trip every compression method and solid mode over a deterministic
+    # corpus, then compare each archive against a recorded fingerprint.
+    # The round-trip half catches data loss; the fingerprint half catches
+    # archive-format drift, which is the failure mode that otherwise builds
+    # cleanly and passes every other check.
+    - name: Test (Linux)
+      if: runner.os == 'Linux'
+      run: |
+        chmod +x Tests/*.sh
+        Tests/run-tests.sh Tests/arc
+
+    # ── macOS steps ────────────────────────────────────────────────────────────
+    # macOS is in the matrix so the portability work stays honest. The README
+    # has claimed macOS support for a long time while the build did not
+    # actually work there; without a runner it would simply rot again.
+    - name: Install packages (macOS)
+      if: runner.os == 'macOS'
+      run: |
+        # No lua@5.1 here: Homebrew removed the formula, and ./compile builds
+        # Lua from the copy vendored in HsLua/src regardless. Asking for it
+        # only produced a red "No available formula" line in every macOS run
+        # that had nothing to do with the build.
+        brew install ncurses || true
+
+    - name: Install MicroHs (macOS)
+      if: runner.os == 'macOS'
+      run: |
+        microhs_sha="05a3fbd5d73ae6a37111a6ced5b57bb1717b8975"
+        microhs_tar="/tmp/microhs.tar.gz"
+        microhs_expected_sha256="a1f85821cbae877d0ea3e173235d45c833d9145b2ca9e92e77d284b6730c63b6"
+        curl -fsSL "https://github.com/augustss/MicroHs/archive/$microhs_sha.tar.gz" -o "$microhs_tar"
+        echo "$microhs_expected_sha256  $microhs_tar" | shasum -a 256 -c -
+        tar -xzf "$microhs_tar" -C /tmp
+        cd "/tmp/MicroHs-$microhs_sha"
+        make minstall
+        # mhs and cpphs both land here; putting the directory on PATH keeps them
+        # at the same pinned version.
+        echo "$HOME/.mcabal/bin" >> "$GITHUB_PATH"
+
+    - name: Build (macOS)
+      if: runner.os == 'macOS'
+      run: |
+        chmod +x compile*
+        ./compile-O2
+
+    - name: Verify binary (macOS)
+      if: runner.os == 'macOS'
+      run: |
+        test -f Tests/arc || { echo "::error::build produced no Tests/arc"; exit 1; }
+        test -s Tests/arc || { echo "::error::Tests/arc is empty"; exit 1; }
+        chmod +x Tests/arc
+        ./Tests/arc --help > /tmp/arc-help.txt 2>&1 || true
+        grep -qi 'command' /tmp/arc-help.txt || {
+          echo "::error::Tests/arc did not produce recognisable help output"
+          head -20 /tmp/arc-help.txt; exit 1; }
+        echo "binary verified: $(wc -c < Tests/arc) bytes"
+
+    - name: Test (macOS)
+      if: runner.os == 'macOS'
+      run: |
+        chmod +x Tests/*.sh
+        Tests/run-tests.sh Tests/arc
+
+  # ── Windows (cross-compiled from Linux) ─────────────────────────────────────
+  # Windows is built here rather than on a Windows runner under MSYS2.
+  #
+  # The MSYS2 jobs ran compile-O2 -> ./compile, which hardcodes -DFREEARC_UNIX.
+  # That compiles the Unix compat block in Compression/Common.h, whose
+  # __cdecl/_stat/WINAPI/FARPROC definitions then collide with the real
+  # windows.h reached via LZMA/Windows/Thread.h. They never produced a binary.
+  #
+  # compile-mhs-win64 builds the FREEARC_WIN path with the mingw-w64 cross
+  # toolchain, which works, and Wine lets the result actually be exercised
+  # instead of merely inspected.
+  #
+  # Trade-off worth knowing: this checks the Windows *binary*, not a Windows
+  # *host*. Wine is not Windows, and nothing here covers the ARM64 Windows
+  # target the old matrix nominally had (it installed x86-64 MSYS2 packages
+  # anyway). Reinstating a native job is worthwhile once the FREEARC_WIN path
+  # is known-good; that is easier to do from a working baseline than from a
+  # job that has never once succeeded.
+  windows-cross:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v6.0.2
+      with:
+        lfs: false
+    - name: Install cross toolchain and Wine
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y --no-install-recommends mingw-w64 mingw-w64-tools cpphs wine64 wine
+    - name: Install MicroHs
+      run: |
         microhs_sha="05a3fbd5d73ae6a37111a6ced5b57bb1717b8975"
         microhs_tar="/tmp/microhs.tar.gz"
         microhs_expected_sha256="a1f85821cbae877d0ea3e173235d45c833d9145b2ca9e92e77d284b6730c63b6"
@@ -94,17 +194,95 @@ jobs:
         echo "$microhs_expected_sha256  $microhs_tar" | sha256sum -c -
         tar -xzf "$microhs_tar" -C /tmp
         cd "/tmp/MicroHs-$microhs_sha"
-
-        # Build MicroHs in MSYS environment (has Unix compatibility headers)
-        export MSYSTEM=MSYS
         make minstall
-      env:
-        MSYSTEM: MSYS
-    - name: Build (Windows)
-      if: runner.os == 'Windows'
-      shell: msys2 {0}
+        echo "$HOME/.mcabal/bin" >> "$GITHUB_PATH"
+    - name: Build (Windows cross)
       run: |
-        export PATH="$HOME/.mcabal/bin:$PATH"
-        cd "$GITHUB_WORKSPACE"
-        chmod +x compile*
-        ./compile-O2
+        chmod +x compile-win64-c compile-mhs-win64
+        ./compile-mhs-win64
+    # compile-mhs-win64 already checks the MZ signature, so this is about the
+    # artifact reaching the workspace rather than re-deriving the same fact.
+    - name: Verify binary
+      run: |
+        test -f Tests/arc-mhs-win64.exe || { echo "::error::no Tests/arc-mhs-win64.exe"; exit 1; }
+        echo "binary verified: $(wc -c < Tests/arc-mhs-win64.exe) bytes"
+    # A PE header only proves the toolchain was wired up. The first working
+    # cross-build produced a valid image that printed its help and then failed
+    # every archive operation, so run the thing.
+    - name: Smoke-test under Wine
+      run: |
+        chmod +x Tests/win-test.sh
+        Tests/win-test.sh
+
+  # ── AddressSanitizer on x86-64 ──────────────────────────────────────────────
+  # Added to diagnose a double free that only appeared on this runner. It found
+  # that one and an out-of-bounds read in Dict/phase1 on its first two runs, and
+  # now passes, so it is kept as a real check rather than deleted.
+  #
+  # It is deliberately NOT continue-on-error. That flag was right while the job
+  # was expected to fail, but on a green job it would swallow exactly the
+  # regressions this exists to catch.
+  #
+  # Cost: roughly doubles the Linux CI time. The memory bugs in this codebase
+  # have consistently been invisible at every warning level, produced different
+  # symptoms per platform, and in two cases corrupted the heap silently on
+  # x86-64 while crashing elsewhere -- so the trade is worth it. If the time
+  # becomes a problem, narrow the case list before dropping the job.
+  asan-x86_64:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v6.0.2
+      with:
+        lfs: false
+    - name: Install LLVM and Clang
+      uses: KyleMayes/install-llvm-action@v2
+      with:
+        version: "21.1.8"
+    - name: Install packages
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y liblua5.1-dev libncurses-dev libcurl4-openssl-dev cpphs
+    - name: Install MicroHs
+      run: |
+        microhs_sha="05a3fbd5d73ae6a37111a6ced5b57bb1717b8975"
+        microhs_tar="/tmp/microhs.tar.gz"
+        microhs_expected_sha256="a1f85821cbae877d0ea3e173235d45c833d9145b2ca9e92e77d284b6730c63b6"
+        curl -fsSL "https://github.com/augustss/MicroHs/archive/$microhs_sha.tar.gz" -o "$microhs_tar"
+        echo "$microhs_expected_sha256  $microhs_tar" | sha256sum -c -
+        tar -xzf "$microhs_tar" -C /tmp
+        cd "/tmp/MicroHs-$microhs_sha"
+        make minstall
+        echo "$HOME/.mcabal/bin" >> "$GITHUB_PATH"
+    - name: Build with AddressSanitizer
+      run: |
+        chmod +x compile* Compression/compile
+        DARC_SANITIZE=address ./compile
+    # detect_leaks=0: this is a hunt for a specific heap-corruption bug, and
+    # LeakSanitizer would otherwise bury the report under leaks inherited from
+    # a codebase that has never been leak-clean.
+    # abort_on_error=1 makes the first report terminate rather than letting a
+    # corrupted process wander on and produce a confusing second failure.
+    - name: Run suite under ASan
+      env:
+        ASAN_OPTIONS: detect_leaks=0:abort_on_error=1:print_stacktrace=1
+      run: |
+        chmod +x Tests/*.sh
+        Tests/run-tests.sh Tests/arc
+    # The suite hides per-case output on success, so surface any ASan report
+    # that landed in a per-configuration log even when the case was recorded
+    # as a failure rather than a crash.
+    - name: Surface ASan reports
+      if: always()
+      run: |
+        work="${TMPDIR:-/tmp}/darc-tests-work"
+        found=0
+        for f in "$work"/*.log; do
+          [ -f "$f" ] || continue
+          if grep -q "AddressSanitizer" "$f"; then
+            found=1
+            echo "::group::$(basename "$f")"
+            cat "$f"
+            echo "::endgroup::"
+          fi
+        done
+        [ "$found" = 1 ] || echo "no AddressSanitizer reports found in $work"

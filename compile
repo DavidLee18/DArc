@@ -1,4 +1,12 @@
 #!/usr/bin/env bash
+# Build the console (or GUI) binary with MicroHs.
+#
+# set -e is deliberate and load-bearing. Without it this script ran to
+# completion and exited 0 even when the C build and the mhs link had both
+# failed, so CI reported success for builds that produced nothing at all.
+# Every failure must stop the build here.
+set -euo pipefail
+
 exe=Tests/arc
 gui_flag=""
 for option; do
@@ -15,39 +23,109 @@ else
   bit64=""
 fi
 defines="-DFREEARC_UNIX -DFREEARC_INTEL_BYTE_ORDER $bit64"
+# macOS has no /proc, so the Haskell side cannot read /proc/meminfo there and
+# must go through the C sysctl implementation in Environment.cpp instead.
+if [ "$(uname -s)" = "Darwin" ]; then defines="$defines -DFREEARC_MACOS"; fi
 # ******** -DFREEARC_WIN -DFREEARC_MOTOROLA_BYTE_ORDER -DFREEARC_ONLY_ALIGNED_ACCESS *******
-cp unix-common.mak common.mak
-cd Compression
-chmod +x compile
-./compile
-cd ..
-make ALL DEFINES="-DFREEARC_UNIX -DFREEARC_INTEL_BYTE_ORDER $bit64 -D__MHS__"
-lua_libs=$(pkg-config --libs lua5.1 2>/dev/null || echo "-llua5.1")
+# libcurl detection must happen BEFORE any C is compiled. URL.cpp is guarded by
+# FREEARC_NOURL, so if the probe runs after "make ALL" the guard never reaches
+# the C side: URL.o is built full of curl calls, the link omits -lcurl, and the
+# build dies with a screen of undefined references to curl_easy_*. Only the
+# Haskell half ever saw the define. This stayed hidden because CI installs
+# libcurl and pkg-config together, so the no-curl path was never exercised.
 if pkg-config --exists libcurl 2>/dev/null; then
   curl_libs=$(pkg-config --libs libcurl)
 else
   curl_libs=""
   defines="$defines -DFREEARC_NOURL"
 fi
-clang -std=c99 -c HsLua/src/ntrljmp.c -IHsLua/src $(pkg-config --cflags lua5.1 2>/dev/null) -o $ctempdir/ntrljmp.o
-c_objs="$ctempdir/Environment.o $ctempdir/URL.o $ctempdir/Common.o $ctempdir/CompressionLibrary.o $ctempdir/C_PPMD.o $ctempdir/C_LZP.o $ctempdir/C_LZMA.o $ctempdir/C_LZMA2.o $ctempdir/LzmaEnc.o $ctempdir/LzmaDec.o $ctempdir/Lzma2Enc.o $ctempdir/Lzma2Dec.o $ctempdir/MtCoder.o $ctempdir/MtDec.o $ctempdir/7zStream.o $ctempdir/LzFind.o $ctempdir/LzFindMt.o $ctempdir/Threads.o $ctempdir/LzFindOpt.o $ctempdir/CpuArch.o $ctempdir/C_LZ4.o $ctempdir/C_BCJ.o $ctempdir/C_GRZip.o $ctempdir/C_BSC.o $ctempdir/C_DisPack.o $ctempdir/C_Zstd.o $ctempdir/C_7z.o $ctempdir/C_Dict.o $ctempdir/C_REP.o $ctempdir/C_MM.o $ctempdir/C_TTA.o $ctempdir/C_Tornado.o $ctempdir/C_4x4.o $ctempdir/C_Delta.o $ctempdir/C_External.o $ctempdir/C_Encryption.o $ctempdir/ntrljmp.o"
-c_libs="-lstdc++ -lncurses -lpthread -lgomp $curl_libs $lua_libs"
+# Optional sanitizer build: DARC_SANITIZE=address ./compile
+#
+# Every makefile here spells its flags as
+#     CFLAGS = $(CODE_FLAGS) $(OPT_FLAGS) $(DEBUG_FLAGS) $(DEFINES)
+# so overriding DEBUG_FLAGS on the make command line reaches all of them --
+# make gives command-line variables priority over assignments in the file.
+#
+# Only DArc's own C/C++ is instrumented; the MicroHs runtime is left alone.
+# That is deliberate rather than a limitation: ASan intercepts malloc/free
+# process-wide, so heap errors are still caught everywhere, and instrumenting
+# the generated runtime only adds noise (it has a known misaligned store).
+#
+# -fno-omit-frame-pointer is required for usable stack traces because the
+# OPT_FLAGS above pass -fomit-frame-pointer.
+if [ -n "${DARC_SANITIZE:-}" ]; then
+  export DARC_DEBUG_FLAGS="-g -fsanitize=${DARC_SANITIZE} -fno-omit-frame-pointer"
+  echo "sanitizer build: -fsanitize=${DARC_SANITIZE}"
+fi
+cp unix-common.mak common.mak
+cd Compression
+chmod +x compile
+./compile
+cd ..
+# Spelled out rather than passing an array of extra arguments: macOS ships
+# bash 3.2, where expanding an empty array under `set -u` is an "unbound
+# variable" error.
+if [ -n "${DARC_DEBUG_FLAGS:-}" ]; then
+  make ALL DEFINES="$defines -D__MHS__" DEBUG_FLAGS="$DARC_DEBUG_FLAGS"
+else
+  make ALL DEFINES="$defines -D__MHS__"
+fi
+# Lua 5.1 is built from the copy vendored in HsLua/src rather than linked from
+# the system. Distributions have been dropping Lua 5.1 for years -- Homebrew
+# removed lua@5.1 entirely -- and the vendored copy is the version HsLua's
+# bindings were written against, so using it removes an external dependency and
+# a version-skew risk at the same time.
+lua_libs=""
+lua_objs=""
+for src in HsLua/src/*.c; do
+  obj="$ctempdir/hslua_$(basename "${src%.c}").o"
+  clang -std=c99 -O2 -w -c "$src" -IHsLua/src -o "$obj"
+  lua_objs="$lua_objs $obj"
+done
+c_objs="$ctempdir/Environment.o $ctempdir/URL.o $ctempdir/Common.o $ctempdir/CompressionLibrary.o $ctempdir/C_PPMD.o $ctempdir/C_LZP.o $ctempdir/C_LZMA.o $ctempdir/C_LZMA2.o $ctempdir/LzmaEnc.o $ctempdir/LzmaDec.o $ctempdir/Lzma2Enc.o $ctempdir/Lzma2Dec.o $ctempdir/MtCoder.o $ctempdir/MtDec.o $ctempdir/7zStream.o $ctempdir/LzFind.o $ctempdir/LzFindMt.o $ctempdir/Threads.o $ctempdir/LzFindOpt.o $ctempdir/CpuArch.o $ctempdir/C_LZ4.o $ctempdir/C_BCJ.o $ctempdir/C_GRZip.o $ctempdir/C_BSC.o $ctempdir/C_DisPack.o $ctempdir/C_Zstd.o $ctempdir/C_7z.o $ctempdir/C_Dict.o $ctempdir/C_REP.o $ctempdir/C_MM.o $ctempdir/C_TTA.o $ctempdir/C_Tornado.o $ctempdir/C_4x4.o $ctempdir/C_Delta.o $ctempdir/C_External.o $ctempdir/C_Encryption.o"
+# -lgomp is GNU's OpenMP runtime and does not exist on macOS. Nothing in this
+# build actually uses OpenMP (see the note in unix-common.mak), so it is simply
+# omitted there rather than substituting Apple's -lomp.
+case "$(uname -s)" in
+  Darwin) omp_libs="" ;;
+  *)      omp_libs="-lgomp" ;;
+esac
+c_libs="-lstdc++ -lncurses -lpthread $omp_libs $curl_libs $lua_libs"
+# The sanitizer runtime has to reach the final link too, not just compilation.
+if [ -n "${DARC_SANITIZE:-}" ]; then c_libs="-fsanitize=${DARC_SANITIZE} $c_libs"; fi
 if [[ -n $gui_flag ]]; then c_objs="$c_objs $ctempdir/GuiEnvironment.o"; fi
 # Build -optc defines for C files compiled by the Haskell compiler
 optc_defines=""
 for d in $defines $gui_flag; do optc_defines="$optc_defines -optc${d}"; done
 # Collect optimization flag (-O2 by default) -- already parsed above
-lua_cflags=$(pkg-config --cflags lua5.1 2>/dev/null || echo "-I/usr/include/lua5.1")
+lua_cflags="-IHsLua/src"   # vendored Lua 5.1 headers
 rm -f $exe
 if ! command -v mhs >/dev/null 2>&1; then
   echo "error: mhs (MicroHs) is required for Haskell compilation but was not found in PATH" >&2
   exit 1
 fi
+# mhs shells out to cpphs for modules carrying {-# LANGUAGE CPP #-}, and most
+# of this codebase does. When cpphs is absent mhs dies with a bare
+# "callCommand: failed 32512", which is exit 127 (command not found) shifted
+# into wait() encoding -- not an obvious message. Check for it up front and
+# say so plainly instead.
+if ! command -v cpphs >/dev/null 2>&1; then
+  echo "error: cpphs was not found in PATH." >&2
+  echo "       mhs requires it to preprocess {-# LANGUAGE CPP #-} modules." >&2
+  echo "       Debian/Ubuntu: sudo apt-get install cpphs" >&2
+  echo "       Otherwise:     cabal install cpphs   (or add ~/.mcabal/bin to PATH)" >&2
+  exit 1
+fi
 # Build -optc and -optl flags for the mhs C backend
-optc_args="-optc -I. -optc -ICompression -optc -IHsLua/src"
+# mhs emits its callback trampoline as HsFunPtr (void(*)(void)) and passes it
+# where CALLBACK_FUNC* is expected. The cast is ABI-safe and the code is
+# generated, not ours, but newer clang promotes the mismatch from warning to
+# error, which stops the macOS build. Older clang on the CI runners only warns,
+# and -w already hid it there.
+optc_args="-optc -I. -optc -ICompression -optc -IHsLua/src -optc -Wno-incompatible-function-pointer-types"
 for f in $lua_cflags; do optc_args="$optc_args -optc $f"; done
 optl_args=""
-for o in $c_objs; do optl_args="$optl_args -optl $o"; done
+for o in $c_objs $lua_objs; do optl_args="$optl_args -optl $o"; done
 for l in $c_libs; do optl_args="$optl_args -optl $l"; done
 mhs Arc \
   -iCompression -icompat-ghc -icompat-oldtime -iHsLua/src \
@@ -56,3 +134,12 @@ mhs Arc \
   $optl_args \
   -o$exe
 rm -f Compression/CompressionLib_stub.?
+
+# Prove the build actually produced something before claiming success. mhs can
+# exit non-zero in ways set -e catches, but a script that reports success
+# without ever checking for its own output is how this build stayed silently
+# broken across every platform for months.
+[ -f "$exe" ] || { echo "error: build reported success but $exe does not exist" >&2; exit 1; }
+[ -s "$exe" ] || { echo "error: $exe was produced but is empty" >&2; exit 1; }
+chmod +x "$exe"
+echo "Built: $exe ($(wc -c <"$exe" | tr -d ' ') bytes)"

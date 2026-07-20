@@ -30,3 +30,17 @@ common.mak
 *.tar.gz
 
 .DS_Store
+
+# generated test corpus and scratch
+Tests/corpus/
+Tests/.work/
+
+# Left in the working tree when arc dies mid-write (common while testing crashes)
+$$temparc$$*.tmp
+#.arc
+
+# Cross-built Windows binaries
+Tests/*.exe
+
+# Rust build output
+rust/*/target/

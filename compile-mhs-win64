@@ -59,8 +59,48 @@ linker_inputs=""
 for o in "${c_objs[@]}"; do linker_inputs="$linker_inputs $o"; done
 
 export CC="x86_64-w64-mingw32-gcc-posix"
-export MHSCCFLAGS="-O2 -static-libgcc -static-libstdc++ -I. -ICompression -IHsLua/src $defines $gui_flag"
+# Everything below makes up for what runtime/mingw/config.h does not provide.
+# See the MHSCONF note further down for why neither shipped config works alone.
+
+# Feature switches that runtime/unix/config.h sets and runtime/mingw/config.h
+# does not. Each omission surfaces only at *runtime*, as a primitive missing
+# from the FFI table -- WANT_DIR shows up as "ERR: FFI unknown opendir" the
+# moment DArc scans a directory -- so they are supplied as a set rather than
+# discovered one crash and one 10-minute build at a time. mingw-w64 has the
+# headers behind all of them. ISWINDOWS backs the runtime's iswindows() query,
+# which is how Haskell code detects the platform.
+runtime_defs="-DWANT_FLOAT32=1 -DWANT_FLOAT64=1 -DWANT_INT64=1"
+runtime_defs="$runtime_defs -DWANT_DIR=1 -DWANT_TIME=1 -DWANT_FD=1"
+runtime_defs="$runtime_defs -DISWINDOWS=1"
+
+# A clock, and a one-argument mkdir. Both are Unix-only upstream: without the
+# clock every threadDelay dies with "ERR: threadDelay: no clock", which is fatal
+# for DArc's all-concurrent pipeline, and WANT_DIR makes the runtime call POSIX
+# two-argument mkdir, which mingw does not have. See compat-win/mhs_win_compat.h.
+# All of these are plain identifier macros, so none of it needs shell quoting.
+runtime_defs="$runtime_defs -include compat-win/mhs_win_compat.h"
+runtime_defs="$runtime_defs -DCLOCK_T=int64_t -DCLOCK_INIT=darc_mhs_clock_init"
+runtime_defs="$runtime_defs -DCLOCK_GET=darc_mhs_clock_get -DCLOCK_SLEEP=usleep"
+export MHSCCFLAGS="-O2 -static-libgcc -static-libstdc++ -I. -ICompression -IHsLua/src $runtime_defs $defines $gui_flag"
 export MHSCCLIBS="$linker_inputs $win_libs"
+# Neither MicroHs runtime config fits a mingw cross-build on its own, so use
+# "mingw" and supply what it is missing (see runtime_defs above).
+#
+#   runtime/mingw/config.h   GCC-oriented (__builtin_ffsll/clzll/ctzll), which
+#                            is what this toolchain needs -- but stale: it sets
+#                            the pre-rename WANT_FLOAT and defines neither
+#                            WANT_FLOAT32/WANT_FLOAT64 nor WANT_INT64, so
+#                            eval.c fails with "'union <anonymous>' has no
+#                            member named 'uuflt32value'".
+#
+#   runtime/windows/config.h current names, but written for MSVC: it pulls in
+#                            <intrin.h> and <Windows.h> with a capital W. mingw
+#                            ships lowercase windows.h, and cross-compiling on
+#                            Linux is case-sensitive, so it fails with
+#                            "Windows.h: No such file or directory".
+#
+# Both observed on MicroHs 0.15.4.0, the commit CI pins. Upstream inconsistency,
+# not something this repo introduced.
 export MHSCONF="mingw"
 
 # 4) Run mhs with -tenvironment
@@ -81,12 +121,23 @@ mhs Arc \
   $optc_args \
   -o "$exe"
 
-if [[ -f "$exe" ]]; then
-  echo ""
-  echo "Built: $exe"
-  ls -la "$exe"
-  file "$exe"
-else
+if [[ ! -f "$exe" ]]; then
   echo "error: build did not produce $exe" >&2
   exit 1
 fi
+[[ -s "$exe" ]] || { echo "error: $exe was produced but is empty" >&2; exit 1; }
+
+# Check the output really is a Windows binary rather than trusting that the
+# cross toolchain was wired up correctly: the first two bytes of a PE image are
+# "MZ". Done inline because `file` is not installed everywhere -- and when it
+# was missing this script exited 127 *after a successful build*, reporting
+# failure for a binary that was sitting right there.
+if [[ "$(head -c 2 "$exe")" != "MZ" ]]; then
+  echo "error: $exe does not start with the MZ signature -- not a Windows executable" >&2
+  exit 1
+fi
+
+echo ""
+echo "Built: $exe ($(wc -c <"$exe" | tr -d ' ') bytes)"
+command -v file >/dev/null 2>&1 && file "$exe"   # extra detail when available
+exit 0

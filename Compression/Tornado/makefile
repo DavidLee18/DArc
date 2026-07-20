@@ -5,8 +5,8 @@ ALL: $(TEMPDIR)/C_Tornado.o
 CODE_FLAGS  = -fno-exceptions -fno-rtti \
               -Wno-unknown-pragmas -Wno-sign-compare -Wno-conversion
 OPT_FLAGS   = -O3 \
-              -fomit-frame-pointer -fstrict-aliasing \
-              -ffast-math -funroll-loops --param inline-unit-growth=999
+              -fomit-frame-pointer -fno-strict-aliasing \
+              -funroll-loops --param inline-unit-growth=999
 DEBUG_FLAGS = -g0
 CFLAGS = $(CODE_FLAGS) $(OPT_FLAGS) $(DEBUG_FLAGS) $(DEFINES)
 

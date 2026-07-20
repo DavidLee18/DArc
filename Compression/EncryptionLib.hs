@@ -53,11 +53,11 @@ foreign import ccall unsafe  "Compression.h  fortuna_size"
 {-# NOINLINE prng_size #-}
 prng_size :: CInt
 prng_size = unsafePerformIO c_prng_size
-foreign import ccall unsafe  "Compression.h  fortuna_start"
+foreign import ccall unsafe  "EncryptionFFI.h  fortuna_start"
    prng_start :: Ptr CChar -> IO CInt
-foreign import ccall unsafe  "Compression.h  fortuna_add_entropy"
+foreign import ccall unsafe  "EncryptionFFI.h  fortuna_add_entropy"
    prng_add_entropy :: Ptr CChar -> CULong -> Ptr CChar -> IO CInt
-foreign import ccall unsafe  "Compression.h  fortuna_ready"
+foreign import ccall unsafe  "EncryptionFFI.h  fortuna_ready"
    prng_ready :: Ptr CChar -> IO CInt
-foreign import ccall unsafe  "Compression.h  fortuna_read"
+foreign import ccall unsafe  "EncryptionFFI.h  fortuna_read"
    prng_read :: Ptr CChar -> CULong -> Ptr CChar -> IO CULong

@@ -141,7 +141,7 @@ int lzp_compress (MemSize BlockSize, int MinCompression, int MinMatchLen, int Ha
         MALLOC (BYTE, Out, InSize+2);
         OutSize = LZPEncode (In, InSize, Out, MinMatchLen, 1<<HashSizeLog, Barrier, SmallestLen);
         if (OutSize<0)  {errcode=OutSize; goto finished;}
-        if (OutSize==0 || MinCompression>0 && OutSize/MinCompression>=InSize/100) {
+        if (OutSize==0 || (MinCompression>0 && OutSize/MinCompression>=InSize/100)) {
             // Failed to compress the data [well enough], so store the original data instead
             FreeAndNil(Out);
             WRITE4 (-InSize);      // A negative number as the block length marks a Stored block

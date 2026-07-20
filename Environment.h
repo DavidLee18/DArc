@@ -66,6 +66,65 @@ void *darc_get_haskell_callback_ptr(void);
 // FreeArc 0.67 --shutdown / -ioff: power off the machine after archive op.
 void PowerOffComputer(void);
 
+// ---------------------------------------------------------------------------
+// Helper entry points called from MicroHs-generated C.
+//
+// These are defined with extern "C" in Environment.cpp but were never declared
+// here, so every call site saw an implicit declaration. C89 lets that through
+// by assuming `int f()`; C99 removed it, and newer clang rejects it outright,
+// which is why the macOS build failed at link time while Linux only warned
+// (and -w hid even that).
+//
+// It is also a real defect rather than a portability nuisance. An implicit
+// declaration assumes a return type of int, so the eight functions below that
+// return long had their results truncated to 32 bits at every call. That is
+// almost certainly why the _w variants exist, writing their result through an
+// out-parameter to sidestep the return value entirely. Declaring them properly
+// removes the need for that workaround.
+// ---------------------------------------------------------------------------
+long darc_bfile_read (void *bf, void *buf, long size);
+void darc_bfile_read_w (void *bf, void *buf, long size, long *out);
+int darc_bfile_seek (void *bf, long offset, int whence);
+long darc_bfile_size (void *bf);
+void darc_bfile_size_w (void *bf, long *out);
+long darc_bfile_tell (void *bf);
+void darc_bfile_tell_w (void *bf, long *out);
+int darc_bfile_truncate (void *bf, long size);
+long darc_bfile_write (void *bf, const void *buf, long size);
+void darc_bfile_write_w (void *bf, const void *buf, long size, long *out);
+int darc_check_sigint (void);
+void darc_clear_sigint (void);
+void darc_fill_tm (int *out, int sec, int min_, int hour, int mday, int mon, int year, int wday, int yday, int isdst, int gmtoff_min);
+int darc_get_nprocs (void);
+void darc_gmtime (long secs, int *out);
+void darc_install_sigint (void);
+int darc_join_volumes (const char *dst_prefix, const char *dst_path);
+void darc_localtime (long secs, int *out);
+long darc_mktime_tz (int year, int mon, int mday, int hour, int min, int sec, int gmtoff_min);
+void darc_mktime_tz_w (int year, int mon, int mday, int hour, int min, int sec, int gmtoff_min, long *out);
+int darc_queue_acquire (const char *path);
+void darc_queue_release (int fd);
+int darc_realpath (const char *path, char *out);
+int darc_sizeof_stat (void);
+int darc_split_file (const char *src_path, const char *dst_prefix, const char *volume_size_str);
+unsigned int darc_st_mode (struct stat *p);
+long darc_st_mtime (struct stat *p);
+void darc_st_mtime_w (struct stat *p, long *out);
+long darc_st_size (struct stat *p);
+void darc_st_size_w (struct stat *p, long *out);
+int darc_strftime (char *buf, size_t size, const char *fmt, int *flat_tm);
+long darc_time (void);
+void darc_time_w (long *out);
+void darc_urandom_read_w (void *buf, long size, long *out);
+int darc_utimes (const char *path, long atime, long mtime);
+void darc_volfile_close (int slot);
+int darc_volfile_open (const char *prefix);
+void darc_volfile_pos_out (int slot, long long *out);
+int darc_volfile_read (int slot, void *buf, int n);
+void darc_volfile_seek (int slot, long long pos);
+void darc_volfile_size_out (int slot, long long *out);
+
+
 #ifdef  __cplusplus
 }
 #endif

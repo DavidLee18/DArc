@@ -467,10 +467,21 @@ int phase1 (byte *buf, unsigned bufsize)
         if (sizeof(hash0_t) >= sizeof(int))    break;   // Without this check we could loop forever on entry zero ;)
     }
 
-    byte *p = buf,                  // pointer to the next character to process
-         *endbuf = buf+bufsize-WORD_STEP-1;  // end of the part of the buffer being processed
+    byte *p = buf;                  // pointer to the next character to process
+    // End of the part of the buffer being processed.
+    //
+    // bufsize is unsigned, so for a block shorter than WORD_STEP+2 bytes this
+    // subtraction does not go negative -- it walks off the front of the buffer.
+    // Clamped to buf so the scan below is skipped outright instead of reading
+    // outside the block.
+    byte *endbuf = bufsize > (unsigned)(WORD_STEP+1) ? buf+bufsize-WORD_STEP-1 : buf;
 
-    do {
+    // Tested before the first iteration, not after it. As a do/while the body
+    // ran once no matter how short the block was, and its opening
+    // "c1 = *p++; c = *p" then read past the end. Reachable from any solid
+    // block smaller than six bytes -- with -s- every file is its own block, so
+    // the corpus's empty.txt and one-byte.txt hit it immediately.
+    while (p < endbuf) {
         byte *p0 = p;             // pointer to the start of the word currently being processed
         unsigned c1 = *p++;  unsigned c = *p;  // the next-to-last and last characters
         unsigned hash0;           // the hash of the word [p0,p) will be kept here
@@ -569,7 +580,7 @@ int phase1 (byte *buf, unsigned bufsize)
 
     end:while (p0<p)  char_counts[*p0++]++;  // counting byte frequencies in the input data
 
-    } while (p < endbuf);
+    }
 
     while (p<buf+bufsize)  char_counts[*p++]++;
 
@@ -651,8 +662,25 @@ int phase2 (unsigned bufsize, int MinLargeCnt, int MinMediumCnt, int MinSmallCnt
 
     // Move the surviving words to the start of the FirstWord array and shrink it to keep only them
     int good_words = LastWord-q;
-    memmove (FirstWord, q, good_words*sizeof(Word));  LastWord = FirstWord + good_words;
-    FirstWord = (Word*) realloc (FirstWord, good_words*sizeof(Word));
+    memmove (FirstWord, q, good_words*sizeof(Word));
+    // LastWord must be derived from the pointer realloc returns, not the one
+    // passed in: realloc is free to move the block, and it does here. Setting
+    // LastWord first left it dangling into the old allocation, so phase3's
+    // qsort ran with an element count computed from two unrelated pointers and
+    // read past the end of the array. Fatal on ARM64 (SIGBUS); on x86-64 it
+    // silently produced a corrupt dictionary instead.
+    //
+    // The good_words==0 case must skip the realloc entirely. realloc(p,0) is
+    // not a failed resize: glibc frees p and returns NULL, so the "keep the old
+    // block if realloc fails" branch below would keep a pointer that had just
+    // been freed. phase2 then returns -1, and DictEncode's check() cleanup
+    // frees it a second time -- an actual double free, which is how this was
+    // found ("attempting double-free ... freed by realloc in phase2").
+    if (good_words > 0) {
+      Word *shrunk = (Word*) realloc (FirstWord, good_words*sizeof(Word));
+      if (shrunk)  FirstWord = shrunk;    // a genuine failed resize: keep the old block
+    }
+    LastWord = FirstWord + good_words;
     debug (verbose>0 && printf( " Good words: %d                ", good_words) );
 
     return good_words>0? 0 : -1;  // All right if there is at least one good word
@@ -1025,8 +1053,16 @@ inline CodeWord *FindWord (byte *p0, byte *endbuf)
     // contains only 7 spaces, then hash0 will be the hash of 7 spaces and at that address in code_words
     // there will be the 5-space word - believe it or not)
     byte *p = p0;
+    if (p >= endbuf)  return NULL;      // nothing to read at all
     unsigned hash0 = hashsize + *p++;
-    do {
+    // The end-of-buffer test has to happen BEFORE the read, not after it.
+    // This was a do/while, so "byte c = *p++" below ran once unconditionally:
+    // when p0 addressed the final byte of the buffer the initial read above
+    // already left p == endbuf, and that read went one byte past the end.
+    // ASan reports it as "READ of size 1 ... 0 bytes to the right" of the
+    // input block. Every subsequent iteration was already guarded, so hoisting
+    // the test only adds the missing first check.
+    while (p<endbuf) {
         // Compute the hash of the word [p0,p)
         byte c = *p++;
         unsigned hash = update_hash (hash0, c);
@@ -1046,7 +1082,7 @@ inline CodeWord *FindWord (byte *p0, byte *endbuf)
         break;
 
 found:  hash0 = hash;    // The word was found, we move on to looking for a word one character longer
-    } while (p<endbuf);  // But it is still better not to run past the end of the buffer :D
+    }
 
     p--; // No word ending at p was found, so now we check the word that is one byte shorter
     CodeWord *word = &codewords_hash [hash0 & hashmask];

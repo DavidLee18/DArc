@@ -362,6 +362,19 @@ void Pbkdf2Hmac (const BYTE *pwd, int pwdSize, const BYTE *salt, int saltSize,
 
 int fortuna_size (void);
 
+// The Fortuna PRNG entry points that EncryptionLib.hs binds are declared in
+// EncryptionFFI.h, not here. Declaring them in this header collided with
+// LibTomCrypt's own prototypes (prng_state* versus an opaque pointer) in every
+// translation unit that includes both, which broke the build on all five
+// platforms.
+
+// .7z support, implemented in Compression/7z/C_7z.c. Declared here rather than
+// in a 7z-specific header so that the FFI imports in Arc7z.hs can name a
+// header the generated C already includes.
+int darc_7z_list    (const char *path);
+int darc_7z_extract (const char *path, const char *out_dir);
+int darc_7z_test    (const char *path);
+
 
 #ifdef __cplusplus
 }       // extern "C"

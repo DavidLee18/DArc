@@ -1,52 +1,46 @@
-make
-cd External
-make
-cd ..
-cd LZP
-make
-cd ..
-cd REP
-make
-cd ..
-cd Delta
-make
-cd ..
-cd MM
-make
-cd ..
-cd Tornado
-make
-cd ..
-cd 4x4
-make
-cd ..
-cd Dict
-make
-cd ..
-cd PPMD
-make
-cd ..
-cd GRZip
-make
-cd ..
-cd BSC
-make
-cd ..
-cd DisPack
-make
-cd ..
-cd Zstd
-make
-cd ..
-cd 7z
-make
-cd ..
-cd LZMA
-make
-cd ..
-cd LZ4
-make
-cd ..
-cd _Encryption
-make
-cd ..
+#!/usr/bin/env bash
+# Build every compression codec.
+#
+# This script previously ran `make` in each directory with no error checking
+# at all, so a codec could fail to compile and the script would still exit 0.
+# Combined with the same omission in the top-level compile script, that meant
+# CI reported success for builds that produced no binary -- for months.
+# Hence the strictness below: a failure anywhere must stop the build and be
+# named.
+set -euo pipefail
+
+HERE="$(cd "$(dirname "$0")" && pwd)"
+cd "$HERE"
+
+CODECS=(
+  External LZP REP Delta MM Tornado 4x4 Dict PPMD
+  GRZip BSC DisPack Zstd 7z LZMA LZ4 _Encryption
+)
+
+fail () { echo "ERROR: $*" >&2; exit 1; }
+
+# Sanitizer flags arrive from the top-level compile script as DARC_DEBUG_FLAGS
+# and override each makefile's own DEBUG_FLAGS. Passing it on the make command
+# line is what gives it priority over the assignment inside the makefile.
+#
+# This is a function rather than an array of extra arguments because macOS
+# still ships bash 3.2, where expanding an empty array under `set -u` is an
+# "unbound variable" error rather than nothing at all. An earlier version used
+# "${make_args[@]}" and broke the macOS build while working everywhere else.
+run_make () {
+  if [ -n "${DARC_DEBUG_FLAGS:-}" ]; then
+    make "$@" DEBUG_FLAGS="$DARC_DEBUG_FLAGS"
+  else
+    make "$@"
+  fi
+}
+
+# Common.o / CompressionLibrary.o first -- the codecs include their headers.
+run_make || fail "failed to build Compression/ (Common.o, CompressionLibrary.o)"
+
+for c in "${CODECS[@]}"; do
+  [ -d "$c" ] || fail "codec directory missing: Compression/$c"
+  run_make -C "$c" || fail "failed to build codec: Compression/$c"
+done
+
+echo "Compression: all ${#CODECS[@]} codecs built"

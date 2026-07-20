@@ -6,7 +6,7 @@ ZSTD_SRC   = libzstd
 ZSTD_INC   = -I$(ZSTD_SRC) -I$(ZSTD_SRC)/common
 CODE_FLAGS = -Wno-unknown-pragmas -Wno-sign-compare -Wno-conversion \
              -Wno-unused-function -Wno-unused-variable -Wno-unused-but-set-variable
-OPT_FLAGS  = -O3 -fomit-frame-pointer -fstrict-aliasing -funroll-loops
+OPT_FLAGS  = -O3 -fomit-frame-pointer -fno-strict-aliasing -funroll-loops
 ZSTD_DEFS  = -DZSTD_MULTITHREAD -DXXH_NAMESPACE=ZSTD_ -DZSTD_LEGACY_SUPPORT=0 -DZSTD_DISABLE_ASM
 
 ZSTD_CSRC := $(wildcard $(ZSTD_SRC)/common/*.c) \
