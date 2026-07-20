@@ -25,19 +25,30 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 ARC="${1:-$HERE/arc}"
 BLESS="${2:-}"
 CORPUS="$HERE/corpus"
-# The work tree must live OUTSIDE "$HERE", not at "$HERE/.work".
+# Archives are created from inside "$CORPUS" (see the create step), so a
+# relative "$ARC" such as ./arc would resolve against the wrong directory once
+# we cd. Absolutise it here, before the executable check below reports on it.
+case "$ARC" in
+  /*) ;;
+  *)  ARC="$(cd "$(dirname "$ARC")" 2>/dev/null && pwd)/$(basename "$ARC")" ;;
+esac
+# The work tree lives OUTSIDE "$HERE", not at "$HERE/.work".
 #
+# Creating from inside the corpus (see the create step) means only the corpus
+# is ever archived, so the original reason for this no longer applies. It is
+# kept because it is the stronger guarantee: no output of this suite can be
+# reachable from the tree the suite archives, whatever the create step later
+# becomes.
+#
+# The original failure is worth knowing, because it presented as a codec bug.
 # "arc a -r ... $CORPUS" treats the final path component as a mask and searches
-# for it recursively beneath the corpus's parent -- which is "$HERE". Extraction
-# reproduces the full stored path, so every "$HERE/.work/out-<label>" ends up
-# containing another directory named "corpus". The next create then matches
-# those too and stores a directory entry for each.
-#
-# The effect compounds: out-m4 carries copies of out-store's and out-m1's trees,
-# and so on, so the entry count grows far faster than the corpus does (228, 290,
+# for it recursively beneath the corpus's parent -- which was "$HERE". Extraction
+# reproduces the full stored path, so every "$HERE/.work/out-<label>" ended up
+# containing another directory named "corpus", and the next create matched those
+# too. The effect compounds: out-m4 carried copies of out-store's and out-m1's
+# trees, so the entry count grew far faster than the corpus did (228, 290,
 # 482 ... across the suite). That is what exhausted the MicroHs heap on the last
-# few configurations, and what left several same-named "corpus" directories for
-# the extraction check to choose between.
+# few configurations.
 WORK="${DARC_TEST_WORK:-${TMPDIR:-/tmp}/darc-tests-work}"
 FP="$HERE/fingerprints.txt"
 
@@ -54,7 +65,23 @@ tree_hash () {
     while IFS= read -r -d '' f; do printf '%s  %s\n' "$(hash_of "$f")" "$f"; done ) | $SHA | cut -d' ' -f1
 }
 
-[ -d "$CORPUS" ] || "$HERE/make-corpus.sh" "$CORPUS" >/dev/null
+# Regenerate the corpus every run rather than reusing whatever is on disk.
+#
+# Fingerprints are taken over archives built from this tree, so ANY stray file
+# in it changes every fingerprint at once. That is not hypothetical: a mistyped
+# option (`-s epn`, where -s is the solid flag) made the archiver treat "epn"
+# as the output name and write epn.arc into the corpus. The next --bless picked
+# up 219 files instead of 218 and recorded a baseline that no clean checkout
+# could reproduce -- presenting as "the fix is not deterministic after all"
+# rather than as "the corpus is dirty".
+#
+# make-corpus.sh does "rm -rf $DIR" first and is deterministic, so this is
+# cheap (218 small files) and makes the suite hermetic.
+"$HERE/make-corpus.sh" "$CORPUS" >/dev/null
+
+# An explicit, sorted file list -- the input side of making archive bytes
+# reproducible. See the create step for why scanning a directory is not enough.
+LIST="$WORK/filelist.txt"
 EXPECTED_TREE="$(tree_hash "$CORPUS")"
 
 # method:label pairs. Labels are used as filenames and fingerprint keys, so
@@ -94,6 +121,7 @@ pass=0; fail=0; drift=0
 declare -a NEWFP=()
 
 rm -rf "$WORK"; mkdir -p "$WORK"
+( cd "$CORPUS" && find . -type f | LC_ALL=C sort ) > "$LIST"
 
 # ---------------------------------------------------------------------------
 # Preflight. When every configuration fails identically the useful question is
@@ -205,11 +233,44 @@ while IFS= read -r line; do
     sed 's/^/    | /' "$3" | head -12
   }
 
-  # --nodates is what makes the archive bytes reproducible.
-  "$ARC" a --nodates -r -y $opts "$arc" "$CORPUS" >"$WORK/$label.create.log" 2>&1
+  # Three things together make these archive bytes reproducible, and all three
+  # are required. Dropping any one of them silently reintroduces a baseline
+  # that only matches on the machine that recorded it.
+  #
+  #   --nodates       no mtimes in the archive.
+  #
+  #   cd "$CORPUS"    entries are stored corpus-relative. Archiving by absolute
+  #                   path stores each path with the leading "/" stripped, so
+  #                   the checkout location ends up in the archive bytes: the
+  #                   same corpus at the same commit fingerprinted differently
+  #                   under /home/runner/... on CI and /src/Tests/... in a
+  #                   container.
+  #
+  #   --sort=epn      a deterministic file order. THIS IS THE SUBTLE ONE. The
+  #   with "@$LIST"   archiver's default sort order is "" which maps to `id`
+  #                   (ArhiveFileList.hs:38) -- it does not sort at all, and
+  #                   stores files in the order the filesystem hands them back.
+  #                   readdir order is filesystem-specific: APFS returned
+  #                   random2, zeros, pattern, random1 where ext4 returned
+  #                   random1, random2, zeros, pattern, for a byte-identical
+  #                   corpus. Every fingerprint therefore differed between
+  #                   macOS and Linux.
+  #
+  # An explicit "@$LIST" is not on its own enough: the archiver ignores the
+  # list's order (reversing the list produced a byte-identical archive), so
+  # --sort=epn is what actually fixes the order -- extension, directory,
+  # basename, a total order over distinct paths. The list still matters,
+  # because it also means no directory entries are stored, and
+  # "filelist = dirs ++ sortBy sort_order files" (ArhiveFileList.hs:33) never
+  # sorts the directories. The corpus has no empty directories, so nothing is
+  # lost by omitting them.
+  #
+  # Verified: identical bytes on macOS/APFS and Linux/ext4 despite different
+  # readdir order, and identical for a reversed input list.
+  ( cd "$CORPUS" && "$ARC" a --nodates -y --sort=epn $opts "$arc" "@$LIST" ) >"$WORK/$label.create.log" 2>&1
   st=$?
   if [ $st -ne 0 ]; then
-    show_fail create "$ARC a --nodates -r -y $opts $arc $CORPUS" "$WORK/$label.create.log" "$st"
+    show_fail create "(cd $CORPUS && $ARC a --nodates -y --sort=epn $opts $arc @$LIST)" "$WORK/$label.create.log" "$st"
     fail=$((fail+1)); continue
   fi
 
@@ -224,32 +285,21 @@ while IFS= read -r line; do
     fail=$((fail+1)); continue
   fi
 
-  # Locate the extracted payload.
+  # The payload lands directly in "$out": entries are stored corpus-relative,
+  # so extraction reproduces the corpus tree at the extraction root itself.
   #
-  # Archives store each path with the leading "/" stripped, so extracting with
-  # -dp"$out" reproduces the corpus at exactly "$out/${CORPUS#/}". Derive it
-  # rather than search for it.
-  #
-  # Searching by name was actively wrong: "arc a -r ... $CORPUS" treats the
-  # last path component as a *mask* and emits a directory entry for every
-  # directory of that name anywhere under the base dir. Extraction then
-  # recreates those as empty dirs, so "$out" holds several directories called
-  # "corpus" of which only one has files. The old
+  # This used to be "$out/${CORPUS#/}" -- derived, because absolute-path
+  # archives recreate the whole checkout path under the extraction directory.
+  # Searching for it by name instead was actively wrong: archiving a directory
+  # with "-r" makes the trailing name a *mask*, so the archive carried a
+  # directory entry for every directory of that name under the base dir,
+  # extraction recreated them as empty dirs, and
   #     find "$out" -type d -name corpus -print -quit
   # returned whichever readdir yielded first -- the real tree on some
-  # filesystems, an empty phantom on others -- which is why this suite reported
-  # "extract produced no files" on one CI runner and passed on another with a
-  # byte-identical archive. Nothing was wrong with extraction.
-  root="$out/${CORPUS#/}"
-  if [ ! -d "$root" ]; then
-    # Fall back only if the layout is genuinely unexpected, and even then
-    # prefer a candidate that actually holds files over the first one found.
-    root=""
-    for cand in $(find "$out" -type d -name "$(basename "$CORPUS")" 2>/dev/null | LC_ALL=C sort); do
-      if [ -n "$(find "$cand" -type f -print -quit 2>/dev/null)" ]; then root="$cand"; break; fi
-    done
-    [ -n "$root" ] || root="$out"
-  fi
+  # filesystems, an empty phantom on others. That is why this suite once
+  # reported "extract produced no files" on one CI runner and passed on another
+  # with a byte-identical archive. Nothing was wrong with extraction.
+  root="$out"
 
   # Distinguish "extracted nothing" from "extracted the wrong bytes". Both used
   # to report as "tree differs", which hid the difference between a failed
