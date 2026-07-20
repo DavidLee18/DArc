@@ -13,4 +13,12 @@ crate-type = ["staticlib", "rlib"]   # staticlib to link; rlib so tests can use 
 [profile.release]
 overflow-checks = true   # see the note in src/ffi.rs
 
-[dev-dependencies]
+[features]
+# The drop-in aliases (delta_compress, dict_decompress, ...) collide with the C
+# implementations when both are linked, which is exactly what rust/difftest
+# does to compare them. So they are opt-in: the archiver build enables this,
+# the differential harness does not.
+dropin = []
+
+[build-dependencies]
+bindgen = "0.72"

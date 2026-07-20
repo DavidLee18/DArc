@@ -7,4 +7,10 @@
 //! "correctly" but differently produces archives older builds cannot read,
 //! which is the highest-risk failure mode in this repository.
 
+pub mod delta;
+pub mod dict;
+pub mod dict_encode;
+pub mod lzp;
 pub mod ffi;
+
+mod exports;

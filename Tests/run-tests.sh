@@ -150,7 +150,16 @@ echo "preflight (partition):"
 raw "--print-config (no archive at all)"  --print-config
 raw "a on an EMPTY dir"                   a -y -m0 "$WORK/e0.arc" "$WORK/empty"
 raw "a on ONE named file (no dir scan)"   a -y -m0 "$WORK/e1.arc" "$WORK/tiny/one.txt"
-raw "a writing to /tmp"                   a -y -m0 /tmp/e2.arc "$WORK/tiny/one.txt"
+# Deliberately outside $WORK, to catch anything that depends on writing next to
+# the source. The path must still be unique and removed first: a fixed
+# /tmp/e2.arc survives every run, so the second invocation onwards became an
+# *update* of an existing archive rather than a create -- a different operation
+# that can block waiting on the earlier archive's contents. That turned this
+# step into an intermittent multi-minute hang whose cause looked like whatever
+# had last been changed.
+rm -f "/tmp/darc-e2-$$.arc"
+raw "a writing to /tmp"                   a -y -m0 "/tmp/darc-e2-$$.arc" "$WORK/tiny/one.txt"
+rm -f "/tmp/darc-e2-$$.arc"
 raw "t on a non-archive"                  t -y "$WORK/tiny/one.txt"
 raw "lb on a non-archive"                 lb "$WORK/tiny/one.txt"
 

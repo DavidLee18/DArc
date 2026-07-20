@@ -127,6 +127,17 @@ int LZPDecode(BYTE* In,UINT Size,BYTE* Out,int MinLen,int HashSize,int Barrier,i
 /*-------------------------------------------------------------------------*/
 
 #ifndef FREEARC_DECOMPRESS_ONLY
+// DARC_RUST=1 selects the Rust port of this codec (rust/darc-codecs).
+//
+// Excluded rather than redeclared: with both definitions present the linker
+// resolves from this object and never pulls the Rust one, producing a binary
+// that looks correctly linked while running the C code. Same arrangement as
+// C_Delta.cpp and C_Dict.cpp.
+//
+// LZPEncode/LZPDecode above stay compiled -- they are only reachable through
+// these two entry points. Verified byte-identical over 8 inputs in both
+// directions; see rust/difftest.
+#ifndef DARC_RUST
 int lzp_compress (MemSize BlockSize, int MinCompression, int MinMatchLen, int HashSizeLog, int Barrier, int SmallestLen, CALLBACK_FUNC *callback, void *auxdata)
 {
     int errcode = FREEARC_OK;   // Error code returned by last operation or FREEARC_OK
@@ -160,9 +171,11 @@ finished:
     FreeAndNil(In); FreeAndNil(Out);
     return errcode;
 }
+#endif  // !DARC_RUST
 #endif  // !defined (FREEARC_DECOMPRESS_ONLY)
 
 
+#ifndef DARC_RUST
 int lzp_decompress (MemSize BlockSize, int MinCompression, int MinMatchLen, int HashSizeLog, int Barrier, int SmallestLen, CALLBACK_FUNC *callback, void *auxdata)
 {
     int errcode = FREEARC_OK;   // Error code returned by last operation or FREEARC_OK
@@ -194,6 +207,7 @@ finished:
     FreeAndNil(In); FreeAndNil(Out);
     return errcode;
 }
+#endif  // !DARC_RUST
 
 
 /*-------------------------------------------------*/
