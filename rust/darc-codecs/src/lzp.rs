@@ -75,9 +75,22 @@ pub fn encode(input: &[u8], out: &mut [u8], min_len: i32, hash_size: usize, barr
             n = n1;
         }
 
+        // Two distinct literal paths, and the difference is load-bearing.
+        //
+        // When the context hash does not match (`hash_miss`), the byte is
+        // emitted raw even if it happens to equal LZP_MATCH_FLAG: the decoder
+        // reaches the same state, sees i != lzpC(p), and short-circuits before
+        // touching the backward stream, so no escape is needed.
+        //
+        // When the hash matched but no usable match was found, an emitted
+        // 0xB5 is ambiguous and must be escaped with a 255 in the backward
+        // stream. Merging the two paths and escaping in both writes one
+        // spurious backward byte -- which is exactly what this port did, and
+        // it showed up only as a one-byte difference on one input.
+        let mut hash_miss = false;
         let mut literal = false;
         if i != lzp_c(input, p) {
-            literal = true;
+            hash_miss = true;
         } else {
             let ml = if (inp - p) as i32 > barrier { smallest_len } else { min_len } as usize;
             if inp + ml <= size && lzp_c(input, p + ml) == lzp_c(input, inp + ml) {
@@ -136,7 +149,7 @@ pub fn encode(input: &[u8], out: &mut [u8], min_len: i32, hash_size: usize, barr
             }
         }
 
-        if literal {
+        if hash_miss || literal {
             if outp >= out_end {
                 return 0;
             }
@@ -144,7 +157,8 @@ pub fn encode(input: &[u8], out: &mut [u8], min_len: i32, hash_size: usize, barr
             out[outp] = c;
             outp += 1;
             inp += 1;
-            if c == LZP_MATCH_FLAG {
+            // Escape only on the MATCH_NOT_FOUND path; see above.
+            if literal && c == LZP_MATCH_FLAG {
                 if out_end == 0 {
                     return 0;
                 }
@@ -278,6 +292,42 @@ pub fn decompress(io: &Io, block_size: u32, min_len: c_int, hash_size_log: c_int
                 }
             }
             Err(e) => return e,
+        }
+    }
+}
+
+/// Port of `lzp_compress`: block framing around `encode`.
+///
+/// A block that does not compress well enough is stored instead, flagged by a
+/// negative length. The threshold test is `OutSize/MinCompression >= InSize/100`
+/// in integer arithmetic, and it is reproduced exactly rather than rewritten as
+/// a percentage -- the truncation is part of which blocks get stored.
+#[allow(clippy::too_many_arguments)]
+pub fn compress(io: &Io, block_size: u32, min_compression: c_int, min_len: c_int,
+                hash_size_log: c_int, barrier: c_int, smallest_len: c_int) -> c_int {
+    let block_size = block_size.max(1) as usize;
+    let hash_size = 1usize << hash_size_log.max(1);
+    let mut inbuf = vec![0u8; block_size];
+    loop {
+        let got = io.read(&mut inbuf);
+        if got < 0 {
+            return got;
+        }
+        if got == 0 {
+            return OK;
+        }
+        let in_size = got as usize;
+        let mut out = vec![0u8; in_size + 2];
+        let out_size = encode(&inbuf[..in_size], &mut out, min_len, hash_size, barrier, smallest_len);
+
+        let store = out_size == 0
+            || (min_compression > 0 && out_size / min_compression as usize >= in_size / 100);
+        if store {
+            if io.write(&(-(in_size as i32)).to_le_bytes()) < 0 || io.write(&inbuf[..in_size]) < 0 {
+                return FREEARC_ERRCODE_IO;
+            }
+        } else if io.write(&(out_size as u32).to_le_bytes()) < 0 || io.write(&out[..out_size]) < 0 {
+            return FREEARC_ERRCODE_IO;
         }
     }
 }

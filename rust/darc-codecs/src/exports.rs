@@ -139,3 +139,23 @@ pub unsafe extern "C" fn darc_rs_lzp_decompress(
         None => FREEARC_ERRCODE_GENERAL,
     }
 }
+
+/// # Safety
+/// `callback` and `auxdata` must be what the C caller supplied.
+#[no_mangle]
+#[allow(clippy::too_many_arguments)]
+pub unsafe extern "C" fn darc_rs_lzp_compress(
+    block_size: u32,
+    min_compression: c_int,
+    min_match_len: c_int,
+    hash_size_log: c_int,
+    barrier: c_int,
+    smallest_len: c_int,
+    callback: CALLBACK_FUNC,
+    auxdata: *mut c_void,
+) -> c_int {
+    match Io::new(callback, auxdata) {
+        Some(io) => lzp::compress(&io, block_size, min_compression, min_match_len, hash_size_log, barrier, smallest_len),
+        None => FREEARC_ERRCODE_GENERAL,
+    }
+}

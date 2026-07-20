@@ -26,6 +26,8 @@ int lzp_decompress (MemSize BlockSize, int MinCompression, int MinMatchLen, int 
 }
 
 #ifdef USE_RUST
+extern "C" int darc_rs_lzp_compress   (MemSize BlockSize, int, int, int, int, int,
+                                        CALLBACK_FUNC *callback, void *auxdata);
 extern "C" int darc_rs_lzp_decompress (MemSize BlockSize, int, int, int, int, int,
                                         CALLBACK_FUNC *callback, void *auxdata);
 #endif
@@ -90,7 +92,11 @@ int main (int argc, char **argv)
             SmallestLen = 32;
   int rc;
   if (argv[1][0] == 'c')
+#ifdef USE_RUST
+    rc = darc_rs_lzp_compress (blocksize, MinCompression, MinMatchLen, HashSizeLog, Barrier, SmallestLen, io_callback, &b);
+#else
     rc = lzp_compress (blocksize, MinCompression, MinMatchLen, HashSizeLog, Barrier, SmallestLen, io_callback, &b);
+#endif
   else
 #ifdef USE_RUST
     rc = darc_rs_lzp_decompress (blocksize, MinCompression, MinMatchLen, HashSizeLog, Barrier, SmallestLen, io_callback, &b);
