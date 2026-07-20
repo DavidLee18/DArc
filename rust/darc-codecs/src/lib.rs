@@ -8,6 +8,7 @@
 //! which is the highest-risk failure mode in this repository.
 
 pub mod delta;
+pub mod dict;
 pub mod ffi;
 
 mod exports;

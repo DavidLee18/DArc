@@ -8,7 +8,7 @@
 //! what wires them together; until then these are exercised by the differential
 //! harness rather than by the archiver.
 
-use crate::delta;
+use crate::{delta, dict};
 use crate::ffi::{Io, CALLBACK_FUNC, FREEARC_ERRCODE_GENERAL};
 use core::ffi::{c_int, c_void};
 
@@ -58,6 +58,7 @@ pub unsafe extern "C" fn darc_rs_delta_decompress(
 
 /// # Safety
 /// `callback` and `auxdata` must be what the C caller supplied.
+#[cfg(feature = "dropin")]
 #[no_mangle]
 pub unsafe extern "C" fn delta_compress(
     block_size: u32,
@@ -70,6 +71,7 @@ pub unsafe extern "C" fn delta_compress(
 
 /// # Safety
 /// `callback` and `auxdata` must be what the C caller supplied.
+#[cfg(feature = "dropin")]
 #[no_mangle]
 pub unsafe extern "C" fn delta_decompress(
     block_size: u32,
@@ -78,4 +80,42 @@ pub unsafe extern "C" fn delta_decompress(
     auxdata: *mut c_void,
 ) -> c_int {
     darc_rs_delta_decompress(block_size, extended_tables, callback, auxdata)
+}
+
+/// # Safety
+/// `callback` and `auxdata` must be what the C caller supplied.
+#[no_mangle]
+#[allow(clippy::too_many_arguments)]
+pub unsafe extern "C" fn darc_rs_dict_decompress(
+    block_size: u32,
+    _min_compression: c_int,
+    _min_weak_chars: c_int,
+    _min_large_cnt: c_int,
+    _min_medium_cnt: c_int,
+    _min_small_cnt: c_int,
+    _min_ratio: c_int,
+    callback: CALLBACK_FUNC,
+    auxdata: *mut c_void,
+) -> c_int {
+    match Io::new(callback, auxdata) {
+        Some(io) => dict::decompress(&io, block_size),
+        None => FREEARC_ERRCODE_GENERAL,
+    }
+}
+
+/// Drop-in under the archiver's own symbol name; see the note above on why the
+/// switch is an exclusion in C_Dict.cpp rather than a redeclaration.
+///
+/// # Safety
+/// `callback` and `auxdata` must be what the C caller supplied.
+#[cfg(feature = "dropin")]
+#[no_mangle]
+#[allow(clippy::too_many_arguments)]
+pub unsafe extern "C" fn dict_decompress(
+    block_size: u32,
+    a: c_int, b: c_int, c: c_int, d: c_int, e: c_int, f: c_int,
+    callback: CALLBACK_FUNC,
+    auxdata: *mut c_void,
+) -> c_int {
+    darc_rs_dict_decompress(block_size, a, b, c, d, e, f, callback, auxdata)
 }

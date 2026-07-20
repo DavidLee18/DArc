@@ -77,7 +77,7 @@ if [ -n "${DARC_RUST:-}" ]; then
   command -v cargo >/dev/null 2>&1 || {
     echo "error: DARC_RUST is set but cargo was not found in PATH" >&2; exit 1; }
   echo "building Rust codecs"
-  ( cd rust/darc-codecs && cargo build --release ) || {
+  ( cd rust/darc-codecs && cargo build --release --features dropin ) || {
     echo "error: cargo build failed" >&2; exit 1; }
   rust_lib="$PWD/rust/darc-codecs/target/release/libdarc_codecs.a"
   [ -f "$rust_lib" ] || { echo "error: cargo produced no $rust_lib" >&2; exit 1; }

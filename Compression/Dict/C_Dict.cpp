@@ -40,6 +40,21 @@ finished:
 #endif  // !defined (FREEARC_DECOMPRESS_ONLY)
 
 
+// DARC_RUST=1 selects the Rust port of the decoder (rust/darc-codecs).
+//
+// Only the decoder is excluded here, not the whole dict.cpp include: the
+// encoder (DictEncode and its seven phases) has not been ported yet and is
+// still needed by dict_compress below.
+//
+// This file wraps its body in extern "C", so this definition and the Rust
+// export are the same symbol. With both present the linker resolves from this
+// object and never pulls the Rust one, producing a binary that looks correctly
+// linked while running the C code -- so the switch has to remove this
+// definition, not merely add a declaration elsewhere.
+//
+// The port is verified byte-identical to DictDecode over 11 inputs including
+// prose, records, source and binary -- see rust/difftest.
+#ifndef DARC_RUST
 int dict_decompress (MemSize BlockSize, int MinCompression, int MinWeakChars, int MinLargeCnt, int MinMediumCnt, int MinSmallCnt, int MinRatio, CALLBACK_FUNC *callback, void *auxdata)
 {
   BYTE* In = NULL;  // pointer to the input data
@@ -75,6 +90,7 @@ finished:
   FreeAndNil(In); FreeAndNil(Out);
   return x<=0? x : FREEARC_ERRCODE_IO;  // 0 if everything is fine, otherwise the error code
 }
+#endif  // !DARC_RUST
 
 
 /*-------------------------------------------------*/
