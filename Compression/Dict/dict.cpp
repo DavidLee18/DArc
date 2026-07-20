@@ -337,8 +337,20 @@ int common_prefix_length (Word *a, Word *b)
     return i;
 }
 
-// Comparison function for sorting words by descending frequency
-int __cdecl count_desc_order (const Word *a, const Word *b)   { return b->count - a->count; }
+// Comparison function for sorting words by descending frequency.
+//
+// The tie-break on ptr is not cosmetic. qsort is not stable and its order among
+// equal elements is implementation-defined, so without a total order the same
+// input produces different dictionaries on different platforms -- and that
+// reaches the archive. Measured before this was added: source.bin encoded to
+// 78120 bytes both on macOS/ARM64 and Linux/x86-64, with different bytes
+// (a36b53f3... vs ad4fc2c0...). Ordering equal counts by position in the input
+// makes the result depend only on the input.
+int __cdecl count_desc_order (const Word *a, const Word *b)
+{
+    if (b->count != a->count)  return b->count - a->count;
+    return a->ptr < b->ptr ? -1 : a->ptr > b->ptr ? 1 : 0;
+}
 
 #ifdef DEBUG
 // Comparison function for sorting words by descending actual usage frequency
@@ -350,7 +362,10 @@ int lexicographical_order (const Word *a, const Word *b)
 {
   unsigned alen = a->len, blen = b->len;
   int cmp = memcmp (a->ptr, b->ptr, mymin(alen,blen));
-  return cmp? cmp : alen-blen;
+  if (cmp)         return cmp;
+  if (alen != blen) return alen-blen;
+  // Identical text and length: still order them, for the same reason as above.
+  return a->ptr < b->ptr ? -1 : a->ptr > b->ptr ? 1 : 0;
 }
 
 
@@ -366,8 +381,20 @@ struct char_stats {
     count_t  count;   // its frequency counter
 };
 
-// Comparison function for sorting characters by ascending frequency
-int char_count_asc_order (const char_stats *a, const char_stats *b)   { return a->count - b->count; }
+// Comparison function for sorting characters by ascending frequency.
+//
+// Ties here are the rule rather than the exception -- on a text file most of the
+// 256 characters have count 0 -- and the last element of this sort becomes
+// PREFIX_FOR_WEAK_CHARS, which is written into the dictionary. Without a
+// tie-break the chosen prefix differed by platform (zeros.bin: 255 on macOS, 1
+// on Linux), so the same file compressed to different archives. Breaking ties
+// by character value keeps the result identical everywhere, and matches what
+// glibc's qsort already produced.
+int char_count_asc_order (const char_stats *a, const char_stats *b)
+{
+    if (a->count != b->count)  return a->count - b->count;
+    return (int)a->chr - (int)b->chr;
+}
 
 
 
