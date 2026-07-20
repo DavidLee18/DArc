@@ -54,3 +54,86 @@ for i in range(10000):
     out += struct.pack("<IIII", i * 5, i * 9 + 3, 0xCAFEBABE, i)
 out += random.randbytes(30000)
 w("embedded.bin", out)
+
+
+# ---------------------------------------------------------------------------
+# Inputs aimed at the compressor's heuristics.
+#
+# The first corpus here matched C byte-for-byte on 14/14 inputs and still could
+# not detect four deliberately introduced errors, including a wrong reading of
+#     difflb < itemlb? len++,omit=0 : useless++,omit++;
+# and a changed acceptance threshold. Counting the tables actually detected
+# explained it: 14 tables across 14 inputs, all of them perfectly monotonic, so
+# search_for_table_boundary never took its direction-change branch -- which is
+# the only place `omit` and `lastpoint` are used -- and the threshold was never
+# near enough to matter.
+#
+# These are built to make those paths run: direction reversals, wrap-around,
+# many small tables at varied widths and spacings, and table sizes that sit
+# either side of the acceptance test.
+# ---------------------------------------------------------------------------
+
+def le(v, w):
+    return (v & ((1 << (8 * w)) - 1)).to_bytes(w, "little")
+
+
+# Columns that climb then fall, repeatedly: forces the direction-change branch,
+# which is where `omit`, `lastpoint` and the bad-run counter come into play.
+out = bytearray()
+for i in range(30000):
+    phase = (i // 40) % 2
+    v = i * 11 if phase == 0 else 500000 - i * 11
+    out += le(v, 4) + le(i * 3, 4)
+w("zigzag.bin", out)
+
+# Counters that wrap, producing a sign flip in the int16 view every 2^16.
+out = bytearray()
+for i in range(40000):
+    out += le(i * 2731, 4) + le(i * 65533, 4)
+w("wrapping.bin", out)
+
+# Many independent small tables of differing widths, separated by noise of
+# differing lengths, so the skip field -- and therefore skipBits in the
+# acceptance test -- takes a wide range of values.
+random.seed(99)
+out = bytearray()
+for t, width in enumerate((2, 3, 4, 5, 6, 8, 12, 16)):
+    for rep in range(6):
+        out += random.randbytes(17 + t * 29 + rep * 7)
+        rows = 40 + rep * 25
+        for i in range(rows):
+            out += le(i * (t + 2) + rep, width)
+w("many-tables.bin", out)
+
+# Tables sized either side of the acceptance test, so a shifted threshold
+# changes which of them are accepted.
+out = bytearray()
+for rows in range(8, 90, 3):
+    out += random.randbytes(23)
+    for i in range(rows):
+        out += le(i * 5 + 7, 4)
+w("threshold-edge.bin", out)
+
+# Runs that are monotonic but only briefly, so the len>=4 test and the
+# consecutive-short-run counter both matter.
+out = bytearray()
+for i in range(30000):
+    seg = i // 3
+    out += le(seg * 17 + (i % 3) * 4099, 4)
+w("short-runs.bin", out)
+
+# A fine sweep across the acceptance test. The coarser threshold-edge.bin above
+# stepped rows by 3 and never landed a candidate close enough to the boundary
+# for a 30 -> 29 change in
+#     useful*sqrt(N) > 30 + 4*skipBits
+# to alter any decision -- that sabotage went undetected by all 13 inputs. This
+# steps one row at a time at several widths and several skip distances, so some
+# candidate sits exactly on the line whichever way it is nudged.
+for width in (2, 3, 4, 6, 8):
+    out = bytearray()
+    for gap in (5, 40, 300, 2000):
+        for rows in range(6, 70):
+            out += random.randbytes(gap)
+            for i in range(rows):
+                out += le(i * 3 + 11, width)
+    w(f"threshold-sweep{width}.bin", out)

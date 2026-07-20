@@ -37,6 +37,8 @@ int delta_decompress (MemSize BlockSize, int ExtendedTables, CALLBACK_FUNC *call
  * port, so the two can be diffed on identical input. The Rust symbol IS
  * extern "C" -- it is the C original that is not. */
 #ifdef USE_RUST
+extern "C" int darc_rs_delta_compress   (MemSize BlockSize, int ExtendedTables,
+                                         CALLBACK_FUNC *callback, void *auxdata);
 extern "C" int darc_rs_delta_decompress (MemSize BlockSize, int ExtendedTables,
                                          CALLBACK_FUNC *callback, void *auxdata);
 #endif
@@ -110,10 +112,8 @@ int main (int argc, char **argv)
   b.out = NULL;  b.out_len = 0;  b.out_cap = 0;
 
 #ifdef USE_RUST
-  // Only decompression is ported so far; compression still routes to the C
-  // original so the harness can produce input for it.
   int rc = argv[1][0] == 'c'
-         ? delta_compress            (blocksize, extended, io_callback, &b)
+         ? darc_rs_delta_compress    (blocksize, extended, io_callback, &b)
          : darc_rs_delta_decompress  (blocksize, extended, io_callback, &b);
 #else
   int rc = argv[1][0] == 'c'

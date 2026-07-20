@@ -237,3 +237,331 @@ pub fn decompress(io: &Io, _block_size: u32, _extended_tables: c_int) -> c_int {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// Compression
+// ---------------------------------------------------------------------------
+//
+// Unlike decompression, this half is all heuristics: which distances look like
+// a table row width, where a table starts and ends, which columns are worth
+// diffing. Every one of those decisions has to reproduce exactly, because the
+// answers are recorded in the stream and a different answer means a different
+// archive.
+
+/// Size of the window in which repeated distances are counted (`LINE`).
+const LINE: usize = 32;
+/// Maximum deviation still considered table-like in the fast check (`DELTA`).
+const DELTA: i32 = 8;
+
+fn read_i16(buf: &[u8], at: isize) -> i16 {
+    // C reads these as unaligned `*(int16*)`. Every call site is kept inside
+    // the block by the loop guards; if one were not, the C original would be
+    // reading uninitialised memory from its own BigAlloc block and would not be
+    // reproducible either.
+    debug_assert!(at >= 0 && (at as usize) + 2 <= buf.len(), "i16 read outside the block");
+    if at < 0 || (at as usize) + 2 > buf.len() {
+        return 0;
+    }
+    i16::from_le_bytes([buf[at as usize], buf[at as usize + 1]])
+}
+
+fn read_u32(buf: &[u8], at: usize) -> u32 {
+    if at + 4 > buf.len() {
+        return 0;
+    }
+    u32::from_le_bytes([buf[at], buf[at + 1], buf[at + 2], buf[at + 3]])
+}
+
+/// Whole part of a binary logarithm, matching `lb()` in Common.h (n > 0).
+fn lb(n: u32) -> u32 {
+    31 - n.leading_zeros()
+}
+
+/// Port of `search_for_table_boundary`.
+///
+/// `n` is a signed stride: the backward scan is called with `-N`. Returns the
+/// index of the boundary, and the `useless` count through the out-parameter the
+/// C version uses.
+fn search_for_table_boundary(
+    buf: &[u8],
+    n: isize,
+    start_at: isize,
+    bufstart: isize,
+    bufend: isize,
+    out_useless: &mut i32,
+) -> isize {
+    let mut t = start_at;
+    let mut dir: i32 = if (read_i16(buf, t + n) as i32) - (read_i16(buf, t) as i32) < 0 { -1 } else { 1 };
+    let (mut len, mut omit, mut useless, mut bad) = (0i32, 0i32, 0i32, 0i32);
+    *out_useless = 0;
+    let mut lastpoint = t;
+    let mut first_time = true;
+
+    t += n;
+    while bufstart <= t + n && t + n + 2 <= bufend {
+        let diff = (read_i16(buf, t) as i32) - (read_i16(buf, t - n) as i32);
+        let mut itemlb = lb(1 + (read_i16(buf, t) as i32).unsigned_abs());
+        let difflb = lb(1 + diff.unsigned_abs());
+        itemlb -= (itemlb > 10) as u32; // itemlb /= 1.1, per the original's comment
+
+        if (dir < 0 && diff < 0) || (dir > 0 && diff > 0) {
+            // The C source writes this as
+            //     difflb < itemlb? len++,omit=0 : useless++,omit++;
+            // where `?:` binds tighter than `,`, so it parses as
+            //     (cond ? (len++, omit=0) : useless++), omit++;
+            // and `omit++` therefore runs on BOTH paths -- the `omit=0` is
+            // immediately undone to 1. Confirmed by compiling it, not by
+            // reading it. `lastpoint = t - n*omit` depends on this.
+            if difflb < itemlb {
+                len += 1;
+                omit = 0;
+            } else {
+                useless += 1;
+            }
+            omit += 1;
+        } else if diff == 0 {
+            useless += 1;
+        } else {
+            if len >= 4 || first_time {
+                bad = 0;
+                lastpoint = t - n * omit as isize;
+                *out_useless = useless;
+                first_time = false;
+            } else {
+                bad += 1;
+                if bad >= 2 {
+                    break; // second short monotonic run in a row
+                }
+            }
+            dir = if (read_i16(buf, t + n) as i32) - (read_i16(buf, t) as i32) < 0 { -1 } else { 1 };
+            len = 0;
+            omit = 0;
+            if dir * diff > 0 {
+                t -= n; // V-shaped transition: restart at the current value
+            }
+        }
+        t += n;
+    }
+    lastpoint
+}
+
+/// Port of `analyze_table`: decide per column whether it is near-constant
+/// (left alone and gathered to the front) or worth diffing.
+fn analyze_table(
+    buf: &[u8],
+    n: usize,
+    table_start: usize,
+    rows: usize,
+    do_diff: &mut [bool; MAX_ELEMENT_SIZE],
+    immutable: &mut [bool; MAX_ELEMENT_SIZE],
+) {
+    for k in 0..n {
+        let mut neq = 0i32;
+        let mut p = table_start + k;
+        for _ in 1..rows {
+            neq += (buf[p + n] != buf[p]) as i32;
+            p += n;
+        }
+        // "Constant" means fewer than a quarter of the rows change. The N
+        // exclusions are in the original and are load-bearing.
+        immutable[k] = neq * 4 < rows as i32 && n != 2 && n != 4 && n != 8;
+        do_diff[k] = !immutable[k];
+    }
+}
+
+/// Port of `diff_table`: subtract each row from the next, LSB-first with carry
+/// kept only across adjacent diffed columns.
+fn diff_table(buf: &mut [u8], n: usize, table_start: usize, rows: usize, do_diff: &[bool; MAX_ELEMENT_SIZE]) {
+    let mut row = rows;
+    while row > 1 {
+        row -= 1;
+        let base = table_start + row * n;
+        let prev = base - n;
+        let mut carry = 0u32;
+        for i in 0..n {
+            if do_diff[i] {
+                let cur = buf[base + i] as u32;
+                let sub = buf[prev + i] as u32 + carry;
+                let newcarry = (cur < sub) as u32;
+                buf[base + i] = (cur.wrapping_sub(sub) & 0xff) as u8;
+                carry = newcarry;
+            } else {
+                carry = 0;
+            }
+        }
+    }
+}
+
+/// Port of `reorder_table`: move every immutable column ahead of the mutable
+/// ones, which helps the LZ77 stage downstream.
+fn reorder_table(
+    buf: &mut [u8],
+    n: usize,
+    table_start: usize,
+    rows: usize,
+    immutable: &[bool; MAX_ELEMENT_SIZE],
+    scratch: &mut Vec<u8>,
+) {
+    let len = n * rows;
+    scratch.clear();
+    scratch.extend_from_slice(&buf[table_start..table_start + len]);
+
+    let mut p = table_start;
+    for pass_immutable in [true, false] {
+        let mut q = 0usize;
+        for _ in 0..rows {
+            for k in 0..n {
+                if immutable[k] == pass_immutable {
+                    buf[p] = scratch[q];
+                    p += 1;
+                }
+                q += 1;
+            }
+        }
+    }
+}
+
+fn encode_type(n: usize, immutable: &[bool; MAX_ELEMENT_SIZE]) -> u32 {
+    let mut ty = 1u32 << n;
+    for i in 0..n {
+        ty += (immutable[i] as u32) << i;
+    }
+    ty
+}
+
+/// Port of `slow_check_for_data_table`. Returns the table extent and its
+/// encoded type when the candidate is judged worth encoding.
+#[allow(clippy::too_many_arguments)]
+fn slow_check_for_data_table(
+    buf: &mut [u8],
+    n: usize,
+    p: usize,
+    bufstart: isize,
+    bufend: isize,
+    scratch: &mut Vec<u8>,
+) -> Option<(usize, usize, u32)> {
+    let mut useless = 0i32;
+    let table_start = search_for_table_boundary(buf, -(n as isize), p as isize, bufstart, bufend, &mut useless);
+    let table_end = search_for_table_boundary(buf, n as isize, table_start, bufstart, bufend, &mut useless);
+
+    if table_end <= table_start {
+        return None;
+    }
+    let rows = ((table_end - table_start) / n as isize) as usize;
+    let useful = rows as i32 - useless;
+    let skip_bits = (core::cmp::max(table_start - bufstart, 1) as f64).log2().floor();
+
+    // The acceptance test, in double arithmetic exactly as the original:
+    //   useful*sqrt(N) > 30 + 4*skipBits
+    if (useful as f64) * (n as f64).sqrt() > 30.0 + 4.0 * skip_bits {
+        let mut do_diff = [false; MAX_ELEMENT_SIZE];
+        let mut immutable = [false; MAX_ELEMENT_SIZE];
+        let ts = table_start as usize;
+        analyze_table(buf, n, ts, rows, &mut do_diff, &mut immutable);
+        diff_table(buf, n, ts, rows, &do_diff);
+        reorder_table(buf, n, ts, rows, &immutable, scratch);
+        return Some((ts, table_end as usize, encode_type(n, &immutable)));
+    }
+    None
+}
+
+/// Port of the `FAST_CHECK_FOR_DATA_TABLE` macro: a cheap filter before the
+/// expensive boundary search.
+fn fast_check(buf: &[u8], n: usize, p: usize) -> bool {
+    let b = |off: usize| buf[p + off] as i32;
+    if p + 3 * n + 2 > buf.len() {
+        return false;
+    }
+    (((b(1) - b(n + 1) + DELTA) as u32) <= 2 * DELTA as u32)
+        && (((b(n + 1) - b(2 * n + 1) + DELTA) as u32) <= 2 * DELTA as u32)
+        && (((b(2 * n + 1) - b(3 * n + 1) + DELTA) as u32) <= 2 * DELTA as u32)
+        && (read_i16(buf, p as isize) as i32 + read_i16(buf, (p + n) as isize) as i32
+            != read_i16(buf, (p + 2 * n) as isize) as i32 + read_i16(buf, (p + 3 * n) as isize) as i32)
+}
+
+/// Port of `delta_compress`.
+pub fn compress(io: &Io, block_size: u32, _extended_tables: c_int) -> c_int {
+    let block_size = block_size.max(1) as usize;
+    let mut buf = vec![0u8; block_size];
+    let mut scratch: Vec<u8> = Vec::new();
+    let (mut tskip, mut ttype, mut trows): (Vec<u8>, Vec<u8>, Vec<u8>) = (Vec::new(), Vec::new(), Vec::new());
+
+    loop {
+        // READ_LEN_OR_EOF: a non-positive result ends the stream.
+        let size = io.read(&mut buf[..]);
+        if size < 0 {
+            return size;
+        }
+        if size == 0 {
+            return OK;
+        }
+        let size = size as usize;
+
+        tskip.clear();
+        ttype.clear();
+        trows.clear();
+
+        let bufend = size as isize;
+        let mut last_table_end: usize = 0;
+        // C seeds these with `buf-1`, one before the block; -1 as a signed
+        // offset is the same thing without forming an out-of-range pointer.
+        let mut hash = [-1i64; 256];
+
+        let mut ptr = LINE;
+        while ptr + MAX_ELEMENT_SIZE * 4 < size {
+            // Cheap skip for runs of identical bytes, e.g. blocks of zeroes.
+            if read_u32(&buf, ptr) != read_u32(&buf, ptr + 3) {
+                let mut count = [0u8; MAX_ELEMENT_SIZE];
+                let mut p = ptr;
+                for _ in 0..LINE {
+                    let slot = (buf[p] / 16) as usize;
+                    let n = p as i64 - hash[slot];
+                    hash[slot] = p as i64;
+                    if n <= MAX_ELEMENT_SIZE as i64 {
+                        count[(n - 1) as usize] = count[(n - 1) as usize].wrapping_add(1);
+                    }
+                    p += 1;
+                }
+
+                let mut found_end: Option<usize> = None;
+                'candidates: for i in 0..MAX_ELEMENT_SIZE {
+                    if count[i] > 5 {
+                        let n = i + 1;
+                        for j in 0..n {
+                            let p = ptr + j;
+                            if !fast_check(&buf, n, p) {
+                                continue;
+                            }
+                            if let Some((ts, te, ty)) = slow_check_for_data_table(
+                                &mut buf, n, p, last_table_end as isize, bufend, &mut scratch,
+                            ) {
+                                tskip.extend_from_slice(&((ts - last_table_end) as u32).to_le_bytes());
+                                ttype.extend_from_slice(&ty.to_le_bytes());
+                                trows.extend_from_slice(&(((te - ts) / n) as u32).to_le_bytes());
+                                last_table_end = te;
+                                found_end = Some(te);
+                                break 'candidates;
+                            }
+                        }
+                    }
+                }
+                if let Some(te) = found_end {
+                    ptr = core::cmp::max(ptr + LINE, te);
+                    continue;
+                }
+            }
+            ptr += LINE;
+        }
+
+        // Emit the block: sizes, the three descriptor arrays, then the data.
+        if io.write(&(size as u32).to_le_bytes()) < 0
+            || io.write(&(ttype.len() as u32).to_le_bytes()) < 0
+            || io.write(&tskip) < 0
+            || io.write(&ttype) < 0
+            || io.write(&trows) < 0
+            || io.write(&buf[..size]) < 0
+        {
+            return FREEARC_ERRCODE_IO;
+        }
+    }
+}

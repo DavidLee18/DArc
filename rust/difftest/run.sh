@@ -95,15 +95,34 @@ build_rs () {
 compare_with () {
   local rs="$1" quiet="${2:-}" fail=0 n=0
   for f in "$WORK"/in/*; do
-    "$REF" c >| "$WORK/packed" < "$f" 2>/dev/null || continue
-    "$REF" d >| "$WORK/c_out"  < "$WORK/packed" 2>/dev/null || continue
+    "$REF" c >| "$WORK/c_packed" < "$f" 2>/dev/null || continue
+    "$REF" d >| "$WORK/c_out"    < "$WORK/c_packed" 2>/dev/null || continue
     n=$((n+1))
-    "$rs" d >| "$WORK/r_out" < "$WORK/packed" 2>/dev/null || true
-    if cmp -s "$WORK/c_out" "$WORK/r_out" && cmp -s "$f" "$WORK/r_out"; then
-      [ -n "$quiet" ] || printf "  %-18s %9s bytes  C==Rust, round-trips\n" \
+    local bad=0
+
+    # Compression: the ported compressor must emit the same bytes as the C one.
+    # Checking only decompression would miss every heuristic in the compressor --
+    # which it silently did at first, reporting 0/23 for eight mutations that
+    # were each detectable when compressed output was compared.
+    if ! "$rs" c >| "$WORK/r_packed" < "$f" 2>/dev/null; then bad=1
+    elif ! cmp -s "$WORK/c_packed" "$WORK/r_packed"; then bad=1
+    fi
+
+    # Decompression, both ways round: the port must read the C stream, and the C
+    # original must read the port's.
+    if [ "$bad" -eq 0 ]; then
+      "$rs" d >| "$WORK/r_out" < "$WORK/c_packed" 2>/dev/null || bad=1
+      cmp -s "$WORK/c_out" "$WORK/r_out" || bad=1
+      cmp -s "$f" "$WORK/r_out" || bad=1
+      "$REF" d >| "$WORK/x_out" < "$WORK/r_packed" 2>/dev/null || bad=1
+      cmp -s "$f" "$WORK/x_out" || bad=1
+    fi
+
+    if [ "$bad" -eq 0 ]; then
+      [ -n "$quiet" ] || printf "  %-20s %9s bytes  C==Rust both ways\n" \
         "$(basename "$f")" "$(wc -c <"$f" | tr -d ' ')" >&2
     else
-      [ -n "$quiet" ] || printf "  %-18s DIFFERS FROM C\n" "$(basename "$f")" >&2
+      [ -n "$quiet" ] || printf "  %-20s DIFFERS FROM C\n" "$(basename "$f")" >&2
       fail=$((fail+1))
     fi
   done
@@ -122,34 +141,77 @@ diff_impls () {
   echo "delta port matches the C original byte for byte"
 }
 
-# A differential test that has never been seen to fail is not evidence. Break
-# the port on purpose and confirm the comparison notices.
+# A differential test that has never been seen to fail is not evidence.
 #
-# This is not ceremony: the first input set here looked like a thorough pass at
-# 8/8 matching, but only 1 of those 8 could detect a deliberately broken carry.
-# For random and binary data the compressor finds almost no tables, so
-# undiff_table barely runs and a wrong answer is invisible. The table-shaped
-# inputs in make_inputs.py exist because of that measurement.
+# This mutates the port in ways that mirror real transcription errors and
+# reports how many inputs notice each one. It is not ceremony -- every number
+# below started out wrong:
+#
+#   * An early corpus of random data, a binary and degenerate sizes matched C on
+#     14/14 and could not detect four deliberate errors. Counting the tables it
+#     actually produced explained it: 14 tables across 14 inputs, all perfectly
+#     monotonic, so search_for_table_boundary never took its direction-change
+#     branch -- the only place `omit` and `lastpoint` are used.
+#   * One mutation reported 0/13 for a different reason entirely: the sed
+#     pattern had the wrong indentation and never applied. The zero meant
+#     "nothing was broken", not "the test is blind". Hence apply_mutation
+#     below refuses to continue if its pattern is absent.
+#
+# With inputs built for the heuristics (make_inputs.py) the corpus produces
+# ~280 tables and every mutation is caught by at least one input.
+MUT_SRC="$ROOT/rust/darc-codecs/src/delta.rs"
+
+apply_mutation () {
+  python3 - "$MUT_SRC" "$1" "$2" <<'PYEOF'
+import sys
+path, old, new = sys.argv[1], sys.argv[2], sys.argv[3]
+s = open(path).read()
+if old not in s:
+    sys.stderr.write("mutation pattern not found: %r\n" % old)
+    sys.exit(1)
+open(path, "w").write(s.replace(old, new, 1))
+PYEOF
+}
+
 sabotage () {
   [ -x "$REF" ] || build_ref || return 1
   build_rs || return 1
   make_inputs
-  local src="$ROOT/rust/darc-codecs/src/delta.rs" bak="$WORK/delta.rs.bak"
-  cp "$src" "$bak"
-  sed -i.tmp 's|carry = sum >> 8;|carry = 0;|' "$src" && rm -f "$src.tmp"
-  local broken="$RS.broken" res n caught
-  if ( cd "$ROOT/rust/darc-codecs" && cargo build --release ) >/dev/null 2>&1; then
+  local bak="$WORK/delta.rs.bak"; cp "$MUT_SRC" "$bak"
+  local broken="$RS.broken" status=0
+
+  # name | pattern | replacement
+  local muts=(
+    "omit++ unconditional|            omit += 1;|            // mutated"
+    "lastpoint back-off|lastpoint = t - n * omit as isize;|lastpoint = t;"
+    "acceptance threshold|> 30.0 + 4.0 * skip_bits|> 29.0 + 4.0 * skip_bits"
+    "candidate count > 5|if count[i] > 5 {|if count[i] > 4 {"
+    "immutable N exclusion|&& n != 2 && n != 4 && n != 8|&& n != 4 && n != 8"
+    "itemlb > 10 adjustment|itemlb -= (itemlb > 10) as u32;|// mutated"
+    "short-run limit|if bad >= 2 {|if bad >= 3 {"
+    "constant-column ratio|neq * 4 < rows as i32|neq * 3 < rows as i32"
+  )
+  for m in "${muts[@]}"; do
+    local name="${m%%|*}" rest="${m#*|}"
+    local pat="${rest%%|*}" rep="${rest#*|}"
+    cp "$bak" "$MUT_SRC"
+    if ! apply_mutation "$pat" "$rep"; then status=1; continue; fi
+    ( cd "$ROOT/rust/darc-codecs" && cargo build --release ) >/dev/null 2>&1
     clang++ -std=c++17 -O2 -w -DUSE_RUST -DDELTA_LIBRARY -DFREEARC_UNIX \
       -DFREEARC_INTEL_BYTE_ORDER -DFREEARC_64BIT -I Compression -I . \
       -o "$broken" "$HERE/delta_ref.cpp" Compression/Delta/Delta.cpp Compression/Common.cpp \
       "$ROOT/rust/darc-codecs/target/release/libdarc_codecs.a" 2>/dev/null
-  fi
-  res=$(compare_with "$broken" quiet); n=${res%% *}; caught=${res##* }
-  cp "$bak" "$src"
+    local res n caught
+    res=$(compare_with "$broken" quiet); n=${res%% *}; caught=${res##* }
+    printf "  %-24s %2s of %2s inputs detect it\n" "$name" "$caught" "$n"
+    [ "$caught" -gt 0 ] || { echo "    ^ NOT DETECTED by any input" >&2; status=1; }
+  done
+
+  cp "$bak" "$MUT_SRC"
   ( cd "$ROOT/rust/darc-codecs" && cargo build --release ) >/dev/null 2>&1
   rm -rf "$WORK"
-  echo "sabotage check: $caught of $n inputs detect a broken carry"
-  [ "$caught" -gt 0 ] || { echo "the differential test cannot detect a broken port" >&2; return 1; }
+  [ "$status" -eq 0 ] && echo "every mutation is caught by at least one input" \
+                      || { echo "the differential test is blind to some errors" >&2; return 1; }
 }
 
 case "${1:-selftest}" in

@@ -15,6 +15,21 @@ use core::ffi::{c_int, c_void};
 /// # Safety
 /// `callback` and `auxdata` must be what the C caller supplied.
 #[no_mangle]
+pub unsafe extern "C" fn darc_rs_delta_compress(
+    block_size: u32,
+    extended_tables: c_int,
+    callback: CALLBACK_FUNC,
+    auxdata: *mut c_void,
+) -> c_int {
+    match Io::new(callback, auxdata) {
+        Some(io) => delta::compress(&io, block_size, extended_tables),
+        None => FREEARC_ERRCODE_GENERAL,
+    }
+}
+
+/// # Safety
+/// `callback` and `auxdata` must be what the C caller supplied.
+#[no_mangle]
 pub unsafe extern "C" fn darc_rs_delta_decompress(
     block_size: u32,
     extended_tables: c_int,
