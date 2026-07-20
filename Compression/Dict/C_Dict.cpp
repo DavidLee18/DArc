@@ -3,9 +3,15 @@ extern "C" {
 }
 
 #define DICT_LIBRARY
+// DARC_RUST=1 selects the Rust port. Both halves are ported now -- the
+// encoder (phases 1-7) and the decoder -- so the whole C implementation is
+// excluded, not just one entry point.
+#ifndef DARC_RUST
 #include "dict.cpp"
+#endif
 
 #ifndef FREEARC_DECOMPRESS_ONLY
+#ifndef DARC_RUST
 int dict_compress (MemSize BlockSize, int MinCompression, int MinWeakChars, int MinLargeCnt, int MinMediumCnt, int MinSmallCnt, int MinRatio, CALLBACK_FUNC *callback, void *auxdata)
 {
     BYTE* In = NULL;  // pointer to the input data
@@ -37,14 +43,11 @@ int dict_compress (MemSize BlockSize, int MinCompression, int MinWeakChars, int 
 finished:
     FreeAndNil(In); FreeAndNil(Out); return x;  // 0 if everything is fine, otherwise the error code
 }
+#endif  // !DARC_RUST
 #endif  // !defined (FREEARC_DECOMPRESS_ONLY)
 
 
 // DARC_RUST=1 selects the Rust port of the decoder (rust/darc-codecs).
-//
-// Only the decoder is excluded here, not the whole dict.cpp include: the
-// encoder (DictEncode and its seven phases) has not been ported yet and is
-// still needed by dict_compress below.
 //
 // This file wraps its body in extern "C", so this definition and the Rust
 // export are the same symbol. With both present the linker resolves from this

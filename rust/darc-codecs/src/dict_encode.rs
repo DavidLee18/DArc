@@ -856,3 +856,53 @@ impl Encoder {
         out
     }
 }
+
+/// Run all seven phases. `Err` means "this block is not worth dict-encoding",
+/// which the caller turns into a stored block, exactly as the C does when
+/// DictEncode returns non-zero.
+#[allow(clippy::too_many_arguments)]
+pub fn encode_block(buf: &[u8], min_weak_chars: i32, min_large: i32, min_medium: i32,
+                    min_small: i32, min_ratio: i32) -> Result<Vec<u8>, c_int> {
+    let mut e = Encoder::new();
+    e.phase1(buf);
+    e.phase2(min_large, min_medium, min_small, min_ratio)?;
+    let nodes = e.phase3(min_weak_chars)?;
+    e.phase4(nodes)?;
+    let mut out = e.phase5()?;
+    e.phase6()?;
+    out.extend_from_slice(&e.phase7());
+    Ok(out)
+}
+
+/// Port of `dict_compress`: block framing around `encode_block`.
+#[allow(clippy::too_many_arguments)]
+pub fn compress(io: &crate::ffi::Io, block_size: u32, min_compression: c_int, min_weak_chars: c_int,
+                min_large: c_int, min_medium: c_int, min_small: c_int, min_ratio: c_int) -> c_int {
+    use crate::ffi::{FREEARC_ERRCODE_IO, OK};
+    let block_size = block_size.max(1) as usize;
+    let mut inbuf = vec![0u8; block_size];
+    loop {
+        let got = io.read(&mut inbuf);
+        if got < 0 { return got; }
+        if got == 0 { return OK; }
+        let in_size = got as usize;
+
+        let encoded = encode_block(&inbuf[..in_size], min_weak_chars, min_large, min_medium, min_small, min_ratio);
+        // The store test is integer arithmetic in the C and is reproduced as
+        // written: OutSize/MinCompression >= InSize/100, truncation included.
+        let store = match &encoded {
+            Err(_) => true,
+            Ok(out) => min_compression > 0 && out.len() / min_compression as usize >= in_size / 100,
+        };
+        if store {
+            if io.write(&(-(in_size as i32)).to_le_bytes()) < 0 || io.write(&inbuf[..in_size]) < 0 {
+                return FREEARC_ERRCODE_IO;
+            }
+        } else {
+            let out = encoded.unwrap();
+            if io.write(&(out.len() as u32).to_le_bytes()) < 0 || io.write(&out) < 0 {
+                return FREEARC_ERRCODE_IO;
+            }
+        }
+    }
+}

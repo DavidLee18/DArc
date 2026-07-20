@@ -8,7 +8,7 @@
 //! what wires them together; until then these are exercised by the differential
 //! harness rather than by the archiver.
 
-use crate::{delta, dict, lzp};
+use crate::{delta, dict, dict_encode, lzp};
 use crate::ffi::{Io, CALLBACK_FUNC, FREEARC_ERRCODE_GENERAL};
 use core::ffi::{c_int, c_void};
 
@@ -185,4 +185,32 @@ pub unsafe extern "C" fn lzp_decompress(
     callback: CALLBACK_FUNC, auxdata: *mut c_void,
 ) -> c_int {
     darc_rs_lzp_decompress(block_size, a, b, c, d, e, callback, auxdata)
+}
+
+/// # Safety
+/// `callback` and `auxdata` must be what the C caller supplied.
+#[no_mangle]
+#[allow(clippy::too_many_arguments)]
+pub unsafe extern "C" fn darc_rs_dict_compress(
+    block_size: u32, min_compression: c_int, min_weak_chars: c_int, min_large: c_int,
+    min_medium: c_int, min_small: c_int, min_ratio: c_int,
+    callback: CALLBACK_FUNC, auxdata: *mut c_void,
+) -> c_int {
+    match Io::new(callback, auxdata) {
+        Some(io) => dict_encode::compress(&io, block_size, min_compression, min_weak_chars,
+                                          min_large, min_medium, min_small, min_ratio),
+        None => FREEARC_ERRCODE_GENERAL,
+    }
+}
+
+/// # Safety
+/// `callback` and `auxdata` must be what the C caller supplied.
+#[cfg(feature = "dropin")]
+#[no_mangle]
+#[allow(clippy::too_many_arguments)]
+pub unsafe extern "C" fn dict_compress(
+    block_size: u32, a: c_int, b: c_int, c: c_int, d: c_int, e: c_int, f: c_int,
+    callback: CALLBACK_FUNC, auxdata: *mut c_void,
+) -> c_int {
+    darc_rs_dict_compress(block_size, a, b, c, d, e, f, callback, auxdata)
 }
