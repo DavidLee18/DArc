@@ -10,6 +10,20 @@ extern "C" {
 }
 #include "PPMdType.h"
 
+// Valid range for the model order.
+//
+// The lower bound is not cosmetic. PPMd reserves order<2 as an internal signal
+// meaning "do not restart the model, continue the existing one" -- see the
+// comment block in PPMd.h. StartModelRare's solid-mode branch (Model.cpp:119)
+// therefore walks MaxContext without initialising it, and MaxContext is BSS.
+// ppmd_compress calls StartSubAllocator and EncodeFile afresh on every call,
+// so it can never legitimately be handed that signal: "arc a -mppmd:o0" and
+// "-mppmd:o1" dereferenced a NULL MaxContext and died with SIGSEGV.
+//
+// MAX_O is the model's own limit, from PPMdType.h.
+static const int PPMD_MIN_ORDER = 2;
+static const int PPMD_MAX_ORDER = MAX_O;
+
 /*-------------------------------------------------*/
 /* ppmd_compress implementation                    */
 /*-------------------------------------------------*/
@@ -131,6 +145,13 @@ void PPMD_METHOD::SetCompressionMem (MemSize _mem)
 {
   if (_mem==0)  return;
   order  +=  int (log(double(_mem)/mem) / log(double(2)) * 4);
+  // Clamp: the adjustment is unbounded, so shrinking memory by more than 4x
+  // drove order below the model's minimum. "-mppmd:o10:m64m -lc4m" produced
+  // order -6 and a method string "ppmd:-6:4mb" that parse_PPMD then rejected,
+  // so limiting memory made a valid method unusable with a confusing
+  // "Unsupported compression method" error.
+  order = mymax (order, PPMD_MIN_ORDER);
+  order = mymin (order, PPMD_MAX_ORDER);
   mem = _mem;
 }
 
@@ -170,6 +191,12 @@ COMPRESSION_METHOD* parse_PPMD (char** parameters)
       else        error=0, p->mem = parseMem (param, &error);
     }
     if (error)  {delete p; return NULL;}  // Error while parsing the method parameters
+    // Reject an out-of-range order rather than letting it reach the model.
+    // Rejecting here makes it an "unsupported method or error in parameters"
+    // message, which is what every other malformed parameter produces; without
+    // it "-mppmd:o0" and "-mppmd:o1" reached StartModelRare's solid-mode branch
+    // and crashed. See PPMD_MIN_ORDER above.
+    if (p->order < PPMD_MIN_ORDER || p->order > PPMD_MAX_ORDER)  {delete p; return NULL;}
     return p;
   } else
     return NULL;   // This is not the ppmd method
