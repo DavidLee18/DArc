@@ -85,6 +85,15 @@ jobs:
           head -20 /tmp/arc-help.txt; exit 1; }
         echo "binary verified: $(wc -c < Tests/arc) bytes"
 
+    # Vendored third-party sources must still be what vendor.lock says they are.
+    # Offline mode only -- cheap, no network. The stronger --upstream check
+    # (re-download the pinned release and compare) is left for manual runs.
+    - name: Verify vendored libraries (Linux)
+      if: runner.os == 'Linux'
+      run: |
+        chmod +x Tests/verify-vendor.sh
+        Tests/verify-vendor.sh
+
     # Round-trip every compression method and solid mode over a deterministic
     # corpus, then compare each archive against a recorded fingerprint.
     # The round-trip half catches data loss; the fingerprint half catches
