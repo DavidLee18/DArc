@@ -28,9 +28,27 @@ fn main() {
     match e.phase3(0) {
         Err(_) => { println!("phase3 rejected"); }
         Ok(nodes) => {
-            println!("nodes {} prefix {}", nodes, e.prefix());
-            print!("{}", e.dump_words());
-            print!("{}", e.dump_char_counts());
+            if upto == 3 {
+                println!("nodes {} prefix {}", nodes, e.prefix());
+                print!("{}", e.dump_words());
+                print!("{}", e.dump_char_counts());
+                return;
+            }
+            if e.phase4(nodes).is_err() { println!("phase4 rejected"); return; }
+            if upto == 4 { print!("{}", e.dump_coded_words()); return; }
+            match e.phase5() {
+                Err(_) => println!("phase5 rejected"),
+                Ok(mut dict) => {
+                    use std::io::Write;
+                    if upto == 5 {
+                        std::io::stdout().write_all(&dict).unwrap();
+                        return;
+                    }
+                    if e.phase6().is_err() { println!("phase6 rejected"); return; }
+                    dict.extend_from_slice(&e.phase7());
+                    std::io::stdout().write_all(&dict).unwrap();
+                }
+            }
         }
     }
 }

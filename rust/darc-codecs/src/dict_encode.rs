@@ -145,7 +145,7 @@ fn search_in_hash(scan: &[Stats], mask: u32, mut hash: u32, phash: u32, c: u8) -
 
 impl Encoder {
     pub fn new() -> Self {
-        Encoder { words: Vec::new(), scan: Vec::new(), mask: 0, max_words: 0,
+        Encoder { text: Vec::new(), hashmask: 0, hashbits: Vec::new(), codewords: Vec::new(), words: Vec::new(), scan: Vec::new(), mask: 0, max_words: 0,
                   char_counts: [0; 256], prefix_for_weak_chars: 0 }
     }
     pub fn prefix(&self) -> u8 { self.prefix_for_weak_chars }
@@ -156,6 +156,16 @@ impl Encoder {
         out.push_str(&format!("words {}\n", self.words.len()));
         for w in &self.words {
             out.push_str(&format!("W {} {} {}\n", w.at, w.len, w.count));
+        }
+        out
+    }
+
+    /// Words after phase4, matching "W <at> <len> <count> <chr> <chr2>".
+    pub fn dump_coded_words(&self) -> String {
+        let mut out = String::new();
+        out.push_str(&format!("words {}\n", self.words.len()));
+        for w in &self.words {
+            out.push_str(&format!("W {} {} {} {} {}\n", w.at, w.len, w.count, w.chr, w.chr2));
         }
         out
     }
@@ -188,6 +198,11 @@ impl Default for Encoder {
 }
 
 pub struct Encoder {
+    /// Copy of the block being encoded; words are (offset, len) into it.
+    text: Vec<u8>,
+    hashmask: u32,
+    hashbits: Vec<u16>,
+    codewords: Vec<CodeWord>,
     words: Vec<Word>,
     scan: Vec<Stats>,
     mask: u32,
@@ -212,6 +227,7 @@ impl Encoder {
 
     /// phase1: build the word list and count byte frequencies.
     pub fn phase1(&mut self, buf: &[u8]) {
+        self.text = buf.to_vec();
         let bufsize = buf.len();
         let max_words = roundup_to_power_of_2(core::cmp::max(bufsize as u32 / 32, 32768)) as usize;
         self.max_words = max_words;
@@ -506,5 +522,337 @@ impl Encoder {
             core::cmp::max(avail as i64 - ((word_count + 259) / 256) as i64, 0) as usize
         };
         Ok(nodes)
+    }
+}
+
+impl Encoder {
+    /// phase4: hand out one- and two-byte codes.
+    pub fn phase4(&mut self, nodes: usize) -> Result<(), c_int> {
+        // One-byte and two-byte groups are sorted lexicographically separately,
+        // which compresses the dictionary itself better.
+        let n = self.words.len();
+        let split = core::cmp::min(nodes, n);
+        let key = |w: &Word, buf: &[u8]| (buf[w.at..w.at + w.len as usize].to_vec(), w.len, w.at);
+        let buf = self.text.clone();
+        self.words[..split].sort_by_key(|w| key(w, &buf));
+        self.words[split..].sort_by_key(|w| key(w, &buf));
+
+        let mut p = 0usize;              // next word awaiting a code
+        let two_byte_start = split;
+
+        // One-byte codes for the most useful words.
+        let mut c = 0usize;
+        while c <= UCHAR_MAX && p < two_byte_start {
+            if self.char_counts[c] == 0 && c as u8 != RESERVED_CHAR {
+                self.words[p].chr = c as u8;
+                self.words[p].chr2 = RESERVED_CHAR;
+                p += 1;
+            }
+            c += 1;
+        }
+
+        // Two-byte codes for the rest.
+        while c <= UCHAR_MAX && p < self.words.len() {
+            if self.char_counts[c] != 0 || c as u8 == RESERVED_CHAR {
+                c += 1;
+                continue;
+            }
+            let mut c2 = 0usize;
+            while c2 <= UCHAR_MAX && p < self.words.len() {
+                if c2 as u8 == RESERVED_CHAR {
+                    c2 += 1;
+                    continue;
+                }
+                // GOOD_2BYTE_WORD(len,cnt) is (len>=4): shorter words are not
+                // worth two bytes, so they are dropped by zeroing their count.
+                while p < self.words.len() && self.words[p].len < 4 {
+                    self.words[p].count = 0;
+                    p += 1;
+                }
+                if p < self.words.len() {
+                    self.words[p].chr = c as u8;
+                    self.words[p].chr2 = c2 as u8;
+                    p += 1;
+                }
+                c2 += 1;
+            }
+            c += 1;
+        }
+        self.words.truncate(p);
+
+        // Any remaining free characters go to words that turned down a two-byte
+        // code above.
+        let mut q = two_byte_start;
+        while c <= UCHAR_MAX && q < self.words.len() {
+            if self.char_counts[c] == 0 && c as u8 != RESERVED_CHAR {
+                self.words[q].chr = c as u8;
+                self.words[q].chr2 = RESERVED_CHAR;
+                q += 1;
+            }
+            c += 1;
+        }
+
+        // Drop the words that never got a code: sort by descending count and
+        // cut at the first zero.
+        self.words.sort_by(|a, b| b.count.cmp(&a.count).then(a.at.cmp(&b.at)));
+        let keep = self.words.iter().position(|w| w.count == 0).unwrap_or(self.words.len());
+        self.words.truncate(keep);
+        Ok(())
+    }
+}
+
+impl Encoder {
+    /// phase5: serialise the dictionary. This is the exact format `dict::decode`
+    /// reads, which is a useful cross-check: the decoder was ported first and
+    /// independently.
+    pub fn phase5(&mut self) -> Result<Vec<u8>, c_int> {
+        const N: usize = UCHAR_MAX + 1;
+        // dict[i]: Some(word index) for a one-byte code, None for unused.
+        let mut dict: Vec<Option<usize>> = vec![None; N];
+        let mut dict_is_two: Vec<bool> = vec![false; N];
+        let mut dict2: Vec<Option<usize>> = vec![None; N * N];
+        let mut char_in_use = [false; N];
+
+        for (i, w) in self.words.iter().enumerate() {
+            if w.chr2 == RESERVED_CHAR {
+                dict[w.chr as usize] = Some(i);
+            } else {
+                dict2[w.chr as usize * N + w.chr2 as usize] = Some(i);
+                dict_is_two[w.chr as usize] = true;
+                for k in 0..w.len as usize {
+                    char_in_use[self.text[w.at + k] as usize] = true;
+                }
+            }
+        }
+
+        // Separator: the highest character that appears in no two-byte word.
+        let mut word_sep = None;
+        for c in (0..N).rev() {
+            if !char_in_use[c] {
+                word_sep = Some(c as u8);
+                break;
+            }
+        }
+        // Every character consumed by words leaves no separator available, and
+        // the dictionary cannot be expressed.
+        let word_sep = word_sep.ok_or(FREEARC_ERRCODE_GENERAL)?;
+
+        let mut out: Vec<u8> = Vec::new();
+        let len_of = |i: usize, dict: &Vec<Option<usize>>, two: &Vec<bool>, me: &Encoder| -> u8 {
+            if two[i] { USE_DICT2 as u8 } else { dict[i].map(|k| me.words[k].len as u8).unwrap_or(0) }
+        };
+
+        // 1. lengths of the one-byte-coded words
+        for i in 0..N {
+            out.push(len_of(i, &dict, &dict_is_two, self));
+        }
+        // 2. common-prefix lengths of the two-byte-coded words
+        let mut prev: Option<usize> = None;
+        for i in 0..N {
+            if dict_is_two[i] {
+                for j in 0..N {
+                    let cur = dict2[i * N + j];
+                    let n = match (cur, prev) {
+                        (Some(a), Some(b)) => self.common_prefix_length(a, b),
+                        _ => 0,
+                    };
+                    out.push(n as u8);
+                    prev = cur;
+                }
+            }
+        }
+        // 3. text of the one-byte words
+        for i in 0..N {
+            if dict_is_two[i] {
+                continue;
+            }
+            if let Some(k) = dict[i] {
+                let w = self.words[k];
+                out.extend_from_slice(&self.text[w.at..w.at + w.len as usize]);
+            }
+        }
+        // 4. separator, then the two-byte words minus their shared prefix
+        prev = None;
+        out.push(word_sep);
+        for i in 0..N {
+            if dict_is_two[i] {
+                for j in 0..N {
+                    let cur = dict2[i * N + j];
+                    let n = match (cur, prev) {
+                        (Some(a), Some(b)) => self.common_prefix_length(a, b),
+                        _ => 0,
+                    };
+                    if let Some(k) = cur {
+                        let w = self.words[k];
+                        out.extend_from_slice(&self.text[w.at + n..w.at + w.len as usize]);
+                    }
+                    out.push(word_sep);
+                    prev = cur;
+                }
+            }
+        }
+        // 5. the prefix used for characters that gave their code to a word
+        out.push(self.prefix_for_weak_chars);
+        Ok(out)
+    }
+
+    fn common_prefix_length(&self, a: usize, b: usize) -> usize {
+        let wa = self.words[a];
+        let wb = self.words[b];
+        let n = core::cmp::min(wa.len, wb.len) as usize;
+        let mut i = 0;
+        while i < n && self.text[wa.at + i] == self.text[wb.at + i] {
+            i += 1;
+        }
+        i
+    }
+}
+
+/// One entry of the encoding hash built by phase6.
+#[derive(Clone, Default)]
+struct CodeWord {
+    text: Vec<u8>,
+    len: u8,
+    chr: u8,
+    chr2: u8,
+}
+
+impl Encoder {
+    /// phase6: build the hash used to find the longest dictionary word at a
+    /// position. FindWord in phase7 must reproduce this hashing exactly or words
+    /// simply stop being found -- the C says as much in a comment.
+    pub fn phase6(&mut self) -> Result<(), c_int> {
+        let buf = self.text.clone();
+        let key = |w: &Word| (buf[w.at..w.at + w.len as usize].to_vec(), w.len, w.at);
+        self.words.sort_by_key(key);
+
+        // Hash size is driven by the number of distinct bytes across the words.
+        let mut unique_bytes: u32 = 0;
+        for i in 0..self.words.len() {
+            let cp = if i == 0 { 0 } else { self.common_prefix_length(i, i - 1) };
+            unique_bytes += self.words[i].len - cp as u32;
+        }
+        let hashsize = roundup_to_power_of_2(unique_bytes.saturating_mul(4)).max(1) as usize;
+        self.hashmask = (hashsize - 1) as u32;
+        self.hashbits = vec![0u16; hashsize];
+        self.codewords = vec![CodeWord::default(); hashsize];
+
+        for wi in 0..self.words.len() {
+            let w = self.words[wi];
+            let mut hash = hashsize as u32 + self.text[w.at] as u32;
+            let mut longest: Option<CodeWord> = None;
+            let mut abandoned = false;
+            for i in 1..w.len as usize {
+                let c = self.text[w.at + i];
+                let hash0 = hash;
+                hash = update_hash(hash, c);
+                let mut n = 13;
+                while self.hashbits[(hash & self.hashmask) as usize] != 0
+                    && self.hashbits[(hash & self.hashmask) as usize] != hash0 as u16
+                {
+                    n -= 1;
+                    if n == 0 {
+                        abandoned = true;
+                        break;
+                    }
+                    hash = rehash(hash, c);
+                }
+                if abandoned {
+                    break;
+                }
+                self.hashbits[(hash & self.hashmask) as usize] = hash0 as u16;
+
+                // Carry the longest prefix word along the chain, so a lookup that
+                // stops here still yields the best encodable word.
+                let idx = (hash & self.hashmask) as usize;
+                if self.codewords[idx].len != 0 {
+                    longest = Some(self.codewords[idx].clone());
+                } else if let Some(l) = &longest {
+                    self.codewords[idx] = l.clone();
+                }
+            }
+            if abandoned {
+                continue;
+            }
+            let idx = (hash & self.hashmask) as usize;
+            self.codewords[idx] = CodeWord {
+                text: self.text[w.at..w.at + w.len as usize].to_vec(),
+                len: w.len as u8,
+                chr: w.chr,
+                chr2: w.chr2,
+            };
+        }
+        Ok(())
+    }
+
+    /// Port of `FindWord`: longest dictionary word starting at `p0`.
+    fn find_word(&self, p0: usize, endbuf: usize) -> Option<&CodeWord> {
+        if p0 >= endbuf {
+            return None;
+        }
+        let mut p = p0;
+        let mut hash0 = self.hashbits.len() as u32 + self.text[p] as u32;
+        p += 1;
+        while p < endbuf {
+            let c = self.text[p];
+            p += 1;
+            let mut hash = update_hash(hash0, c);
+            let mut n = 13;
+            let mut found = false;
+            loop {
+                let h = self.hashbits[(hash & self.hashmask) as usize];
+                if h == 0 {
+                    break;
+                }
+                if h == hash0 as u16 {
+                    found = true;
+                    break;
+                }
+                hash = rehash(hash, c);
+                n -= 1;
+                if n == 0 {
+                    break;
+                }
+            }
+            if !found {
+                break;
+            }
+            hash0 = hash;
+        }
+        p -= 1;
+        let word = &self.codewords[(hash0 & self.hashmask) as usize];
+        let len = word.len as usize;
+        if len == 0 || len > endbuf - p {
+            return None;
+        }
+        if self.text[p0..p0 + len] != word.text[..len] {
+            return None;
+        }
+        Some(word)
+    }
+
+    /// phase7: encode the text with the dictionary.
+    pub fn phase7(&self) -> Vec<u8> {
+        let endbuf = self.text.len();
+        let mut out: Vec<u8> = Vec::new();
+        let mut p = 0usize;
+        while p < endbuf {
+            if let Some(w) = self.find_word(p, endbuf) {
+                out.push(w.chr);
+                if w.chr2 != RESERVED_CHAR {
+                    out.push(w.chr2);
+                }
+                p += w.len as usize;
+            } else {
+                let c = self.text[p];
+                p += 1;
+                // A character whose code was given away must be escaped.
+                if self.char_counts[c as usize] == 0 || c == self.prefix_for_weak_chars {
+                    out.push(self.prefix_for_weak_chars);
+                }
+                out.push(c);
+            }
+        }
+        out
     }
 }

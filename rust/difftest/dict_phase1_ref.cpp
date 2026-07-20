@@ -57,11 +57,34 @@ int main (void)
   int nodes = 0;
   int rc3 = phase3 (0, &nodes);
   if (rc3) { printf ("phase3 rejected\n"); return 0; }
-  printf ("nodes %d prefix %d\n", nodes, PREFIX_FOR_WEAK_CHARS);
-  printf ("words %ld\n", (long)(LastWord - FirstWord));
-  for (Word *p = FirstWord; p < LastWord; p++)
-    printf ("W %ld %u %d\n", (long)(p->ptr - in), p->len, p->count);
-  for (int c = 0; c <= UCHAR_MAX; c++)
-    if (char_counts[c]) printf ("C %d %d\n", c, char_counts[c]);
+  if (upto == 3) {
+    printf ("nodes %d prefix %d\n", nodes, PREFIX_FOR_WEAK_CHARS);
+    printf ("words %ld\n", (long)(LastWord - FirstWord));
+    for (Word *p = FirstWord; p < LastWord; p++)
+      printf ("W %ld %u %d\n", (long)(p->ptr - in), p->len, p->count);
+    for (int c = 0; c <= UCHAR_MAX; c++)
+      if (char_counts[c]) printf ("C %d %d\n", c, char_counts[c]);
+    return 0;
+  }
+
+  int rc4 = phase4 (nodes);
+  if (rc4) { printf ("phase4 rejected\n"); return 0; }
+  if (upto == 4) {
+    printf ("words %ld\n", (long)(LastWord - FirstWord));
+    for (Word *p = FirstWord; p < LastWord; p++)
+      printf ("W %ld %u %d %d %d\n", (long)(p->ptr - in), p->len, p->count, p->chr, p->chr2);
+    return 0;
+  }
+
+  byte *outbuf = NULL; unsigned dictlen = 0;
+  int rc5 = phase5 (&outbuf, &dictlen, (unsigned) len);
+  if (rc5) { printf ("phase5 rejected\n"); return 0; }
+  if (upto == 5) { fwrite (outbuf, 1, dictlen, stdout); return 0; }
+
+  if (phase6()) { printf ("phase6 rejected\n"); return 0; }
+  unsigned datalen = 0;
+  if (phase7 (in, (unsigned) len, outbuf + dictlen, &datalen)) { printf ("phase7 rejected\n"); return 0; }
+  // Dictionary followed by the encoded text -- what DictEncode returns.
+  fwrite (outbuf, 1, dictlen + datalen, stdout);
   return 0;
 }
