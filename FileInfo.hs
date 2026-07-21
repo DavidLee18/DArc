@@ -443,7 +443,17 @@ find_filter_and_process_files filespecs ff@FileFind{ ff_ep=ep, ff_scan_subdirs=s
             -- Is one of the names given as "dir/"?
             dir_slash    =  dirname>"" && masks `contains` ""
             -- Scan subdirectories if the "-r" option is given or one of the names is given as "dir/"
-            recursive    =  scan_subdirs || dir_slash
+            --
+            -- ...except in the addDir pass. That pass exists only to emit the
+            -- entry for a directory named literally on the command line, and
+            -- that directory sits exactly one level below dirname (the caller
+            -- splits "work/data" into dirname "work" + mask "data"). Letting it
+            -- recurse made the mask match by basename anywhere underneath, so
+            -- "arc a -r arch work/data" also stored an entry for "work/sub/data"
+            -- -- and stored it bare, without its contents, since this pass only
+            -- adds the directory itself. That both archived a directory the user
+            -- never named and leaked the surrounding filesystem layout.
+            recursive    =  not addDir && (scan_subdirs || dir_slash)
             -- Include all files/directories in the list if one of the names is given as "dir/" or "*" or "dir/*"
             include_all  =  dir_slash || masks `contains` reANY_FILE
             -- Predicate determining which files and directories will be included in the list being built:

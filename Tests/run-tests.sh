@@ -41,7 +41,10 @@ esac
 # becomes.
 #
 # The original failure is worth knowing, because it presented as a codec bug.
-# "arc a -r ... $CORPUS" treats the final path component as a mask and searches
+# (The archiver defect behind it is FIXED -- see "recursive" in FileInfo.hs and
+# the -r basename-mask check further down -- but archiving from inside the corpus
+# is kept regardless, since it is also what pins the deterministic scan order.)
+# "arc a -r ... $CORPUS" treated the final path component as a mask and searched
 # for it recursively beneath the corpus's parent -- which was "$HERE". Extraction
 # reproduces the full stored path, so every "$HERE/.work/out-<label>" ended up
 # containing another directory named "corpus", and the next create matched those
@@ -188,6 +191,34 @@ raw "a writing to /tmp"                   a -y -m0 "/tmp/darc-e2-$$.arc" "$WORK/
 rm -f "/tmp/darc-e2-$$.arc"
 raw "t on a non-archive"                  t -y "$WORK/tiny/one.txt"
 raw "lb on a non-archive"                 lb "$WORK/tiny/one.txt"
+
+# "arc a -r <dir>" must archive exactly that directory, not every directory
+# sharing its basename. The final component used to be treated as a mask and
+# matched recursively beneath the *parent*, so naming "w/data" also stored a bare
+# entry for "w/sub/data" -- someone else's directory, without its contents, which
+# both archived something the user never asked for and leaked the surrounding
+# layout. Checked by content, not exit status: the buggy version succeeded.
+echo
+echo "  -r names one directory, not a basename mask:"
+rm -rf "$WORK/rmask"; mkdir -p "$WORK/rmask/w/data" "$WORK/rmask/w/sub/data"
+echo a > "$WORK/rmask/w/data/a.txt"
+echo b > "$WORK/rmask/w/sub/data/b.txt"
+rm -f "$WORK/rmask/r.arc"
+if ( cd "$WORK/rmask" && "$ARC" a -r -y -m0 --nodates r.arc w/data ) >"$WORK/rmask.log" 2>&1; then
+  listing=$("$ARC" l "$WORK/rmask/r.arc" 2>/dev/null)
+  if printf '%s' "$listing" | grep -q "sub/data"; then
+    printf '  %-38s FAIL: also stored w/sub/data\n' "excludes same-named sibling dir"
+  else
+    printf '  %-38s ok\n' "excludes same-named sibling dir"
+  fi
+  if printf '%s' "$listing" | grep -q "data/a.txt"; then
+    printf '  %-38s ok\n' "keeps the named directory's contents"
+  else
+    printf '  %-38s FAIL: lost w/data/a.txt\n' "keeps the named directory's contents"
+  fi
+else
+  printf '  %-38s FAIL: create failed\n' "-r basename-mask check"
+fi
 
 # How far did it get? DArc writes into a temp file and renames on success, so
 # whatever is left behind after the crash bounds the failure point far more
