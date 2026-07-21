@@ -626,16 +626,23 @@ default:
 // WAV header recognition
 int autodetect_wav_header (void *buf, long size, int *is_float, int *num_chan, int *word_size, int *offset)
 {
+    // Every one of these is a 32-bit field in the RIFF/WAVE layout. They were
+    // declared "unsigned long", which is 8 bytes on LP64, so on any 64-bit build
+    // the struct did not match the file at all: each field read picked up
+    // adjacent bytes and detection failed for every WAV ever passed in. TTA then
+    // fell back to autodetect_by_entropy, which guesses 8- and 16-bit right and
+    // therefore hid the breakage -- but not 24-bit or 32-bit float, which were
+    // silently stored instead of compressed.
     struct wave_hdr_t {
-        unsigned long   ChunkID;
-        unsigned long   ChunkSize;
-        unsigned long   Format;
-        unsigned long   Subchunk1ID;
-        unsigned long   Subchunk1Size;
+        uint32          ChunkID;
+        uint32          ChunkSize;
+        uint32          Format;
+        uint32          Subchunk1ID;
+        uint32          Subchunk1Size;
         unsigned short  AudioFormat;
         unsigned short  NumChannels;
-        unsigned long   SampleRate;
-        unsigned long   ByteRate;
+        uint32          SampleRate;
+        uint32          ByteRate;
         unsigned short  BlockAlign;
         unsigned short  BitsPerSample;
     } *wave_hdr = (wave_hdr_t*)buf;
@@ -667,9 +674,9 @@ int autodetect_wav_header (void *buf, long size, int *is_float, int *num_chan, i
     }
 
     // Skip any extra subchunks and header of wave data subchunk itself
-    struct subchunk_hdr {
-        unsigned long   SubchunkID;
-        unsigned long   SubchunkSize;
+    struct subchunk_hdr {   // also 32-bit fields; see above
+        uint32          SubchunkID;
+        uint32          SubchunkSize;
     };
 
     if (sizeof(subchunk_hdr) >= (BYTE*)buf+size-p)   return 0;  // detection fails
