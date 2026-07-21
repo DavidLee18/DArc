@@ -209,6 +209,38 @@ int lzp_decompress (MemSize BlockSize, int MinCompression, int MinMatchLen, int 
     int errcode = FREEARC_OK;   // Error code returned by last operation or FREEARC_OK
     BYTE* In = NULL;  // pointer to the input data
     BYTE* Out= NULL;  // pointer to the output data
+
+    // Known and accepted: cost per block is dominated by the hash table, not by
+    // the block. LZP_INIT allocates HashSize pointers and fills every one of
+    // them, so at the default HashSizeLog=18 each block pays for a 2MB table
+    // regardless of how little data it carries. Real streams have few large
+    // blocks and this amortises away; a *hostile* stream can instead be built
+    // from thousands of 20-byte blocks (4-byte length + a 16-byte payload, the
+    // smallest LZPDecode accepts) and make the decoder do that work over and
+    // over.
+    //
+    // Measured rather than assumed, because it first showed up as a suspected
+    // denial of service:
+    //   - ordinary corruption costs nothing. 120 randomly damaged -mlzp archives
+    //     in a release build: median 0.14s, max 0.30s, against a 0.16s baseline
+    //     for the same archive undamaged. A damaged stream desynchronises and is
+    //     rejected long before it can spend real time here.
+    //   - the earlier 6-10s figures came from an AddressSanitizer build, which
+    //     instruments every store in the fill loop. That was measurement
+    //     overhead, not behaviour.
+    //   - a deliberately crafted stream costs ~0.05ms per block, i.e. about
+    //     2.6s of CPU per megabyte of input, linear. Roughly 40x the per-byte
+    //     cost of valid data, and bounded by the input size.
+    //
+    // Not fixed on purpose. Hoisting the allocation out of this loop is the
+    // tempting change and buys almost nothing: the fill loop dominates, not
+    // malloc. Making it genuinely cheap needs a generation counter in the table
+    // so a block can reset it in O(1), which rewrites the inner loop of a
+    // decoder that is correct, format-transparent and fuzz-clean today. That is
+    // a poor trade for a linear 40x factor on a hand-built file. If it is ever
+    // worth doing, do it on its own with before/after throughput numbers for the
+    // valid path -- do not bolt a size heuristic onto the block loop instead,
+    // since a small final block is perfectly legitimate.
     for(;;) {
         int InSize, OutSize;     // number of bytes in the input and output buffers, respectively
         READ4_OR_EOF (InSize);
