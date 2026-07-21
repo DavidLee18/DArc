@@ -99,6 +99,15 @@ MATCH_NOT_FOUND:
 
 int LZPDecode(BYTE* In,UINT Size,BYTE* Out,int MinLen,int HashSize,int Barrier,int SmallestLen)
 {
+    // LZP_INIT reads In[0..15] unconditionally -- the 12-byte header copied to
+    // the output plus the first context word. A block shorter than that (a
+    // truncated archive is the common way to get one) made it read past the
+    // input buffer. Reject it; valid compressed blocks always carry the full
+    // header, so this is transparent to real data. Note this guards only the
+    // header read: fully bounding the match-copy loop below against a crafted
+    // (not merely truncated) block needs the output capacity threaded in and is
+    // deliberately left to a dedicated pass -- see darc-open-work memory.
+    if (Size < 16)  return FREEARC_ERRCODE_BAD_COMPRESSED_DATA;
     LZP_INIT(HashSize,Out);
     do {
         p=HTable[k];
@@ -197,6 +206,7 @@ int lzp_decompress (MemSize BlockSize, int MinCompression, int MinMatchLen, int 
             MALLOC (BYTE, Out, BlockSize);
             READ  (In, InSize);
             OutSize = LZPDecode (In, InSize, Out, MinMatchLen, 1<<HashSizeLog, Barrier, SmallestLen);
+            if (OutSize < 0)  {errcode = OutSize; goto finished;}   // reject a block LZPDecode refused
             FreeAndNil(In);
             Out = (BYTE*) realloc (Out, OutSize);
             WRITE (Out, OutSize);

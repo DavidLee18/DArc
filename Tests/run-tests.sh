@@ -101,6 +101,7 @@ CASES="
 -m9:m9
 -m4x:m4x
 -mtor:tor
+-mlzp:lzp
 -mlzma:lzma
 -mppmd:ppmd
 -mgrzip:grzip

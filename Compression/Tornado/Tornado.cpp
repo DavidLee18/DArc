@@ -429,6 +429,15 @@ int tor_decompress0 (CALLBACK_FUNC *callback, void *auxdata, int _bufsize, int m
             UINT dist = decoder.getdist();
             print_match (output-outbuf+offset, len, dist);
 
+            // Both match-copy loops below are "do {...} while (--len)", so len==0
+            // wraps the UINT counter to 4G and runs off the end of the buffer.
+            // A real match is always >=1 (getlen returns minlen+extra, minlen>=1)
+            // and EOF is signalled by len==IMPOSSIBLE_LEN, which is nonzero, so
+            // rejecting len==0 here is transparent to valid streams. len comes
+            // straight from the decoder, and minlen from a header byte (buf[1]),
+            // so a corrupt stream can make it 0.
+            if (len==0)  {errcode=FREEARC_ERRCODE_BAD_COMPRESSED_DATA; goto finished;}
+
             // Check for simple match (i.e. match not requiring any special handling, >99% of matches fail to this category)
             if (output-outbuf>=dist && write_end-output>len) {
                 BYTE *p = output-dist;
