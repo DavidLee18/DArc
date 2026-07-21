@@ -1,0 +1,229 @@
+name: Release
+
+# Builds the release binaries and attaches them to the GitHub release for the
+# pushed tag. Deliberately separate from Build CI: that runs on every push and
+# should stay fast, while this only runs when a version is cut.
+#
+# The install steps below are copied from build.yml rather than shared, and the
+# MicroHs pin (commit + sha256) must be kept identical to it. A release built
+# against a different compiler revision than CI validates would be a silent
+# difference between what is tested and what is shipped.
+#
+# Windows arm64 is absent on purpose: Debian's mingw-w64 provides x86_64 and
+# i686 only, and compile-mhs-win64 is written against the x86_64 triplet, so
+# that target needs llvm-mingw and a reworked script rather than another matrix
+# entry. Tracked as follow-up work.
+
+on:
+  push:
+    tags: [ "v*" ]
+  # Lets the assets be rebuilt for an existing tag without re-tagging.
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to build and attach assets to (e.g. v2.0.0)"
+        required: true
+
+permissions:
+  contents: write        # required to upload release assets
+
+concurrency:
+  group: release-${{ github.event.inputs.tag || github.ref }}
+  cancel-in-progress: false
+
+env:
+  MICROHS_SHA: "05a3fbd5d73ae6a37111a6ced5b57bb1717b8975"
+  MICROHS_SHA256: "a1f85821cbae877d0ea3e173235d45c833d9145b2ca9e92e77d284b6730c63b6"
+
+jobs:
+  # ── Native builds: Linux amd64/arm64 and macOS arm64 ─────────────────────────
+  build:
+    name: ${{ matrix.label }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            label: linux-amd64
+          - os: ubuntu-24.04-arm
+            label: linux-arm64
+          - os: macos-latest
+            label: macos-arm64
+    steps:
+    - uses: actions/checkout@v6.0.2
+      with:
+        lfs: false
+        ref: ${{ github.event.inputs.tag || github.ref }}
+
+    - name: Install LLVM and Clang
+      if: runner.os == 'Linux'
+      uses: KyleMayes/install-llvm-action@v2
+      with:
+        version: "21.1.8"
+
+    - name: Install packages (Linux)
+      if: runner.os == 'Linux'
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y liblua5.1-dev libncurses-dev libcurl4-openssl-dev cpphs
+
+    - name: Install packages (macOS)
+      if: runner.os == 'macOS'
+      run: brew install ncurses || true
+
+    - name: Install MicroHs
+      run: |
+        set -euo pipefail
+        curl -fsSL "https://github.com/augustss/MicroHs/archive/$MICROHS_SHA.tar.gz" -o /tmp/microhs.tar.gz
+        if command -v sha256sum >/dev/null; then
+          echo "$MICROHS_SHA256  /tmp/microhs.tar.gz" | sha256sum -c -
+        else
+          echo "$MICROHS_SHA256  /tmp/microhs.tar.gz" | shasum -a 256 -c -
+        fi
+        tar -xzf /tmp/microhs.tar.gz -C /tmp
+        cd "/tmp/MicroHs-$MICROHS_SHA"
+        make minstall
+        echo "$HOME/.mcabal/bin" >> "$GITHUB_PATH"
+
+    - name: Build
+      run: |
+        chmod +x compile*
+        ./compile-O2
+
+    - name: Verify binary
+      run: |
+        test -s Tests/arc || { echo "::error::build produced no Tests/arc"; exit 1; }
+        chmod +x Tests/arc
+        ./Tests/arc | head -1
+
+    # Round-tripping here rather than trusting Build CI: this is the artifact
+    # users actually receive, and it is built by a different workflow.
+    - name: Round-trip the release binary
+      run: |
+        cd Tests
+        ./run-tests.sh ./arc
+
+    - name: Package
+      run: |
+        set -euo pipefail
+        # NB: an "[ test ] && a && b" chain here would return non-zero on the
+        # normal tag-push path and set -e would kill the step.
+        if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+          ver="${{ github.event.inputs.tag }}"
+        else
+          ver="$GITHUB_REF_NAME"
+        fi
+        ver="${ver#v}"
+        stage="darc-$ver-${{ matrix.label }}"
+        mkdir -p "dist/$stage"
+        cp Tests/arc "dist/$stage/arc"
+        # arc.groups is the solid-ordering config the binary reads; shipping the
+        # binary without it changes how archives are grouped.
+        cp Tests/arc.groups "dist/$stage/arc.groups"
+        cp README.md LICENSE "dist/$stage/" 2>/dev/null || true
+        tar -czf "dist/$stage.tar.gz" -C dist "$stage"
+        rm -rf "dist/$stage"
+        ls -l dist/
+
+    - uses: actions/upload-artifact@v4
+      with:
+        name: ${{ matrix.label }}
+        path: dist/*
+        if-no-files-found: error
+
+  # ── Windows amd64, cross-compiled from Linux ────────────────────────────────
+  windows-cross:
+    name: windows-amd64
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v6.0.2
+      with:
+        lfs: false
+        ref: ${{ github.event.inputs.tag || github.ref }}
+
+    - name: Install cross toolchain and Wine
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y --no-install-recommends mingw-w64 mingw-w64-tools cpphs wine64 wine
+
+    - name: Install MicroHs
+      run: |
+        set -euo pipefail
+        curl -fsSL "https://github.com/augustss/MicroHs/archive/$MICROHS_SHA.tar.gz" -o /tmp/microhs.tar.gz
+        echo "$MICROHS_SHA256  /tmp/microhs.tar.gz" | sha256sum -c -
+        tar -xzf /tmp/microhs.tar.gz -C /tmp
+        cd "/tmp/MicroHs-$MICROHS_SHA"
+        make minstall
+        echo "$HOME/.mcabal/bin" >> "$GITHUB_PATH"
+
+    - name: Build (Windows cross)
+      run: |
+        chmod +x compile-win64-c compile-mhs-win64
+        ./compile-mhs-win64
+
+    - name: Verify binary
+      run: |
+        exe=Tests/arc-mhs-win64.exe
+        test -s "$exe" || { echo "::error::no $exe"; exit 1; }
+        file "$exe" | grep -qi "PE32+" || { echo "::error::not a PE32+ binary"; exit 1; }
+
+    - name: Package
+      run: |
+        set -euo pipefail
+        # NB: an "[ test ] && a && b" chain here would return non-zero on the
+        # normal tag-push path and set -e would kill the step.
+        if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+          ver="${{ github.event.inputs.tag }}"
+        else
+          ver="$GITHUB_REF_NAME"
+        fi
+        ver="${ver#v}"
+        stage="darc-$ver-windows-amd64"
+        mkdir -p "dist/$stage"
+        cp Tests/arc-mhs-win64.exe "dist/$stage/arc.exe"
+        cp Tests/arc.groups "dist/$stage/arc.groups"
+        cp README.md LICENSE "dist/$stage/" 2>/dev/null || true
+        (cd dist && zip -r "$stage.zip" "$stage" >/dev/null)
+        rm -rf "dist/$stage"
+        ls -l dist/
+
+    - uses: actions/upload-artifact@v4
+      with:
+        name: windows-amd64
+        path: dist/*
+        if-no-files-found: error
+
+  # ── Attach everything to the release ────────────────────────────────────────
+  publish:
+    needs: [ build, windows-cross ]
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/download-artifact@v4
+      with:
+        path: dist
+        merge-multiple: true
+
+    - name: Checksums
+      run: |
+        cd dist
+        sha256sum * > SHA256SUMS
+        cat SHA256SUMS
+
+    # Uploads to the release for this tag. If a draft was prepared in advance
+    # (with hand-written notes) this attaches to it and leaves the notes alone;
+    # otherwise a draft is created so nothing is published unreviewed.
+    - name: Attach assets to the release
+      env:
+        GH_TOKEN: ${{ github.token }}
+      run: |
+        set -euo pipefail
+        tag="${{ github.event.inputs.tag || github.ref_name }}"
+        if ! gh release view "$tag" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+          echo "No release for $tag yet; creating a draft."
+          gh release create "$tag" --repo "$GITHUB_REPOSITORY" --draft \
+             --title "$tag" --notes "Assets built by the Release workflow."
+        fi
+        gh release upload "$tag" --repo "$GITHUB_REPOSITORY" --clobber dist/*
+        gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json assets \
+           -q '.assets[] | "  uploaded: \(.name) (\(.size) bytes)"'
