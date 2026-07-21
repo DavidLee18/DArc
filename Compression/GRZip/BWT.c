@@ -1051,10 +1051,25 @@ sint32 GRZip_BWT_Encode(uint8 * Input,sint32 Size,uint8 * Output,sint32 FastMode
 
 sint32 GRZip_BWT_Decode(uint8 * Input,sint32 Size,sint32 FBP)
 {
+  // FBP is the position of the original first byte, taken straight from the
+  // block header and never checked, so an out-of-range value indexed off the
+  // end of the inverse transform's table. The two variants differ in what is
+  // legal: FastBWT reads T[FBP] from a table of exactly Size entries, while
+  // StrongBWT only uses FBP to split its fill loops over a Size+1 entry table,
+  // so FBP==Size is valid there. Reject anything outside those ranges.
+  if (Size<=0)  return (GRZ_CRC_ERROR);
+
   if ((FBP&StrongBWT_Flag)==0)
+  {
+    if (FBP<0 || FBP>=Size)  return (GRZ_CRC_ERROR);
     return (GRZip_FastBWT_Decode(Input,Size,FBP));
+  }
   else
-    return (GRZip_StrongBWT_Decode(Input,Size,FBP&(~StrongBWT_Flag)));
+  {
+    sint32 RealFBP = FBP&(~StrongBWT_Flag);
+    if (RealFBP<0 || RealFBP>Size)  return (GRZ_CRC_ERROR);
+    return (GRZip_StrongBWT_Decode(Input,Size,RealFBP));
+  }
 }
 
 #undef BWT_MaxByte

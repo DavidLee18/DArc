@@ -482,12 +482,25 @@ sint32 GRZip_WFC_Ari_Encode(uint8* Input,sint32 Size,uint8* Output)
 #undef ARI_ShiftLow
 
 
-#define ARI_InTgtByte()      (*Input++)
+// Bounded input fetch. Past the end of the compressed block, yield 0 instead of
+// reading off the buffer, and count how far we ran over. A well-formed stream
+// reads at most a few bytes past the end during final renormalisation, so the
+// overrun is checked against a generous margin in the decode loop rather than
+// failing on the first byte.
+#define ARI_InTgtByte()      (Input<InputEnd? *Input++ : (ARIOverRead++,0))
 #define ARI_GetFreq(TotFreq) (ARICode/(Range/=(TotFreq)))
 
-sint32 GRZip_WFC_Ari_Decode(uint8* Input,uint32 Size,uint8* Output)
+// Size is the *decoded* length -- WFC_Init() below allocates WFCBuf with it, one
+// byte per decoded symbol, so it must keep that meaning. InSize is the length of
+// the compressed data at Input, which the decoder previously did not receive at
+// all: it read from Input and wrote to Output until it happened to decode an end
+// marker. Both directions are now bounded.
+sint32 GRZip_WFC_Ari_Decode(uint8* Input,uint32 Size,uint8* Output,uint32 InSize)
 {
   uint8* SOutput=Output;
+  uint8* InputEnd=Input+InSize;
+  uint8* OutputEnd=Output+Size;
+  uint32 ARIOverRead=0;
 
   uint32 FFNum=0;
   uint32 Cache=0;
@@ -529,12 +542,21 @@ sint32 GRZip_WFC_Ari_Decode(uint8* Input,uint32 Size,uint8* Output)
 
   while (1)
   {
+    // The loop's only exit is the decoded end marker below, so a corrupt stream
+    // could spin forever. Once we are reading well past the compressed data
+    // there is no marker coming -- give up.
+    if (ARIOverRead>64)  {WFC_Finish();BigFree(Model_Log2RLE_1);return (GRZ_UNEXPECTED_EOF);}
+
     PredChar=Char;
 
     VCtx=&Model_L0_1[PredChar][0]; UCtx=&Model_L0_2[4*CtxL0+(CtxRLE&3)][0];
     uint32 Cum=0,Frq=ARI_GetFreq(Model_L0_0[4]+UCtx[4]+VCtx[4]);
 
-    WFCMTF_Rank=0;while (Frq>=Cum) {Cum+=(Model_L0_0[WFCMTF_Rank]+UCtx[WFCMTF_Rank]+VCtx[WFCMTF_Rank]);WFCMTF_Rank++;}
+    // Frq comes from the arithmetic decoder, so on a corrupt block it can exceed
+    // the cumulative total and walk this loop past the end of the models, which
+    // hold 5 entries with [4] as the running total (symbols are 0..3). A valid
+    // stream always stops by rank 4, so the bound is transparent.
+    WFCMTF_Rank=0;while (Frq>=Cum && WFCMTF_Rank<4) {Cum+=(Model_L0_0[WFCMTF_Rank]+UCtx[WFCMTF_Rank]+VCtx[WFCMTF_Rank]);WFCMTF_Rank++;}
     WFCMTF_Rank--; Cum-=(Model_L0_0[WFCMTF_Rank]+UCtx[WFCMTF_Rank]+VCtx[WFCMTF_Rank]);
 
     ARI_Decode(Model_L0_0[WFCMTF_Rank]+UCtx[WFCMTF_Rank]+VCtx[WFCMTF_Rank],Cum,
@@ -632,6 +654,11 @@ sint32 GRZip_WFC_Ari_Decode(uint8* Input,uint32 Size,uint8* Output)
       UpdateVCtx_1(0,M_Log2RLE_Shift_0); UpdateUCtx_1(0,M_Log2RLE_Shift_1);
       VCtx++;UCtx++;
       Log2RunSize++;
+      // Log2RunSize indexes Model_Log2RLE_2[] and WFCMTF_Log2RLESize[], both
+      // GRZ_Log2MaxBlockSize+1 entries, and the VCtx/UCtx walk above steps
+      // through models of the same width. A real run cannot be longer than the
+      // block, so a valid stream never reaches this bound.
+      if (Log2RunSize>GRZ_Log2MaxBlockSize)  {WFC_Finish();BigFree(Model_Log2RLE_1); return (GRZ_UNEXPECTED_EOF);}
     }
 
     if (Log2RunSize<2)
@@ -658,6 +685,9 @@ sint32 GRZip_WFC_Ari_Decode(uint8* Input,uint32 Size,uint8* Output)
        }
     RunSize+=WFCMTF_Log2RLESize[Log2RunSize];
 
+    // RunSize is decoded from the stream, so a corrupt block can make it huge.
+    // This RLE was the actual over-run reported by fuzzing (WFC_Ari.c:661).
+    if (RunSize>(uint32)(OutputEnd-Output))  {WFC_Finish();BigFree(Model_Log2RLE_1);return (GRZ_UNEXPECTED_EOF);}
     while (RunSize--) *Output++=Char;
 
   }
