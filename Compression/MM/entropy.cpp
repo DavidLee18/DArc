@@ -39,6 +39,17 @@
 
 #define mymax(a,b)               ((a)>(b)? (a) : (b))
 
+// The bit arrays are addressed as 32-bit words: bit_array_*_bits>>5 is a word
+// index and (pos<<2) the matching byte offset. The original code walked them
+// with "unsigned long", which is 64 bits on LP64 (64-bit Linux/macOS) -- so
+// every word access landed at twice the intended byte offset and the grow-check
+// reserved half the bytes actually written. That is the root cause of TTA being
+// unusable on 64-bit builds: the encoder overran bit_array_write (a heap
+// overflow in put_unary) and produced garbage, which in turn drove the adaptive
+// Rice parameter past the end of bit_mask32 in encode_frame. Pin the word type
+// to exactly 32 bits so the index arithmetic and the pointer stride agree.
+typedef unsigned int tta_word;   /* must be exactly 32 bits wide */
+
 const unsigned long bit_mask32[33] = {
     0x00000000, 0x00000001, 0x00000003, 0x00000007,
     0x0000000f, 0x0000001f, 0x0000003f, 0x0000007f,
@@ -82,9 +93,18 @@ init_bit_array_write (void) {
 void
 init_bit_array_read (unsigned long size) {
     bit_array_read_size = size;
-    bit_array_read = (unsigned char *) malloc1d (bit_array_read_size, sizeof(char));
+    // The readers below fetch whole 32-bit words, so a frame whose byte length
+    // is not a multiple of 4 has a final partial word. Round the allocation up
+    // (plus one spare word) so touching that word stays inside the buffer;
+    // malloc1d is calloc, so the padding reads as zero. The bounds in
+    // get_binary/get_unary are expressed against this rounded word count.
+    bit_array_read = (unsigned char *) malloc1d (((size + 3) & ~3UL) + 4, sizeof(char));
     bit_array_read_bits = 0;
 }
+
+// Number of 32-bit words the read buffer covers, rounding the final partial
+// word up -- it is backed by the padding allocated above.
+#define bit_array_read_words   (((bit_array_read_size) + 3) >> 2)
 
 long
 get_len (void) {
@@ -101,7 +121,7 @@ put_binary (unsigned long value, unsigned long bits) {
         bit_array_write = (unsigned char *) realloc (bit_array_write, bit_array_write_size += STEP_SIZE);
         if (!bit_array_write) tta_error (MEMORY_ERROR, NULL);
     }
-    unsigned long *s = ((unsigned long *)bit_array_write) + pos;
+    tta_word *s = ((tta_word *)bit_array_write) + pos;
 
     *s &= bit_mask32[fbit];
     *s |= (value & bit_mask32[bits]) << fbit;
@@ -116,11 +136,16 @@ put_unary (unsigned long value) {
     unsigned long rbit = 32 - fbit;
     unsigned long pos = bit_array_write_bits >> 5;
 
-    if ((pos << 2) + value > bit_array_write_size) {
+    // The unary code spans from word "pos" to pos + value/32 + 1, i.e. up to
+    // (pos<<2) + value/8 + 8 bytes. The old check added "value" (a bit count)
+    // to a byte offset, which happens to be conservative for long codes but
+    // under-reserves for short ones -- with value 0 it demanded only (pos<<2)
+    // bytes while still writing 8. Compute the real span.
+    if ((pos << 2) + (value >> 3) + 8 > bit_array_write_size) {
         bit_array_write = (unsigned char *) realloc (bit_array_write, bit_array_write_size += mymax(STEP_SIZE,value/8+10));
         if (!bit_array_write) tta_error (MEMORY_ERROR, NULL);
     }
-    unsigned long *s = ((unsigned long *)bit_array_write) + pos;
+    tta_word *s = ((tta_word *)bit_array_write) + pos;
 
     *s &= bit_mask32[fbit];
     if (value < rbit) *s |= (bit_mask32[value]) << fbit;
@@ -139,15 +164,20 @@ get_binary (unsigned long *value, unsigned long bits) {
     unsigned long fbit = bit_array_read_bits & 0x1FUL;
     unsigned long rbit = 32 - fbit;
     unsigned long pos = bit_array_read_bits >> 5;
-    unsigned long *s = ((unsigned long *) bit_array_read) + pos;
+    tta_word *s = ((tta_word *) bit_array_read) + pos;
 
     *value = 0;
 
-    if (pos > bit_array_read_size) return;
+    // pos is a word index and bit_array_read_size a byte count, so the original
+    // guard was off by sizeof(word) and effectively never fired. Compare like
+    // for like, and check the second word separately since it is only touched
+    // when the field straddles a word boundary.
+    if (pos >= bit_array_read_words) return;
 
     if (bits <= rbit)
         *value = (*s >> fbit) & bit_mask32[bits];
     else {
+        if (pos + 1 >= bit_array_read_words) return;
         *value = (*s++ >> fbit) & bit_mask32[rbit];
         *value |= (*s & bit_mask32[bits - rbit]) << rbit;
     }
@@ -160,18 +190,24 @@ get_unary (unsigned long *value) {
     unsigned long fbit = bit_array_read_bits & 0x1FUL;
     unsigned long rbit = 32 - fbit;
     unsigned long pos = bit_array_read_bits >> 5;
-    unsigned long *s = ((unsigned long *) bit_array_read) + pos;
+    tta_word *s = ((tta_word *) bit_array_read) + pos;
     unsigned long mask = 1;
 
     *value = 0;
 
-    if (pos > bit_array_read_size) return;
+    // Same unit mismatch as get_binary (word index vs byte count), plus the
+    // continuation walk below had no bound at all -- a corrupt frame whose unary
+    // run never terminates walked s off the end of the buffer. Bound both
+    // against the last whole word. A valid frame always terminates inside the
+    // buffer, so this does not change its decoding.
+    tta_word *s_end = ((tta_word *) bit_array_read) + bit_array_read_words;
+    if (s >= s_end) return;
 
     if ((*s >> fbit) == bit_mask32[rbit]) {
         *value += rbit; fbit = 0;
-        while (*(++s) == bit_mask32[32]) *value += 32;
+        while (s + 1 < s_end && *(++s) == bit_mask32[32]) *value += 32;
     }
-    for (mask <<= fbit; *s & mask; mask <<= 1) (*value)++;
+    for (mask <<= fbit; s < s_end && (*s & mask); mask <<= 1) (*value)++;
 
     bit_array_read_bits += (*value + 1);
 }
@@ -197,9 +233,13 @@ encode_frame (long *data, unsigned long len) {
         k = k0;
 
         sum0 += value - (sum0 >> 4);
+        // The Rice parameter indexes bit_mask32[0..32] below, but k0/k1 were
+        // incremented with no ceiling, so a loud enough frame drove k to 33 and
+        // read past the table. Clamp at 32; decode_frame applies the identical
+        // clamp so the two sides stay in lock-step.
         if (k0 > 0 && sum0 < shift_16[k0])
             k0--;
-        else if (sum0 > shift_16[k0 + 1])
+        else if (k0 < 32 && sum0 > shift_16[k0 + 1])
             k0++;
 
         if (value >= bit_shift[k]) {
@@ -209,7 +249,7 @@ encode_frame (long *data, unsigned long len) {
             sum1 += value - (sum1 >> 4);
             if (k1 > 0 && sum1 < shift_16[k1])
             	k1--;
-            else if (sum1 > shift_16[k1 + 1])
+            else if (k1 < 32 && sum1 > shift_16[k1 + 1])
             	k1++;
 
             unary = 1 + (value >> k);
@@ -269,13 +309,13 @@ decode_frame (long *data, unsigned long len) {
         case 1:
         	sum1 += value - (sum1 >> 4);
         	if (k1 > 0 && sum1 < shift_16[k1])   k1--;
-        	else if (sum1 > shift_16[k1 + 1])    k1++;
+        	else if (k1 < 32 && sum1 > shift_16[k1 + 1])    k1++;   // clamp mirrors encode_frame
         	value += bit_shift[k0];
                 // no break!
         default:
         	sum0 += value - (sum0 >> 4);
         	if (k0 > 0 && sum0 < shift_16[k0])   k0--;
-        	else if (sum0 > shift_16[k0 + 1])    k0++;
+        	else if (k0 < 32 && sum0 > shift_16[k0 + 1])    k0++;   // clamp mirrors encode_frame
         }
 
         *p = DEC(value);
