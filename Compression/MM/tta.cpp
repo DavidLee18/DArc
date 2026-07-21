@@ -129,15 +129,23 @@ static long read_wave (long *data, void *rest, void **bufferptr, void *prevbuf, 
                     break;
                 }
         case 3: {
+                    // Read exactly the three bytes of the sample and sign-extend
+                    // through a 32-bit word. The original dereferenced a "long"
+                    // here, which is 8 bytes on LP64: it read five bytes past
+                    // each sample and the ">> 8" then shifted in the following
+                    // samples' bits instead of the sign.
                     unsigned char *sbuffer = (unsigned char *)buffer;
                     for (i = 0; i < elements; i++) {
-                        unsigned long t = *((long *)(sbuffer + i * byte_size));
-                        data[i] = (long) (t << 8) >> 8;
+                        unsigned char *q = sbuffer + i * 3;
+                        uint32 t = (uint32)q[0] | ((uint32)q[1] << 8) | ((uint32)q[2] << 16);
+                        data[i] = (long) ((tta_i32)(t << 8) >> 8);
                     }
                     break;
                 }
         case 4: {
-                    long *sbuffer = (long*)buffer;
+                    // 4-byte elements (32-bit float). "long" is 8 bytes on LP64,
+                    // so this read two elements at a time and ran off the buffer.
+                    tta_i32 *sbuffer = (tta_i32*)buffer;
                     for (i = 0; i < elements; i++)
                         data[i] = sbuffer[i];
                     break;
@@ -171,16 +179,26 @@ static long write_wave (long **data, long byte_size, long num_chan, unsigned lon
                 break;
             }
     case 3: {
+                // Store exactly three bytes per sample. The original assigned
+                // through a "long *", writing 8 bytes at a 3-byte stride: each
+                // store clobbered the next samples (later stores happened to
+                // repair them) and the last one ran past the buffer.
                 unsigned char *sbuffer = (unsigned char *)buffer;
                 for (i = 0; i < (len * num_chan); i+= num_chan)
-                for (n = 0; n < num_chan; n++)
-                    *((long *)(sbuffer + (i+n) * byte_size)) = data[n][i/num_chan];
+                for (n = 0; n < num_chan; n++) {
+                    uint32 v = (uint32) data[n][i/num_chan];
+                    unsigned char *q = sbuffer + (i+n) * 3;
+                    q[0] = (unsigned char) v;
+                    q[1] = (unsigned char)(v >> 8);
+                    q[2] = (unsigned char)(v >> 16);
+                }
                 break;
             }
     case 4: {
-                long *sbuffer = (long*)buffer;
+                // 4-byte elements; "long" would write 8 and overrun the buffer.
+                tta_i32 *sbuffer = (tta_i32*)buffer;
                 for (i = 0; i < (len * num_chan); i+= num_chan)
-                for (n = 0; n < num_chan; n++) sbuffer[i+n] = data[n][i/num_chan];
+                for (n = 0; n < num_chan; n++) sbuffer[i+n] = (tta_i32) data[n][i/num_chan];
                 break;
             }
     }
@@ -245,9 +263,11 @@ void combine_float (long frame_len, long num_chan, long **buffer)
 
     for (i = 0; i < frame_len; i++)
     for (j = 0; j < num_chan; j++) {
+        // abs() takes an int; buffer[] is long (64-bit on LP64), so this
+        // truncated its argument. labs() is the matching one.
         unsigned long negative = buffer[j+num_chan][i] & 0x80000000;
         unsigned long data_hi = buffer[j][i];
-        unsigned long data_lo = abs(buffer[j+num_chan][i]) - 1;
+        unsigned long data_lo = labs(buffer[j+num_chan][i]) - 1;
 
         data_hi += 0x3F80;
         buffer[j][i] = (data_hi << 16) | SWAP16(data_lo) | negative;
