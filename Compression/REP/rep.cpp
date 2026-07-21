@@ -516,6 +516,13 @@ int rep_decompress (unsigned BlockSize, int MinCompression, int MinMatchLen, int
         READ4(ComprSize);
         if (ComprSize == 0)  break;    // EOF flag (see above)
 
+        // ComprSize is read straight from the (possibly corrupt) stream. A
+        // negative value made READ below memcpy a negative -> huge size; a
+        // value too small to hold the block header let the table parsing walk
+        // off the input buffer. The smallest legal block is the num field plus
+        // datalens[0], i.e. 2*sizeof(int32). Reject anything below that.
+        if (ComprSize < (int)(2*sizeof(int32)))  ReturnErrorCode (FREEARC_ERRCODE_BAD_COMPRESSED_DATA);
+
         if (ComprSize > bufsize)
         {
             BigFree(buf0); bufsize=ComprSize; buf0 = (byte*) BigAlloc(bufsize);
@@ -526,21 +533,49 @@ int rep_decompress (unsigned BlockSize, int MinCompression, int MinMatchLen, int
         READ(buf, ComprSize);
 
         // The block header contains the size of the lens/offsets/datalens tables; then come the tables themselves and finally the uncompressed data
+        byte *buf_end  = buf0 + ComprSize;   // end of the input block
+        byte *data_end = data0 + BlockSize;  // end of the output buffer
+
         int         num = *(int32*)buf;  buf += sizeof(int32);           // Number of matches (= the number of entries in the lens/offsets/datalens tables)
+        // num is untrusted. It sizes three tables (lens, offsets: num each;
+        // datalens: num+1) plus the num field itself: sizeof(int32)*(3*num+2)
+        // bytes, which must fit inside the block. Validate it in 64-bit BEFORE
+        // deriving the table pointers, because a corrupt num otherwise overflows
+        // the pointer arithmetic and every datalens[i]/lens[i] read is wild.
+        if (num < 0  ||  (int64)sizeof(int32) * (3*(int64)num + 2) > ComprSize)
+            ReturnErrorCode (FREEARC_ERRCODE_BAD_COMPRESSED_DATA);
         int32*     lens =  (int32*)buf;  buf += num*sizeof(int32);
         int32*  offsets =  (int32*)buf;  buf += num*sizeof(int32);
         int32* datalens =  (int32*)buf;  buf += (num+1)*sizeof(int32);   // More precisely, datalens contains num+1 entries
 
         // Each iteration of this loop copies one block of uncompressed data and one match, which are interleaved in our implementation of the compression process
         for (int i=0; i<num; i++) {
-            memcpy (data, buf, datalens[i]);  buf += datalens[i];  data += datalens[i];
+            // Every copy length is untrusted. Validate the literal against both
+            // the remaining input (buf_end) and the remaining output (data_end),
+            // and the match against the output, before copying -- otherwise a
+            // corrupt datalens[i]/lens[i] overruns the data0 heap block. The
+            // decompressor is fed raw archive bytes, so this fires on ordinary
+            // corruption, not only crafted input (verified: a single flipped
+            // byte in a -mrep archive reached the old unchecked memcpy).
+            int dl = datalens[i];
+            if (dl < 0  ||  dl > buf_end - buf  ||  dl > data_end - data)
+                ReturnErrorCode (FREEARC_ERRCODE_BAD_COMPRESSED_DATA);
+            memcpy (data, buf, dl);  buf += dl;  data += dl;
             debug (verbose>1 && printf ("Match %d %d %d\n", -offsets[i], data-data0, lens[i]));
             // If the offset falls before the start of the buffer, subtract BlockSize from it in order to "wrap" around the buffer boundary
             int offset = offsets[i] <= data-data0 ?  offsets[i] : offsets[i]-BlockSize;
-            memcpy_lz_match (data, data-offset, lens[i]);  data += lens[i];
+            int ln = lens[i];
+            // offset must land the match source inside [data0, data); ln must
+            // keep the destination inside the output buffer.
+            if (offset <= 0  ||  offset > data - data0  ||  ln < 0  ||  ln > data_end - data)
+                ReturnErrorCode (FREEARC_ERRCODE_BAD_COMPRESSED_DATA);
+            memcpy_lz_match (data, data-offset, ln);  data += ln;
         }
         // Plus one more block of uncompressed data at the very end (possibly of zero length)
-        memcpy (data, buf, datalens[num]);  buf += datalens[num];  data += datalens[num];
+        int dl = datalens[num];
+        if (dl < 0  ||  dl > buf_end - buf  ||  dl > data_end - data)
+            ReturnErrorCode (FREEARC_ERRCODE_BAD_COMPRESSED_DATA);
+        memcpy (data, buf, dl);  buf += dl;  data += dl;
 
         // Output the decompressed data, print debug statistics and prepare for the next loop iteration
         WRITE(last_data, data-last_data);
