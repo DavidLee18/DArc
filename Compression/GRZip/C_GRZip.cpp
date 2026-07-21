@@ -248,7 +248,7 @@ sint32 GRZip_DecompressBlock(uint8 * Input,sint32 Size,uint8 * Output)
       memcpy(Output,Input+28,Result);
       return (Result);
     }
-    Result=GRZip_LZP_Decode(Input+28,Result,Output,Get_LZP_MinMatchLen(Mode),Get_LZP_HT_Size(Mode));
+    Result=GRZip_LZP_Decode(Input+28,Result,Output,Get_LZP_MinMatchLen(Mode),Get_LZP_HT_Size(Mode),*(sint32 *)(Input));
     return (Result);
   }
 
@@ -327,7 +327,7 @@ sint32 GRZip_DecompressBlock(uint8 * Input,sint32 Size,uint8 * Output)
 
   if (LZP_Enabled(Mode))
   {
-    sint32 Result=GRZip_LZP_Decode(LZPBuffer,TSize,Output,Get_LZP_MinMatchLen(Mode),Get_LZP_HT_Size(Mode));
+    sint32 Result=GRZip_LZP_Decode(LZPBuffer,TSize,Output,Get_LZP_MinMatchLen(Mode),Get_LZP_HT_Size(Mode),*(sint32 *)(Input));
     if (Result==GRZ_NOT_ENOUGH_MEMORY)
     {
       BigFree(LZPBuffer);

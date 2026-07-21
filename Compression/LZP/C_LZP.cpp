@@ -97,28 +97,47 @@ MATCH_NOT_FOUND:
 }
 #endif  // !defined (FREEARC_DECOMPRESS_ONLY)
 
-int LZPDecode(BYTE* In,UINT Size,BYTE* Out,int MinLen,int HashSize,int Barrier,int SmallestLen)
+int LZPDecode(BYTE* In,UINT Size,BYTE* Out,int MinLen,int HashSize,int Barrier,int SmallestLen,UINT OutSize)
 {
-    // LZP_INIT reads In[0..15] unconditionally -- the 12-byte header copied to
+    // LZP_INIT reads In[0..11] unconditionally -- the 12-byte header copied to
     // the output plus the first context word. A block shorter than that (a
     // truncated archive is the common way to get one) made it read past the
     // input buffer. Reject it; valid compressed blocks always carry the full
-    // header, so this is transparent to real data. Note this guards only the
-    // header read: fully bounding the match-copy loop below against a crafted
-    // (not merely truncated) block needs the output capacity threaded in and is
-    // deliberately left to a dedicated pass -- see darc-open-work memory.
+    // header, so this is transparent to real data.
     if (Size < 16)  return FREEARC_ERRCODE_BAD_COMPRESSED_DATA;
     LZP_INIT(HashSize,Out);
+    // OutSize is the capacity of the Out buffer. Everything below is bounded
+    // against it and against InEnd so a corrupt or hostile block is rejected
+    // rather than over-reading the input or over-writing the output. Valid
+    // blocks satisfy every bound by construction, so this is transparent.
+    //
+    // The input forward pointer is already safe: In advances by at most one per
+    // iteration (the leftmost "*In++" always runs) and the do/while re-checks
+    // In<InEnd, so it can never pass InEnd. Two things were unbounded -- the
+    // backward length walk (InEnd stepping down with no floor) and the output
+    // writes -- and each gets a bound below. Bounding the output length also
+    // removes a denial-of-service: a match length of 0 made "while(--i)" wrap
+    // to 4G and copy a byte at a time for minutes before finally faulting.
+    BYTE *OutEnd = OutStart + OutSize;
     do {
         p=HTable[k];
         if ( !--n )  { HTable[k]=Out;       n=n1; }
-        if (*In++ != LZP_MATCH_FLAG || i != lzpC(p) || *--InEnd == 255)
+        if (*In++ != LZP_MATCH_FLAG || i != lzpC(p) || *--InEnd == 255) {
+                if (Out >= OutEnd)  {free(HTable); return FREEARC_ERRCODE_BAD_COMPRESSED_DATA;}
                 *Out++ = In[-1];
-        else {
+        } else {
             HTable[k]=Out;                  n1 += (Out-p > (n1+1)*HashSize && n1 < 7);
-            for (i=(Out-p>Barrier? SmallestLen:MinLen)-1;*InEnd == 0;InEnd--)
+            // "InEnd > In" keeps the backward length walk from stepping below
+            // the forward pointer (and thus below the buffer). It never fires
+            // on valid data, whose length bytes always sit above In.
+            for (i=(Out-p>Barrier? SmallestLen:MinLen)-1;InEnd > In && *InEnd == 0;InEnd--)
                     i += 254;
             i += *InEnd;                    k=2*n1+2;
+            // The copy writes i bytes to Out and reads i bytes from p (an
+            // earlier output position, so p+i stays below OutEnd once Out+i
+            // does). Reject i==0 (would wrap --i) and any length that would run
+            // past OutEnd. UINT compare avoids pointer overflow on a huge i.
+            if (i == 0 || i > (UINT)(OutEnd - Out))  {free(HTable); return FREEARC_ERRCODE_BAD_COMPRESSED_DATA;}
             do {
                 if ( !--k ) { k=2*n1+1;     HTable[lzpH(lzpC(Out),Out,HashMask)]=Out; }
                 *Out++ = *p++;
@@ -205,7 +224,7 @@ int lzp_decompress (MemSize BlockSize, int MinCompression, int MinMatchLen, int 
             MALLOC (BYTE, In,  InSize);
             MALLOC (BYTE, Out, BlockSize);
             READ  (In, InSize);
-            OutSize = LZPDecode (In, InSize, Out, MinMatchLen, 1<<HashSizeLog, Barrier, SmallestLen);
+            OutSize = LZPDecode (In, InSize, Out, MinMatchLen, 1<<HashSizeLog, Barrier, SmallestLen, BlockSize);
             if (OutSize < 0)  {errcode = OutSize; goto finished;}   // reject a block LZPDecode refused
             FreeAndNil(In);
             Out = (BYTE*) realloc (Out, OutSize);
