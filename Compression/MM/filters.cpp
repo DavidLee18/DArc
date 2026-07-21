@@ -34,15 +34,15 @@
 #include "filters.h"
 
 typedef struct {
-    long order;
-    long mode;
-    long shift;
-    long round;
-    long qm[MAX_ORDER];
-    long dx[BUF_SIZE];
-    long dl[BUF_SIZE];
-    long *px;
-    long *pl;
+    tta_i32 order;
+    tta_i32 mode;
+    tta_i32 shift;
+    tta_i32 round;
+    tta_i32 qm[MAX_ORDER];
+    tta_i32 dx[BUF_SIZE];
+    tta_i32 dl[BUF_SIZE];
+    tta_i32 *px;
+    tta_i32 *pl;
 } fltst;
 
 ///////// Filters Settings /////////
@@ -62,8 +62,8 @@ static int flt_set [3][3][4][3] = {
 
 __inline void
 filter_compress (fltst *fs, long *in) {
-    long *pA, *pB, *pE;
-    long out, sum;
+    tta_i32 *pA, *pB, *pE;
+    tta_i32 out, sum;
 
     pA = fs->pl;
     pB = fs->qm;
@@ -133,12 +133,12 @@ filter_compress (fltst *fs, long *in) {
 
     if (fs->px + fs->order == fs->dx + (BUF_SIZE-1)) {
         memcpy(fs->dx, fs->px + 1, fs->order *
-            sizeof(long)); fs->px = fs->dx;
+            sizeof(tta_i32)); fs->px = fs->dx;
     } else  fs->px++;
 
     if (fs->pl + fs->order ==  fs->dl + (BUF_SIZE-1)) {
         memcpy(fs->dl, fs->pl + 1, fs->order *
-            sizeof(long)); fs->pl = fs->dl;
+            sizeof(tta_i32)); fs->pl = fs->dl;
     } else fs->pl++;
 
     *in = out;
@@ -146,8 +146,8 @@ filter_compress (fltst *fs, long *in) {
 
 __inline void
 filter_decompress (fltst *fs, long *in) {
-    long *pA, *pB, *pE;
-    long out, sum;
+    tta_i32 *pA, *pB, *pE;
+    tta_i32 out, sum;
 
     pA = fs->pl;
     pB = fs->qm;
@@ -217,12 +217,12 @@ filter_decompress (fltst *fs, long *in) {
 
     if (fs->px + fs->order == fs->dx + (BUF_SIZE - 1)) {
         memcpy(fs->dx, fs->px + 1, fs->order *
-            sizeof(long)); fs->px = fs->dx;
+            sizeof(tta_i32)); fs->px = fs->dx;
     } else  fs->px++;
 
     if (fs->pl + fs->order ==  fs->dl + (BUF_SIZE - 1)) {
         memcpy(fs->dl, fs->pl + 1, fs->order *
-            sizeof(long)); fs->pl = fs->dl;
+            sizeof(tta_i32)); fs->pl = fs->dl;
     } else fs->pl++;
 
     *in = out;

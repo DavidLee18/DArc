@@ -102,6 +102,7 @@ CASES="
 -m4x:m4x
 -mtor:tor
 -mlzp:lzp
+-mtta:tta
 -mlzma:lzma
 -mppmd:ppmd
 -mgrzip:grzip

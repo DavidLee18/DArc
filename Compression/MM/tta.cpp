@@ -450,8 +450,14 @@ int tta_decompress (CALLBACK_FUNC *callback, void *auxdata)
     rest = malloc1d (num_chan, byte_size);
 
     while (1) {
-        // read block header which stores uncompressed size of block
-        READ4 (bytes_read);
+        // read block header which stores uncompressed size of block.
+        // The compressor ends the stream simply by stopping after the last
+        // frame -- it writes no terminator (see "goto finished" on EOF in
+        // tta_compress) -- so this must tolerate end-of-input. With a plain
+        // READ4 the decoder reported an I/O error at the end of every
+        // successfully compressed file. Only the frame header is optional;
+        // a short read anywhere inside a frame below is still an error.
+        READ4_OR_EOF (bytes_read);
         if (bytes_read > (1 << 30))
             tta_error (FILE_ERROR, NULL);
         frame_len = bytes_read/(num_chan*byte_size);
