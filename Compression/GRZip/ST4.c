@@ -98,6 +98,12 @@ sint32 GRZip_ST4_Encode(uint8 * Input, sint32 Size, uint8 * Output)
 
 sint32 GRZip_ST4_Decode(uint8 * Input, sint32 Size, sint32 FBP)
 {
+  // FBP comes from the block header unchecked; it indexes Table[] and seeds the
+  // reconstruction loop below. Reject out-of-range values -- a valid FBP always
+  // addresses a byte of the block.
+  // Table[] below holds Size+1 entries, so FBP==Size is legitimate.
+  if (Size<=0 || FBP<0 || FBP>Size)  return (GRZ_CRC_ERROR);
+
   sint32    LastSeen[ST_MaxByte],T[ST_MaxByte],S[ST_MaxByte];
   sint32    CStart,Sum,i,j;
 

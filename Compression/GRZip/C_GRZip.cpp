@@ -238,6 +238,13 @@ sint32 GRZip_DecompressBlock(uint8 * Input,sint32 Size,uint8 * Output)
   if ((*(sint32 *)(Input+16))+28>Size) return (GRZ_UNEXPECTED_EOF);
   if ((*(sint32 *)(Input+20))!=RESERVED)
     return (GRZ_CRC_ERROR);
+  // The remaining header words are sizes fed straight to BigAlloc and used as
+  // decode bounds below, but nothing checked them: a negative or absurd value
+  // produced a wild allocation and unbounded decode. A block can never exceed
+  // GRZ_MaxBlockSize by construction, so reject anything outside that.
+  if ((*(sint32 *)(Input))   <0 || (*(sint32 *)(Input))   >GRZ_MaxBlockSize) return (GRZ_CRC_ERROR);
+  if ((*(sint32 *)(Input+8)) <0 || (*(sint32 *)(Input+8)) >GRZ_MaxBlockSize) return (GRZ_CRC_ERROR);
+  if ((*(sint32 *)(Input+16))<0) return (GRZ_CRC_ERROR);
   sint32 Mode=*(sint32 *)(Input+4);
   sint32 Result=*(sint32 *)(Input+16);
   if (Mode==-1)
@@ -299,10 +306,23 @@ sint32 GRZip_DecompressBlock(uint8 * Input,sint32 Size,uint8 * Output)
 
   sint32 TSize;
 
+  // The compressor rounds the block up to a multiple of 8 before the BWT/ST4 and
+  // arithmetic stages ("Size=(Size+7)&(~7)") but stores the *unrounded* length
+  // in Input+8, so the arithmetic decoder legitimately produces up to 7 bytes
+  // more than that. Bound it against the rounded length -- LZPBuffer is
+  // allocated with 1024 bytes of slack, so this stays well inside it, and WFC
+  // also uses this value to size its internal WFCBuf (which was previously
+  // allocated 7 bytes short for the same reason).
+  sint32 AriOutSize=((*(sint32 *)(Input+8))+7)&(~7);
+
+  // Both decoders now also receive the compressed length (Input+16, already
+  // validated to fit inside the block) so they can bound their input.
   if (Mode&GRZ_Compression_MTF)
-    TSize=GRZip_MTF_Ari_Decode(Input+28,LZPBuffer);
+    TSize=GRZip_MTF_Ari_Decode(Input+28,(*(sint32 *)(Input+16)),LZPBuffer,AriOutSize);
   else
-    TSize=GRZip_WFC_Ari_Decode(Input+28,(*(sint32 *)(Input+8)),LZPBuffer);
+    TSize=GRZip_WFC_Ari_Decode(Input+28,AriOutSize,LZPBuffer,(*(sint32 *)(Input+16)));
+
+  if (TSize<0) {BigFree(LZPBuffer);return (TSize);}   // decoder rejected the block
 
   if (Result==GRZ_NOT_ENOUGH_MEMORY)
   {
@@ -317,10 +337,13 @@ sint32 GRZip_DecompressBlock(uint8 * Input,sint32 Size,uint8 * Output)
   else
     Result=GRZip_BWT_Decode(LZPBuffer,TSize,Result);
 
-  if (Result==GRZ_NOT_ENOUGH_MEMORY)
+  // The inverse transform can now reject a block (bad FBP), and only
+  // NOT_ENOUGH_MEMORY was being checked -- any other negative code fell through
+  // and was later used as a length.
+  if (Result<0)
   {
     BigFree(LZPBuffer);
-    return(GRZ_NOT_ENOUGH_MEMORY);
+    return(Result);
   };
 
   TSize=*(sint32 *)(Input+8);

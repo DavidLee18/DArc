@@ -181,6 +181,12 @@ void MTCompressor<Job>::WriterThread()
             break;
         // Wait until (de)compression will be finished
         job->OperationFinished.Lock();
+        // OutSize doubles as the worker's error code (see WorkerThread::run), so
+        // a failed block leaves a negative value here. Passing that on as a
+        // length made the callback memcpy a negative size; the error itself was
+        // already recorded by SetErrCode in the worker.
+        if (job->OutSize < 0)
+            {SetErrCode(job->OutSize); break;}
         // Write the compressed block and exit if a write error occurred / no more data is needed
         if (SetErrCode(callback("write", job->OutBuf, job->OutSize, auxdata)) < 0)
             break;
