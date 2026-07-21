@@ -317,11 +317,30 @@ static int pool_init (_4x4Ctx *c)
   for (int i = 0; i < c->num_jobs; i++)
     c->free_q.put (&c->jobs[i]);
 
-  // Spawn workers
+  // Spawn workers.
+  //
+  // Give them an explicit stack instead of inheriting the platform default,
+  // which differs by an order of magnitude: glibc gives a non-main thread 8MB,
+  // macOS gives it 512KB. These threads run whole codecs -- the inner method of
+  // a "4x4:..." chain executes here, not on the caller's stack -- and some are
+  // stack-hungry. Tornado's decoder overflowed 512KB roughly half the time in an
+  // AddressSanitizer build, whose frames carry redzones, faulting inside
+  // DataTables::add (a leaf function that was merely the call that ran out).
+  // That was the intermittent -m1 failure seen only on macOS, never in Linux CI.
+  // 8MB matches glibc and costs nothing: the mapping is reserved, not committed.
+  pthread_attr_t attr;
+  pthread_attr_t *attrp = NULL;
+  if (pthread_attr_init (&attr) == 0) {
+    if (pthread_attr_setstacksize (&attr, 8*1024*1024) == 0)  attrp = &attr;
+    else                                                      pthread_attr_destroy (&attr);
+  }
+
   c->worker_threads = (pthread_t*) calloc (c->num_workers, sizeof(pthread_t));
   for (int i = 0; i < c->num_workers; i++)
-    pthread_create (&c->worker_threads[i], NULL, worker_thread, c);
-  pthread_create (&c->writer_thread, NULL, writer_thread_fn, c);
+    pthread_create (&c->worker_threads[i], attrp, worker_thread, c);
+  pthread_create (&c->writer_thread, attrp, writer_thread_fn, c);
+
+  if (attrp)  pthread_attr_destroy (attrp);
   return 0;
 }
 
