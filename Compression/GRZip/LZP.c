@@ -128,11 +128,20 @@ sint32 GRZip_LZP_Encode(uint8 * Input,uint32 Size,uint8 * Output,uint32 LZP_MinM
 
 #endif  // !defined (FREEARC_DECOMPRESS_ONLY)
 
-sint32 GRZip_LZP_Decode(uint8 * Input,uint32 Size,uint8 * Output,uint32 LZP_MinMatchLen,uint32 LZP_HT_Size)
+sint32 GRZip_LZP_Decode(uint8 * Input,uint32 Size,uint8 * Output,uint32 LZP_MinMatchLen,uint32 LZP_HT_Size,uint32 OutSize)
 {
   LZP_AllocHashTable();
   uint8  * InputEnd=Input+Size;
   uint8  * OutputBeg=Output;
+  uint8  * OutputEnd=Output+OutSize;
+
+  // Input/Output sizes come from a possibly corrupt block header. The header
+  // read/write below touch [0..3] of each buffer, and everything in the loop
+  // is bounded against InputEnd/OutputEnd, so a bad block is rejected instead
+  // of over-reading the input or over-running the output. Valid blocks satisfy
+  // every bound by construction -- OutSize is the block's decompressed size,
+  // which the caller allocated Output to hold -- so this is transparent.
+  if (Size < 4 || OutSize < 4)  { LZP_FreeHashTable(); return (GRZ_UNEXPECTED_EOF); }
 
   *((uint32 *)Output)=*((uint32 *)Input);
   uint32 Ctx=(Input[3]+(Input[2]<<8)+(Input[1]<<16)+(Input[0]<<24));
@@ -149,23 +158,36 @@ sint32 GRZip_LZP_Decode(uint8 * Input,uint32 Size,uint8 * Output,uint32 LZP_MinM
 
     if (Pointer)
      {
-       if ((*Input++)!=LZP_MatchFlag) Ctx=(Ctx<<8)|(*Output++=*(Input-1));
+       if ((*Input++)!=LZP_MatchFlag) {
+         if (Output>=OutputEnd)  { LZP_FreeHashTable(); return (GRZ_UNEXPECTED_EOF); }
+         Ctx=(Ctx<<8)|(*Output++=*(Input-1));
+       }
        else
        {
          uint32 CommonLength=0;
-         while (CommonLength+=((*Input)^LZP_XorFlag),(*Input++)==LZP_RunFlag);
+         // Bound the run-length reader against InputEnd -- it was unbounded and
+         // walked off the input on a truncated/hostile block.
+         while (Input<InputEnd && (CommonLength+=((*Input)^LZP_XorFlag),(*Input++)==LZP_RunFlag));
          if (CommonLength)
           {
             CommonLength=CommonLength+LZP_MinMatchLen-1;
+            // The copy writes CommonLength bytes and reads them from Pointer,
+            // an earlier output position, so bounding the destination bounds
+            // the source too. Reject a length that would run past OutputEnd.
+            if (CommonLength > (uint32)(OutputEnd-Output))  { LZP_FreeHashTable(); return (GRZ_UNEXPECTED_EOF); }
             while (CommonLength--) *Output++=*Pointer++;
             Ctx=(Output[-1]+(Output[-2]<<8)+(Output[-3]<<16)+(Output[-4]<<24));
           }
-         else
+         else {
+          if (Output>=OutputEnd)  { LZP_FreeHashTable(); return (GRZ_UNEXPECTED_EOF); }
           Ctx=(Ctx<<8)|(*Output++=LZP_MatchFlag);
+         }
        }
      }
-    else
+    else {
+      if (Output>=OutputEnd)  { LZP_FreeHashTable(); return (GRZ_UNEXPECTED_EOF); }
       Ctx=(Ctx<<8)|((*Output++)=(*Input++));
+    }
   }
   LZP_FreeHashTable();
   return (Output-OutputBeg);
