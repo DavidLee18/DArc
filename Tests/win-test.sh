@@ -64,7 +64,13 @@ if [ -n "$WINE" ]; then
   wine --version 2>&1 | head -1
   wineboot -i >/dev/null 2>&1 || true      # first run initialises the prefix
 else
-  echo "native Windows (${PROCESSOR_ARCHITECTURE:-unknown})"
+  # PROCESSOR_ARCHITECTURE is per-process, not per-machine: Git Bash is an x64
+  # binary and runs emulated on an ARM64 host, where it reports "AMD64" and
+  # Windows puts the real answer in PROCESSOR_ARCHITEW6432. Reporting the
+  # process architecture here would invite exactly the wrong conclusion from a
+  # green log. (The run itself is not in doubt either way -- x64 Windows cannot
+  # execute an ARM64 image at all, so getting this far already proves the host.)
+  echo "native Windows (${PROCESSOR_ARCHITEW6432:-${PROCESSOR_ARCHITECTURE:-unknown}})"
 fi
 echo "exe: $EXE"
 echo
