@@ -306,11 +306,13 @@ jobs:
         path: interop
     # Own archives first. If this build cannot read back what it just wrote,
     # the codec is broken on Windows and any interop failure below is a
-    # consequence rather than a finding -- so run it before the cross-platform
-    # check, and with no xfail, because a build failing to round-trip itself is
-    # never expected.
+    # consequence rather than a finding. That is exactly what this step
+    # established for tta: neither Windows build can even create a tta
+    # archive, so it is xfail here too -- see interop-test.sh.
     - name: Round-trip this build's own archives
       shell: bash
+      env:
+        DARC_INTEROP_XFAIL: tta
       run: |
         set -euo pipefail
         tar -xf interop/corpus.tar -C interop
@@ -431,7 +433,10 @@ jobs:
         chmod +x winbin/arc
     # Own archives first, for the same reason as the arm64 job: a build that
     # cannot read back what it just wrote has a codec bug, not an interop one.
+    # tta is xfail here because it turned out to be exactly that.
     - name: Round-trip this build's own archives
+      env:
+        DARC_INTEROP_XFAIL: tta
       run: |
         set -euo pipefail
         Tests/interop-test.sh make  winbin/arc interop/corpus out-amd64

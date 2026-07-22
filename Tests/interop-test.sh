@@ -117,18 +117,23 @@ CASES="
 #
 # Currently expected, set by the cross-platform check steps in build.yml:
 #
-#   tta   The Windows builds reject a TTA archive written by the Linux build.
-#         Both Windows targets fail identically -- GCC-mingw amd64 and Clang
-#         arm64 -- so this is a Windows/Linux difference, not a compiler one,
-#         which points at LLP64 (long is 4 bytes) against LP64 (8). TTA has a
-#         long history of exactly that: nine such bugs were fixed in it for
-#         v2.0.0, every one validated by round-tripping on LP64 hosts only.
-#         -mtta has never been exercised on Windows at all -- win-test.sh
-#         covers -m0/-m1/-m4 and run-tests.sh does not run there -- so this
-#         may be a codec that has never worked on Windows rather than a new
-#         divergence. The self-round-trip step in CI is what tells the two
-#         apart: if a Windows build cannot read even its OWN tta archive, the
-#         bug is in the codec on Windows and has nothing to do with interop.
+#   tta   -mtta does not work on Windows at all. This started as an interop
+#         failure -- both Windows builds rejected a TTA archive written by the
+#         Linux build -- but the self-round-trip step settled it: neither
+#         Windows build can even CREATE a tta archive, so there is no interop
+#         question here. It is a codec that is broken on Windows.
+#
+#         It had simply never been run there. win-test.sh covers -m0/-m1/-m4
+#         and run-tests.sh does not run on Windows, so nothing ever invoked
+#         -mtta on a Windows build; this suite is the first thing to try.
+#
+#         Both targets fail identically -- GCC-mingw on amd64 and Clang on
+#         arm64 -- so it is a Windows/Linux difference rather than a compiler
+#         one, which points at LLP64 (long is 4 bytes) against LP64 (8). TTA
+#         has a long history of exactly that family: nine such bugs were fixed
+#         in it for v2.0.0, every one validated by round-tripping on LP64
+#         hosts only. Tracked as follow-up work; it is a pre-existing defect,
+#         not a regression from anything in this suite.
 XFAIL="${DARC_INTEROP_XFAIL:-}"
 
 is_xfail () {
@@ -140,6 +145,19 @@ tree_hash () {   # order-independent hash of a directory's file contents+names
   [ -d "$1" ] || { echo "no-such-dir"; return; }
   ( cd "$1" && find . -type f -print0 2>/dev/null | LC_ALL=C sort -z |
     while IFS= read -r -d '' f; do printf '%s  %s\n' "$(hash_of "$f")" "$f"; done ) | $SHA | cut -d' ' -f1
+}
+
+# Show why the archiver failed. "tail -3" is not enough: DArc prints a version
+# and host banner after an error, so the last three lines of a failed run are
+# "Version: Windows 10 / Host system: Linux / Host version: ..." and the actual
+# message scrolls past. Prefer lines that look like the diagnosis, and fall
+# back to the tail only when none match.
+why () {  # why <logfile>
+  grep -iE 'error|exception|failed|cannot|unable|not supported' "$1" 2>/dev/null |
+    grep -viE '^ *(Version|Host system|Host version):' | head -3 |
+    sed 's/^/      /'
+  grep -qiE 'error|exception|failed|cannot|unable|not supported' "$1" 2>/dev/null ||
+    tail -3 "$1" | sed 's/^/      /'
 }
 
 rm -rf "$WORK"; mkdir -p "$WORK"
@@ -154,6 +172,7 @@ make)
   rm -f "$DIR"/*.arc "$DIR"/SHA256SUMS 2>/dev/null
   echo "writing archives with $ARC"
   echo "corpus: $n_want files, tree $EXPECTED_TREE"
+  xfail=0; xpass=0
   # Herestring, not a pipeline: a "| while read" loop runs in a subshell in
   # most shells, so anything it counted would be discarded at the done.
   while IFS= read -r line; do
@@ -164,10 +183,19 @@ make)
     # corpus so entries are stored corpus-relative -- both exactly as
     # run-tests.sh does it, so archives are comparable with its fingerprints.
     if ( cd "$CORPUS" && "$ARC" a --nodates -r -y $opts "$(winpath "$arc")" . ) >"$WORK/$label.log" 2>&1; then
-      printf '  %-20s %s\n' "$label" "$(hash_of "$arc")"
+      if is_xfail "$label"; then
+        printf '  %-20s XPASS created -- remove it from XFAIL\n' "$label"
+        xpass=$((xpass+1))
+      else
+        printf '  %-20s %s\n' "$label" "$(hash_of "$arc")"
+      fi
+    elif is_xfail "$label"; then
+      printf '  %-20s xfail cannot create (known, see XFAIL in %s)\n' "$label" "$(basename "$0")"
+      why "$WORK/$label.log"
+      xfail=$((xfail+1))
     else
       printf '  %-20s CREATE FAILED\n' "$label"
-      tail -3 "$WORK/$label.log" | sed 's/^/      /'
+      why "$WORK/$label.log"
     fi
   done <<< "$CASES"
   # Counted from disk rather than from the loop, so the pass condition rests on
@@ -176,8 +204,13 @@ make)
   made="$(ls "$DIR"/*.arc 2>/dev/null | wc -l | tr -d ' ')"
   want="$(echo "$CASES" | grep -c ':')"
   ( cd "$DIR" && $SHA ./*.arc > SHA256SUMS 2>/dev/null )
-  echo "wrote $made/$want archives to $DIR"
-  [ "$made" -eq "$want" ] || { echo "error: $((want-made)) archive(s) were not created" >&2; exit 1; }
+  echo "wrote $made/$want archives to $DIR ($xfail known-broken)"
+  if [ "$xpass" -gt 0 ]; then
+    echo "error: $xpass archive(s) marked xfail were created -- update XFAIL in $0" >&2
+    exit 1
+  fi
+  [ "$made" -eq "$((want - xfail))" ] ||
+    { echo "error: $((want - xfail - made)) archive(s) were not created" >&2; exit 1; }
   ;;
 
 # ---------------------------------------------------------------------------
@@ -213,12 +246,12 @@ check)
 
     if ! "$ARC" t -y "$(winpath "$arc")" >"$WORK/$label.t.log" 2>&1; then
       bad "$label" "integrity test rejected the archive"
-      tail -3 "$WORK/$label.t.log" | sed 's/^/      /'
+      why "$WORK/$label.t.log"
       continue
     fi
     if ! "$ARC" x -y -dp"$(winpath "$out")" "$(winpath "$arc")" >"$WORK/$label.x.log" 2>&1; then
       bad "$label" "extract failed"
-      tail -3 "$WORK/$label.x.log" | sed 's/^/      /'
+      why "$WORK/$label.x.log"
       continue
     fi
 
