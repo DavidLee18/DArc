@@ -133,8 +133,22 @@ is_xfail () {
 hash_of  () { $SHA "$1" 2>/dev/null | cut -d' ' -f1; }
 tree_hash () {   # order-independent hash of a directory's file contents+names
   [ -d "$1" ] || { echo "no-such-dir"; return; }
+  # One hash process per BATCH of files, not one per file.
+  #
+  # The per-file form spawned a process for every entry: 218 for this corpus,
+  # and tree_hash runs once per configuration plus once for the corpus itself.
+  # That measured 22.8s per call on macOS and dominated the run on the Windows
+  # ARM64 runner, where process creation is far more expensive -- a single
+  # interop pass there took ~7 minutes against ~17 seconds for the same work
+  # under Wine on Linux. Batching is 0.33s per call, a 69x improvement.
+  #
+  # $SHA prints exactly "<hash>  <path>" per file, which is the same text the
+  # old printf composed, so the digest is unchanged -- verified byte-for-byte
+  # against the previous implementation on this corpus. -r keeps an empty
+  # directory from making GNU xargs run the hasher once with no arguments,
+  # where it would read stdin instead.
   ( cd "$1" && find . -type f -print0 2>/dev/null | LC_ALL=C sort -z |
-    while IFS= read -r -d '' f; do printf '%s  %s\n' "$(hash_of "$f")" "$f"; done ) | $SHA | cut -d' ' -f1
+    xargs -0 -r $SHA ) | $SHA | cut -d' ' -f1
 }
 
 # Show why the archiver failed. "tail -3" is not enough: DArc prints a version
