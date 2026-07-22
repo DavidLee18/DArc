@@ -11,6 +11,10 @@
 
 pub mod cfb;
 pub mod random;
+
+/// Serpent S-boxes, generated from the C. Not yet a usable cipher -- the key
+/// schedule and round functions are still to come.
+pub mod serpent_sboxes;
 pub mod ctr;
 
 use hmac::Hmac;
