@@ -176,3 +176,30 @@ fn partial_final_block_is_not_padded() {
         );
     }
 }
+
+#[test]
+fn streaming_in_chunks_matches_one_shot() {
+    // docrypt builds the cipher once and loops over read buffers, so a chunk
+    // boundary is not a block boundary. State must carry across calls.
+    //
+    // The chunk sizes below are deliberately coprime with the 16-byte block --
+    // 1, 3, 7, 13 -- so every call starts mid-block. An implementation that
+    // restarted from the IV per call, or that only handled block-aligned
+    // chunks, passes the one-shot tests above and fails here.
+    let key = key32();
+    let iv = iv(16);
+    let plain: Vec<u8> = (0..1000u32).map(|i| (i % 251) as u8).collect();
+    let cipher = <aes::Aes256 as cipher::KeyInit>::new_from_slice(&key).unwrap();
+
+    let mut expected = plain.clone();
+    darc_crypto::ctr::apply_keystream(&cipher, &iv, &mut expected);
+
+    for chunk in [1usize, 3, 7, 13, 16, 17, 64, 999] {
+        let mut buf = plain.clone();
+        let mut state = darc_crypto::ctr::Ctr::new(&cipher, &iv);
+        for part in buf.chunks_mut(chunk) {
+            state.apply(part);
+        }
+        assert_eq!(buf, expected, "CTR streamed in {chunk}-byte chunks diverged");
+    }
+}

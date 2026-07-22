@@ -24,44 +24,70 @@
 use cipher::array::Array;
 use cipher::{BlockCipherEncrypt, BlockSizeUser};
 
-/// Shared driver. `feedback_is_output` selects the direction: on encryption the
-/// register takes the byte we produce, on decryption the byte we consume --
-/// which is the ciphertext either way.
-fn run<C>(cipher: &C, iv: &[u8], data: &mut [u8], encrypting: bool)
+/// Streaming CFB state.
+///
+/// Like [`crate::ctr::Ctr`], the keystream block, the feedback register and the
+/// position within them persist across calls, because `docrypt` builds the
+/// cipher once and loops over read buffers. A chunk boundary is not a block
+/// boundary.
+pub struct Cfb<'a, C> {
+    cipher: &'a C,
+    keystream: Vec<u8>,
+    feedback: Vec<u8>,
+    pos: usize,
+}
+
+impl<'a, C> Cfb<'a, C>
 where
     C: BlockCipherEncrypt + BlockSizeUser,
 {
-    let bs = C::block_size();
-    assert_eq!(
-        iv.len(),
-        bs,
-        "CFB IV must be exactly one block ({bs} bytes for this cipher)"
-    );
-
-    // cfb_start encrypts the IV in place before any data is processed.
-    let mut keystream = iv.to_vec();
-    encrypt_in_place(cipher, &mut keystream);
-
-    let mut feedback = vec![0u8; bs];
-    let mut pos = 0usize;
-
-    for byte in data.iter_mut() {
-        if pos == bs {
-            keystream.copy_from_slice(&feedback);
-            encrypt_in_place(cipher, &mut keystream);
-            pos = 0;
+    /// `iv` must be exactly one cipher block.
+    pub fn new(cipher: &'a C, iv: &[u8]) -> Self {
+        let bs = C::block_size();
+        assert_eq!(iv.len(), bs, "CFB IV must be exactly one block ({bs} bytes)");
+        // cfb_start encrypts the IV in place before any data is processed.
+        let mut keystream = iv.to_vec();
+        encrypt_in_place(cipher, &mut keystream);
+        Cfb {
+            cipher,
+            keystream,
+            feedback: vec![0u8; bs],
+            pos: 0,
         }
-        let cipher_byte = if encrypting {
-            let c = *byte ^ keystream[pos];
-            *byte = c;
-            c
-        } else {
-            let c = *byte;
-            *byte = c ^ keystream[pos];
-            c
-        };
-        feedback[pos] = cipher_byte;
-        pos += 1;
+    }
+
+    fn run(&mut self, data: &mut [u8], encrypting: bool) {
+        let bs = C::block_size();
+        for byte in data.iter_mut() {
+            if self.pos == bs {
+                self.keystream.copy_from_slice(&self.feedback);
+                encrypt_in_place(self.cipher, &mut self.keystream);
+                self.pos = 0;
+            }
+            // The register takes the CIPHERTEXT in both directions: the byte
+            // produced when encrypting, the byte consumed when decrypting.
+            let cipher_byte = if encrypting {
+                let c = *byte ^ self.keystream[self.pos];
+                *byte = c;
+                c
+            } else {
+                let c = *byte;
+                *byte = c ^ self.keystream[self.pos];
+                c
+            };
+            self.feedback[self.pos] = cipher_byte;
+            self.pos += 1;
+        }
+    }
+
+    /// Encrypt in place, continuing from the previous call.
+    pub fn encrypt(&mut self, data: &mut [u8]) {
+        self.run(data, true)
+    }
+
+    /// Decrypt in place, continuing from the previous call.
+    pub fn decrypt(&mut self, data: &mut [u8]) {
+        self.run(data, false)
     }
 }
 
@@ -74,18 +100,18 @@ where
     cipher.encrypt_block(b);
 }
 
-/// Encrypt in place.
+/// One-shot wrapper over [`Cfb`], for callers holding the whole message.
 pub fn encrypt<C>(cipher: &C, iv: &[u8], data: &mut [u8])
 where
     C: BlockCipherEncrypt + BlockSizeUser,
 {
-    run(cipher, iv, data, true)
+    Cfb::new(cipher, iv).encrypt(data)
 }
 
-/// Decrypt in place.
+/// One-shot wrapper over [`Cfb`].
 pub fn decrypt<C>(cipher: &C, iv: &[u8], data: &mut [u8])
 where
     C: BlockCipherEncrypt + BlockSizeUser,
 {
-    run(cipher, iv, data, false)
+    Cfb::new(cipher, iv).decrypt(data)
 }

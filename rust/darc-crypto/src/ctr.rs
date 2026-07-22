@@ -28,43 +28,74 @@
 use cipher::{BlockCipherEncrypt, BlockSizeUser, KeyInit};
 use cipher::array::Array;
 
-/// Apply DArc's CTR keystream to `data` in place.
+/// Streaming CTR state.
 ///
-/// `iv` must be one cipher block long; anything else is a caller bug rather
-/// than a data-dependent condition, so it panics rather than returning an
-/// error that would have to be threaded through every call site.
+/// The counter and the position within the current keystream block persist
+/// across calls, because `docrypt` builds the cipher once and then loops over
+/// read buffers -- so a chunk boundary is not a block boundary and must not
+/// restart anything. An implementation that took the IV afresh per call would
+/// pass every whole-buffer test and corrupt every archive larger than one
+/// read.
+pub struct Ctr<'a, C> {
+    cipher: &'a C,
+    counter: Vec<u8>,
+    pad: Vec<u8>,
+    /// Bytes of `pad` already consumed. Starts at 0 with `pad` holding
+    /// `E(IV)`, mirroring `ctr_start`, which pre-generates it.
+    pos: usize,
+    started: bool,
+}
+
+impl<'a, C> Ctr<'a, C>
+where
+    C: BlockCipherEncrypt + BlockSizeUser,
+{
+    /// `iv` must be exactly one cipher block.
+    pub fn new(cipher: &'a C, iv: &[u8]) -> Self {
+        let bs = C::block_size();
+        assert_eq!(iv.len(), bs, "CTR IV must be exactly one block ({bs} bytes)");
+        Ctr {
+            cipher,
+            counter: iv.to_vec(),
+            pad: vec![0u8; bs],
+            pos: bs, // forces the first block to be generated on first use
+            started: false,
+        }
+    }
+
+    /// Apply the keystream to `data` in place, continuing where the previous
+    /// call left off. Encryption and decryption are the same operation.
+    pub fn apply(&mut self, data: &mut [u8]) {
+        let bs = C::block_size();
+        for byte in data.iter_mut() {
+            if self.pos == bs {
+                // The first block uses the IV unchanged; every later block
+                // increments first. ctr_start pre-generates E(IV) without
+                // incrementing, and LTC_CTR_RFC3686 -- which would have
+                // pre-incremented -- is not passed.
+                if self.started {
+                    increment_le(&mut self.counter);
+                }
+                self.started = true;
+                self.pad.copy_from_slice(&self.counter);
+                let block = <&mut Array<u8, C::BlockSize>>::try_from(&mut self.pad[..])
+                    .expect("pad is allocated at exactly one block");
+                self.cipher.encrypt_block(block);
+                self.pos = 0;
+            }
+            *byte ^= self.pad[self.pos];
+            self.pos += 1;
+        }
+    }
+}
+
+/// One-shot convenience wrapper over [`Ctr`], for callers that hold the whole
+/// message at once.
 pub fn apply_keystream<C>(cipher: &C, iv: &[u8], data: &mut [u8])
 where
     C: BlockCipherEncrypt + BlockSizeUser,
 {
-    let bs = C::block_size();
-    assert_eq!(
-        iv.len(),
-        bs,
-        "CTR IV must be exactly one block ({bs} bytes for this cipher)"
-    );
-
-    let mut counter = iv.to_vec();
-    let mut pad = vec![0u8; bs];
-
-    // First block uses the IV unchanged -- see the note above about ctr_start
-    // pre-generating the pad.
-    let mut first = true;
-    for chunk in data.chunks_mut(bs) {
-        if !first {
-            increment_le(&mut counter);
-        }
-        first = false;
-
-        pad.copy_from_slice(&counter);
-        let block = <&mut Array<u8, C::BlockSize>>::try_from(&mut pad[..])
-            .expect("pad is allocated at exactly one block");
-        cipher.encrypt_block(block);
-
-        for (b, k) in chunk.iter_mut().zip(pad.iter()) {
-            *b ^= *k;
-        }
-    }
+    Ctr::new(cipher, iv).apply(data);
 }
 
 /// Add one to a little-endian counter spanning the whole buffer, carrying from

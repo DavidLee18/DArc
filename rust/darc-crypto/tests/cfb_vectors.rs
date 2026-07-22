@@ -108,3 +108,34 @@ fn decrypt_recovers_darcs_own_ciphertext() {
     cfb::decrypt(&c, &iv, &mut buf);
     assert_eq!(buf, plaintext(48));
 }
+
+#[test]
+fn streaming_in_chunks_matches_one_shot() {
+    // Same hazard as CTR: docrypt loops over read buffers, so the feedback
+    // register and the position within the keystream block must survive a
+    // chunk boundary. Chunk sizes coprime with the 16-byte block, so every
+    // call starts mid-block.
+    let key = key32();
+    let iv = iv(16);
+    let plain = plaintext(1000);
+    let c = <aes::Aes256 as cipher::KeyInit>::new_from_slice(&key).unwrap();
+
+    let mut expected = plain.clone();
+    cfb::encrypt(&c, &iv, &mut expected);
+
+    for chunk in [1usize, 3, 7, 13, 16, 17, 64, 999] {
+        let mut buf = plain.clone();
+        let mut state = cfb::Cfb::new(&c, &iv);
+        for part in buf.chunks_mut(chunk) {
+            state.encrypt(part);
+        }
+        assert_eq!(buf, expected, "CFB encrypt streamed in {chunk}-byte chunks diverged");
+
+        let mut back = buf.clone();
+        let mut state = cfb::Cfb::new(&c, &iv);
+        for part in back.chunks_mut(chunk) {
+            state.decrypt(part);
+        }
+        assert_eq!(back, plain, "CFB decrypt streamed in {chunk}-byte chunks diverged");
+    }
+}
