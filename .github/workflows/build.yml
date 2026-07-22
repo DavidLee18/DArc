@@ -485,17 +485,39 @@ jobs:
     #                            read back correctly in both directions; they
     #                            are just compressed differently, mostly by
     #                            under 0.5% -- except -mtor, which is 35%
-    #                            LARGER on arm64 (34771 -> 47043 bytes). That
-    #                            is a real compression-quality gap in the
-    #                            llvm-mingw/Clang build and is tracked
-    #                            separately. Reported, not gated, until it is
-    #                            understood; gating it now would just pin the
-    #                            defect in place.
+    #                            LARGER (34771 -> 47043 bytes for the identical
+    #                            method spec, tor:434kb on both sides).
+    #                            Reported, not gated, until it is understood;
+    #                            gating it now would only pin it in place.
     #
-    # Not thread count and not memory: both were measured and neither changes
-    # archive bytes. Nor is it ARM64 itself -- run-tests.sh checks the same
-    # committed fingerprints on ubuntu-24.04-arm and macos-latest and they
-    # match, so an ARM64 build per se produces identical output.
+    # What that gap is NOT, each established by measurement rather than by
+    # argument. Recorded so the next attempt starts past them:
+    #
+    #   architecture     It is the toolchain. Building windows-amd64 with
+    #                    llvm-mingw instead of mingw-gcc -- same architecture,
+    #                    same host, same Wine -- reproduces the arm64 sizes
+    #                    EXACTLY, all 14 of them. DARC_WIN_TOOLCHAIN=llvm in
+    #                    compile-win64-c is what that experiment used and is
+    #                    how to repeat it.
+    #   thread count     -mt1 through -mt8 are byte-identical for every codec.
+    #   memory limit     -lc1 through -lc128 move -mtor by 24 bytes, against a
+    #                    12272-byte gap. Only -m9 responds to -lc at all.
+    #   parameters       Both sides store the same spec, tor:434kb, so it is
+    #                    not memory-driven parameter selection either.
+    #   strict aliasing  The obvious suspect, and wrong. Adding
+    #                    -fno-strict-aliasing changed the output by nothing at
+    #                    all. It is still the correct flag -- see
+    #                    compile-win64-c -- but it is not this.
+    #   ARM64 per se     run-tests.sh checks the same committed fingerprints on
+    #                    ubuntu-24.04-arm and macos-latest, and both match.
+    #
+    # Also not reproducible with Apple clang on macOS: neither -fstrict-aliasing
+    # nor -O2 moves Tornado's output there. It is specific to llvm-mingw, so it
+    # can only be observed in CI.
+    #
+    # Next step, untried: compile only Compression/Tornado with mingw-gcc while
+    # the rest of the build uses llvm-mingw, to confirm the miscompilation is
+    # in that translation unit rather than somewhere shared.
     - name: Compare archive bytes across builds
       run: |
         set -uo pipefail

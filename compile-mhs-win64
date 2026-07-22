@@ -14,10 +14,21 @@ set -e
 
 arch=${DARC_WIN_ARCH:-x86_64}
 case "$arch" in
-  x86_64)  triple="x86_64-w64-mingw32";  cc_suffix="-posix"; sfx="win64"     ;;
-  aarch64) triple="aarch64-w64-mingw32"; cc_suffix="";       sfx="win-arm64" ;;
+  x86_64)  triple="x86_64-w64-mingw32";  toolchain=gcc;  sfx="win64"     ;;
+  aarch64) triple="aarch64-w64-mingw32"; toolchain=llvm; sfx="win-arm64" ;;
   *) echo "error: DARC_WIN_ARCH must be x86_64 or aarch64, got '$arch'" >&2; exit 2 ;;
 esac
+
+# See compile-win64-c: lets a target be built with the other toolchain, to
+# separate compiler-specific from architecture-specific behaviour.
+case "${DARC_WIN_TOOLCHAIN:-}" in
+  "")        ;;
+  gcc|llvm)  toolchain="$DARC_WIN_TOOLCHAIN" ;;
+  *) echo "error: DARC_WIN_TOOLCHAIN must be gcc or llvm, got '$DARC_WIN_TOOLCHAIN'" >&2; exit 2 ;;
+esac
+# Debian's mingw uses "-posix" to pick the threading model; llvm-mingw has no
+# such variants, so the driver name has no suffix there.
+case "$toolchain" in gcc) cc_suffix="-posix" ;; llvm) cc_suffix="" ;; esac
 
 exe=Tests/arc-mhs-$sfx.exe
 gui_flag=""
@@ -28,11 +39,11 @@ for option; do
   esac
 done
 
-WINOUT=${WINOUT:-/tmp/out/FreeArc-win64-mhs-$arch}
+WINOUT=${WINOUT:-/tmp/out/FreeArc-win64-mhs-$arch-$toolchain}
 mkdir -p "$WINOUT"
 
 # 1) Build C/C++ objects for the Windows target with __MHS__ defined
-MHS=1 WINOUT="$WINOUT" DARC_WIN_ARCH="$arch" ./compile-win64-c
+MHS=1 WINOUT="$WINOUT" DARC_WIN_ARCH="$arch" DARC_WIN_TOOLCHAIN="$toolchain" ./compile-win64-c
 
 # 2) ntrljmp.c for Lua trampoline (Lua not used on MHS path — skip unless GUI/Lua needed)
 # We don't link Lua under MHS for now; HsLua bindings only used by GHC build.
@@ -73,9 +84,9 @@ for zo in "$WINOUT"/zstd_*.o; do [[ -f "$zo" ]] && c_objs+=("$zo"); done
 # GCC-mingw has libstdc++; llvm-mingw has LLVM's libc++, which additionally
 # needs libc++abi and libunwind when linked statically. Asking for -lstdc++
 # under llvm-mingw fails outright, so this is not a preference.
-case "$arch" in
-  x86_64)  cxx_libs="-lstdc++ -lpthread" ;;
-  aarch64) cxx_libs="-lc++ -lc++abi -lunwind" ;;
+case "$toolchain" in
+  gcc)  cxx_libs="-lstdc++ -lpthread" ;;
+  llvm) cxx_libs="-lc++ -lc++abi -lunwind" ;;
 esac
 win_libs="-static $cxx_libs -lwinpthread -lwinmm -lws2_32 -ladvapi32 -lshell32 -luser32 -lkernel32 -lwininet -Wl,--allow-multiple-definition"
 
@@ -130,10 +141,10 @@ runtime_defs="$runtime_defs -DCLOCK_GET=darc_mhs_clock_get -DCLOCK_SLEEP=usleep"
 #     pointer really is a callback of the right shape at run time -- see the
 #     foreign-export machinery in Compression/CompressionLib.hs -- so this is
 #     a missing cast in generated code, not a real mismatch.
-case "$arch" in
-  x86_64)
+case "$toolchain" in
+  gcc)
     cc_quirks="-static-libgcc -static-libstdc++" ;;
-  aarch64)
+  llvm)
     cc_quirks="-include errno.h -Wno-incompatible-function-pointer-types" ;;
 esac
 export MHSCCFLAGS="-O2 $cc_quirks -I. -ICompression -IHsLua/src $runtime_defs $defines $gui_flag"

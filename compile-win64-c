@@ -33,7 +33,24 @@ case "$arch" in
     echo "error: DARC_WIN_ARCH must be x86_64 or aarch64, got '$arch'" >&2; exit 2 ;;
 esac
 
-WINOUT=${WINOUT:-/tmp/out/FreeArc-win64-ghc-$arch}
+# Build a target with the other toolchain, for isolating compiler-specific
+# behaviour from architecture-specific behaviour. llvm-mingw supplies both
+# triples, so x86_64 can be built with Clang as well as with GCC; the
+# difference is only the driver-name suffix, since Debian's mingw uses
+# "-posix" to select the threading model and llvm-mingw has no such variants.
+#
+# Added because windows-amd64 (GCC) produces archives byte-identical to Linux
+# while windows-arm64 (Clang) does not, and -mtor comes out 35% larger there.
+# Compiler and architecture are confounded across those two builds; this knob
+# separates them.
+case "${DARC_WIN_TOOLCHAIN:-}" in
+  "")     ;;
+  gcc)    cc_suffix="-posix"; toolchain="mingw-w64"  ;;
+  llvm)   cc_suffix="";       toolchain="llvm-mingw" ;;
+  *) echo "error: DARC_WIN_TOOLCHAIN must be gcc or llvm, got '$DARC_WIN_TOOLCHAIN'" >&2; exit 2 ;;
+esac
+
+WINOUT=${WINOUT:-/tmp/out/FreeArc-win64-ghc-$arch${DARC_WIN_TOOLCHAIN:+-$DARC_WIN_TOOLCHAIN}}
 mkdir -p "$WINOUT"
 CC="$triple-g++$cc_suffix"
 command -v "$CC" >/dev/null 2>&1 ||
@@ -42,13 +59,27 @@ MHS_DEF=""
 if [[ -n "${MHS:-}" ]]; then
   MHS_DEF="-D__MHS__"
 fi
+# -fno-strict-aliasing is REQUIRED, not a preference. Compression/Common.h
+# reads unaligned data with "#define value32(p) (*(uint32*)(p))" on a BYTE*,
+# which is a strict-aliasing violation, and the codecs are built on it. Every
+# one of the 17 codec makefiles under Compression/ therefore specifies
+# -fno-strict-aliasing; this script compiles them all itself and was passing
+# none of it, so the Windows build has been relying on the compiler choosing
+# not to exploit the UB.
+#
+# GCC at -O2 does not exploit it, which is why windows-amd64 has been
+# byte-identical to Linux. Clang is not so forgiving: both llvm-mingw builds,
+# x86_64 and aarch64 alike, produce identical-to-each-other but different
+# archives -- -mtor comes out 35% larger. Same input, same method spec, worse
+# compression, which is what miscompiled match-finding looks like when the
+# emitted matches are still verified before use.
 FLAGS=(
   -std=c++17 -c
   -DFREEARC_WIN -DFREEARC_INTEL_BYTE_ORDER -DFREEARC_64BIT
   $MHS_DEF
   -D_WIN32_WINNT=$win_ver -DWINVER=$win_ver
   -I. -ICompression -IHsLua/src
-  -O2
+  -O2 -fno-strict-aliasing
   -Wno-unknown-pragmas -Wno-sign-compare -Wno-deprecated-declarations
 )
 
@@ -61,11 +92,16 @@ build() {
     */_Encryption/*) extra=(-IShared_src/_Encryption/headers -ICompression/_Encryption/headers) ;;
   esac
   # PPMD must match Linux makefile exactly (Compression/PPMD/makefile): -O1,
-  # -fstrict-aliasing, -fno-exceptions/-fno-rtti, -fomit-frame-pointer, -funroll-loops.
-  # Any mismatch on the WORD&-alias SWAP pattern in Model.cpp produces cross-
-  # incompatible PPMD streams (Linux↔Win64 archives differ and fail to decode).
+  # -fno-strict-aliasing, -fno-exceptions/-fno-rtti, -fomit-frame-pointer,
+  # -funroll-loops. Any mismatch on the WORD&-alias SWAP pattern in Model.cpp
+  # produces cross-incompatible PPMD streams (Linux<->Win64 archives differ and
+  # fail to decode).
+  #
+  # This said -fstrict-aliasing, the exact opposite of what that makefile asks
+  # for, directly under a comment promising to match it. It survived because
+  # GCC at -O1 did not act on the difference.
   case "$src" in
-    */PPMD/*) extra+=(-O1 -fstrict-aliasing -fno-exceptions -fno-rtti -fomit-frame-pointer -funroll-loops) ;;
+    */PPMD/*) extra+=(-O1 -fno-strict-aliasing -fno-exceptions -fno-rtti -fomit-frame-pointer -funroll-loops) ;;
   esac
   # Skip the new CLS codec (not needed; host/plugin model, requires dlopen)
   case "$src" in
@@ -93,7 +129,7 @@ done
 # LZMA 7-Zip 24.09 C SDK sources
 CC_C="$triple-gcc$cc_suffix"
 C7Z_FLAGS=(
-  -std=c11 -c -O2 -DNDEBUG -D_REENTRANT
+  -std=c11 -c -O2 -fno-strict-aliasing -DNDEBUG -D_REENTRANT
   -DFREEARC_WIN -DFREEARC_INTEL_BYTE_ORDER -DFREEARC_64BIT
   $MHS_DEF
   -D_WIN32_WINNT=$win_ver -DWINVER=$win_ver
@@ -106,8 +142,10 @@ for src in Compression/LZMA/7z24/*.c; do
 done
 
 # zstd library (not single-TU — all common/compress/decompress .c files)
+# Compression/Zstd/makefile builds these with -fno-strict-aliasing; this said
+# -fstrict-aliasing, the same inversion as the PPMD case above.
 ZSTD_FLAGS=(
-  -std=c99 -c -O3 -fomit-frame-pointer -fstrict-aliasing -funroll-loops
+  -std=c99 -c -O3 -fomit-frame-pointer -fno-strict-aliasing -funroll-loops
   -DZSTD_MULTITHREAD -DXXH_NAMESPACE=ZSTD_ -DZSTD_LEGACY_SUPPORT=0 -DZSTD_DISABLE_ASM
   -DFREEARC_WIN -DFREEARC_INTEL_BYTE_ORDER -DFREEARC_64BIT
   -ICompression/Zstd/libzstd -ICompression/Zstd/libzstd/common
