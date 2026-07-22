@@ -9,6 +9,8 @@
 
 #![forbid(unsafe_code)]
 
+pub mod ctr;
+
 use hmac::Hmac;
 use sha2::Sha512;
 
