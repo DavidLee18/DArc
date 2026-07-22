@@ -77,9 +77,12 @@ if [ -n "${DARC_RUST:-}" ]; then
   command -v cargo >/dev/null 2>&1 || {
     echo "error: DARC_RUST is set but cargo was not found in PATH" >&2; exit 1; }
   echo "building Rust codecs"
-  ( cd rust/darc-codecs && cargo build --release --features dropin ) || {
+  ( cd rust && cargo build --release -p darc-codecs --features darc-codecs/dropin ) || {
     echo "error: cargo build failed" >&2; exit 1; }
-  rust_lib="$PWD/rust/darc-codecs/target/release/libdarc_codecs.a"
+  # rust/ is a cargo workspace, so build output lands in the WORKSPACE target
+  # directory, not the member's. It was rust/darc-codecs/target/ before the
+  # workspace existed.
+  rust_lib="$PWD/rust/target/release/libdarc_codecs.a"
   [ -f "$rust_lib" ] || { echo "error: cargo produced no $rust_lib" >&2; exit 1; }
   defines="$defines -DDARC_RUST"
   # Reaches the per-codec makefiles through unix-common.mak, which appends
