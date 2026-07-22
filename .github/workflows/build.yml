@@ -327,6 +327,82 @@ jobs:
         path: out-arm64
         if-no-files-found: error
 
+  # ── TEMPORARY: is the arm64 archive difference the compiler or the arch? ────
+  # windows-amd64 (GCC) writes archives byte-identical to Linux; windows-arm64
+  # (Clang) does not, and -mtor comes out 35% larger there over the same corpus
+  # with the identical method spec (tor:434kb both sides). Compiler and
+  # architecture are confounded across those two builds.
+  #
+  # llvm-mingw supplies an x86_64 triple too, so this builds the SAME
+  # architecture as the known-good amd64 build with the OTHER compiler and
+  # compares the bytes. Clang+x86_64 differing means the compiler is the
+  # trigger; matching means it is specific to ARM64-on-Windows.
+  #
+  # Delete this job once the question is answered.
+  tornado-toolchain-probe:
+    needs: interop-produce
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v6.0.2
+      with:
+        lfs: false
+    - name: Install llvm-mingw, Wine and cpphs
+      run: |
+        set -euo pipefail
+        sudo apt-get update
+        sudo apt-get install -y --no-install-recommends cpphs wine64 wine
+        ver="20260616"
+        tarball="llvm-mingw-$ver-ucrt-ubuntu-22.04-x86_64.tar.xz"
+        sha256="534b92e067b22a6b4441f48ae9240a3341b17825d04d577eab0cf85c44b4deda"
+        curl -fsSL "https://github.com/mstorsjo/llvm-mingw/releases/download/$ver/$tarball" -o /tmp/"$tarball"
+        echo "$sha256  /tmp/$tarball" | sha256sum -c -
+        tar -xJf /tmp/"$tarball" -C /opt
+        echo "/opt/llvm-mingw-$ver-ucrt-ubuntu-22.04-x86_64/bin" >> "$GITHUB_PATH"
+    - name: Install MicroHs
+      run: |
+        microhs_sha="05a3fbd5d73ae6a37111a6ced5b57bb1717b8975"
+        microhs_expected_sha256="a1f85821cbae877d0ea3e173235d45c833d9145b2ca9e92e77d284b6730c63b6"
+        curl -fsSL "https://github.com/augustss/MicroHs/archive/$microhs_sha.tar.gz" -o /tmp/microhs.tar.gz
+        echo "$microhs_expected_sha256  /tmp/microhs.tar.gz" | sha256sum -c -
+        tar -xzf /tmp/microhs.tar.gz -C /tmp
+        cd "/tmp/MicroHs-$microhs_sha"
+        make minstall
+        echo "$HOME/.mcabal/bin" >> "$GITHUB_PATH"
+    - name: Build windows-amd64 with Clang instead of GCC
+      run: |
+        chmod +x compile-win64-c compile-mhs-win64
+        DARC_WIN_ARCH=x86_64 DARC_WIN_TOOLCHAIN=llvm ./compile-mhs-win64
+    - uses: actions/download-artifact@v4
+      with:
+        name: interop-linux
+        path: interop
+    - name: Write archives with it and compare against linux
+      run: |
+        set -euo pipefail
+        tar -xf interop/corpus.tar -C interop
+        chmod +x Tests/interop-test.sh Tests/arc-mhs-win64.exe
+        export WINEDEBUG=-all WINEPREFIX="$HOME/.darc-wineprefix"
+        wineboot -i >/dev/null 2>&1 || true
+        mkdir -p shim
+        { echo '#!/bin/sh'
+          echo 'export WINEDEBUG=-all WINEPREFIX="$HOME/.darc-wineprefix"'
+          echo "exec wine $PWD/Tests/arc-mhs-win64.exe \"\$@\""
+        } > shim/arc
+        chmod +x shim/arc
+        Tests/interop-test.sh make shim/arc interop/corpus out-clang-amd64
+        echo
+        echo "=== ANSWER ==="
+        echo "method              size(linux)  size(clang-amd64)   bytes"
+        for a in interop/archives/*.arc; do
+          m=$(basename "$a" .arc); b="out-clang-amd64/$m.arc"
+          [ -f "$b" ] || continue
+          v=$(cmp -s "$a" "$b" && echo same || echo DIFFERS)
+          printf '%-20s %11s %17s   %s\n' "$m" "$(wc -c < "$a")" "$(wc -c < "$b")" "$v"
+        done
+        echo
+        echo "If tor DIFFERS here, the trigger is the COMPILER (Clang), not ARM64."
+        echo "If tor is the same, the trigger is specific to ARM64-on-Windows."
+
   # ── Cross-build archive interoperability ────────────────────────────────────
   # run-tests.sh only ever asks whether a build can read back its own archives.
   # Nothing asked whether the Windows builds -- which use a different compiler

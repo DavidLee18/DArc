@@ -33,7 +33,24 @@ case "$arch" in
     echo "error: DARC_WIN_ARCH must be x86_64 or aarch64, got '$arch'" >&2; exit 2 ;;
 esac
 
-WINOUT=${WINOUT:-/tmp/out/FreeArc-win64-ghc-$arch}
+# Build a target with the other toolchain, for isolating compiler-specific
+# behaviour from architecture-specific behaviour. llvm-mingw supplies both
+# triples, so x86_64 can be built with Clang as well as with GCC; the
+# difference is only the driver-name suffix, since Debian's mingw uses
+# "-posix" to select the threading model and llvm-mingw has no such variants.
+#
+# Added because windows-amd64 (GCC) produces archives byte-identical to Linux
+# while windows-arm64 (Clang) does not, and -mtor comes out 35% larger there.
+# Compiler and architecture are confounded across those two builds; this knob
+# separates them.
+case "${DARC_WIN_TOOLCHAIN:-}" in
+  "")     ;;
+  gcc)    cc_suffix="-posix"; toolchain="mingw-w64"  ;;
+  llvm)   cc_suffix="";       toolchain="llvm-mingw" ;;
+  *) echo "error: DARC_WIN_TOOLCHAIN must be gcc or llvm, got '$DARC_WIN_TOOLCHAIN'" >&2; exit 2 ;;
+esac
+
+WINOUT=${WINOUT:-/tmp/out/FreeArc-win64-ghc-$arch${DARC_WIN_TOOLCHAIN:+-$DARC_WIN_TOOLCHAIN}}
 mkdir -p "$WINOUT"
 CC="$triple-g++$cc_suffix"
 command -v "$CC" >/dev/null 2>&1 ||
