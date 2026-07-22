@@ -327,82 +327,6 @@ jobs:
         path: out-arm64
         if-no-files-found: error
 
-  # ── TEMPORARY: is the arm64 archive difference the compiler or the arch? ────
-  # windows-amd64 (GCC) writes archives byte-identical to Linux; windows-arm64
-  # (Clang) does not, and -mtor comes out 35% larger there over the same corpus
-  # with the identical method spec (tor:434kb both sides). Compiler and
-  # architecture are confounded across those two builds.
-  #
-  # llvm-mingw supplies an x86_64 triple too, so this builds the SAME
-  # architecture as the known-good amd64 build with the OTHER compiler and
-  # compares the bytes. Clang+x86_64 differing means the compiler is the
-  # trigger; matching means it is specific to ARM64-on-Windows.
-  #
-  # Delete this job once the question is answered.
-  tornado-toolchain-probe:
-    needs: interop-produce
-    runs-on: ubuntu-latest
-    steps:
-    - uses: actions/checkout@v6.0.2
-      with:
-        lfs: false
-    - name: Install llvm-mingw, Wine and cpphs
-      run: |
-        set -euo pipefail
-        sudo apt-get update
-        sudo apt-get install -y --no-install-recommends cpphs wine64 wine
-        ver="20260616"
-        tarball="llvm-mingw-$ver-ucrt-ubuntu-22.04-x86_64.tar.xz"
-        sha256="534b92e067b22a6b4441f48ae9240a3341b17825d04d577eab0cf85c44b4deda"
-        curl -fsSL "https://github.com/mstorsjo/llvm-mingw/releases/download/$ver/$tarball" -o /tmp/"$tarball"
-        echo "$sha256  /tmp/$tarball" | sha256sum -c -
-        tar -xJf /tmp/"$tarball" -C /opt
-        echo "/opt/llvm-mingw-$ver-ucrt-ubuntu-22.04-x86_64/bin" >> "$GITHUB_PATH"
-    - name: Install MicroHs
-      run: |
-        microhs_sha="05a3fbd5d73ae6a37111a6ced5b57bb1717b8975"
-        microhs_expected_sha256="a1f85821cbae877d0ea3e173235d45c833d9145b2ca9e92e77d284b6730c63b6"
-        curl -fsSL "https://github.com/augustss/MicroHs/archive/$microhs_sha.tar.gz" -o /tmp/microhs.tar.gz
-        echo "$microhs_expected_sha256  /tmp/microhs.tar.gz" | sha256sum -c -
-        tar -xzf /tmp/microhs.tar.gz -C /tmp
-        cd "/tmp/MicroHs-$microhs_sha"
-        make minstall
-        echo "$HOME/.mcabal/bin" >> "$GITHUB_PATH"
-    - name: Build windows-amd64 with Clang instead of GCC
-      run: |
-        chmod +x compile-win64-c compile-mhs-win64
-        DARC_WIN_ARCH=x86_64 DARC_WIN_TOOLCHAIN=llvm ./compile-mhs-win64
-    - uses: actions/download-artifact@v4
-      with:
-        name: interop-linux
-        path: interop
-    - name: Write archives with it and compare against linux
-      run: |
-        set -euo pipefail
-        tar -xf interop/corpus.tar -C interop
-        chmod +x Tests/interop-test.sh Tests/arc-mhs-win64.exe
-        export WINEDEBUG=-all WINEPREFIX="$HOME/.darc-wineprefix"
-        wineboot -i >/dev/null 2>&1 || true
-        mkdir -p shim
-        { echo '#!/bin/sh'
-          echo 'export WINEDEBUG=-all WINEPREFIX="$HOME/.darc-wineprefix"'
-          echo "exec wine $PWD/Tests/arc-mhs-win64.exe \"\$@\""
-        } > shim/arc
-        chmod +x shim/arc
-        Tests/interop-test.sh make shim/arc interop/corpus out-clang-amd64
-        echo
-        echo "=== ANSWER ==="
-        echo "method              size(linux)  size(clang-amd64)   bytes"
-        for a in interop/archives/*.arc; do
-          m=$(basename "$a" .arc); b="out-clang-amd64/$m.arc"
-          [ -f "$b" ] || continue
-          v=$(cmp -s "$a" "$b" && echo same || echo DIFFERS)
-          printf '%-20s %11s %17s   %s\n' "$m" "$(wc -c < "$a")" "$(wc -c < "$b")" "$v"
-        done
-        echo
-        echo "If tor DIFFERS here, the trigger is the COMPILER (Clang), not ARM64."
-        echo "If tor is the same, the trigger is specific to ARM64-on-Windows."
-
   # ── Cross-build archive interoperability ────────────────────────────────────
   # run-tests.sh only ever asks whether a build can read back its own archives.
   # Nothing asked whether the Windows builds -- which use a different compiler
@@ -561,17 +485,39 @@ jobs:
     #                            read back correctly in both directions; they
     #                            are just compressed differently, mostly by
     #                            under 0.5% -- except -mtor, which is 35%
-    #                            LARGER on arm64 (34771 -> 47043 bytes). That
-    #                            is a real compression-quality gap in the
-    #                            llvm-mingw/Clang build and is tracked
-    #                            separately. Reported, not gated, until it is
-    #                            understood; gating it now would just pin the
-    #                            defect in place.
+    #                            LARGER (34771 -> 47043 bytes for the identical
+    #                            method spec, tor:434kb on both sides).
+    #                            Reported, not gated, until it is understood;
+    #                            gating it now would only pin it in place.
     #
-    # Not thread count and not memory: both were measured and neither changes
-    # archive bytes. Nor is it ARM64 itself -- run-tests.sh checks the same
-    # committed fingerprints on ubuntu-24.04-arm and macos-latest and they
-    # match, so an ARM64 build per se produces identical output.
+    # What that gap is NOT, each established by measurement rather than by
+    # argument. Recorded so the next attempt starts past them:
+    #
+    #   architecture     It is the toolchain. Building windows-amd64 with
+    #                    llvm-mingw instead of mingw-gcc -- same architecture,
+    #                    same host, same Wine -- reproduces the arm64 sizes
+    #                    EXACTLY, all 14 of them. DARC_WIN_TOOLCHAIN=llvm in
+    #                    compile-win64-c is what that experiment used and is
+    #                    how to repeat it.
+    #   thread count     -mt1 through -mt8 are byte-identical for every codec.
+    #   memory limit     -lc1 through -lc128 move -mtor by 24 bytes, against a
+    #                    12272-byte gap. Only -m9 responds to -lc at all.
+    #   parameters       Both sides store the same spec, tor:434kb, so it is
+    #                    not memory-driven parameter selection either.
+    #   strict aliasing  The obvious suspect, and wrong. Adding
+    #                    -fno-strict-aliasing changed the output by nothing at
+    #                    all. It is still the correct flag -- see
+    #                    compile-win64-c -- but it is not this.
+    #   ARM64 per se     run-tests.sh checks the same committed fingerprints on
+    #                    ubuntu-24.04-arm and macos-latest, and both match.
+    #
+    # Also not reproducible with Apple clang on macOS: neither -fstrict-aliasing
+    # nor -O2 moves Tornado's output there. It is specific to llvm-mingw, so it
+    # can only be observed in CI.
+    #
+    # Next step, untried: compile only Compression/Tornado with mingw-gcc while
+    # the rest of the build uses llvm-mingw, to confirm the miscompilation is
+    # in that translation unit rather than somewhere shared.
     - name: Compare archive bytes across builds
       run: |
         set -uo pipefail
