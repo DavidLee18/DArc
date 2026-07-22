@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Smoke-test the cross-built Windows binary under Wine.
+# Smoke-test a Windows binary, either under Wine on a Unix host or natively on
+# Windows itself.
 #
 # A PE header only proves the toolchain was wired up correctly. The first
 # working cross-build produced a valid PE32+ image that printed its help and
@@ -16,82 +17,115 @@ set -uo pipefail
 
 EXE=${1:-Tests/arc-mhs-win64.exe}
 
-# Wine refuses to create its configuration directory when the parent is not
-# owned by the current user, which is the case for /tmp on the CI runners:
-#   wine: '/tmp' is not owned by you, refusing to create a configuration directory there
-# Keep the prefix under HOME, which is always ours.
-export WINEDEBUG=${WINEDEBUG:--all}
-export WINEPREFIX=${WINEPREFIX:-$HOME/.darc-wineprefix}
+[ -f "$EXE" ] || { echo "error: $EXE not found -- run ./compile-mhs-win64 first" >&2; exit 2; }
+
+# Everything below runs from a scratch directory using *relative* paths. That is
+# not tidiness: MSYS/Git-Bash rewrites POSIX-looking arguments into Windows
+# paths before handing them to a native .exe, and "-dp/tmp/whatever" is exactly
+# the shape that mangling trips over. Relative arguments pass through untouched,
+# so one command line works under both Wine and Windows -- and the extracted
+# tree then lands somewhere predictable instead of at a location derived from
+# the absolute path of the source tree.
+case "$EXE" in
+  /*) ;;
+  *)  EXE="$PWD/$EXE" ;;
+esac
+
+# On Windows the binary is native and runs directly; anywhere else it needs Wine.
+case "${OSTYPE:-}" in
+  msys*|cygwin*|win32*) WINE="" ;;
+  *)                    WINE="wine" ;;
+esac
+
+if [ -n "$WINE" ]; then
+  command -v "$WINE" >/dev/null 2>&1 || { echo "error: wine not found in PATH" >&2; exit 2; }
+  # Wine refuses to create its configuration directory when the parent is not
+  # owned by the current user, which is the case for /tmp on the CI runners:
+  #   wine: '/tmp' is not owned by you, refusing to create a configuration directory there
+  # Keep the prefix under HOME, which is always ours.
+  export WINEDEBUG=${WINEDEBUG:--all}
+  export WINEPREFIX=${WINEPREFIX:-$HOME/.darc-wineprefix}
+fi
+
+# Invoke the binary the way this host requires. A function rather than an array
+# because macOS ships bash 3.2, where expanding an *empty* array under `set -u`
+# is an "unbound variable" error.
+run_arc () {
+  if [ -n "$WINE" ]; then "$WINE" "$EXE" "$@"; else "$EXE" "$@"; fi
+}
 
 WORK=${WORK:-${TMPDIR:-/tmp}/darc-win-test.$$}
-
-[ -f "$EXE" ] || { echo "error: $EXE not found -- run ./compile-mhs-win64 first" >&2; exit 2; }
-command -v wine >/dev/null 2>&1 || { echo "error: wine not found in PATH" >&2; exit 2; }
 
 fail=0
 note_fail () { echo "  $*"; fail=$((fail+1)); }
 
-echo "--- wine ---"
-wine --version 2>&1 | head -1
-wineboot -i >/dev/null 2>&1 || true      # first run initialises the prefix
+echo "--- host ---"
+if [ -n "$WINE" ]; then
+  wine --version 2>&1 | head -1
+  wineboot -i >/dev/null 2>&1 || true      # first run initialises the prefix
+else
+  echo "native Windows (${PROCESSOR_ARCHITECTURE:-unknown})"
+fi
+echo "exe: $EXE"
 echo
 
+rm -rf "$WORK"; mkdir -p "$WORK/in/sub"
+cd "$WORK" || { echo "error: cannot enter $WORK" >&2; exit 2; }
+
 echo "--- arc --help ---"
-if wine "$EXE" --help > "$WORK.help" 2> "$WORK.help.err"; then
-  if grep -qi 'command' "$WORK.help"; then
+if run_arc --help > help.out 2> help.err; then
+  if grep -qi 'command' help.out; then
     echo "  help output looks right"
   else
     note_fail "no recognisable help output"
-    head -5 "$WORK.help" "$WORK.help.err" | sed 's/^/     /'
+    head -5 help.out help.err | sed 's/^/     /'
   fi
 else
   note_fail "--help exited $?"
-  head -5 "$WORK.help" "$WORK.help.err" | sed 's/^/     /'
+  head -5 help.out help.err | sed 's/^/     /'
 fi
 echo
 
 echo "--- round-trip a small tree ---"
-rm -rf "$WORK"; mkdir -p "$WORK/in/sub"
-echo "hello windows"            > "$WORK/in/a.txt"
-printf 'binary\x00\x01\x02data' > "$WORK/in/sub/b.bin"
-head -c 20000 /dev/urandom      > "$WORK/in/big.bin"
+echo "hello windows"            > in/a.txt
+printf 'binary\x00\x01\x02data' > in/sub/b.bin
+head -c 20000 /dev/urandom      > in/big.bin
 
 for m in -m0 -m1 -m4; do
-  out="$WORK/out$m"
-  rm -rf "$out"; mkdir -p "$out"; rm -f "$WORK/t.arc"
+  out="out$m"
+  rm -rf "$out"; mkdir -p "$out"; rm -f t.arc
 
-  if ! wine "$EXE" a --nodates -r -y $m "$WORK/t.arc" "$WORK/in" > "$WORK/c.log" 2>&1; then
-    note_fail "$m: create failed"; tail -3 "$WORK/c.log" | sed 's/^/     /'; continue
+  if ! run_arc a --nodates -r -y $m t.arc in > c.log 2>&1; then
+    note_fail "$m: create failed"; tail -3 c.log | sed 's/^/     /'; continue
   fi
-  if ! wine "$EXE" t -y "$WORK/t.arc" > "$WORK/t.log" 2>&1; then
-    note_fail "$m: integrity test failed"; tail -3 "$WORK/t.log" | sed 's/^/     /'; continue
+  if ! run_arc t -y t.arc > t.log 2>&1; then
+    note_fail "$m: integrity test failed"; tail -3 t.log | sed 's/^/     /'; continue
   fi
-  if ! wine "$EXE" x -y -dp"$out" "$WORK/t.arc" > "$WORK/x.log" 2>&1; then
-    note_fail "$m: extract failed"; tail -3 "$WORK/x.log" | sed 's/^/     /'; continue
+  if ! run_arc x -y -dp"$out" t.arc > x.log 2>&1; then
+    note_fail "$m: extract failed"; tail -3 x.log | sed 's/^/     /'; continue
   fi
 
-  # Archives store paths with the leading separator stripped, so the extracted
-  # tree lands at a known place. Derived rather than searched for by name:
-  # "find -name in -print -quit" picks whichever entry readdir yields first,
-  # which is what made the main suite report phantom empty directories.
-  root="$out/${WORK#/}/in"
-  if [ ! -d "$root" ]; then
-    note_fail "$m: no extracted tree at $root"
+  # A relative input path means the archive stores "in/...", so the extracted
+  # tree is at a known place. Derived rather than searched for by name: an
+  # earlier "find -name in -print -quit" picked whichever entry readdir yielded
+  # first, which is what made the main suite report phantom empty directories.
+  if [ ! -d "$out/in" ]; then
+    note_fail "$m: no extracted tree at $out/in"
     find "$out" -maxdepth 4 -type d | head -5 | sed 's/^/     /'
     continue
   fi
-  if diff -r "$WORK/in" "$root" >/dev/null 2>&1; then
-    echo "  $m: round-trip OK ($(wc -c < "$WORK/t.arc" | tr -d ' ') bytes)"
+  if diff -r in "$out/in" >/dev/null 2>&1; then
+    echo "  $m: round-trip OK ($(wc -c < t.arc | tr -d ' ') bytes)"
   else
     note_fail "$m: content mismatch"
-    diff -rq "$WORK/in" "$root" 2>&1 | head -3 | sed 's/^/     /'
+    diff -rq in "$out/in" 2>&1 | head -3 | sed 's/^/     /'
   fi
 done
 
 echo
 if [ "$fail" -eq 0 ]; then
   echo "windows smoke test: all checks passed"
-  rm -rf "$WORK" "$WORK".help "$WORK".help.err
+  cd /; rm -rf "$WORK"
   exit 0
 fi
 echo "windows smoke test: $fail check(s) failed" >&2

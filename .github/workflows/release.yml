@@ -9,10 +9,11 @@ name: Release
 # against a different compiler revision than CI validates would be a silent
 # difference between what is tested and what is shipped.
 #
-# Windows arm64 is absent on purpose: Debian's mingw-w64 provides x86_64 and
-# i686 only, and compile-mhs-win64 is written against the x86_64 triplet, so
-# that target needs llvm-mingw and a reworked script rather than another matrix
-# entry. Tracked as follow-up work.
+# The two Windows targets use different toolchains -- Debian's mingw-w64 (GCC)
+# for amd64, llvm-mingw (Clang) for arm64, because Debian packages x86_64 and
+# i686 only -- and are verified differently: amd64 under Wine on the runner
+# that built it, arm64 on a real windows-11-arm runner, since Wine has no ARM64
+# emulation. publish waits on both.
 
 on:
   push:
@@ -132,10 +133,26 @@ jobs:
         path: dist/*
         if-no-files-found: error
 
-  # ── Windows amd64, cross-compiled from Linux ────────────────────────────────
+  # ── Windows, cross-compiled from Linux ──────────────────────────────────────
+  # amd64 uses Debian's mingw-w64 (GCC); arm64 uses llvm-mingw (Clang), because
+  # Debian packages x86_64 and i686 only. See compile-win64-c.
+  #
+  # amd64 is smoke-tested here under Wine. arm64 cannot be -- Wine has no ARM64
+  # emulation -- so it is verified on a real ARM64 Windows runner in the
+  # windows-arm64-verify job below, which publish waits for.
   windows-cross:
-    name: windows-amd64
+    name: ${{ matrix.label }}
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: x86_64
+            label: windows-amd64
+            exe: arc-mhs-win64.exe
+          - arch: aarch64
+            label: windows-arm64
+            exe: arc-mhs-win-arm64.exe
     steps:
     - uses: actions/checkout@v6.0.2
       with:
@@ -143,9 +160,26 @@ jobs:
         ref: ${{ github.event.inputs.tag || github.ref }}
 
     - name: Install cross toolchain and Wine
+      if: matrix.arch == 'x86_64'
       run: |
         sudo apt-get update
         sudo apt-get install -y --no-install-recommends mingw-w64 mingw-w64-tools cpphs wine64 wine
+
+    - name: Install llvm-mingw
+      if: matrix.arch == 'aarch64'
+      run: |
+        set -euo pipefail
+        sudo apt-get update
+        sudo apt-get install -y --no-install-recommends cpphs
+        # Pinned with a checksum for the same reason MicroHs is: the compiler is
+        # part of what produces the shipped binary.
+        ver="20260616"
+        tarball="llvm-mingw-$ver-ucrt-ubuntu-22.04-x86_64.tar.xz"
+        sha256="534b92e067b22a6b4441f48ae9240a3341b17825d04d577eab0cf85c44b4deda"
+        curl -fsSL "https://github.com/mstorsjo/llvm-mingw/releases/download/$ver/$tarball" -o /tmp/"$tarball"
+        echo "$sha256  /tmp/$tarball" | sha256sum -c -
+        tar -xJf /tmp/"$tarball" -C /opt
+        echo "/opt/llvm-mingw-$ver-ucrt-ubuntu-22.04-x86_64/bin" >> "$GITHUB_PATH"
 
     - name: Install MicroHs
       run: |
@@ -160,13 +194,24 @@ jobs:
     - name: Build (Windows cross)
       run: |
         chmod +x compile-win64-c compile-mhs-win64
-        ./compile-mhs-win64
+        DARC_WIN_ARCH=${{ matrix.arch }} ./compile-mhs-win64
 
+    # compile-mhs-win64 checks the PE machine field itself, which is the only
+    # thing that distinguishes these two artifacts -- `file` reports both as
+    # "PE32+ executable (console)", so a build that silently fell back to the
+    # wrong toolchain would pass a `file` check.
     - name: Verify binary
       run: |
-        exe=Tests/arc-mhs-win64.exe
-        test -s "$exe" || { echo "::error::no $exe"; exit 1; }
-        file "$exe" | grep -qi "PE32+" || { echo "::error::not a PE32+ binary"; exit 1; }
+        test -s "Tests/${{ matrix.exe }}" || { echo "::error::no Tests/${{ matrix.exe }}"; exit 1; }
+        echo "binary: $(wc -c < "Tests/${{ matrix.exe }}") bytes"
+
+    # Only amd64 can be exercised on this runner. arm64 is exercised on real
+    # hardware in windows-arm64-verify below.
+    - name: Smoke-test under Wine
+      if: matrix.arch == 'x86_64'
+      run: |
+        chmod +x Tests/win-test.sh
+        Tests/win-test.sh "Tests/${{ matrix.exe }}"
 
     - name: Package
       run: |
@@ -179,9 +224,9 @@ jobs:
           ver="$GITHUB_REF_NAME"
         fi
         ver="${ver#v}"
-        stage="darc-$ver-windows-amd64"
+        stage="darc-$ver-${{ matrix.label }}"
         mkdir -p "dist/$stage"
-        cp Tests/arc-mhs-win64.exe "dist/$stage/arc.exe"
+        cp "Tests/${{ matrix.exe }}" "dist/$stage/arc.exe"
         cp Tests/arc.groups "dist/$stage/arc.groups"
         cp README.md LICENSE "dist/$stage/" 2>/dev/null || true
         (cd dist && zip -r "$stage.zip" "$stage" >/dev/null)
@@ -190,13 +235,43 @@ jobs:
 
     - uses: actions/upload-artifact@v4
       with:
-        name: windows-amd64
+        name: ${{ matrix.label }}
         path: dist/*
         if-no-files-found: error
 
+  # ── Exercise the ARM64 Windows artifact on real ARM64 Windows ───────────────
+  # publish waits on this, so an arm64 binary that builds but cannot create an
+  # archive never reaches the release. It unpacks the artifact that will
+  # actually be uploaded rather than rebuilding, so what runs is what ships.
+  windows-arm64-verify:
+    needs: windows-cross
+    runs-on: windows-11-arm
+    steps:
+    - uses: actions/checkout@v6.0.2
+      with:
+        lfs: false
+        ref: ${{ github.event.inputs.tag || github.ref }}
+
+    - uses: actions/download-artifact@v4
+      with:
+        name: windows-arm64
+        path: dist
+
+    - name: Unpack and smoke-test
+      shell: bash
+      run: |
+        set -euo pipefail
+        zip=$(ls dist/*.zip)
+        unzip -q "$zip" -d unpacked
+        exe=$(ls unpacked/*/arc.exe)
+        echo "testing $exe from $zip"
+        # Invoked through bash rather than directly: a Windows checkout does not
+        # preserve the executable bit.
+        bash Tests/win-test.sh "$exe"
+
   # ── Attach everything to the release ────────────────────────────────────────
   publish:
-    needs: [ build, windows-cross ]
+    needs: [ build, windows-cross, windows-arm64-verify ]
     runs-on: ubuntu-latest
     steps:
     - uses: actions/download-artifact@v4

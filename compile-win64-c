@@ -1,10 +1,43 @@
 #!/usr/bin/env bash
-# Build all C/C++ objects for Windows x64 target using mingw-w64 cross toolchain.
+# Build all C/C++ objects for a Windows target using a mingw-w64 cross toolchain.
 # Shared by both GHC and MHS Windows builds; DOES NOT define __MHS__.
+#
+# Target architecture is selected with DARC_WIN_ARCH (default x86_64):
+#
+#   x86_64    Debian's mingw-w64, i.e. GCC. The "-posix" suffix picks the
+#             POSIX threading model, which is the one that has libstdc++
+#             threads; the "-win32" variant does not.
+#   aarch64   llvm-mingw (https://github.com/mstorsjo/llvm-mingw), i.e. Clang.
+#             Debian's mingw-w64 packages x86_64 and i686 only, so there is no
+#             distro toolchain for this target. llvm-mingw's "-gcc"/"-g++"
+#             names are wrappers around clang, so the driver names below stay
+#             uniform even though the compilers do not.
+#
+# Both targets are little-endian, so FREEARC_INTEL_BYTE_ORDER is right for
+# each -- that define names the byte order, not the instruction set.
 set -e
-WINOUT=${WINOUT:-/tmp/out/FreeArc-win64-ghc}
+
+arch=${DARC_WIN_ARCH:-x86_64}
+case "$arch" in
+  x86_64)
+    triple="x86_64-w64-mingw32"; cc_suffix="-posix"; toolchain="mingw-w64"
+    # Windows 7. Kept as-is for x86-64 so this stays a no-op refactor for the
+    # target that already ships.
+    win_ver=0x0601 ;;
+  aarch64)
+    triple="aarch64-w64-mingw32"; cc_suffix=""; toolchain="llvm-mingw"
+    # Windows 10: the first release for which ARM64 desktop Windows exists,
+    # so there is nothing older to stay compatible with.
+    win_ver=0x0A00 ;;
+  *)
+    echo "error: DARC_WIN_ARCH must be x86_64 or aarch64, got '$arch'" >&2; exit 2 ;;
+esac
+
+WINOUT=${WINOUT:-/tmp/out/FreeArc-win64-ghc-$arch}
 mkdir -p "$WINOUT"
-CC="x86_64-w64-mingw32-g++-posix"
+CC="$triple-g++$cc_suffix"
+command -v "$CC" >/dev/null 2>&1 ||
+  { echo "error: $CC not found in PATH -- $arch needs $toolchain" >&2; exit 2; }
 MHS_DEF=""
 if [[ -n "${MHS:-}" ]]; then
   MHS_DEF="-D__MHS__"
@@ -13,7 +46,7 @@ FLAGS=(
   -std=c++17 -c
   -DFREEARC_WIN -DFREEARC_INTEL_BYTE_ORDER -DFREEARC_64BIT
   $MHS_DEF
-  -D_WIN32_WINNT=0x0601 -DWINVER=0x0601
+  -D_WIN32_WINNT=$win_ver -DWINVER=$win_ver
   -I. -ICompression -IHsLua/src
   -O2
   -Wno-unknown-pragmas -Wno-sign-compare -Wno-deprecated-declarations
@@ -58,12 +91,12 @@ for src in Compression/*/C_*.cpp; do
 done
 
 # LZMA 7-Zip 24.09 C SDK sources
-CC_C="x86_64-w64-mingw32-gcc-posix"
+CC_C="$triple-gcc$cc_suffix"
 C7Z_FLAGS=(
   -std=c11 -c -O2 -DNDEBUG -D_REENTRANT
   -DFREEARC_WIN -DFREEARC_INTEL_BYTE_ORDER -DFREEARC_64BIT
   $MHS_DEF
-  -D_WIN32_WINNT=0x0601 -DWINVER=0x0601
+  -D_WIN32_WINNT=$win_ver -DWINVER=$win_ver
   -Wno-unknown-pragmas -Wno-sign-compare -Wno-deprecated-declarations
 )
 for src in Compression/LZMA/7z24/*.c; do
