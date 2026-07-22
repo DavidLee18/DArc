@@ -127,13 +127,27 @@ CASES="
 #         and run-tests.sh does not run on Windows, so nothing ever invoked
 #         -mtta on a Windows build; this suite is the first thing to try.
 #
-#         Both targets fail identically -- GCC-mingw on amd64 and Clang on
-#         arm64 -- so it is a Windows/Linux difference rather than a compiler
-#         one, which points at LLP64 (long is 4 bytes) against LP64 (8). TTA
-#         has a long history of exactly that family: nine such bugs were fixed
-#         in it for v2.0.0, every one validated by round-tripping on LP64
-#         hosts only. Tracked as follow-up work; it is a pre-existing defect,
-#         not a regression from anything in this suite.
+#         Root cause, confirmed: malloc2d in Compression/MM/tta.cpp lays a
+#         pointer table and a data block into one allocation, and steps over
+#         the table with
+#
+#             tmp = (long *) array + num;
+#
+#         That advances by num * sizeof(long). The table it is skipping is
+#         num * sizeof(long *) bytes. Those are equal on LP64 and NOT on
+#         Windows, where long is 4 bytes and pointers are still 8 -- so the
+#         data block starts halfway inside the pointer table and the samples
+#         overwrite the pointers. Hence "page fault on write access to
+#         0x00007f3600000000": a live heap pointer whose low 32 bits have been
+#         replaced by sample data. Both directions crash, encode and decode.
+#
+#         The fix is to step over the table as pointers, "(long *)(array +
+#         num)", which is identical on LP64 and therefore leaves Linux archive
+#         bytes untouched. Remove tta from the xfail sites in build.yml when
+#         it lands -- an XPASS will insist on it anyway.
+#
+#         Tenth instance of the family that produced nine fixes for v2.0.0,
+#         and a pre-existing defect rather than a regression from this suite.
 XFAIL="${DARC_INTEROP_XFAIL:-}"
 
 is_xfail () {
