@@ -100,6 +100,41 @@ CASES="
 -mdelta+lzma:chain-delta-lzma
 "
 
+# Codecs allowed to fail, named by the caller in DARC_INTEROP_XFAIL. Kept in
+# CASES rather than deleted from it, because a quietly shortened list is
+# indistinguishable from full coverage six months later -- every run prints
+# these as xfail, so the gap stays visible in the log.
+#
+# An xfail that PASSES is reported as an error, not a success: the list is a
+# claim about what is broken, and a stale entry understates coverage just as
+# badly as deleting the case would.
+#
+# The default is empty, and it has to be, because whether a codec interoperates
+# is a property of the PAIR of builds involved. tta below is fine when a build
+# reads its own archives and only fails across the Linux/Windows boundary; a
+# list baked into this script would turn every same-build run into a false
+# XPASS. So each CI call site names what it expects to fail.
+#
+# Currently expected, set by the cross-platform check steps in build.yml:
+#
+#   tta   The Windows builds reject a TTA archive written by the Linux build.
+#         Both Windows targets fail identically -- GCC-mingw amd64 and Clang
+#         arm64 -- so this is a Windows/Linux difference, not a compiler one,
+#         which points at LLP64 (long is 4 bytes) against LP64 (8). TTA has a
+#         long history of exactly that: nine such bugs were fixed in it for
+#         v2.0.0, every one validated by round-tripping on LP64 hosts only.
+#         -mtta has never been exercised on Windows at all -- win-test.sh
+#         covers -m0/-m1/-m4 and run-tests.sh does not run there -- so this
+#         may be a codec that has never worked on Windows rather than a new
+#         divergence. The self-round-trip step in CI is what tells the two
+#         apart: if a Windows build cannot read even its OWN tta archive, the
+#         bug is in the codec on Windows and has nothing to do with interop.
+XFAIL="${DARC_INTEROP_XFAIL:-}"
+
+is_xfail () {
+  case " $XFAIL " in *" $1 "*) return 0 ;; *) return 1 ;; esac
+}
+
 hash_of  () { $SHA "$1" 2>/dev/null | cut -d' ' -f1; }
 tree_hash () {   # order-independent hash of a directory's file contents+names
   [ -d "$1" ] || { echo "no-such-dir"; return; }
@@ -155,21 +190,36 @@ check)
   # to reintroduce whenever the inputs arrive from another job.
   [ "$n_arc" -gt 0 ] || { echo "error: no .arc files in $DIR -- nothing was checked" >&2; exit 2; }
 
-  fail=0
+  fail=0; xfail=0; xpass=0
+
+  # Report an outcome, routing it through the xfail list. Everything below
+  # reports by calling this rather than by touching the counters directly, so
+  # a known-broken codec cannot accidentally be counted as a hard failure or
+  # -- worse -- pass silently once it is fixed.
+  bad () {   # bad <label> <reason>
+    if is_xfail "$1"; then
+      printf '  %-20s xfail %s (known, see XFAIL in %s)\n' "$1" "$2" "$(basename "$0")"
+      xfail=$((xfail+1))
+    else
+      printf '  %-20s FAIL  %s\n' "$1" "$2"
+      fail=$((fail+1))
+    fi
+  }
+
   for arc in "$DIR"/*.arc; do
     label="$(basename "$arc" .arc)"
     out="$WORK/x-$label"
     rm -rf "$out"; mkdir -p "$out"
 
     if ! "$ARC" t -y "$(winpath "$arc")" >"$WORK/$label.t.log" 2>&1; then
-      printf '  %-20s FAIL  integrity test rejected the archive\n' "$label"
+      bad "$label" "integrity test rejected the archive"
       tail -3 "$WORK/$label.t.log" | sed 's/^/      /'
-      fail=$((fail+1)); continue
+      continue
     fi
     if ! "$ARC" x -y -dp"$(winpath "$out")" "$(winpath "$arc")" >"$WORK/$label.x.log" 2>&1; then
-      printf '  %-20s FAIL  extract\n' "$label"
+      bad "$label" "extract failed"
       tail -3 "$WORK/$label.x.log" | sed 's/^/      /'
-      fail=$((fail+1)); continue
+      continue
     fi
 
     # Entries are stored corpus-relative, so the tree lands at the extraction
@@ -177,29 +227,48 @@ check)
     # is what once made this class of check report phantom empty directories.
     n_got="$(find "$out" -type f 2>/dev/null | wc -l | tr -d ' ')"
     if [ "$n_got" -eq 0 ]; then
-      printf '  %-20s FAIL  extracted no files (expected %s)\n' "$label" "$n_want"
-      fail=$((fail+1)); continue
+      bad "$label" "extracted no files (expected $n_want)"
+      continue
     fi
     got="$(tree_hash "$out")"
     if [ "$got" != "$EXPECTED_TREE" ]; then
       detail="content differs"
       [ "$n_got" -ne "$n_want" ] && detail="file count $n_got, expected $n_want"
-      printf '  %-20s FAIL  extracted tree differs: %s\n' "$label" "$detail"
+      bad "$label" "extracted tree differs: $detail"
       ( cd "$CORPUS" && find . -type f | LC_ALL=C sort ) > "$WORK/$label.want" 2>/dev/null
       ( cd "$out"    && find . -type f | LC_ALL=C sort ) > "$WORK/$label.got"  2>/dev/null
       diff "$WORK/$label.want" "$WORK/$label.got" 2>/dev/null | head -4 | sed 's/^/      /'
-      fail=$((fail+1)); continue
+      continue
     fi
-    printf '  %-20s ok    %s files\n' "$label" "$n_got"
+    if is_xfail "$label"; then
+      printf '  %-20s XPASS %s files -- remove it from XFAIL\n' "$label" "$n_got"
+      xpass=$((xpass+1))
+    else
+      printf '  %-20s ok    %s files\n' "$label" "$n_got"
+    fi
     rm -rf "$out"
   done
 
   echo
+  # An xfail that started passing is reported as an error on purpose. The list
+  # is a claim about what is broken; leaving a stale entry in it understates
+  # coverage just as badly as deleting the case would.
+  if [ "$xpass" -gt 0 ]; then
+    echo "interop: $xpass archive(s) marked xfail now pass -- update XFAIL in $0" >&2
+    # Named separately rather than returned to: a summary that mentioned only
+    # the stale xfail would bury a genuine regression in the same run.
+    [ "$fail" -gt 0 ] && echo "interop: and $fail archive(s) failed outright" >&2
+    exit 1
+  fi
   if [ "$fail" -eq 0 ]; then
-    echo "interop: all $n_arc archive(s) read back identically"
+    if [ "$xfail" -gt 0 ]; then
+      echo "interop: $((n_arc-xfail))/$n_arc read back identically, $xfail known-broken (xfail)"
+    else
+      echo "interop: all $n_arc archive(s) read back identically"
+    fi
     exit 0
   fi
-  echo "interop: $fail of $n_arc archive(s) failed" >&2
+  echo "interop: $fail of $n_arc archive(s) failed ($xfail known-broken)" >&2
   exit 1
   ;;
 
