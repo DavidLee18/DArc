@@ -93,7 +93,22 @@ long **malloc2d (long num, unsigned long len)
     array = (long **) calloc (num, sizeof(long *) + len * sizeof(long));
     if (array == NULL) tta_error (MEMORY_ERROR, NULL);
 
-    for(i = 0, tmp = (long *) array + num; i < num; i++)
+    // One allocation holds num row pointers followed by num*len samples, so
+    // the data starts immediately past the pointer table. Step over it in
+    // units of the pointer -- "(long *)(array + num)" -- not in units of long.
+    //
+    // The original "(long *) array + num" advances by num * sizeof(long) over
+    // a table that is num * sizeof(long *) bytes. Those are the same size only
+    // where long is as wide as a pointer. On Windows they are not: long is 4
+    // bytes and pointers are 8, so the data block began halfway inside the
+    // pointer table and the first samples written overwrote the row pointers.
+    // Both encode and decode then died with a page fault on an address like
+    // 0x00007f3600000000 -- a live heap pointer whose low half had been
+    // replaced by sample data.
+    //
+    // Equivalent on LP64, where the two strides coincide, so archives written
+    // by Linux and macOS builds are unchanged by this.
+    for(i = 0, tmp = (long *) (array + num); i < num; i++)
         array[i] = tmp + i * len;
 
     return (array);
