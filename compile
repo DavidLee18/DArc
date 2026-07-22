@@ -76,14 +76,17 @@ rust_lib=""
 if [ -n "${DARC_RUST:-}" ]; then
   command -v cargo >/dev/null 2>&1 || {
     echo "error: DARC_RUST is set but cargo was not found in PATH" >&2; exit 1; }
-  echo "building Rust codecs"
-  ( cd rust && cargo build --release -p darc-codecs --features darc-codecs/dropin ) || {
+  echo "building Rust codecs and crypto"
+  ( cd rust && cargo build --release -p darc-codecs -p darc-crypto --features darc-codecs/dropin ) || {
     echo "error: cargo build failed" >&2; exit 1; }
   # rust/ is a cargo workspace, so build output lands in the WORKSPACE target
-  # directory, not the member's. It was rust/darc-codecs/target/ before the
-  # workspace existed.
-  rust_lib="$PWD/rust/target/release/libdarc_codecs.a"
-  [ -f "$rust_lib" ] || { echo "error: cargo produced no $rust_lib" >&2; exit 1; }
+  # directory, not each member's. Both staticlibs are linked: codecs supply the
+  # ported compression methods, darc-crypto the encryption (docrypt, PBKDF2,
+  # random) that C_Encryption.cpp forwards to under -DDARC_RUST.
+  rust_lib="$PWD/rust/target/release/libdarc_codecs.a $PWD/rust/target/release/libdarc_crypto.a"
+  for l in $rust_lib; do
+    [ -f "$l" ] || { echo "error: cargo produced no $l" >&2; exit 1; }
+  done
   defines="$defines -DDARC_RUST"
   # Reaches the per-codec makefiles through unix-common.mak, which appends
   # DARC_EXTRA_DEFINES to DEFINES; make imports it from the environment.

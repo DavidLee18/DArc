@@ -55,14 +55,22 @@ both stored, both compatibility-critical.
 - `rounds` is passed as 0 = cipher default, which is why the fixed-round crates
   fit. A non-zero rounds would need something else.
 
-## Remaining before this links
+## Status: wired
 
-- A CALLBACK_FUNC/Io bridge in darc-crypto (darc-codecs has `ffi::Io`; either
-  share it via a small crate or duplicate the ~40 lines).
-- `#[no_mangle]` exports: `darc_rs_docrypt`, `darc_rs_pbkdf2_hmac_sha512`,
-  `darc_rs_random_fill`.
-- A C shim compiled under `DARC_RUST` that excludes the LTC includes +
-  `register_all` + the C `docrypt`, keeps `ENCRYPTION_METHOD`/`parse_ENCRYPTION`
-  (with the two `cipher_descriptor[]` accesses redirected to the table above),
-  and forwards to the exports.
-- Follow the `#ifndef DARC_RUST` exclusion pattern from `C_Delta.cpp`.
+- `ffi::Io` bridge in darc-crypto, bindgen-generated from the shared headers
+  (build.rs + wrapper.h), so `CALLBACK_FUNC` is not hand-written. DONE.
+- `#[no_mangle]` exports `darc_rs_docrypt` / `darc_rs_pbkdf2_hmac_sha512` /
+  `darc_rs_random_fill`, verified present in libdarc_crypto.a. DONE.
+- The C shim in `C_Encryption.cpp` under `#ifdef DARC_RUST`: excludes the LTC
+  includes, `register_all`, the C `EncryptionMode`, `fortuna_size`,
+  `Pbkdf2Hmac` and `docrypt`; provides Rust-forwarding replacements plus the
+  measured `cipher_descriptor` table and a `find_cipher`; keeps `find_mode`,
+  `parse_ENCRYPTION`, and the `ENCRYPTION_METHOD` methods unchanged. The whole
+  file is inside `extern "C"`, so the replacements take C linkage and resolve
+  the same FFI symbols. DONE.
+- `compile` builds and links `libdarc_crypto.a` alongside the codecs under
+  `DARC_RUST=1`. DONE.
+
+Fortuna's five entry points are kept as thin C stubs (`fortuna_read` ->
+`darc_rs_random_fill`, the rest trivial), since the Haskell FFI still calls
+them; only `read` has to be secure.
