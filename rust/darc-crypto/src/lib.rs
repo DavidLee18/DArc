@@ -9,6 +9,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod cfb;
 pub mod ctr;
 
 use hmac::Hmac;

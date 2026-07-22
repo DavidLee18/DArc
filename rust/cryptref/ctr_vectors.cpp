@@ -71,6 +71,27 @@ static void dump(const char* name, const char* cipher, const unsigned char* key,
     printf("\n");
 }
 
+// CFB, the other mode C_Encryption.cpp offers (mode == 1). Encrypts a known
+// non-zero plaintext rather than zeros: CFB feeds ciphertext back, so a zero
+// plaintext would still exercise the feedback path but would make an
+// encrypt/decrypt mix-up harder to see.
+static void dump_cfb(const char* name, const char* cipher, const unsigned char* key, int keylen,
+                     const unsigned char* iv, int nbytes)
+{
+    unsigned char pt[256], ct[256];
+    for (int i = 0; i < nbytes; i++) pt[i] = (unsigned char)(i * 7 + 1);
+    symmetric_CFB cfb;
+    int idx = find_cipher(cipher);
+    if (idx < 0) { printf("%s ERROR cipher-not-registered\n", name); return; }
+    int err = cfb_start(idx, iv, key, keylen, 0, &cfb);
+    if (err != CRYPT_OK) { printf("%s ERROR cfb_start=%d\n", name, err); return; }
+    err = cfb_encrypt(pt, ct, nbytes, &cfb);
+    if (err != CRYPT_OK) { printf("%s ERROR cfb_encrypt=%d\n", name, err); return; }
+    printf("%s ", name);
+    for (int i = 0; i < nbytes; i++) printf("%02x", ct[i]);
+    printf("\n");
+}
+
 int main()
 {
     register_cipher(&aes_enc_desc);
@@ -96,5 +117,10 @@ int main()
     unsigned char ivc[16];
     memset(ivc, 0xff, 16); ivc[15] = 0x00;   // low bytes all 0xff -> carry propagates
     dump("aes128carry", "aes", key32, 16, ivc, 48);
+
+    dump_cfb("cfb-aes256",  "aes",      key32, 32, iv16, 48);
+    dump_cfb("cfb-blowfish","blowfish", key32, 16, iv8,  48);
+    // 37 bytes: not a block multiple, so the trailing partial block is covered.
+    dump_cfb("cfb-aes256-37","aes",     key32, 32, iv16, 37);
     return 0;
 }
