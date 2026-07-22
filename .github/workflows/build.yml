@@ -213,6 +213,14 @@ jobs:
       run: |
         chmod +x Tests/win-test.sh
         Tests/win-test.sh
+    # Uploaded so the interop jobs can exercise this exact binary without
+    # rebuilding it, which also means they test what this job produced rather
+    # than a second build of the same source.
+    - uses: actions/upload-artifact@v4
+      with:
+        name: arc-win-amd64
+        path: Tests/arc-mhs-win64.exe
+        if-no-files-found: error
 
   # ── Windows on ARM64 ────────────────────────────────────────────────────────
   # Split across two jobs because neither half can be done alone:
@@ -274,7 +282,7 @@ jobs:
         if-no-files-found: error
 
   windows-arm64-test:
-    needs: windows-arm64-cross
+    needs: [ windows-arm64-cross, interop-produce ]
     runs-on: windows-11-arm
     steps:
     - uses: actions/checkout@v6.0.2
@@ -291,6 +299,206 @@ jobs:
     - name: Smoke-test on native ARM64 Windows
       shell: bash
       run: bash Tests/win-test.sh Tests/arc-mhs-win-arm64.exe
+
+    - uses: actions/download-artifact@v4
+      with:
+        name: interop-linux
+        path: interop
+    # Own archives first. If this build cannot read back what it just wrote,
+    # the codec is broken on Windows and any interop failure below is a
+    # consequence rather than a finding. That is exactly what this step
+    # established for tta: neither Windows build can even create a tta
+    # archive, so it is xfail here too -- see interop-test.sh.
+    - name: Round-trip this build's own archives
+      shell: bash
+      env:
+        DARC_INTEROP_XFAIL: tta
+      run: |
+        set -euo pipefail
+        tar -xf interop/corpus.tar -C interop
+        bash Tests/interop-test.sh make  Tests/arc-mhs-win-arm64.exe interop/corpus out-arm64
+        bash Tests/interop-test.sh check Tests/arc-mhs-win-arm64.exe interop/corpus out-arm64
+    # See the XFAIL comment block in interop-test.sh for why tta is listed.
+    - name: Read Linux-written archives
+      shell: bash
+      env:
+        DARC_INTEROP_XFAIL: tta
+      run: |
+        set -euo pipefail
+        bash Tests/interop-test.sh check Tests/arc-mhs-win-arm64.exe interop/corpus interop/archives
+    - uses: actions/upload-artifact@v4
+      with:
+        name: interop-win-arm64
+        path: out-arm64
+        if-no-files-found: error
+
+  # ── Cross-build archive interoperability ────────────────────────────────────
+  # run-tests.sh only ever asks whether a build can read back its own archives.
+  # Nothing asked whether the Windows builds -- which use a different compiler
+  # over the same codec sources -- write archives the Linux build can read, or
+  # the reverse. A build can pass every round-trip test while producing output
+  # no other build can open, and compile-win64-c already warns that PPMD does
+  # exactly that if its flags drift.
+  #
+  # interop-produce writes the reference archives; the two Windows jobs read
+  # them and write their own; interop-verify reads those back on Linux. The
+  # corpus is shipped between jobs rather than regenerated on each side, so a
+  # corpus difference can never masquerade as a format incompatibility.
+  #
+  # This builds its own Linux binary rather than depending on the `build`
+  # matrix: `needs` is job-level, so waiting on `build` would mean waiting on
+  # the macOS leg too. A duplicate ~10-minute build that runs in parallel is
+  # cheaper than serialising the whole Windows chain behind it.
+  interop-produce:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v6.0.2
+      with:
+        lfs: false
+    - uses: KyleMayes/install-llvm-action@v2
+      with:
+        version: "21.1.8"
+    - name: Install packages
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y liblua5.1-dev libncurses-dev libcurl4-openssl-dev cpphs
+    - name: Install MicroHs
+      run: |
+        microhs_sha="05a3fbd5d73ae6a37111a6ced5b57bb1717b8975"
+        microhs_expected_sha256="a1f85821cbae877d0ea3e173235d45c833d9145b2ca9e92e77d284b6730c63b6"
+        curl -fsSL "https://github.com/augustss/MicroHs/archive/$microhs_sha.tar.gz" -o /tmp/microhs.tar.gz
+        echo "$microhs_expected_sha256  /tmp/microhs.tar.gz" | sha256sum -c -
+        tar -xzf /tmp/microhs.tar.gz -C /tmp
+        cd "/tmp/MicroHs-$microhs_sha"
+        make minstall
+        echo "$HOME/.mcabal/bin" >> "$GITHUB_PATH"
+    - name: Build
+      run: |
+        chmod +x compile*
+        ./compile-O2
+    - name: Write reference archives
+      run: |
+        set -euo pipefail
+        chmod +x Tests/make-corpus.sh Tests/interop-test.sh
+        ( cd Tests && ./make-corpus.sh corpus )
+        Tests/interop-test.sh make Tests/arc Tests/corpus interop/archives
+        # Tarred rather than shipped as loose files: artifact upload/download
+        # does not preserve modes, and 218 files move faster as one.
+        tar -cf interop/corpus.tar -C Tests corpus
+        cp Tests/arc interop/arc
+    - uses: actions/upload-artifact@v4
+      with:
+        name: interop-linux
+        path: interop
+        if-no-files-found: error
+
+  # amd64 is a separate job rather than more steps on windows-cross so that the
+  # two do not serialise: windows-cross and interop-produce run in parallel and
+  # this picks up both artifacts afterwards.
+  interop-windows-amd64:
+    needs: [ interop-produce, windows-cross ]
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v6.0.2
+      with:
+        lfs: false
+    - name: Install Wine
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y --no-install-recommends wine64 wine
+    - uses: actions/download-artifact@v4
+      with:
+        name: interop-linux
+        path: interop
+    - uses: actions/download-artifact@v4
+      with:
+        name: arc-win-amd64
+        path: winbin
+    - name: Set up Wine and a shim
+      run: |
+        set -euo pipefail
+        tar -xf interop/corpus.tar -C interop
+        chmod +x Tests/interop-test.sh
+        # A .exe is not executable after an artifact round-trip, and the script
+        # refuses to run a non-executable archiver.
+        chmod +x winbin/arc-mhs-win64.exe
+        export WINEDEBUG=-all WINEPREFIX="$HOME/.darc-wineprefix"
+        wineboot -i >/dev/null 2>&1 || true
+        # interop-test.sh runs one archiver binary; give it a Wine-invoking
+        # shim so the script needs no notion of which platform it is driving.
+        { echo '#!/bin/sh'
+          echo 'export WINEDEBUG=-all WINEPREFIX="$HOME/.darc-wineprefix"'
+          echo 'exec wine "$(dirname "$0")/arc-mhs-win64.exe" "$@"'
+        } > winbin/arc
+        chmod +x winbin/arc
+    # Own archives first, for the same reason as the arm64 job: a build that
+    # cannot read back what it just wrote has a codec bug, not an interop one.
+    # tta is xfail here because it turned out to be exactly that.
+    - name: Round-trip this build's own archives
+      env:
+        DARC_INTEROP_XFAIL: tta
+      run: |
+        set -euo pipefail
+        Tests/interop-test.sh make  winbin/arc interop/corpus out-amd64
+        Tests/interop-test.sh check winbin/arc interop/corpus out-amd64
+    # See the XFAIL comment block in interop-test.sh for why tta is listed.
+    - name: Read Linux-written archives
+      env:
+        DARC_INTEROP_XFAIL: tta
+      run: Tests/interop-test.sh check winbin/arc interop/corpus interop/archives
+    - uses: actions/upload-artifact@v4
+      with:
+        name: interop-win-amd64
+        path: out-amd64
+        if-no-files-found: error
+
+  # The other direction: archives written by each Windows build, read back by
+  # the Linux build that wrote the reference set.
+  interop-verify:
+    needs: [ interop-produce, interop-windows-amd64, windows-arm64-test ]
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v6.0.2
+      with:
+        lfs: false
+    - uses: actions/download-artifact@v4
+      with:
+        name: interop-linux
+        path: interop
+    - uses: actions/download-artifact@v4
+      with:
+        name: interop-win-amd64
+        path: from-amd64
+    - uses: actions/download-artifact@v4
+      with:
+        name: interop-win-arm64
+        path: from-arm64
+    # See the XFAIL comment block in interop-test.sh for why tta is listed.
+    - name: Read Windows-written archives on Linux
+      env:
+        DARC_INTEROP_XFAIL: tta
+      run: |
+        set -euo pipefail
+        tar -xf interop/corpus.tar -C interop
+        chmod +x interop/arc Tests/interop-test.sh
+        for src in from-amd64 from-arm64; do
+          echo "=== archives written by ${src#from-} ==="
+          Tests/interop-test.sh check interop/arc interop/corpus "$src"
+        done
+    # Informational, deliberately not a pass/fail gate. If every build turns out
+    # to emit byte-identical archives then this could become one, which would be
+    # a far stronger guarantee than "reads back correctly" -- but a difference
+    # here is not by itself a bug (path separators and stored attributes are
+    # legitimately platform-dependent), so it is reported and left to a human.
+    - name: Compare archive bytes across builds
+      run: |
+        echo "method              linux == amd64   linux == arm64"
+        for a in interop/archives/*.arc; do
+          m=$(basename "$a" .arc)
+          x=$(cmp -s "$a" "from-amd64/$m.arc" && echo same || echo DIFFERS)
+          y=$(cmp -s "$a" "from-arm64/$m.arc" && echo same || echo DIFFERS)
+          printf '%-20s %-16s %s\n' "$m" "$x" "$y"
+        done
 
   # ── Rust codec ports ────────────────────────────────────────────────────────
   # Two things are checked, and they are not the same thing:
