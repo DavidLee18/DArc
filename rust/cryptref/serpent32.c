@@ -514,6 +514,19 @@ k_xor(0, a, b, c, d);
     
     STORE32L(a,&ct[0]); STORE32L(b,&ct[4]); STORE32L(c,&ct[8]); STORE32L(d,&ct[12]);
 }
+static void ctr_keystream(const char* name, const unsigned char* key, int kl, const unsigned char* iv0) {
+    // CTR keystream = E(IV) || E(IV+1) || E(IV+2), little-endian whole-block
+    // counter, matching ctr_start/ctr_encrypt. Correct (32-bit) Serpent.
+    setup(key, kl);
+    unsigned char ctr[16]; memcpy(ctr, iv0, 16);
+    printf("%s ", name);
+    for (int blk = 0; blk < 3; blk++) {
+        if (blk) { for (int i=0;i<16;i++){ if(++ctr[i]) break; } }
+        unsigned char out[16]; encrypt(ctr, out);
+        for (int i=0;i<16;i++) printf("%02x", out[i]);
+    }
+    printf("\n");
+}
 static void one(const char* name, const unsigned char* key, int kl, const unsigned char* pt) {
     setup(key,kl); unsigned char ct[16]; encrypt(pt,ct);
     printf("%s %d ",name,kl);
@@ -525,6 +538,7 @@ int main(){
     unsigned char key[32],pt[16];
     for(int i=0;i<32;i++) key[i]=(unsigned char)i;
     for(int i=0;i<16;i++) pt[i]=(unsigned char)(0xf0+i);
+    ctr_keystream("ctr_serpent256", key, 32, pt);
     one("k256",key,32,pt); one("k192",key,24,pt); one("k128",key,16,pt); one("k160",key,20,pt);
     unsigned char zk[32]={0},zp[16]={0}; one("zeros",zk,32,zp);
     unsigned char ff[32],fp[16]; memset(ff,0xff,32); memset(fp,0xff,16); one("ones",ff,32,fp);

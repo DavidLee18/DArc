@@ -25,6 +25,12 @@ publish.workspace = true
 # and would be wrong here. LibTomCrypt was asked for CTR_COUNTER_LITTLE_ENDIAN,
 # so every archive ever written with -p uses that, and reading them back
 # requires it.
+[lib]
+name = "darc_crypto"
+# staticlib so the C encryption shim can link the exported symbols; rlib so the
+# crate's own tests can use it.
+crate-type = ["staticlib", "rlib"]
+
 [dependencies]
 pbkdf2 = { version = "0.13", default-features = false }
 hmac = "0.13"
@@ -35,3 +41,6 @@ blowfish = "0.10.0"
 serpent = "0.6.0"
 cipher = "0.5.2"
 getrandom = "0.4.3"
+
+[build-dependencies]
+bindgen = "0.72"

@@ -7,9 +7,14 @@
 //! verified against vectors from an independent implementation rather than
 //! against itself.
 
-#![forbid(unsafe_code)]
+// The crypto logic (ctr, cfb, pbkdf2, random) is unsafe-free and denied at the
+// crate level; the FFI boundary (ffi, exports) needs unsafe and opts back in
+// per-module, so the guarantee holds everywhere it can.
+#![deny(unsafe_code)]
 
 pub mod cfb;
+pub mod ffi;
+pub mod exports;
 pub mod random;
 
 // Serpent is NOT hand-ported: DArc's Serpent is standard Serpent (see
