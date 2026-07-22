@@ -65,9 +65,6 @@ publish = false
 # and they have to be hand-ported. That is ~15k lines of C before counting BSC.
 [workspace.dependencies]
 lz4_flex = { version = "0.14", default-features = false, features = ["std"] }
-ppmd-rust = "1.4"
-ruzstd = "0.8"
-lzma-rs = { version = "0.3", features = ["raw_decoder"] }
 
 # Kept from the darc-codecs manifest, where it had no effect once the crate
 # became a workspace member: cargo only honours [profile] in the workspace

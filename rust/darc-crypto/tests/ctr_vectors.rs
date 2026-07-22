@@ -106,6 +106,24 @@ fn blowfish_matches_darc() {
 }
 
 #[test]
+fn blowfish_default_56_byte_key_matches_darc() {
+    // DArc's default blowfish key length is max_key_length = 56 bytes, so this
+    // is the path a plain `-ae blowfish` archive actually takes -- distinct
+    // from the 16-byte case above. 56 bytes is also blowfish's maximum; 57 is
+    // rejected. The crate is byte-order-generic (Blowfish<BE> by default) and
+    // this pins that the default matches DArc's LibTomCrypt blowfish.
+    let key: Vec<u8> = (0u8..56).collect();
+    assert_eq!(
+        keystream::<blowfish::Blowfish>(&key, &iv(8)),
+        "70e67c34dc7771f514530722811156b6\
+         0247755ad8c1ad52cbb17e7b3ed825c7\
+         e1e504227f130c1b22bb0db9458a17ed"
+    );
+    assert!(<blowfish::Blowfish as cipher::KeyInit>::new_from_slice(&vec![0u8; 57]).is_err(),
+            "blowfish accepted a 57-byte key; DArc's max is 56");
+}
+
+#[test]
 fn carry_propagates_across_the_whole_counter() {
     // IV = ff ff ... ff 00. Incrementing carries through fifteen bytes, so an
     // implementation that only ever touched the low byte, or that treated the

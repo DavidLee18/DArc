@@ -113,6 +113,11 @@ int main()
     dump("twofish",  "twofish",  key32, 32, iv16, 48);
     dump("serpent",  "serpent",  key32, 32, iv16, 48);
     dump("blowfish", "blowfish", key32, 16, iv8,  48);
+    // Blowfish's DArc default is a 56-byte key (max_key_length); that is the
+    // path a plain -ae blowfish archive uses, and it is the one that would
+    // break if the crate's key handling or byte order disagreed.
+    unsigned char key56[56]; for (int i = 0; i < 56; i++) key56[i] = (unsigned char)i;
+    dump("blowfish56", "blowfish", key56, 56, iv8, 48);
 
     unsigned char ivc[16];
     memset(ivc, 0xff, 16); ivc[15] = 0x00;   // low bytes all 0xff -> carry propagates
