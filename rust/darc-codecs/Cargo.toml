@@ -18,5 +18,17 @@ crate-type = ["staticlib", "rlib"]   # staticlib to link; rlib so tests can use 
 # the differential harness does not.
 dropin = []
 
+[dependencies]
+# Replaces Compression/LZ4 (5,163 LOC). DArc uses the raw LZ4 BLOCK format --
+# LZ4_compress_default / LZ4_decompress_safe -- which is a fixed specification,
+# so any conformant implementation reads any other's blocks. The version byte
+# and int32 lengths around them are DArc's own framing and stay in C_LZ4.cpp.
+#
+# Encoder output is NOT byte-identical to the C library's: LZ4 is a
+# match-finder and encoders legitimately differ. That is acceptable under the
+# format-valid decision, and -mlz4 is not in the fingerprint suite, so no
+# baseline moves.
+lz4_flex = { workspace = true }
+
 [build-dependencies]
 bindgen = "0.72"
