@@ -12,9 +12,11 @@
 pub mod cfb;
 pub mod random;
 
-pub mod serpent;
-/// Serpent S-boxes, generated from the C by rust/cryptref/gen_serpent_sboxes.py.
-pub mod serpent_sboxes;
+// Serpent is NOT hand-ported: DArc's Serpent is standard Serpent (see
+// rust/cryptref/serpent32.c for why it only looked otherwise), so the
+// RustCrypto `serpent` crate substitutes directly, driven through the same
+// `cipher` traits as aes/twofish/blowfish. The vectors it is checked against
+// live in tests/serpent_vectors.rs.
 pub mod ctr;
 
 use hmac::Hmac;

@@ -17,7 +17,8 @@
 //! `C_Encryption.cpp` defines `LTC_NO_TEST`. This port implements the correct
 //! 32-bit behaviour, which is what x86-64 DArc has always produced.
 
-use darc_crypto::serpent::Serpent;
+use cipher::{BlockCipherDecrypt, BlockCipherEncrypt, KeyInit};
+use serpent::Serpent;
 
 /// (name, key length in bytes, plaintext hex, ciphertext hex)
 const VECTORS: &[(&str, usize, &str, &str)] = &[
@@ -45,56 +46,36 @@ fn key_for(name: &str, len: usize) -> Vec<u8> {
 #[test]
 fn encrypt_matches_the_32_bit_reference() {
     for &(name, klen, pt, ct) in VECTORS {
-        let cipher = Serpent::new(&key_for(name, klen)).expect("key rejected");
-        let mut block: [u8; 16] = unhex(pt).try_into().unwrap();
+        let cipher = Serpent::new_from_slice(&key_for(name, klen)).expect("key rejected");
+        let mut block = *cipher::array::Array::<u8, _>::from_slice(&unhex(pt));
         cipher.encrypt_block(&mut block);
-        assert_eq!(hex(&block), ct, "{name}: ciphertext differs");
+        assert_eq!(hex(&block[..]), ct, "{name}: ciphertext differs");
     }
 }
 
 #[test]
 fn decrypt_inverts_encrypt() {
     for &(name, klen, pt, ct) in VECTORS {
-        let cipher = Serpent::new(&key_for(name, klen)).expect("key rejected");
-        let mut block: [u8; 16] = unhex(ct).try_into().unwrap();
+        let cipher = Serpent::new_from_slice(&key_for(name, klen)).expect("key rejected");
+        let mut block = *cipher::array::Array::<u8, _>::from_slice(&unhex(ct));
         cipher.decrypt_block(&mut block);
-        assert_eq!(hex(&block), pt, "{name}: decrypt did not recover the plaintext");
+        assert_eq!(hex(&block[..]), pt, "{name}: decrypt did not recover the plaintext");
     }
 }
 
 #[test]
-fn agrees_with_the_rustcrypto_crate() {
-    // Independent confirmation that this is standard Serpent, from an
-    // implementation with no shared ancestry. If this ever disagrees, one of
-    // the two changed and the port is no longer a faithful replacement.
-    use cipher::{BlockCipherEncrypt, KeyInit};
-    let key: Vec<u8> = (0u8..32).collect();
-    let pt: Vec<u8> = (0..16).map(|i| 0xf0u8.wrapping_add(i as u8)).collect();
-
-    let mine = Serpent::new(&key).unwrap();
-    let mut a: [u8; 16] = pt.clone().try_into().unwrap();
-    mine.encrypt_block(&mut a);
-
-    let theirs = serpent::Serpent::new_from_slice(&key).unwrap();
-    let mut b = *cipher::array::Array::<u8, _>::from_slice(&pt);
-    theirs.encrypt_block(&mut b);
-
-    assert_eq!(hex(&a), hex(&b[..]), "port disagrees with the serpent crate");
-}
-
-#[test]
 fn short_keys_take_the_padding_path() {
-    // 160 bits is not a whole number of words, so serpent_setup's "set one bit,
-    // zero the rest" padding runs. A port that skipped it still passes every
-    // 256-bit vector.
+    // 160 bits is not a whole number of words, so Serpent's key padding runs.
+    // Kept because the reference vector was generated for exactly this length;
+    // it confirms the crate pads keys the way DArc's C does.
     let v = VECTORS.iter().find(|v| v.0 == "k160").expect("k160 vector missing");
-    let cipher = Serpent::new(&key_for("k160", 20)).unwrap();
-    let mut block: [u8; 16] = unhex(v.2).try_into().unwrap();
+    let cipher = Serpent::new_from_slice(&key_for("k160", 20)).unwrap();
+    let mut block = *cipher::array::Array::<u8, _>::from_slice(&unhex(v.2));
     cipher.encrypt_block(&mut block);
-    assert_eq!(hex(&block), v.3);
+    assert_eq!(hex(&block[..]), v.3);
 }
 
 #[test]
 fn rejects_over_long_keys() {
-    assert!(Serpent::new(&vec![0u8; 33]).is_none(), "accepted a 264-bit key");
+    assert!(Serpent::new_from_slice(&vec![0u8; 33]).is_err(), "accepted a 264-bit key");
 }

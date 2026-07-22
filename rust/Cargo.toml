@@ -23,6 +23,11 @@ publish = false
 #   zstd-safe   binding; replaced Compression/Zstd/libzstd (32,375 LOC of C).
 #               Bundles zstd 1.5.7 against the vendored 1.5.6 -- same frame
 #               format, verified by decoding 1.5.6's own output.
+#   serpent     replaces the Serpent cipher in Compression/_Encryption. DArc's
+#               Serpent is standard Serpent, so the crate substitutes directly;
+#               checked against x86-64 DArc's own vectors in
+#               darc-crypto/tests/serpent_vectors.rs. (It was briefly thought
+#               non-standard -- that was ARM64 miscompiling ulong32, see below.)
 #
 # REJECTED, each after measuring rather than assuming. Do not re-try these
 # without new evidence:
@@ -45,11 +50,14 @@ publish = false
 #   ruzstd      DECODE ONLY, so it cannot replace the encoder. zstd-safe was
 #               taken instead.
 #
-#   serpent     NOT rejected after all. It was thought incompatible, but the
-#               disagreement was ARM64 miscompiling DArc's own Serpent:
-#               tomcrypt_macros.h types ulong32 as 64-bit on every LP64 target
-#               that is not x86_64. DArc's Serpent is standard Serpent, and the
-#               crate agrees with the port. See darc-crypto/src/serpent.rs.
+#   NOTE ON THE ARM64 BUG that made serpent look un-adoptable: DArc's Serpent
+#   is miscompiled on ARM64. tomcrypt_macros.h:13 types ulong32 as 64-bit on
+#   every LP64 target except x86_64, and serpent.c's key expansion rotates it
+#   with a raw shift-or that only works at 32 bits. So an ARM64 C build of DArc
+#   encrypts -ae serpent differently from x86-64, and LTC_NO_TEST hides the
+#   failing self-test. Adopting the crate produces CORRECT Serpent everywhere,
+#   which is the desirable fix but means a Rust ARM64 build and a C ARM64 build
+#   disagree on -ae serpent. See rust/cryptref/serpent32.c.
 #
 # There is NO crate for libbsc, and none for any of the DArc-specific codecs --
 # Tornado, GRZip, MM/TTA, DisPack, REP, Dict, LZP, Delta, 4x4, SREP. Those are
