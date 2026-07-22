@@ -471,20 +471,50 @@ jobs:
           echo "=== archives written by ${src#from-} ==="
           Tests/interop-test.sh check interop/arc interop/corpus "$src"
         done
-    # Informational, deliberately not a pass/fail gate. If every build turns out
-    # to emit byte-identical archives then this could become one, which would be
-    # a far stronger guarantee than "reads back correctly" -- but a difference
-    # here is not by itself a bug (path separators and stored attributes are
-    # legitimately platform-dependent), so it is reported and left to a human.
+    # Byte identity is a far stronger guarantee than "reads back correctly": it
+    # says two independently built compressors made the same decisions, not
+    # merely compatible ones. It is enforced where it currently holds and
+    # reported where it does not, because the two Windows targets differ:
+    #
+    #   linux vs windows-amd64   byte-identical on all 14 methods, measured.
+    #                            GATED -- a regression here means a codec
+    #                            started behaving differently under a different
+    #                            compiler, which is worth failing over.
+    #
+    #   linux vs windows-arm64   differs on 12 of 14. Archives are valid and
+    #                            read back correctly in both directions; they
+    #                            are just compressed differently, mostly by
+    #                            under 0.5% -- except -mtor, which is 35%
+    #                            LARGER on arm64 (34771 -> 47043 bytes). That
+    #                            is a real compression-quality gap in the
+    #                            llvm-mingw/Clang build and is tracked
+    #                            separately. Reported, not gated, until it is
+    #                            understood; gating it now would just pin the
+    #                            defect in place.
+    #
+    # Not thread count and not memory: both were measured and neither changes
+    # archive bytes. Nor is it ARM64 itself -- run-tests.sh checks the same
+    # committed fingerprints on ubuntu-24.04-arm and macos-latest and they
+    # match, so an ARM64 build per se produces identical output.
     - name: Compare archive bytes across builds
       run: |
+        set -uo pipefail
         echo "method              linux == amd64   linux == arm64"
+        drift=0
         for a in interop/archives/*.arc; do
           m=$(basename "$a" .arc)
-          x=$(cmp -s "$a" "from-amd64/$m.arc" && echo same || echo DIFFERS)
+          if cmp -s "$a" "from-amd64/$m.arc"; then x=same; else x=DIFFERS; drift=$((drift+1)); fi
           y=$(cmp -s "$a" "from-arm64/$m.arc" && echo same || echo DIFFERS)
           printf '%-20s %-16s %s\n' "$m" "$x" "$y"
         done
+        echo
+        if [ "$drift" -ne 0 ]; then
+          echo "::error::windows-amd64 no longer produces byte-identical archives to linux ($drift method(s))"
+          echo "That pair has been byte-identical on every method; a change here means a codec"
+          echo "started making different decisions under mingw-gcc. Investigate before blessing."
+          exit 1
+        fi
+        echo "windows-amd64 is byte-identical to linux on all $(ls interop/archives/*.arc | wc -l | tr -d " ") methods"
 
   # ── Rust codec ports ────────────────────────────────────────────────────────
   # Two things are checked, and they are not the same thing:
