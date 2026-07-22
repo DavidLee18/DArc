@@ -306,23 +306,18 @@ jobs:
         path: interop
     # Own archives first. If this build cannot read back what it just wrote,
     # the codec is broken on Windows and any interop failure below is a
-    # consequence rather than a finding. That is exactly what this step
-    # established for tta: neither Windows build can even create a tta
-    # archive, so it is xfail here too -- see interop-test.sh.
+    # consequence rather than a finding -- which is exactly what this step
+    # established for tta, whose malloc2d bug it found before the interop
+    # check could mislead anyone into calling it a format divergence.
     - name: Round-trip this build's own archives
       shell: bash
-      env:
-        DARC_INTEROP_XFAIL: tta
       run: |
         set -euo pipefail
         tar -xf interop/corpus.tar -C interop
         bash Tests/interop-test.sh make  Tests/arc-mhs-win-arm64.exe interop/corpus out-arm64
         bash Tests/interop-test.sh check Tests/arc-mhs-win-arm64.exe interop/corpus out-arm64
-    # See the XFAIL comment block in interop-test.sh for why tta is listed.
     - name: Read Linux-written archives
       shell: bash
-      env:
-        DARC_INTEROP_XFAIL: tta
       run: |
         set -euo pipefail
         bash Tests/interop-test.sh check Tests/arc-mhs-win-arm64.exe interop/corpus interop/archives
@@ -433,18 +428,12 @@ jobs:
         chmod +x winbin/arc
     # Own archives first, for the same reason as the arm64 job: a build that
     # cannot read back what it just wrote has a codec bug, not an interop one.
-    # tta is xfail here because it turned out to be exactly that.
     - name: Round-trip this build's own archives
-      env:
-        DARC_INTEROP_XFAIL: tta
       run: |
         set -euo pipefail
         Tests/interop-test.sh make  winbin/arc interop/corpus out-amd64
         Tests/interop-test.sh check winbin/arc interop/corpus out-amd64
-    # See the XFAIL comment block in interop-test.sh for why tta is listed.
     - name: Read Linux-written archives
-      env:
-        DARC_INTEROP_XFAIL: tta
       run: Tests/interop-test.sh check winbin/arc interop/corpus interop/archives
     - uses: actions/upload-artifact@v4
       with:
@@ -473,10 +462,7 @@ jobs:
       with:
         name: interop-win-arm64
         path: from-arm64
-    # See the XFAIL comment block in interop-test.sh for why tta is listed.
     - name: Read Windows-written archives on Linux
-      env:
-        DARC_INTEROP_XFAIL: tta
       run: |
         set -euo pipefail
         tar -xf interop/corpus.tar -C interop

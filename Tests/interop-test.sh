@@ -100,54 +100,30 @@ CASES="
 -mdelta+lzma:chain-delta-lzma
 "
 
-# Codecs allowed to fail, named by the caller in DARC_INTEROP_XFAIL. Kept in
-# CASES rather than deleted from it, because a quietly shortened list is
-# indistinguishable from full coverage six months later -- every run prints
-# these as xfail, so the gap stays visible in the log.
+# Codecs allowed to fail, named by the caller in DARC_INTEROP_XFAIL. A case
+# marked here stays in CASES and is still run and printed, because a quietly
+# shortened list is indistinguishable from full coverage six months later.
 #
 # An xfail that PASSES is reported as an error, not a success: the list is a
 # claim about what is broken, and a stale entry understates coverage just as
 # badly as deleting the case would.
 #
-# The default is empty, and it has to be, because whether a codec interoperates
-# is a property of the PAIR of builds involved. tta below is fine when a build
-# reads its own archives and only fails across the Linux/Windows boundary; a
-# list baked into this script would turn every same-build run into a false
-# XPASS. So each CI call site names what it expects to fail.
+# The default is empty, and it has to be, because whether a codec
+# interoperates is a property of the PAIR of builds involved -- a codec can be
+# fine when a build reads its own archives and fail only across the
+# Linux/Windows boundary. A list baked into this script would turn every
+# same-build run into a false XPASS. So each call site names what it expects
+# to fail.
 #
-# Currently expected, set by the cross-platform check steps in build.yml:
+# Nothing is currently expected to fail; no CI step sets this.
 #
-#   tta   -mtta does not work on Windows at all. This started as an interop
-#         failure -- both Windows builds rejected a TTA archive written by the
-#         Linux build -- but the self-round-trip step settled it: neither
-#         Windows build can even CREATE a tta archive, so there is no interop
-#         question here. It is a codec that is broken on Windows.
-#
-#         It had simply never been run there. win-test.sh covers -m0/-m1/-m4
-#         and run-tests.sh does not run on Windows, so nothing ever invoked
-#         -mtta on a Windows build; this suite is the first thing to try.
-#
-#         Root cause, confirmed: malloc2d in Compression/MM/tta.cpp lays a
-#         pointer table and a data block into one allocation, and steps over
-#         the table with
-#
-#             tmp = (long *) array + num;
-#
-#         That advances by num * sizeof(long). The table it is skipping is
-#         num * sizeof(long *) bytes. Those are equal on LP64 and NOT on
-#         Windows, where long is 4 bytes and pointers are still 8 -- so the
-#         data block starts halfway inside the pointer table and the samples
-#         overwrite the pointers. Hence "page fault on write access to
-#         0x00007f3600000000": a live heap pointer whose low 32 bits have been
-#         replaced by sample data. Both directions crash, encode and decode.
-#
-#         The fix is to step over the table as pointers, "(long *)(array +
-#         num)", which is identical on LP64 and therefore leaves Linux archive
-#         bytes untouched. Remove tta from the xfail sites in build.yml when
-#         it lands -- an XPASS will insist on it anyway.
-#
-#         Tenth instance of the family that produced nine fixes for v2.0.0,
-#         and a pre-existing defect rather than a regression from this suite.
+# The one entry this ever held was tta, which turned out not to be an interop
+# problem at all: neither Windows build could CREATE a tta archive, because
+# malloc2d in Compression/MM/tta.cpp stepped over its pointer table in units
+# of long rather than of pointer -- the same size on LP64, half the size on
+# Windows, so the samples overwrote the pointers. Fixed; the XPASS check is
+# what forced this list back to empty.
+
 XFAIL="${DARC_INTEROP_XFAIL:-}"
 
 is_xfail () {
