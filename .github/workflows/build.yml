@@ -214,6 +214,84 @@ jobs:
         chmod +x Tests/win-test.sh
         Tests/win-test.sh
 
+  # ── Windows on ARM64 ────────────────────────────────────────────────────────
+  # Split across two jobs because neither half can be done alone:
+  #
+  #   build   Debian's mingw-w64 packages x86_64 and i686 only, so this target
+  #           needs llvm-mingw (Clang). Cross-compiling from Linux is the only
+  #           option -- MicroHs would otherwise have to be bootstrapped on the
+  #           Windows runner.
+  #   test    Wine has no ARM64 emulation, so unlike windows-cross above there
+  #           is no way to exercise the result on the machine that built it.
+  #
+  # The upside of that constraint is that this target gets tested on real
+  # hardware rather than on Wine, which is the stronger of the two checks.
+  windows-arm64-cross:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v6.0.2
+      with:
+        lfs: false
+    - name: Install llvm-mingw
+      run: |
+        set -euo pipefail
+        # Pinned with a checksum for the same reason MicroHs is: the compiler is
+        # part of what produces the shipped binary, so it should not drift
+        # underneath us between runs.
+        ver="20260616"
+        tarball="llvm-mingw-$ver-ucrt-ubuntu-22.04-x86_64.tar.xz"
+        sha256="534b92e067b22a6b4441f48ae9240a3341b17825d04d577eab0cf85c44b4deda"
+        curl -fsSL "https://github.com/mstorsjo/llvm-mingw/releases/download/$ver/$tarball" -o /tmp/"$tarball"
+        echo "$sha256  /tmp/$tarball" | sha256sum -c -
+        tar -xJf /tmp/"$tarball" -C /opt
+        echo "/opt/llvm-mingw-$ver-ucrt-ubuntu-22.04-x86_64/bin" >> "$GITHUB_PATH"
+    - name: Install packages
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y --no-install-recommends cpphs
+    - name: Install MicroHs
+      run: |
+        microhs_sha="05a3fbd5d73ae6a37111a6ced5b57bb1717b8975"
+        microhs_tar="/tmp/microhs.tar.gz"
+        microhs_expected_sha256="a1f85821cbae877d0ea3e173235d45c833d9145b2ca9e92e77d284b6730c63b6"
+        curl -fsSL "https://github.com/augustss/MicroHs/archive/$microhs_sha.tar.gz" -o "$microhs_tar"
+        echo "$microhs_expected_sha256  $microhs_tar" | sha256sum -c -
+        tar -xzf "$microhs_tar" -C /tmp
+        cd "/tmp/MicroHs-$microhs_sha"
+        make minstall
+        echo "$HOME/.mcabal/bin" >> "$GITHUB_PATH"
+    - name: Build (Windows ARM64 cross)
+      run: |
+        chmod +x compile-win64-c compile-mhs-win64
+        DARC_WIN_ARCH=aarch64 ./compile-mhs-win64
+    # compile-mhs-win64 already checks the PE machine field against the
+    # requested architecture, so a build that silently fell back to the host
+    # toolchain fails there rather than being uploaded here.
+    - uses: actions/upload-artifact@v4
+      with:
+        name: arc-win-arm64
+        path: Tests/arc-mhs-win-arm64.exe
+        if-no-files-found: error
+
+  windows-arm64-test:
+    needs: windows-arm64-cross
+    runs-on: windows-11-arm
+    steps:
+    - uses: actions/checkout@v6.0.2
+      with:
+        lfs: false
+    - uses: actions/download-artifact@v4
+      with:
+        name: arc-win-arm64
+        path: Tests
+    # Git Bash, so the same script that runs under Wine on Linux runs here with
+    # the Wine prefix dropped.
+    # Invoked through bash rather than directly: a Windows checkout does not
+    # preserve the executable bit.
+    - name: Smoke-test on native ARM64 Windows
+      shell: bash
+      run: bash Tests/win-test.sh Tests/arc-mhs-win-arm64.exe
+
   # ── Rust codec ports ────────────────────────────────────────────────────────
   # Two things are checked, and they are not the same thing:
   #

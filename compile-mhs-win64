@@ -1,23 +1,38 @@
 #!/usr/bin/env bash
-# Cross-compile DArc to Windows x64 via MicroHs combinator-VM.
-# Uses mhs -tenvironment to redirect C codegen through x86_64-w64-mingw32 toolchain.
-# Output: Tests/arc-mhs-win64.exe (target ~2.7MB vs 22MB GHC build)
+# Cross-compile DArc to 64-bit Windows via the MicroHs combinator-VM.
+# Uses mhs -tenvironment to redirect C codegen through a mingw-w64 toolchain.
+#
+# Target architecture is DARC_WIN_ARCH (default x86_64); see compile-win64-c
+# for what each value selects and why. Output:
+#
+#   x86_64    Tests/arc-mhs-win64.exe        (~2.7MB vs 22MB for the GHC build)
+#   aarch64   Tests/arc-mhs-win-arm64.exe
+#
+# The x86_64 name is left exactly as it was so the existing CI jobs, release
+# packaging and Tests/win-test.sh default keep working untouched.
 set -e
 
-exe=Tests/arc-mhs-win64.exe
+arch=${DARC_WIN_ARCH:-x86_64}
+case "$arch" in
+  x86_64)  triple="x86_64-w64-mingw32";  cc_suffix="-posix"; sfx="win64"     ;;
+  aarch64) triple="aarch64-w64-mingw32"; cc_suffix="";       sfx="win-arm64" ;;
+  *) echo "error: DARC_WIN_ARCH must be x86_64 or aarch64, got '$arch'" >&2; exit 2 ;;
+esac
+
+exe=Tests/arc-mhs-$sfx.exe
 gui_flag=""
 for option; do
   case $option in
-    -DFREEARC_GUI) exe=Tests/freearc-mhs-win64.exe; gui_flag="-DFREEARC_GUI" ;;
+    -DFREEARC_GUI) exe=Tests/freearc-mhs-$sfx.exe; gui_flag="-DFREEARC_GUI" ;;
     -O*) echo "warning: ignoring optimization flag '$option' for mhs build" >&2 ;;
   esac
 done
 
-WINOUT=${WINOUT:-/tmp/out/FreeArc-win64-mhs}
+WINOUT=${WINOUT:-/tmp/out/FreeArc-win64-mhs-$arch}
 mkdir -p "$WINOUT"
 
-# 1) Build C/C++ objects for Win64 with __MHS__ defined
-MHS=1 WINOUT="$WINOUT" ./compile-win64-c
+# 1) Build C/C++ objects for the Windows target with __MHS__ defined
+MHS=1 WINOUT="$WINOUT" DARC_WIN_ARCH="$arch" ./compile-win64-c
 
 # 2) ntrljmp.c for Lua trampoline (Lua not used on MHS path — skip unless GUI/Lua needed)
 # We don't link Lua under MHS for now; HsLua bindings only used by GHC build.
@@ -51,14 +66,26 @@ c_objs=(
 [[ -f "$WINOUT/C_BCJ.o" ]] && c_objs+=("$WINOUT/C_BCJ.o")
 for zo in "$WINOUT"/zstd_*.o; do [[ -f "$zo" ]] && c_objs+=("$zo"); done
 
-# Windows system libs (mingw provides these)
-win_libs="-static -lstdc++ -lpthread -lwinpthread -lwinmm -lws2_32 -ladvapi32 -lshell32 -luser32 -lkernel32 -lwininet -Wl,--allow-multiple-definition"
+# Windows system libs (mingw provides these).
+#
+# The link is driven by the C compiler, not the C++ one, so the C++ runtime has
+# to be named explicitly -- and the two toolchains do not ship the same one.
+# GCC-mingw has libstdc++; llvm-mingw has LLVM's libc++, which additionally
+# needs libc++abi and libunwind when linked statically. Asking for -lstdc++
+# under llvm-mingw fails outright, so this is not a preference.
+case "$arch" in
+  x86_64)  cxx_libs="-lstdc++ -lpthread" ;;
+  aarch64) cxx_libs="-lc++ -lc++abi -lunwind" ;;
+esac
+win_libs="-static $cxx_libs -lwinpthread -lwinmm -lws2_32 -ladvapi32 -lshell32 -luser32 -lkernel32 -lwininet -Wl,--allow-multiple-definition"
 
 # Build MHSCCLIBS from C objects (one space-separated string)
 linker_inputs=""
 for o in "${c_objs[@]}"; do linker_inputs="$linker_inputs $o"; done
 
-export CC="x86_64-w64-mingw32-gcc-posix"
+export CC="$triple-gcc$cc_suffix"
+command -v "$CC" >/dev/null 2>&1 ||
+  { echo "error: $CC not found in PATH" >&2; exit 2; }
 # Everything below makes up for what runtime/mingw/config.h does not provide.
 # See the MHSCONF note further down for why neither shipped config works alone.
 
@@ -81,7 +108,35 @@ runtime_defs="$runtime_defs -DISWINDOWS=1"
 runtime_defs="$runtime_defs -include compat-win/mhs_win_compat.h"
 runtime_defs="$runtime_defs -DCLOCK_T=int64_t -DCLOCK_INIT=darc_mhs_clock_init"
 runtime_defs="$runtime_defs -DCLOCK_GET=darc_mhs_clock_get -DCLOCK_SLEEP=usleep"
-export MHSCCFLAGS="-O2 -static-libgcc -static-libstdc++ -I. -ICompression -IHsLua/src $runtime_defs $defines $gui_flag"
+# What the two toolchains need that the other does not. Both of the aarch64
+# entries are about Clang rather than about ARM64 -- llvm-mingw is simply the
+# only toolchain that targets it -- so if a Clang x86-64 mingw build is ever
+# added, it wants this same set.
+#
+#   -static-libgcc/-static-libstdc++  name GCC's runtimes. Clang accepts the
+#     flags but has neither, so it warns about an unused argument on every
+#     single file it compiles.
+#
+#   -include errno.h  mhs generates errno accessors (mhs_EACCES and friends)
+#     that reference the macros without including <errno.h> themselves. That
+#     header happens to be reached transitively under Debian's mingw-w64
+#     headers and is not under llvm-mingw's, where the build stops with
+#     "use of undeclared identifier 'EACCES'". Force-including it costs
+#     nothing and does not depend on which chain pulls it in.
+#
+#   -Wno-incompatible-function-pointer-types  mhs's FFI glue passes HsFunPtr,
+#     i.e. void(*)(void), straight into CompressionService's CALLBACK_FUNC*
+#     parameter without a cast. GCC warns; Clang 16 and later reject it. The
+#     pointer really is a callback of the right shape at run time -- see the
+#     foreign-export machinery in Compression/CompressionLib.hs -- so this is
+#     a missing cast in generated code, not a real mismatch.
+case "$arch" in
+  x86_64)
+    cc_quirks="-static-libgcc -static-libstdc++" ;;
+  aarch64)
+    cc_quirks="-include errno.h -Wno-incompatible-function-pointer-types" ;;
+esac
+export MHSCCFLAGS="-O2 $cc_quirks -I. -ICompression -IHsLua/src $runtime_defs $defines $gui_flag"
 export MHSCCLIBS="$linker_inputs $win_libs"
 # Neither MicroHs runtime config fits a mingw cross-build on its own, so use
 # "mingw" and supply what it is missing (see runtime_defs above).
@@ -134,6 +189,33 @@ fi
 # failure for a binary that was sitting right there.
 if [[ "$(head -c 2 "$exe")" != "MZ" ]]; then
   echo "error: $exe does not start with the MZ signature -- not a Windows executable" >&2
+  exit 1
+fi
+
+# ...and that it is a Windows binary for the architecture that was *asked* for.
+# "MZ" is identical for both targets, so a build that silently fell back to the
+# host toolchain would pass every check above. `file` does name the
+# architecture ("PE32+ executable (console) Aarch64"), but it is not installed
+# everywhere -- the same reason the MZ check above is open-coded rather than
+# shelling out to it. So read the PE machine field directly: the e_lfanew
+# offset lives at 0x3c and the machine word is 4 bytes past the "PE\0\0"
+# signature it points at.
+case "$arch" in
+  x86_64)  want_machine=0x8664; want_name="AMD64" ;;
+  aarch64) want_machine=0xaa64; want_name="ARM64" ;;
+esac
+# Little-endian fields, assembled a byte at a time so this does not depend on
+# the byte order of whatever host is doing the cross-compiling.
+read_le () {  # read_le <byte-offset> <length> -> decimal value
+  local byte value=0 shift_by=0
+  for byte in $(od -An -tu1 -j "$1" -N "$2" "$exe"); do
+    value=$(( value + byte * (1 << shift_by) )); shift_by=$(( shift_by + 8 ))
+  done
+  echo "$value"
+}
+got_machine=$(printf '0x%04x' "$(read_le $(( $(read_le 60 4) + 4 )) 2)")
+if [[ "$got_machine" != "$want_machine" ]]; then
+  echo "error: $exe is PE machine $got_machine, expected $want_machine ($want_name)" >&2
   exit 1
 fi
 

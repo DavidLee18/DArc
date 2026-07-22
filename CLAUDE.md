@@ -18,7 +18,16 @@ The codebase is roughly half Haskell (application logic, archive format, UI) and
 ./compile-ghc         # console binary  -> Tests/arc-ghc  (GHC 9.4.7+, Linux x64)
 ./compile-mhs-win64   # cross-compile   -> Tests/arc-mhs-win64.exe (mingw-w64)
 make clean            # remove object files from all tempdirs
+
+# Windows on ARM64. Same script, different toolchain: Debian's mingw-w64
+# packages x86_64 and i686 only, so this target needs llvm-mingw (Clang) on
+# PATH -> Tests/arc-mhs-win-arm64.exe
+DARC_WIN_ARCH=aarch64 ./compile-mhs-win64
 ```
+
+`DARC_WIN_ARCH` (`x86_64` by default, or `aarch64`) is read by both `compile-mhs-win64` and `compile-win64-c` and picks the cross toolchain, the target Windows version and the output name. Clang needs two flags GCC does not — see the `cc_quirks` block in `compile-mhs-win64` for what each is for. `compile-ghc-win64` is x86-64 only; there is no GHC bindist for this target.
+
+Since Wine has no ARM64 emulation, the ARM64 binary cannot be exercised on the machine that cross-builds it. CI runs `Tests/win-test.sh` against it on a real `windows-11-arm` runner instead, and the release workflow's `publish` job waits on that result. `win-test.sh` detects whether it is on Windows or on a Unix host and adds Wine only in the latter case; it works in relative paths throughout, because MSYS rewrites POSIX-looking arguments before handing them to a native `.exe`.
 
 Binaries land in `Tests/`, which despite the name is a build *output* directory, not a test suite — it holds the produced binaries (gitignored via `Tests/*arc`) alongside the committed `arc.groups` solid-ordering config.
 
