@@ -12,8 +12,8 @@
 pub mod cfb;
 pub mod random;
 
-/// Serpent S-boxes, generated from the C. Not yet a usable cipher -- the key
-/// schedule and round functions are still to come.
+pub mod serpent;
+/// Serpent S-boxes, generated from the C by rust/cryptref/gen_serpent_sboxes.py.
 pub mod serpent_sboxes;
 pub mod ctr;
 

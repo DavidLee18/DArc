@@ -33,10 +33,11 @@ HEADER = '''//! Serpent S-boxes, translated mechanically from
 //! `!`, each temporary becomes a `let`, and the four outputs come back as a
 //! tuple.
 //!
-//! DArc's Serpent is NOT standard Serpent -- it fails the Crypto++ vectors
-//! bundled alongside it. These reproduce what the archiver actually does,
-//! which is what existing `-ae serpent` archives were encrypted with. Fixing
-//! the cipher is a separate question from porting it faithfully.
+//! DArc's Serpent IS standard Serpent. It only appears not to be when built
+//! for a non-x86_64 LP64 target, where tomcrypt_macros.h types `ulong32` as
+//! `unsigned long` -- 64 bits -- and serpent.c's key expansion rotates with a
+//! raw `(lk << 11) | (lk >> 21)` that is only a rotate at 32 bits. See
+//! darc-crypto/tests/serpent_vectors.rs.
 #![allow(clippy::many_single_char_names)]
 '''
 

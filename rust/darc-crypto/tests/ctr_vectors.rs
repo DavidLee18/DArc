@@ -72,43 +72,24 @@ fn twofish_matches_darc() {
     );
 }
 
-/// DArc's Serpent is NOT standard Serpent, and the `serpent` crate cannot
-/// stand in for it. This asserts the divergence rather than hiding it, so that
-/// a future crate update which happened to converge would fail here and force
-/// someone to look, instead of silently making `-ae serpent` archives
-/// unreadable.
+/// Serpent is absent from the CTR vectors above on purpose.
 ///
-/// The evidence, in order:
+/// Those vectors were dumped on ARM64, where DArc's Serpent is miscompiled:
+/// `tomcrypt_macros.h:13` types `ulong32` as `unsigned long` -- 64 bits -- on
+/// every LP64 target that is not x86_64, and serpent.c's key expansion rotates
+/// with a raw `(lk << 11) | (lk >> 21)` that only rotates at 32 bits. So a
+/// Serpent CTR vector taken here would encode the bug, not the format.
 ///
-///   * The keystreams differ, and no byte-order convention reconciles them --
-///     key and IV reversed by bytes, by words, and word-swapped, with the
-///     output likewise transformed, were all tried and none matched. So this
-///     is a different cipher, not a different calling convention.
-///   * DArc's own bundled self-test agrees. `serpent_test()`, whose vectors
-///     the file says come from Crypto++, FAILS, while `twofish_test()` and
-///     `blowfish_test()` in the same build pass. That test never runs in
-///     production because C_Encryption.cpp defines LTC_NO_TEST.
-///
-/// So the vendored implementation -- Gladman's, by way of libmcrypt -- does
-/// not agree with published Serpent vectors, and `-ae serpent` is documented
-/// and selectable at Options.hs:185. Archives written with it round-trip
-/// through DArc, since the same code encrypts and decrypts, but they are not
-/// Serpent as specified and no other tool would read them.
-///
-/// Substituting the crate is therefore off the table until the vendored
-/// implementation is understood: it would render every existing Serpent
-/// archive unopenable. Tracked separately from this port.
+/// The cipher itself is covered properly in serpent_vectors.rs, against a
+/// reference built at the intended width and cross-checked against the
+/// RustCrypto crate. Regenerating the CTR vectors on x86-64 would let Serpent
+/// join this file; until then, leaving it out is better than asserting
+/// something architecture-specific.
 #[test]
-fn serpent_cannot_be_substituted_by_the_rustcrypto_crate() {
-    let darc = "1e0a349f3de9990b2a848e2d8a7f3c93\
-                f5b7a1b58a4a771178ae03200aec0bd1\
-                3c1796e652e1a02d9e0cc2a6f9f8b5a6";
-    assert_ne!(
-        keystream::<serpent::Serpent>(&key32(), &iv(16)),
-        darc,
-        "the serpent crate now agrees with DArc's vendored Serpent -- \
-         re-check which of the two changed before adopting it"
-    );
+fn serpent_ctr_is_covered_elsewhere() {
+    // A marker rather than a check: the cipher's own vectors live in
+    // serpent_vectors.rs. Asserting anything here would bake in ARM64's bug.
+    assert!(cfg!(test));
 }
 
 #[test]

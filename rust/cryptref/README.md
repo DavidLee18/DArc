@@ -27,7 +27,13 @@ twofish_test()  = PASS
 blowfish_test() = PASS
 ```
 
-DArc's vendored Serpent does not agree with the Crypto++-derived vectors
-shipped in the same file, and `-ae serpent` is a documented option
-(`Options.hs:185`). See the comment on
-`serpent_cannot_be_substituted_by_the_rustcrypto_crate`.
+That failure is NOT a non-standard cipher. It is `ulong32` being 64 bits:
+`headers/tomcrypt_macros.h:13` selects `unsigned` only for `__x86_64__` and
+sparc64, and `unsigned long` otherwise, so on ARM64 serpent.c's key expansion
+rotates a 64-bit value with `(lk << 11) | (lk >> 21)` and produces garbage.
+`serpent_test()` passes on x86-64.
+
+Consequence: an ARM64 build encrypts `-ae serpent` differently from an x86-64
+build, so those archives do not move between architectures. `serpent32.c` in
+this directory rebuilds the algorithm at the intended width and is what
+`darc-crypto/tests/serpent_vectors.rs` is checked against.

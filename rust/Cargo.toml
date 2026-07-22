@@ -45,8 +45,11 @@ publish = false
 #   ruzstd      DECODE ONLY, so it cannot replace the encoder. zstd-safe was
 #               taken instead.
 #
-#   serpent     DArc's Serpent is not standard Serpent -- see
-#               darc-crypto/tests/ctr_vectors.rs.
+#   serpent     NOT rejected after all. It was thought incompatible, but the
+#               disagreement was ARM64 miscompiling DArc's own Serpent:
+#               tomcrypt_macros.h types ulong32 as 64-bit on every LP64 target
+#               that is not x86_64. DArc's Serpent is standard Serpent, and the
+#               crate agrees with the port. See darc-crypto/src/serpent.rs.
 #
 # There is NO crate for libbsc, and none for any of the DArc-specific codecs --
 # Tornado, GRZip, MM/TTA, DisPack, REP, Dict, LZP, Delta, 4x4, SREP. Those are
