@@ -7,7 +7,7 @@
 # proven equivalent against the C one (see difftest/ and Tests/interop-test.sh).
 [workspace]
 resolver = "2"
-members = ["darc-codecs"]
+members = ["darc-codecs", "darc-crypto"]
 
 [workspace.package]
 edition = "2021"

@@ -1,0 +1,31 @@
+[package]
+name = "darc-crypto"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# Replaces Compression/_Encryption -- 10,151 lines of vendored LibTomCrypt.
+#
+# This is the one part of the codebase where "delete the vendored C, add a
+# dependency" works exactly as intended. Everything here is a standardised
+# algorithm with a specified output, so there is no encoder freedom: matching
+# the standard IS matching DArc, and published test vectors verify it. The
+# compression codecs have no such luxury.
+#
+# What DArc actually builds out of these, read off C_Encryption.cpp:
+#
+#   key      PBKDF2 (PKCS#5 alg2) over HMAC-SHA512, caller-supplied iteration
+#            count and salt                                       (:159-166)
+#   modes    CTR with a LITTLE-ENDIAN counter, or CFB             (:112-113)
+#   ciphers  AES, Blowfish, Serpent, Twofish
+#   rounds   passed as 0, i.e. each cipher's default              (:211)
+#
+# The little-endian counter matters: RustCrypto's Ctr128BE is the usual choice
+# and would be wrong here. LibTomCrypt was asked for CTR_COUNTER_LITTLE_ENDIAN,
+# so every archive ever written with -p uses that, and reading them back
+# requires it.
+[dependencies]
+pbkdf2 = { version = "0.13", default-features = false }
+hmac = "0.13"
+sha2 = { version = "0.11", default-features = false }
