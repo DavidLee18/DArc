@@ -64,15 +64,37 @@ if [ -n "$WINE" ]; then
   wine --version 2>&1 | head -1
   wineboot -i >/dev/null 2>&1 || true      # first run initialises the prefix
 else
-  # PROCESSOR_ARCHITECTURE is per-process, not per-machine: Git Bash is an x64
-  # binary and runs emulated on an ARM64 host, where it reports "AMD64" and
-  # Windows puts the real answer in PROCESSOR_ARCHITEW6432. Reporting the
-  # process architecture here would invite exactly the wrong conclusion from a
-  # green log. (The run itself is not in doubt either way -- x64 Windows cannot
-  # execute an ARM64 image at all, so getting this far already proves the host.)
-  echo "native Windows (${PROCESSOR_ARCHITEW6432:-${PROCESSOR_ARCHITECTURE:-unknown}})"
+  echo "native Windows"
 fi
-echo "exe: $EXE"
+
+# Which architecture is under test, read out of the PE header rather than
+# guessed from the environment.
+#
+# The obvious-looking $PROCESSOR_ARCHITECTURE is wrong here: it is per-process,
+# and Git Bash is an x64 binary that runs emulated on an ARM64 host, so it
+# reports "AMD64" on an ARM64 runner. PROCESSOR_ARCHITEW6432 does not rescue
+# it either -- that one is specific to 32-bit-on-64-bit WOW64 and is unset
+# under x64-on-ARM64 emulation. And what the reader wants is the architecture
+# of the *binary* anyway, which is the thing being claimed.
+#
+# `file` would report it, but it is not installed everywhere -- which is the
+# same reason the MZ check in compile-mhs-win64 is open-coded. Little-endian
+# fields assembled a byte at a time, so this does not depend on the byte order
+# of the host either. e_lfanew sits at 0x3c; the machine word is 4 bytes past
+# the "PE\0\0" signature it points at.
+read_le () {  # read_le <byte-offset> <length> -> decimal value
+  local byte value=0 shift_by=0
+  for byte in $(od -An -tu1 -j "$1" -N "$2" "$EXE"); do
+    value=$(( value + byte * (1 << shift_by) )); shift_by=$(( shift_by + 8 ))
+  done
+  echo "$value"
+}
+case "$(printf '0x%04x' "$(read_le $(( $(read_le 60 4) + 4 )) 2)")" in
+  0x8664) arch_name="x86-64" ;;
+  0xaa64) arch_name="ARM64"  ;;
+  *)      arch_name="unrecognised PE machine" ;;
+esac
+echo "exe: $EXE ($arch_name)"
 echo
 
 rm -rf "$WORK"; mkdir -p "$WORK/in/sub"

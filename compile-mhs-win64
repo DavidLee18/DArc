@@ -193,11 +193,12 @@ if [[ "$(head -c 2 "$exe")" != "MZ" ]]; then
 fi
 
 # ...and that it is a Windows binary for the architecture that was *asked* for.
-# "MZ" cannot tell the two targets apart, and neither can `file`, which reports
-# "PE32+ executable (console)" for both -- so a build that silently fell back to
-# the host toolchain would pass every check above. The PE machine field is the
-# only thing here that actually distinguishes them, so read it directly: the
-# e_lfanew offset lives at 0x3c and the machine word is 4 bytes past the "PE\0\0"
+# "MZ" is identical for both targets, so a build that silently fell back to the
+# host toolchain would pass every check above. `file` does name the
+# architecture ("PE32+ executable (console) Aarch64"), but it is not installed
+# everywhere -- the same reason the MZ check above is open-coded rather than
+# shelling out to it. So read the PE machine field directly: the e_lfanew
+# offset lives at 0x3c and the machine word is 4 bytes past the "PE\0\0"
 # signature it points at.
 case "$arch" in
   x86_64)  want_machine=0x8664; want_name="AMD64" ;;

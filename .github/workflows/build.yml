@@ -264,9 +264,9 @@ jobs:
       run: |
         chmod +x compile-win64-c compile-mhs-win64
         DARC_WIN_ARCH=aarch64 ./compile-mhs-win64
-    # compile-mhs-win64 already checks the PE machine field, which is the only
-    # thing that tells an ARM64 image apart from an x86-64 one -- `file` calls
-    # both "PE32+ executable (console)".
+    # compile-mhs-win64 already checks the PE machine field against the
+    # requested architecture, so a build that silently fell back to the host
+    # toolchain fails there rather than being uploaded here.
     - uses: actions/upload-artifact@v4
       with:
         name: arc-win-arm64

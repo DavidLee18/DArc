@@ -196,10 +196,10 @@ jobs:
         chmod +x compile-win64-c compile-mhs-win64
         DARC_WIN_ARCH=${{ matrix.arch }} ./compile-mhs-win64
 
-    # compile-mhs-win64 checks the PE machine field itself, which is the only
-    # thing that distinguishes these two artifacts -- `file` reports both as
-    # "PE32+ executable (console)", so a build that silently fell back to the
-    # wrong toolchain would pass a `file` check.
+    # compile-mhs-win64 checks the PE machine field against the requested
+    # architecture, so a build that silently fell back to the wrong toolchain
+    # fails there. Note the old `file ... | grep PE32+` check here could not
+    # have caught it: that string is identical for both targets.
     - name: Verify binary
       run: |
         test -s "Tests/${{ matrix.exe }}" || { echo "::error::no Tests/${{ matrix.exe }}"; exit 1; }
