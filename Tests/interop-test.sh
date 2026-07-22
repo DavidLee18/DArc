@@ -43,7 +43,21 @@ usage () {
 
 # Absolutise before anything cds, and so the executable check below names the
 # path the user actually passed.
-abspath () { case "$1" in /*) echo "$1" ;; *) echo "$(cd "$(dirname "$1")" 2>/dev/null && pwd)/$(basename "$1")" ;; esac; }
+#
+# This must NOT require the path to exist: in make mode the output directory
+# legitimately does not yet. The obvious "cd $(dirname "$1") && pwd" form does
+# require it, and fails in the worst possible way -- with cd's error
+# suppressed, a missing parent makes the command substitution empty, so
+# "interop/archives" becomes "/archives": still absolute, still plausible, and
+# wrong. It got past a local test suite because every path used there happened
+# to have an existing parent, and surfaced on CI as the archiver failing to
+# open a temporary file.
+abspath () {
+  case "$1" in
+    /*) echo "${1%/}" ;;
+    *)  echo "${PWD%/}/${1#./}" ;;
+  esac
+}
 ARC="$(abspath "$ARC")"
 CORPUS="$(abspath "$CORPUS")"
 DIR="$(abspath "$DIR")"
@@ -101,7 +115,7 @@ case "$MODE" in
 
 # ---------------------------------------------------------------------------
 make)
-  mkdir -p "$DIR"
+  mkdir -p "$DIR" || { echo "error: cannot create output directory: $DIR" >&2; exit 2; }
   rm -f "$DIR"/*.arc "$DIR"/SHA256SUMS 2>/dev/null
   echo "writing archives with $ARC"
   echo "corpus: $n_want files, tree $EXPECTED_TREE"
