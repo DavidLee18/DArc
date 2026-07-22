@@ -18,12 +18,35 @@ publish = false
 # actually stand in. That is a much shorter list than it looks, so the versions
 # live here to keep the decision in one reviewable place:
 #
-#   lz4_flex    pure Rust, replaces Compression/LZ4        (5163 LOC of C)
-#   ppmd-rust   replaces Compression/PPMD                  ( 897 LOC of C)
-#   ruzstd      pure Rust but DECODE ONLY, so it cannot replace Compression/Zstd
-#               outright; the encoder still needs the C library or a port
-#   lzma-rs     pure Rust, but its encoder is not byte-identical to the 7-Zip
-#               SDK's, so swapping it changes emitted archives
+# ADOPTED
+#   lz4_flex    pure Rust, replaced Compression/LZ4         (5,163 LOC of C)
+#   zstd-safe   binding; replaced Compression/Zstd/libzstd (32,375 LOC of C).
+#               Bundles zstd 1.5.7 against the vendored 1.5.6 -- same frame
+#               format, verified by decoding 1.5.6's own output.
+#
+# REJECTED, each after measuring rather than assuming. Do not re-try these
+# without new evidence:
+#
+#   ppmd-rust   DIFFERENT STREAM. DArc's PPMd is Shkarin var.H with Subbotin's
+#               carryless range coder (32-bit low, TOP=1<<24) and MAX_O=128;
+#               ppmd-rust is 7-Zip's Ppmd7 with Pavlov's range coder (64-bit
+#               Low) and max order 64. Same model, incompatible bytes -- it
+#               could not read a single existing -mppmd archive.
+#
+#   lzma-rs     ENCODER IS A STUB. Its raw decoder does read DArc's headerless
+#               LZMA1 streams when lc/lp/pb are supplied (feature
+#               "raw_decoder"), so the compatibility direction works. But
+#               measured against the 7-Zip SDK on the same input: 32,329 bytes
+#               against 118 on repetitive text (274x), and 50,872 against
+#               65,536 input on mixed data where LZMA-9 reaches roughly 0.4.
+#               Adopting it decode-only would remove no C and leave two
+#               decoders to maintain, so LZMA stays on the SDK.
+#
+#   ruzstd      DECODE ONLY, so it cannot replace the encoder. zstd-safe was
+#               taken instead.
+#
+#   serpent     DArc's Serpent is not standard Serpent -- see
+#               darc-crypto/tests/ctr_vectors.rs.
 #
 # There is NO crate for libbsc, and none for any of the DArc-specific codecs --
 # Tornado, GRZip, MM/TTA, DisPack, REP, Dict, LZP, Delta, 4x4, SREP. Those are
@@ -33,7 +56,7 @@ publish = false
 lz4_flex = { version = "0.14", default-features = false, features = ["std"] }
 ppmd-rust = "1.4"
 ruzstd = "0.8"
-lzma-rs = "0.3"
+lzma-rs = { version = "0.3", features = ["raw_decoder"] }
 
 # Kept from the darc-codecs manifest, where it had no effect once the crate
 # became a workspace member: cargo only honours [profile] in the workspace
