@@ -44,3 +44,6 @@ Tests/*.exe
 
 # Rust build output
 rust/*/target/
+
+# Rust workspace build output
+rust/target/

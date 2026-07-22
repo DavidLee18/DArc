@@ -1,0 +1,43 @@
+# Workspace for the Rust port of DArc.
+#
+# Members are added as each piece of the C/Haskell tree is replaced. The port
+# proceeds codec by codec because archive-format compatibility is the binding
+# constraint: wire format 0.51 must keep round-tripping with DArc86 and every
+# released DArc, so a codec can only be swapped once its Rust implementation is
+# proven equivalent against the C one (see difftest/ and Tests/interop-test.sh).
+[workspace]
+resolver = "2"
+members = ["darc-codecs"]
+
+[workspace.package]
+edition = "2021"
+license = "GPL-2.0-or-later"
+publish = false
+
+# Vendored C is replaced by a dependency here ONLY where a crate exists that can
+# actually stand in. That is a much shorter list than it looks, so the versions
+# live here to keep the decision in one reviewable place:
+#
+#   lz4_flex    pure Rust, replaces Compression/LZ4        (5163 LOC of C)
+#   ppmd-rust   replaces Compression/PPMD                  ( 897 LOC of C)
+#   ruzstd      pure Rust but DECODE ONLY, so it cannot replace Compression/Zstd
+#               outright; the encoder still needs the C library or a port
+#   lzma-rs     pure Rust, but its encoder is not byte-identical to the 7-Zip
+#               SDK's, so swapping it changes emitted archives
+#
+# There is NO crate for libbsc, and none for any of the DArc-specific codecs --
+# Tornado, GRZip, MM/TTA, DisPack, REP, Dict, LZP, Delta, 4x4, SREP. Those are
+# Bulat Ziganshin's own formats; "add a package line" is not available for them
+# and they have to be hand-ported. That is ~15k lines of C before counting BSC.
+[workspace.dependencies]
+lz4_flex = "0.14"
+ppmd-rust = "1.4"
+ruzstd = "0.8"
+lzma-rs = "0.3"
+
+# Kept from the darc-codecs manifest, where it had no effect once the crate
+# became a workspace member: cargo only honours [profile] in the workspace
+# root. See src/ffi.rs for why the ported codecs want wrapping arithmetic to
+# trap rather than wrap silently.
+[profile.release]
+overflow-checks = true

@@ -1,0 +1,19 @@
+# cargo-nextest configuration.
+#
+# nextest runs each test in its own process, which matters here: the codec
+# crates keep module-level state (hash tables, dictionaries) behind a C ABI,
+# and a test that corrupts it must not be able to make an unrelated test pass
+# or fail. cargo test's shared-process model cannot give that.
+[profile.default]
+# A codec test that hangs is a bug, not a slow test -- LZP has a documented
+# per-block cost profile and Tornado has a match-finder loop. Fail rather than
+# tie up CI.
+slow-timeout = { period = "60s", terminate-after = 3 }
+fail-fast = false
+
+[profile.ci]
+slow-timeout = { period = "120s", terminate-after = 3 }
+fail-fast = false
+failure-output = "immediate-final"
+status-level = "fail"
+final-status-level = "slow"

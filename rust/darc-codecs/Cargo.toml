@@ -1,17 +1,15 @@
 [package]
 name = "darc-codecs"
 version = "0.1.0"
-edition = "2021"
+edition.workspace = true
+license.workspace = true
 # Ported DArc codecs, exposed under the same C ABI as the C originals so they
 # can be swapped in one at a time without touching the rest of the build.
-publish = false
+publish.workspace = true
 
 [lib]
 name = "darc_codecs"
 crate-type = ["staticlib", "rlib"]   # staticlib to link; rlib so tests can use it
-
-[profile.release]
-overflow-checks = true   # see the note in src/ffi.rs
 
 [features]
 # The drop-in aliases (delta_compress, dict_decompress, ...) collide with the C
