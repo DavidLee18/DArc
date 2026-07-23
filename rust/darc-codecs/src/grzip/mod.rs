@@ -28,6 +28,7 @@
 
 #![allow(dead_code)] // WIP: stages land before the dispatcher that uses them
 
+pub mod bwt;
 pub mod lzp;
 pub mod rec;
 
