@@ -41,4 +41,13 @@ int darc_grz_compress_block (unsigned char *in, int size, unsigned char *out, in
 
 int darc_grz_decompress_block (unsigned char *in, int size, unsigned char *out)
 { return GRZip_DecompressBlock (in, size, out); }
+
+int darc_grz_stream_compress (int method, int blocksize, int enable_lzp, int minlen,
+                              int hashlog, int altsort, int adaptive, int deltaflt,
+                              CALLBACK_FUNC *cb, void *aux)
+{ return grzip_compress (method, blocksize, enable_lzp, minlen, hashlog,
+                         altsort, adaptive, deltaflt, cb, aux); }
+
+int darc_grz_stream_decompress (CALLBACK_FUNC *cb, void *aux)
+{ return grzip_decompress (cb, aux); }
 }

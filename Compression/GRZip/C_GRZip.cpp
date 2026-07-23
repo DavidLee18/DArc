@@ -598,11 +598,31 @@ struct GRZipMTDecompressor : MTCompressor<GRZipDecompressionThread>
 };
 
 
+// DARC_RUST=1 selects the Rust port of the decoder (rust/darc-codecs).
+//
+// grzip_decompress is declared in C_GRZip.h, which this file includes inside an
+// extern "C" block, so this definition inherits C linkage and shares a symbol
+// with the Rust export. Excluded rather than redeclared: with both present the
+// linker resolves from this object and never pulls the Rust one -- and, both
+// being C-linkage, GNU ld reports a multiple definition. The same is true of
+// the other codecs (C_Dict.cpp, C_LZP.cpp, rep.cpp, tta.cpp, mm.cpp,
+// Tornado.cpp).
+//
+// The Rust decoder is serial where GRZipMTDecompressor uses a worker pool. That
+// is a throughput difference, not a format one: a GRZip stream is a bare
+// sequence of blocks and the bytes written are the same blocks in the same
+// order. GRZipDecompressionThread and the pool stay compiled for the encoder,
+// which still uses them.
+//
+// Verified byte-identical to the C decoder across all four transform/coder
+// combinations; see rust/difftest/grzip-check.sh.
+#ifndef DARC_RUST
 int __cdecl grzip_decompress (CALLBACK_FUNC *callback, void *auxdata)
 {
   GRZipMTDecompressor grz (callback, auxdata);
   return grz.run();
 }
+#endif  // !DARC_RUST (grzip_decompress)
 
 
 /*-------------------------------------------------*/

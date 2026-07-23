@@ -397,3 +397,33 @@ pub unsafe extern "C" fn darc_rs_grzip_decompress_block(
         Err(e) => e,
     }
 }
+
+/// GRZip decoder. Like TTA, MM and Tornado it takes no tuning parameters --
+/// every block carries its own 28-byte header.
+///
+/// # Safety
+/// `callback` and `auxdata` must be what the C caller supplied.
+#[no_mangle]
+pub unsafe extern "C" fn darc_rs_grzip_decompress(
+    callback: CALLBACK_FUNC,
+    auxdata: *mut c_void,
+) -> c_int {
+    match Io::new(callback, auxdata) {
+        Some(io) => grzip::stream::decompress(&io),
+        None => FREEARC_ERRCODE_GENERAL,
+    }
+}
+
+/// Drop-in under the archiver's own symbol name; the switch is an exclusion in
+/// C_GRZip.cpp rather than a redeclaration, as with the other codecs.
+///
+/// # Safety
+/// `callback` and `auxdata` must be what the C caller supplied.
+#[cfg(feature = "dropin")]
+#[no_mangle]
+pub unsafe extern "C" fn grzip_decompress(
+    callback: CALLBACK_FUNC,
+    auxdata: *mut c_void,
+) -> c_int {
+    darc_rs_grzip_decompress(callback, auxdata)
+}

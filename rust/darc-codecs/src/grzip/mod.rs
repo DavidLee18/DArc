@@ -35,6 +35,7 @@ pub mod lzp;
 pub mod mtf_ari;
 pub mod rec;
 pub mod st4;
+pub mod stream;
 pub mod wfc_ari;
 
 use core::ffi::c_int;

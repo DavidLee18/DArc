@@ -73,5 +73,27 @@ for mode in 0 2 4 6 0x100 0x102 0x104 0x106 0x50104 0x50100; do
   total=$((total+fail))
 done
 
+# Stream level. Only this layer splits input into blocks, so it is the only
+# place an input past GRZ_MaxBlockSize (8 MB - 512) means anything -- the block
+# harness above physically cannot take one. Per the Tornado lesson, a corpus
+# that fits inside one block leaves the whole splitting path untested.
+python3 - "$W/big" <<'PY2'
+import sys,struct
+open(sys.argv[1],"wb").write(b"".join(
+    struct.pack("<I", (i*2654435761)&0xffffffff) if i%3 else b"the quick brown fox "[:4]
+    for i in range(3000000)))
+PY2
+sfail=0; sn=0
+for f in "$W"/in/* "$W/big"; do
+  sn=$((sn+1)); name=$(basename "$f")
+  "$W/c"  sc < "$f"    >| "$W/ss" 2>/dev/null || { echo "  [stream] $name: C-compress FAILED"; sfail=$((sfail+1)); continue; }
+  "$W/c"  sd < "$W/ss" >| "$W/sc" 2>/dev/null || { echo "  [stream] $name: C-decode FAILED";   sfail=$((sfail+1)); continue; }
+  "$W/rs" sd < "$W/ss" >| "$W/sr" 2>/dev/null || { echo "  [stream] $name: RUST-decode FAILED"; sfail=$((sfail+1)); continue; }
+  cmp -s "$f" "$W/sc" || { echo "  [stream] $name: C-decode != original (harness bug)"; sfail=$((sfail+1)); continue; }
+  cmp -s "$f" "$W/sr" || { echo "  [stream] $name: RUST-decode != original"; sfail=$((sfail+1)); continue; }
+done
+echo "  [stream, multi-block] $sn inputs, $sfail differing"
+total=$((total+sfail))
+
 echo "grzip decode: $total total differing"
 [ "$total" -eq 0 ] && echo "GRZip decoder matches the C original byte for byte" || exit 1
