@@ -36,10 +36,12 @@
 
 #![allow(dead_code)] // WIP: layers land before the entry point that uses them
 
+pub mod decode;
 pub mod huffman;
 pub mod lz77;
 pub mod range;
 pub mod stream;
+pub mod tables;
 pub mod vle;
 
 /// Encoding methods (`enum {STORING..ARICODER}`, Tornado.cpp:34).

@@ -31,10 +31,16 @@ use super::vle::Tables;
 use super::{CODES, EOB_CODE, LEN_CODES, REPCHAR, REPDIST_CODES};
 use core::ffi::c_int;
 
-/// Signals in the length space (Tornado.cpp uses these to end the stream and to
-/// mark data tables).
-pub const IMPOSSIBLE_LEN: u32 = 1 << 30;
-pub const IMPOSSIBLE_DIST: u32 = 1 << 30;
+/// Signals in the length space, used to end the stream and to mark data tables
+/// (`IMPOSSIBLE_LEN`/`IMPOSSIBLE_DIST`, LZ77_Coder.cpp:7-8).
+///
+/// These are `INT_MAX/2`, i.e. 0x3fffffff -- NOT 1<<30. The difference is one,
+/// and it is total: the EOF check is an equality test, so a decoder using
+/// 1<<30 never recognises the end of a stream and reads until the input runs
+/// out. Every back-end failed identically until this was read out of the
+/// header rather than assumed.
+pub const IMPOSSIBLE_LEN: u32 = (i32::MAX / 2) as u32;
+pub const IMPOSSIBLE_DIST: u32 = (i32::MAX / 2) as u32;
 
 /// What every back-end must provide to the output loop.
 pub trait Lz77Decoder {

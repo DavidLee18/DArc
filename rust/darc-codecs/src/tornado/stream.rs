@@ -69,7 +69,9 @@ impl<'a> InputByteStream<'a> {
             buf: vec![0u8; MAXELEM + size],
             pos: MAXELEM,
             valid: MAXELEM,
-            read_point: MAXELEM + size,
+            // C: read_point = buf + bufsize, i.e. MAXELEM short of the end,
+            // leaving room for a get64 that straddles the fence.
+            read_point: size,
             overrun: 0,
             err: None,
         };
@@ -172,7 +174,14 @@ pub struct InputBitStream<'a> {
 
 impl<'a> InputBitStream<'a> {
     pub fn new(io: &'a Io, bufsize: usize) -> Self {
-        InputBitStream { bytes: InputByteStream::new(io, bufsize), bitbuf: 0, bitcount: 0 }
+        Self::from_bytes(InputByteStream::new(io, bufsize))
+    }
+
+    /// Continue from an already-open byte stream. The six-byte header is read
+    /// through one of these, and it has buffered payload behind it, so the
+    /// back-end must inherit that buffer rather than open a second stream.
+    pub fn from_bytes(bytes: InputByteStream<'a>) -> Self {
+        InputBitStream { bytes, bitbuf: 0, bitcount: 0 }
     }
 
     /// `needbits` -- top up to at least `n` valid bits (n <= 32) and return them.
