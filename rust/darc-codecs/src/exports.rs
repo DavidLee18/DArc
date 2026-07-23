@@ -8,7 +8,7 @@
 //! what wires them together; until then these are exercised by the differential
 //! harness rather than by the archiver.
 
-use crate::{delta, dict, dict_encode, lzp, mm, rep, tta};
+use crate::{delta, dict, dict_encode, lzp, mm, rep, tornado, tta};
 use crate::ffi::{Io, CALLBACK_FUNC, FREEARC_ERRCODE_GENERAL};
 use core::ffi::{c_int, c_void};
 
@@ -335,4 +335,35 @@ pub unsafe extern "C" fn dict_compress(
     callback: CALLBACK_FUNC, auxdata: *mut c_void,
 ) -> c_int {
     darc_rs_dict_compress(block_size, a, b, c, d, e, f, callback, auxdata)
+}
+
+/// Tornado decoder. Like TTA and MM it takes no tuning parameters -- the
+/// encoding method, minimum match length and window size all travel in the
+/// six-byte stream header.
+///
+/// # Safety
+/// `callback` and `auxdata` must be what the C caller supplied.
+#[no_mangle]
+pub unsafe extern "C" fn darc_rs_tor_decompress(
+    callback: CALLBACK_FUNC,
+    auxdata: *mut c_void,
+) -> c_int {
+    match Io::new(callback, auxdata) {
+        Some(io) => tornado::decode::decompress(&io),
+        None => FREEARC_ERRCODE_GENERAL,
+    }
+}
+
+/// Drop-in under the archiver's own symbol name; the switch is an exclusion in
+/// Tornado.cpp rather than a redeclaration, as with the other codecs.
+///
+/// # Safety
+/// `callback` and `auxdata` must be what the C caller supplied.
+#[cfg(feature = "dropin")]
+#[no_mangle]
+pub unsafe extern "C" fn tor_decompress(
+    callback: CALLBACK_FUNC,
+    auxdata: *mut c_void,
+) -> c_int {
+    darc_rs_tor_decompress(callback, auxdata)
 }

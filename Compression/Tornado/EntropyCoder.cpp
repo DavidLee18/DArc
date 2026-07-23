@@ -565,11 +565,31 @@ public:
       buffer = (buffer << 8) + getc();
   }
 
+  // A count outside the coder's range means the compressed data are corrupt.
+  // This used to print to stderr and call exit(1) -- inside a library, from a
+  // worker thread, with the archive still open: `arc t` on a damaged -mtor
+  // archive killed the process instead of reporting a bad block, which is the
+  // one thing testing an archive exists to do. And -mtor is reached by every
+  // -m4-and-up archive, so this is not an exotic path.
+  //
+  // Now it records the error and clamps, so decoding stays well defined --
+  // TCounter::Decode indexes cum[]/cnt[] with this value, and a count of
+  // (1<<bits)-1 is the largest one that stays inside them.
+  //
+  // No check is added to tor_decompress0's symbol loop: WRITE_DATA_IF already
+  // tests decoder.error() (Tornado.cpp:372), and every iteration of that loop
+  // advances `output` by at least one byte, so the test is reached within
+  // (write_end-output) symbols. Adding a per-symbol check would only make the
+  // error surface sooner, at the cost of a branch in the hottest loop of a
+  // codec every -m4-and-up archive uses. A valid stream never takes this
+  // branch at all, so nothing about it changes either way.
   unsigned int GetCount(unsigned int bits)
   {
     unsigned int count = buffer / (range >>= bits);
-    if (count >= (1<<bits))
-      fprintf(stderr, "data error\n"), exit(1);
+    if (count >= (1u<<bits)) {
+      errcode = FREEARC_ERRCODE_BAD_COMPRESSED_DATA;
+      count = (1u<<bits) - 1;
+    }
     return (count);
   }
 

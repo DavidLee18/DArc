@@ -621,12 +621,13 @@ jobs:
     # the same original bytes over a corpus built for that codec's heuristics.
     # They were runnable but unrun until now: a differential test nothing
     # invokes is documentation, not a check.
-    - name: Per-codec differential tests (REP, TTA, MM)
+    - name: Per-codec differential tests (REP, TTA, MM, Tornado)
       run: |
         chmod +x rust/difftest/*.sh
         rust/difftest/rep-check.sh
         rust/difftest/tta-check.sh
         rust/difftest/mm-check.sh
+        rust/difftest/tornado-check.sh
 
     # Build the archiver twice and require identical archives. This is the check
     # that actually guards the format.

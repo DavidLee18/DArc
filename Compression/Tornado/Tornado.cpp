@@ -484,6 +484,21 @@ finished:
 }
 
 
+// DARC_RUST=1 selects the Rust port of the decoder (rust/darc-codecs).
+//
+// tor_decompress is declared inside the `extern "C"` block at the top of this
+// file, so this definition inherits C linkage and shares a symbol with the Rust
+// export. Excluded rather than redeclared: with both present the linker
+// resolves from this object and never pulls the Rust one -- and, both being
+// C-linkage, GNU ld reports a multiple definition. So the switch has to remove
+// this definition, not merely add a declaration elsewhere. The same is true of
+// the other codecs (C_Dict.cpp, C_LZP.cpp, rep.cpp, tta.cpp, mm.cpp).
+//
+// tor_decompress0 is a template with no other caller, so excluding this entry
+// point leaves it uninstantiated and emits nothing; the encoder and everything
+// it shares stay compiled. Verified byte-identical to the C decoder across all
+// four entropy back-ends; see rust/difftest/tornado-check.sh.
+#ifndef DARC_RUST
 int tor_decompress (CALLBACK_FUNC *callback, void *auxdata)
 {
     int errcode;
@@ -510,6 +525,7 @@ int tor_decompress (CALLBACK_FUNC *callback, void *auxdata)
     }
 finished: return errcode;
 }
+#endif  // !DARC_RUST (tor_decompress)
 
 
 /*
