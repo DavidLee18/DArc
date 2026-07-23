@@ -18,4 +18,6 @@
 
 #![allow(dead_code)] // WIP: tables land before the filter that uses them
 
+pub mod decode;
+pub mod filter;
 pub mod tables;
