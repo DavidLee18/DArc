@@ -20,12 +20,19 @@ trap 'rm -rf "$W"' EXIT
   || { echo "cargo build failed" >&2; exit 1; }
 LIB="$ROOT/rust/target/release/libdarc_codecs.a"
 
-cc() { clang++ -std=c++17 -O2 -w -DFREEARC_UNIX -DFREEARC_INTEL_BYTE_ORDER -DFREEARC_64BIT \
-        "$@" -I"$ROOT" -I"$ROOT/Compression" \
-        "$ROOT/rust/difftest/mm_ref.cpp" "$ROOT/rust/difftest/mm_ccodec.cpp" \
-        "$ROOT/Compression/Common.cpp"; }
-cc                        -o "$W/c"  || exit 1
-cc -DUSE_RUST "$LIB"      -o "$W/rs" || exit 1
+# Trailing arguments land AFTER the sources, because the Rust staticlib has to:
+# GNU ld resolves an archive against only the objects already seen on the
+# command line, so a library placed first is silently dropped and every symbol
+# comes back undefined. macOS ld does not care.
+cc() { # cc <output> [args appended after the sources]
+  local out="$1"; shift
+  clang++ -std=c++17 -O2 -w -DFREEARC_UNIX -DFREEARC_INTEL_BYTE_ORDER -DFREEARC_64BIT \
+    -I"$ROOT" -I"$ROOT/Compression" \
+    "$ROOT/rust/difftest/mm_ref.cpp" "$ROOT/rust/difftest/mm_ccodec.cpp" \
+    "$ROOT/Compression/Common.cpp" "$@" -o "$out"
+}
+cc "$W/c"                    || exit 1
+cc "$W/rs" -DUSE_RUST "$LIB" || exit 1
 
 # Inputs: multimedia-shaped data at every sample width the filter implements
 # (8/16/24/32-bit, mono through four channels), plus a real .wav so the WAV

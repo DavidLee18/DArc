@@ -217,11 +217,20 @@ int mm_compress (int mode, int skip_header, int is_float, int num_chan, int word
         WRITE (ptr, bytes);
 
         // Move unprocessed rest of data into buffer beginning
-        memmove (buf, ptr+bytes, rest);  ptr=buf;
+        memmove (buf, ptr+bytes, rest);
 
         // Starting from second iteration, we will process data in 64k chunks
         chunk = N>1? roundDown(BUFFER_SIZE,N) : BUFFER_SIZE;
         buf   = (BYTE*) realloc (buf, chunk+1);       // +1 is for processing 24-bit chunks using 32-bit operations
+        // ptr is reset AFTER the realloc, not before it. It used to be assigned
+        // on the memmove line above, which left it pointing into the block
+        // realloc had just released -- and the very next iteration diffs and
+        // writes through it. AddressSanitizer reports it as a heap-use-after-free
+        // at the WRITE below as soon as any input takes a second pass, which is
+        // every input larger than one pipeline buffer. It went unseen because
+        // this shrinks 1 MB to 64 KB, and a shrinking realloc usually returns
+        // the same pointer; ASan's allocator always moves, so it always fires.
+        ptr = buf;
 
         // Read next data chunk. This time, bytes+rest should be exactly == chunk, unless we at the end of data
         errcode = bytes = callback ("read", buf+rest, chunk-rest, auxdata);
