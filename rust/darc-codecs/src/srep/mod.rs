@@ -47,6 +47,8 @@
 
 #![allow(dead_code)] // WIP: the format layer lands before the block loop
 
+pub mod decode;
+pub mod io_lz;
 pub mod matches;
 
 /// `BULAT_ZIGANSHIN_SIGNATURE` -- note this is defined in
