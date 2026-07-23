@@ -174,3 +174,296 @@ pub fn decompress_full(
     let _ = NOMEM; // allocation-failure code, kept for parity with the C
     decompress(io)
 }
+
+// ---------------------------------------------------------------------------
+// Encoder
+// ---------------------------------------------------------------------------
+//
+// A hash-based match finder ported line-for-line from `rep_compress`. It is
+// deterministic -- the hash table state is a pure function of the input and
+// parameters -- so a correct port produces byte-identical output to the C, and
+// that (Rust-encode == C-encode) is what rust/difftest/rep_ref.cpp checks.
+//
+// The arithmetic is all 32-bit `int` in the C, which is 32 bits on every target
+// (unlike `long`/`ulong32`, this has no ARM64 surprise). The rolling hash is
+// signed and its right shift is arithmetic, so i32 with wrapping ops and `>>`
+// reproduces it exactly.
+
+const PRIME: i32 = 153191;
+
+fn power_u32(base: u32, mut n: u32) -> u32 {
+    let mut result: u32 = 1;
+    while n != 0 {
+        result = result.wrapping_mul(base);
+        n -= 1;
+    }
+    result
+}
+
+/// Largest power of two not exceeding sqrt(n): sqrtb(36) = 4.
+fn sqrtb(mut n: u32) -> u32 {
+    let mut result: u32 = 1;
+    loop {
+        n /= 4; // base*base, base=2
+        if n == 0 {
+            break;
+        }
+        result *= 2;
+    }
+    result
+}
+
+/// roundup_to_power_of(n, 2): smallest power of two >= n, with n==1 -> 1.
+fn roundup_pow2(n: u32) -> u32 {
+    if n <= 1 {
+        return 1;
+    }
+    let mut result: u32 = 1;
+    while result < n {
+        result <<= 1;
+    }
+    result
+}
+
+/// Encode a REP stream. Signature mirrors `rep_compress`.
+#[allow(clippy::too_many_arguments)]
+pub fn compress(
+    io: &Io,
+    block_size: u32,
+    _min_compression: c_int,
+    min_match_len: c_int,
+    barrier: c_int,
+    smallest_len: c_int,
+    hash_bits: c_int,
+    amplifier: c_int,
+) -> c_int {
+    match encode(io, block_size, min_match_len, barrier, smallest_len, hash_bits, amplifier) {
+        Ok(()) => OK,
+        Err(e) => e,
+    }
+}
+
+const MAX_READ: usize = 8 * 1024 * 1024;
+
+fn encode(
+    io: &Io,
+    block_size: u32,
+    min_match_len: c_int,
+    barrier: c_int,
+    mut smallest_len: c_int,
+    hash_bits: c_int,
+    amplifier: c_int,
+) -> Result<(), c_int> {
+    let block_size = block_size as usize;
+    let min_match_len = min_match_len as i64;
+    let barrier = barrier as i64;
+    if smallest_len > min_match_len as c_int {
+        smallest_len = min_match_len as c_int;
+    }
+    // L = roundup_to_power_of(SmallestLen/2, 2); k = sqrtb(L*2)
+    let l = roundup_pow2((smallest_len / 2) as u32) as i64;
+    let k = sqrtb((l * 2) as u32) as i64;
+    let k1 = (k - 1) as i32;
+    let test = (k * amplifier as i64).min(l);
+    let c_power_prime_l = power_u32(PRIME as u32, l as u32) as i32;
+
+    // Hash size: CalcHashSize
+    let hash_size: usize = if hash_bits > 0 {
+        1usize << hash_bits
+    } else {
+        (roundup_pow2((block_size / 3 * 2) as u32) as usize) / (k.max(16) as usize)
+    };
+    let hash_mask: i32 = (hash_size as i32).wrapping_sub(1);
+
+    let mut hash: i32 = 0;
+    let update_hash = |hash: &mut i32, sub: u8, add: u8| {
+        *hash = hash
+            .wrapping_mul(PRIME)
+            .wrapping_add(add as i32)
+            .wrapping_sub((sub as i32).wrapping_mul(c_power_prime_l));
+    };
+    let chksum = |hash: i32| -> i32 { (hash >> 28) & k1 };
+
+    let mut buf = vec![0u8; block_size];
+    let mut hasharr = vec![0i32; hash_size];
+
+    // Parallel output buffers, flushed per block.
+    let mut lens: Vec<u8> = Vec::new();
+    let mut offsets: Vec<u8> = Vec::new();
+    let mut datalens: Vec<u8> = Vec::new();
+    let mut data_offsets: Vec<i32> = Vec::new(); // addresses into buf; the C stores these then reads buf back
+
+    let mut base: i64 = 0;
+    let mut last_i: i64 = 0;
+    let mut last_match: i64 = 0;
+    let mut first_time = true;
+
+    loop {
+        // READ: FirstTime reads up to MAX_READ; later, up to BlockSize/8.
+        let want = if first_time {
+            (block_size as i64 - base).min(MAX_READ as i64)
+        } else {
+            (block_size as i64 - base).min((block_size as i64 / 8).min(MAX_READ as i64))
+        };
+        let got = io.read(&mut buf[base as usize..base as usize + want as usize]);
+        if got < 0 {
+            return Err(got);
+        }
+        let size = got as i64;
+
+        if first_time {
+            hasharr.iter_mut().for_each(|h| *h = 0);
+            write_u32(io, block_size as u32)?; // Put32(BlockSize)
+            first_time = false;
+        }
+        if size == 0 {
+            break;
+        }
+
+        if base == 0 {
+            hash = 0;
+            for i in 0..l.min(size) as usize {
+                update_hash(&mut hash, 0, buf[i]);
+            }
+        }
+
+        let mut literals: i64 = 0;
+        lens.clear();
+        offsets.clear();
+        datalens.clear();
+        data_offsets.clear();
+
+        // MAIN LOOP
+        let mut i: i64 = last_i;
+        while i + l * 2 < base + size {
+            let mut j = 0i64;
+            while j < test {
+                if i >= last_match {
+                    let mut m = hasharr[(hash & hash_mask) as usize];
+                    if m != 0 && chksum(hash) == (m & k1) {
+                        m &= !k1;
+                        let mmatch = m as i64;
+                        if mmatch >= i && mmatch < base + size {
+                            // stale -> skip to no_match
+                        } else {
+                            let low_bound = if mmatch < i {
+                                i - mmatch
+                            } else if mmatch - (base + size) > i {
+                                0
+                            } else {
+                                i - (mmatch - (base + size))
+                            };
+                            let high_bound = block_size as i64 - mmatch + i;
+                            let start = find_start(&buf, mmatch, i, last_match.max(low_bound));
+                            let end = find_end(&buf, mmatch, i, (base + size).min(high_bound));
+                            let need = if i - mmatch < barrier { min_match_len } else { smallest_len as i64 };
+                            if end - start >= need {
+                                let mut offset = i - mmatch;
+                                if offset < 0 {
+                                    offset += block_size as i64;
+                                }
+                                data_offsets.push(last_match as i32);
+                                push32(&mut datalens, (start - last_match) as i32);
+                                push32(&mut offsets, offset as i32);
+                                push32(&mut lens, (end - start) as i32);
+                                literals += start - last_match;
+                                last_match = end;
+                            }
+                        }
+                    }
+                }
+                // no_match:
+                if (i & (k - 1)) == 0 {
+                    hasharr[(hash & hash_mask) as usize] = i as i32 + chksum(hash);
+                }
+                update_hash(&mut hash, buf[i as usize], buf[(i + l) as usize]);
+                j += 1;
+                i += 1;
+            }
+            // index every k bytes until end of the L-block
+            while (i & (l - 1)) != 0 {
+                hasharr[(hash & hash_mask) as usize] = i as i32 + chksum(hash);
+                for _ in 0..k {
+                    update_hash(&mut hash, buf[i as usize], buf[(i + l) as usize]);
+                    i += 1;
+                }
+            }
+            last_i = i; // C: for(...; last_i=i) -- update after each L-block iteration
+        }
+
+        base += size;
+        if base == block_size as i64 {
+            last_i = base;
+        }
+        if last_match > last_i {
+            push32(&mut datalens, 0);
+        } else {
+            data_offsets.push(last_match as i32);
+            push32(&mut datalens, (last_i - last_match) as i32);
+            literals += last_i - last_match;
+            last_match = last_i;
+        }
+        if base == block_size as i64 {
+            base = 0;
+            last_match = 0;
+            last_i = 0;
+        }
+
+        let outsize = 4 * 2 + lens.len() as i64 + offsets.len() as i64 + datalens.len() as i64 + literals;
+        write_u32(io, (outsize - 4) as u32)?;
+        write_u32(io, (lens.len() / 4) as u32)?;
+        write_all(io, &lens)?;
+        write_all(io, &offsets)?;
+        write_all(io, &datalens)?;
+        // dataOffsets/datalens rewound in lockstep: write buf[off..off+dl]
+        let mut dp = 0usize;
+        let mut dlp = 0usize;
+        while dp < data_offsets.len() {
+            let off = data_offsets[dp] as usize;
+            let dl = i32::from_le_bytes([datalens[dlp], datalens[dlp + 1], datalens[dlp + 2], datalens[dlp + 3]]) as usize;
+            dp += 1;
+            dlp += 4;
+            write_all(io, &buf[off..off + dl])?;
+        }
+    }
+
+    // Final block: uncompressed remainder + EOF marker.
+    let datalen = base - last_match;
+    write_u32(io, (4 * 2 + datalen) as u32)?;
+    write_u32(io, 0)?; // 0 matches
+    write_u32(io, datalen as u32)?;
+    write_all(io, &buf[last_match as usize..(last_match + datalen) as usize])?;
+    write_u32(io, 0)?; // EOF flag
+    Ok(())
+}
+
+fn find_start(buf: &[u8], mut m: i64, mut q: i64, start: i64) -> i64 {
+    while q > start {
+        m -= 1;
+        q -= 1;
+        if buf[m as usize] != buf[q as usize] {
+            return q + 1;
+        }
+    }
+    q
+}
+fn find_end(buf: &[u8], mut m: i64, mut q: i64, end: i64) -> i64 {
+    while q < end && buf[m as usize] == buf[q as usize] {
+        m += 1;
+        q += 1;
+    }
+    q
+}
+fn push32(v: &mut Vec<u8>, x: i32) {
+    v.extend_from_slice(&x.to_le_bytes());
+}
+fn write_u32(io: &Io, x: u32) -> Result<(), c_int> {
+    write_all(io, &x.to_le_bytes())
+}
+fn write_all(io: &Io, b: &[u8]) -> Result<(), c_int> {
+    if b.is_empty() {
+        return Ok(());
+    }
+    let n = io.write(b);
+    if (n as usize) == b.len() { Ok(()) } else { Err(if n >= 0 { IO } else { n }) }
+}
