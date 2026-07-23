@@ -8,7 +8,7 @@
 //! what wires them together; until then these are exercised by the differential
 //! harness rather than by the archiver.
 
-use crate::{delta, dict, dict_encode, grzip, lzp, mm, rep, tornado, tta};
+use crate::{delta, dict, dict_encode, dispack, grzip, lzp, mm, rep, tornado, tta};
 use crate::ffi::{Io, CALLBACK_FUNC, FREEARC_ERRCODE_GENERAL};
 use core::ffi::{c_int, c_void};
 
@@ -426,4 +426,35 @@ pub unsafe extern "C" fn grzip_decompress(
     auxdata: *mut c_void,
 ) -> c_int {
     darc_rs_grzip_decompress(callback, auxdata)
+}
+
+/// DisPack decoder. `block_size` bounds the untrusted chunk lengths.
+///
+/// # Safety
+/// `callback` and `auxdata` must be what the C caller supplied.
+#[no_mangle]
+pub unsafe extern "C" fn darc_rs_dispack_decompress(
+    block_size: u32,
+    callback: CALLBACK_FUNC,
+    auxdata: *mut c_void,
+) -> c_int {
+    match Io::new(callback, auxdata) {
+        Some(io) => dispack::decode::decompress(&io, block_size),
+        None => FREEARC_ERRCODE_GENERAL,
+    }
+}
+
+/// Drop-in under the archiver's own symbol name; the switch is an exclusion in
+/// C_DisPack.cpp rather than a redeclaration, as with the other codecs.
+///
+/// # Safety
+/// `callback` and `auxdata` must be what the C caller supplied.
+#[cfg(feature = "dropin")]
+#[no_mangle]
+pub unsafe extern "C" fn dispack_decompress(
+    block_size: u32,
+    callback: CALLBACK_FUNC,
+    auxdata: *mut c_void,
+) -> c_int {
+    darc_rs_dispack_decompress(block_size, callback, auxdata)
 }

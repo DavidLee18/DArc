@@ -1,5 +1,11 @@
 #include "../Compression.h"
 
+// Free decompression function, split out from DISPACK_METHOD::decompress so the
+// DARC_RUST switch can replace it at link time. Declared here (and included
+// inside C_DisPack.cpp's extern "C" block) so it has C linkage, matching the
+// Rust export -- see the DARC_RUST note in C_DisPack.cpp.
+int dispack_decompress (MemSize BlockSize, CALLBACK_FUNC *callback, void *auxdata);
+
 #ifdef __cplusplus
 
 // Implementation of the standard COMPRESSION_METHOD compression-method interface
