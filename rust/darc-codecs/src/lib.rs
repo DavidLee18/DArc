@@ -13,6 +13,7 @@ pub mod dict_encode;
 pub mod lz4;
 pub mod lzp;
 pub mod rep;
+pub mod tta;
 pub mod zstd;
 pub mod ffi;
 

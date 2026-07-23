@@ -438,6 +438,21 @@ finished:
 }
 #endif
 
+// DARC_RUST=1 selects the Rust port of the decoder (rust/darc-codecs).
+//
+// tta_decompress is declared in ttaenc.h, which C_TTA.h pulls in inside
+// C_TTA.cpp's extern "C" block, so this definition has C linkage and shares a
+// symbol with the Rust export. Excluded rather than redeclared: with both
+// present the linker resolves from this object and never pulls the Rust one --
+// and, both being C-linkage, GNU ld reports a multiple definition. So the
+// switch has to remove this definition, not merely add a declaration elsewhere.
+// The same is true of the other codecs (C_Dict.cpp, C_LZP.cpp, rep.cpp).
+//
+// The encoder (tta_compress) and everything it shares -- read_wave, split_*,
+// the entropy encoder, the filters -- stay compiled; only this entry point is
+// replaced. Verified byte-identical to the C decoder over a matrix of channel
+// counts, word sizes and levels; see rust/difftest/tta-check.sh.
+#ifndef DARC_RUST
 int tta_decompress (CALLBACK_FUNC *callback, void *auxdata)
 {
     long    **buffer=NULL;
@@ -548,6 +563,7 @@ finished:
     FreeAndNil (rest);
     return errcode;
 }
+#endif  // !DARC_RUST (tta_decompress)
 
 
 #ifndef TTA_LIBRARY
