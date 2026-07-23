@@ -248,19 +248,38 @@ void Model::_16bit_run (void *buf, unsigned bufsize, int N)
 }
 
 // Run through buffer without diffing for 24-bit elements
+//
+// i*3, not i: channel i of a 24-bit sample group starts three bytes per channel
+// in, which is where diff3 in mm.cpp reads it. Reading at p+i made every
+// channel after the first straddle two samples, so the entropy this measured
+// was not the entropy of anything the filter would produce. The 8- and 16-bit
+// models use the right stride (p[N+i] on a correctly typed pointer); only the
+// 24-bit pair dropped the scale.
 void Model::_24bit_run (void *buf, unsigned bufsize, int N)
 {
     void *bufend = (char*)buf + bufsize;
     for (char *p=(char*)buf; p+3*N<=bufend; p+=3*N)
         for (int i=0; i<N; i++)
-            count (i, signed24bit(p+i));
+            count (i, signed24bit(p+i*3));
 }
 
 // Run through buffer without diffing for 32-bit elements
+//
+// int32, not long. This was written when long was 32 bits and stayed correct
+// until the first LP64 build, where it silently became a 64-bit stride: it read
+// PAIRS of samples as one value, and the pair -- not being a sample at all --
+// routinely exceeded 2^32. ucount slots such a value with
+// stats[channel][768 + (x>>24)] into a STATSIZE(1024)-entry row, so the count
+// landed anywhere in the heap. `arc a -mmm` segfaulted on any ordinary input;
+// where it did not, it had corrupted the heap quietly instead.
+//
+// A sample is int32 and count() maps it to at most 2^32-1, which is exactly the
+// largest value ucount can slot. The loop bound advances by N*4 bytes again,
+// which is the other half of what `long` broke.
 void Model::_32bit_run (void *buf, unsigned bufsize, int N)
 {
     void *bufend = (char*)buf + bufsize;
-    for (long *p=(long*)buf; p+N<=bufend; p+=N)
+    for (int32 *p=(int32*)buf; p+N<=bufend; p+=N)
         for (int i=0; i<N; i++)
             count (i, p[i]);
 }
@@ -344,18 +363,26 @@ void Model::_16bit_diff_run (void *buf, unsigned bufsize, int N)
 void Model::_24bit_diff_run (void *buf, unsigned bufsize, int N)
 {
     void *bufend = (char*)buf + bufsize;
+    // i*3, not i -- see _24bit_run above.
     for (char *p=(char*)buf; p+3*N*2<=bufend; p+=3*N)
         for (int i=0; i<N; i++)
-            count (i, (long)unsigned24bit(p+3*N+i) - (long)unsigned24bit(p+i));
+            count (i, (long)unsigned24bit(p+3*N+i*3) - (long)unsigned24bit(p+i*3));
 }
 
 // Run through buffer with diffing for 32-bit elements
+//
+// See _32bit_run above for why this is int32 rather than long. The difference
+// is taken unsigned and cast back, so it wraps at 32 bits the way it did when
+// long was 32 bits -- and the way diff4/undiff4 in mm.cpp actually wrap, which
+// is what this is meant to be estimating. That keeps it inside +/-2^31, hence
+// inside what count/ucount can slot; a difference widened to 64 bits would not
+// be, since two int32 can differ by almost 2^32.
 void Model::_32bit_diff_run (void *buf, unsigned bufsize, int N)
 {
     void *bufend = (char*)buf + bufsize;
-    for (long *p=(long*)buf; p+N*2<=bufend; p+=N)
+    for (int32 *p=(int32*)buf; p+N*2<=bufend; p+=N)
         for (int i=0; i<N; i++)
-            count (i, p[N+i] - p[i]);
+            count (i, (int32) ((uint32)p[N+i] - (uint32)p[i]));
 }
 
 

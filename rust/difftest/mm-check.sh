@@ -100,14 +100,15 @@ decode_case () {   # $1=tag  $2..=encoder args (MODE SKIPHDR ISFLOAT NUMCHAN WOR
 
 total=0
 #            tag          MODE SKIP FLOAT CHAN WORD OFFSET
-# Autodetection runs at mode 1 only. Mode 9 (the default!) adds the 24- and
-# 32-bit models, and Model::_32bit_run / _32bit_diff_run walk the buffer with a
-# `long *` -- 64-bit on LP64 -- so they read pairs of samples as one and hand
-# Model::count a difference of up to 2^63. ucount then does
-# `stats[channel][768 + (x>>24)]++` into a 1024-entry row: heap corruption,
-# usually a segfault. That is a live encoder bug in mmdet.cpp (:263, :356), not
-# something this decoder port introduces or can compensate for -- it is
-# reported separately. fast_bitvalues is {8,16}, which is why mode 1 is clear.
+# Mode 9 is the archiver's default and runs the full {8,16,24,32} model set;
+# mode 1 uses only {8,16} over a smaller sample, so the two reach different
+# detectors and both are worth covering. Mode 9 spent this codec's entire life
+# crashing -- Model::_32bit_run / _32bit_diff_run walked the buffer with a
+# `long *`, 64-bit on LP64, reading pairs of samples as one and slotting a
+# value up to 2^63>>24 into a 1024-entry stats row. Fixed in mmdet.cpp, so
+# everything reaching autodetection below is coverage that was unreachable.
+decode_case "auto d9"        9 0 0 0 0 0  ; total=$((total+$?))
+decode_case "auto d9 no-hdr" 9 1 0 0 0 0  ; total=$((total+$?))
 decode_case "auto d1"        1 0 0 0 0 0  ; total=$((total+$?))
 decode_case "auto d1 no-hdr" 1 1 0 0 0 0  ; total=$((total+$?))
 decode_case "1*8"            9 0 0 1 8  0 ; total=$((total+$?))
