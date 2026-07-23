@@ -8,7 +8,7 @@
 //! what wires them together; until then these are exercised by the differential
 //! harness rather than by the archiver.
 
-use crate::{delta, dict, dict_encode, lzp, rep};
+use crate::{delta, dict, dict_encode, lzp, rep, tta};
 use crate::ffi::{Io, CALLBACK_FUNC, FREEARC_ERRCODE_GENERAL};
 use core::ffi::{c_int, c_void};
 
@@ -247,6 +247,36 @@ pub unsafe extern "C" fn rep_decompress(
     callback: CALLBACK_FUNC, auxdata: *mut c_void,
 ) -> c_int {
     darc_rs_rep_decompress(block_size, a, b, c, d, e, f, callback, auxdata)
+}
+
+/// TTA decoder. `tta_decompress` takes no tuning parameters -- level, channel
+/// count and word size all travel in the stream header.
+///
+/// # Safety
+/// `callback` and `auxdata` must be what the C caller supplied.
+#[no_mangle]
+pub unsafe extern "C" fn darc_rs_tta_decompress(
+    callback: CALLBACK_FUNC,
+    auxdata: *mut c_void,
+) -> c_int {
+    match Io::new(callback, auxdata) {
+        Some(io) => tta::decompress(&io),
+        None => FREEARC_ERRCODE_GENERAL,
+    }
+}
+
+/// Drop-in under the archiver's own symbol name; the switch is an exclusion in
+/// C_TTA.cpp rather than a redeclaration, as with the other codecs.
+///
+/// # Safety
+/// `callback` and `auxdata` must be what the C caller supplied.
+#[cfg(feature = "dropin")]
+#[no_mangle]
+pub unsafe extern "C" fn tta_decompress(
+    callback: CALLBACK_FUNC,
+    auxdata: *mut c_void,
+) -> c_int {
+    darc_rs_tta_decompress(callback, auxdata)
 }
 
 /// # Safety
