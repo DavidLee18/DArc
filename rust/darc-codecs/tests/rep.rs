@@ -78,3 +78,40 @@ fn num_that_overflows_the_tables_is_rejected() {
     s.extend_from_slice(&block);
     assert!(decompress(&s) < 0);
 }
+
+// Encode -> decode round-trip through the ported functions. The byte-exact
+// match to the C encoder is proven in rust/difftest/rep_ref.cpp; this is the
+// cheap in-crate guard that the two halves agree.
+fn compress(input: &[u8]) -> Vec<u8> {
+    let mut mem = Mem { input: input.to_vec(), pos: 0, out: Vec::new() };
+    let io = unsafe { Io::new(Some(cb), &mut mem as *mut Mem as *mut c_void) }.unwrap();
+    // REP defaults from REP_METHOD::REP_METHOD().
+    let rc = rep::compress(&io, 64 << 20, 100, 512, i32::MAX, 512, 0, 1);
+    assert!(rc >= 0, "compress returned {rc}");
+    mem.out
+}
+
+#[test]
+fn encode_decode_round_trips() {
+    fn prng(seed: u32, n: usize) -> Vec<u8> {
+        let mut s = seed;
+        (0..n).map(|_| { s = s.wrapping_mul(1103515245).wrapping_add(12345); (s >> 16) as u8 }).collect()
+    }
+    let blk = prng(2, 2000);
+    let cases: Vec<Vec<u8>> = vec![
+        Vec::new(),
+        b"hello".to_vec(),
+        prng(1, 20000),                                   // incompressible
+        [blk.clone(), prng(3, 5000), blk.clone(), blk.clone()].concat(), // long repeats
+        vec![0u8; 100000],                                // extreme repetition
+        b"the quick brown fox ".repeat(5000),
+    ];
+    for (i, input) in cases.iter().enumerate() {
+        let packed = compress(input);
+        let mut mem = Mem { input: packed, pos: 0, out: Vec::new() };
+        let io = unsafe { Io::new(Some(cb), &mut mem as *mut Mem as *mut c_void) }.unwrap();
+        let rc = rep::decompress(&io);
+        assert!(rc >= 0, "case {i}: decompress returned {rc}");
+        assert_eq!(mem.out, *input, "case {i}: round-trip mismatch ({} bytes)", input.len());
+    }
+}

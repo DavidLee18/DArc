@@ -20,6 +20,7 @@
 int rep_compress   (MemSize, int, int, int, int, int, int, CALLBACK_FUNC*, void*);
 int rep_decompress (MemSize, int, int, int, int, int, int, CALLBACK_FUNC*, void*);
 #ifdef USE_RUST
+extern "C" int darc_rs_rep_compress   (MemSize, int, int, int, int, int, int, CALLBACK_FUNC*, void*);
 extern "C" int darc_rs_rep_decompress (MemSize, int, int, int, int, int, int, CALLBACK_FUNC*, void*);
 #endif
 
@@ -58,7 +59,11 @@ int main (int argc, char **argv) {
         Barrier=0x7fffffff, SmallestLen=512, HashSizeLog=0, Amplifier=1;
   int rc;
   if (argv[1][0]=='c')
+#ifdef USE_RUST
+    rc = darc_rs_rep_compress (BlockSize,MinCompression,MinMatchLen,Barrier,SmallestLen,HashSizeLog,Amplifier,io_callback,&b);
+#else
     rc = rep_compress (BlockSize,MinCompression,MinMatchLen,Barrier,SmallestLen,HashSizeLog,Amplifier,io_callback,&b);
+#endif
   else
 #ifdef USE_RUST
     rc = darc_rs_rep_decompress (BlockSize,MinCompression,MinMatchLen,Barrier,SmallestLen,HashSizeLog,Amplifier,io_callback,&b);

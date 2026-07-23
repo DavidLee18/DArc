@@ -355,6 +355,11 @@ MemSize CalcHashSize (MemSize HashBits, MemSize BlockSize, MemSize k)
 }
 
 #ifndef FREEARC_DECOMPRESS_ONLY
+// DARC_RUST=1 selects the Rust port of the encoder (rust/darc-codecs), verified
+// byte-identical to this function (rust/difftest/rep_ref.cpp), and excluded here
+// for the same reason as the decoder: two definitions of rep_compress fail the
+// GNU ld link.
+#ifndef DARC_RUST
 int rep_compress (unsigned BlockSize, int MinCompression, int MinMatchLen, int Barrier, int SmallestLen, int HashBits, int Amplifier, CALLBACK_FUNC *callback, void *auxdata)
 {
     // ALGORITHM PARAMETER SETUP  (a copy of this is in REP_METHOD::GetCompressionMem!)
@@ -492,6 +497,7 @@ finished:
     lens.free(); offsets.free(); datalens.free(); dataOffsets.free();
     return errcode>=0? 0 : errcode;
 }
+#endif  // !DARC_RUST (rep_compress)
 #endif // FREEARC_DECOMPRESS_ONLY
 
 

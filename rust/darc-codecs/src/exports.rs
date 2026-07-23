@@ -207,6 +207,36 @@ pub unsafe extern "C" fn darc_rs_rep_decompress(
     }
 }
 
+/// REP encoder.
+///
+/// # Safety
+/// `callback` and `auxdata` must be what the C caller supplied.
+#[no_mangle]
+#[allow(clippy::too_many_arguments)]
+pub unsafe extern "C" fn darc_rs_rep_compress(
+    block_size: u32, min_compression: c_int, min_match_len: c_int, barrier: c_int,
+    smallest_len: c_int, hash_bits: c_int, amplifier: c_int,
+    callback: CALLBACK_FUNC, auxdata: *mut c_void,
+) -> c_int {
+    match Io::new(callback, auxdata) {
+        Some(io) => rep::compress(
+            &io, block_size, min_compression, min_match_len, barrier, smallest_len, hash_bits, amplifier),
+        None => FREEARC_ERRCODE_GENERAL,
+    }
+}
+
+/// # Safety
+/// `callback` and `auxdata` must be what the C caller supplied.
+#[cfg(feature = "dropin")]
+#[no_mangle]
+#[allow(clippy::too_many_arguments)]
+pub unsafe extern "C" fn rep_compress(
+    block_size: u32, a: c_int, b: c_int, c: c_int, d: c_int, e: c_int, f: c_int,
+    callback: CALLBACK_FUNC, auxdata: *mut c_void,
+) -> c_int {
+    darc_rs_rep_compress(block_size, a, b, c, d, e, f, callback, auxdata)
+}
+
 /// # Safety
 /// `callback` and `auxdata` must be what the C caller supplied.
 #[cfg(feature = "dropin")]
