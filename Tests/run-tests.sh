@@ -111,6 +111,17 @@ EXPECTED_TREE="$(tree_hash "$CORPUS")"
 # branch showed zero hits across every other configuration here -- which is why
 # the double-free only ever appeared on a CI runner, whose longer checkout
 # paths change the stored block contents, and never reproduced locally.
+#
+# MM appears twice because its two decoder branches are chosen by the encoder:
+# "-mmm:2*16" pins the channel count and word size, so autodetection is skipped
+# and every block is filtered, while "-mmm:d1" lets the detector run and stores
+# whatever it cannot classify. Plain "-mmm" -- the default, mode 9 -- is absent
+# because it CRASHES: Model::_32bit_run and _32bit_diff_run (mmdet.cpp:263,
+# :356) walk the buffer with a `long *`, 64-bit on LP64, and hand Model::count
+# a difference of up to 2^63, which ucount then uses to index a 1024-entry row.
+# `arc a -mmm` segfaults on this very corpus. That is a pre-existing encoder
+# bug, unrelated to the decoder ports; mode 1 uses only the 8- and 16-bit
+# models and is unaffected.
 CASES="
 -m0:store
 -m1:m1
@@ -120,6 +131,8 @@ CASES="
 -mtor:tor
 -mlzp:lzp
 -mtta:tta
+-mmm:2*16:mm
+-mmm:d1:mm-auto
 -mlzma:lzma
 -mppmd:ppmd
 -mgrzip:grzip
@@ -256,7 +269,9 @@ printf '%s\n' "-----------------------------------------------------------------
 
 while IFS= read -r line; do
   [ -z "$line" ] && continue
-  opts="${line%%:*}"; label="${line##*:}"
+  # Split on the LAST colon, not the first: method strings carry their own
+  # parameters after a colon ("-mmm:2*16"), while labels never contain one.
+  opts="${line%:*}"; label="${line##*:}"
   arc="$WORK/$label.arc"; out="$WORK/out-$label"
 
   # Show why a step failed, right here. A harness that says "see some.log"

@@ -217,11 +217,20 @@ int mm_compress (int mode, int skip_header, int is_float, int num_chan, int word
         WRITE (ptr, bytes);
 
         // Move unprocessed rest of data into buffer beginning
-        memmove (buf, ptr+bytes, rest);  ptr=buf;
+        memmove (buf, ptr+bytes, rest);
 
         // Starting from second iteration, we will process data in 64k chunks
         chunk = N>1? roundDown(BUFFER_SIZE,N) : BUFFER_SIZE;
         buf   = (BYTE*) realloc (buf, chunk+1);       // +1 is for processing 24-bit chunks using 32-bit operations
+        // ptr is reset AFTER the realloc, not before it. It used to be assigned
+        // on the memmove line above, which left it pointing into the block
+        // realloc had just released -- and the very next iteration diffs and
+        // writes through it. AddressSanitizer reports it as a heap-use-after-free
+        // at the WRITE below as soon as any input takes a second pass, which is
+        // every input larger than one pipeline buffer. It went unseen because
+        // this shrinks 1 MB to 64 KB, and a shrinking realloc usually returns
+        // the same pointer; ASan's allocator always moves, so it always fires.
+        ptr = buf;
 
         // Read next data chunk. This time, bytes+rest should be exactly == chunk, unless we at the end of data
         errcode = bytes = callback ("read", buf+rest, chunk-rest, auxdata);
@@ -238,6 +247,24 @@ finished:
 #endif  // !defined (FREEARC_DECOMPRESS_ONLY)
 
 
+// DARC_RUST=1 selects the Rust port of the decoder (rust/darc-codecs).
+//
+// mm_decompress is declared in C_MM.h, which C_MM.cpp pulls in inside its
+// extern "C" block, so this definition inherits C linkage and shares a symbol
+// with the Rust export. Excluded rather than redeclared: with both present the
+// linker resolves from this object and never pulls the Rust one -- and, both
+// being C-linkage, GNU ld reports a multiple definition. So the switch has to
+// remove this definition, not merely add a declaration elsewhere. The same is
+// true of the other codecs (C_Dict.cpp, C_LZP.cpp, rep.cpp, tta.cpp).
+//
+// The encoder (mm_compress), the diff routines it uses and all of mmdet.cpp
+// stay compiled; only this entry point is replaced. The undiff routines above
+// are left in place too: they are this function's whole body, but they are
+// plain non-static globals, so leaving them costs a few unreferenced bytes
+// while dropping them would widen the exclusion for no gain. Verified
+// byte-identical to the C decoder over a matrix of channel counts, word sizes,
+// header offsets and detector modes; see rust/difftest/mm-check.sh.
+#ifndef DARC_RUST
 int mm_decompress (CALLBACK_FUNC *callback, void *auxdata)
 {
     byte header[3];
@@ -301,6 +328,7 @@ finished:
     FreeAndNil (buf);
     return errcode;         // 0 if everything is fine, otherwise the error code
 }
+#endif  // !DARC_RUST (mm_decompress)
 
 
 

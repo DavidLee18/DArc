@@ -15,13 +15,21 @@ trap 'rm -rf "$W"' EXIT
   || { echo "cargo build failed" >&2; exit 1; }
 LIB="$ROOT/rust/target/release/libdarc_codecs.a"
 
-cc() { clang++ -std=c++17 -O2 -w -DFREEARC_UNIX -DFREEARC_INTEL_BYTE_ORDER -DFREEARC_64BIT \
-        "$@" -I"$ROOT" -I"$ROOT/Compression" \
-        "$ROOT/rust/difftest/tta_ref.cpp" "$ROOT/rust/difftest/tta_ccodec.cpp" \
-        "$ROOT/rust/difftest/mmdet_ccodec.cpp" \
-        "$ROOT/Compression/Common.cpp"; }
-cc                        -o "$W/c"  || exit 1
-cc -DUSE_RUST "$LIB"      -o "$W/rs" || exit 1
+# Trailing arguments land AFTER the sources, because the Rust staticlib has to:
+# GNU ld resolves an archive against only the objects already seen on the
+# command line, so a library placed first is silently dropped and every symbol
+# comes back undefined. macOS ld does not care, which is how this script passed
+# locally while never having linked on Linux.
+cc() { # cc <output> [args appended after the sources]
+  local out="$1"; shift
+  clang++ -std=c++17 -O2 -w -DFREEARC_UNIX -DFREEARC_INTEL_BYTE_ORDER -DFREEARC_64BIT \
+    -I"$ROOT" -I"$ROOT/Compression" \
+    "$ROOT/rust/difftest/tta_ref.cpp" "$ROOT/rust/difftest/tta_ccodec.cpp" \
+    "$ROOT/rust/difftest/mmdet_ccodec.cpp" \
+    "$ROOT/Compression/Common.cpp" "$@" -o "$out"
+}
+cc "$W/c"                    || exit 1
+cc "$W/rs" -DUSE_RUST "$LIB" || exit 1
 
 # Inputs: synthetic PCM-like signals -- sines, chords, ramps, noise, silence and
 # near-silence -- built at raw byte level. The audio filters and the adaptive
