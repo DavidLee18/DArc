@@ -353,3 +353,17 @@ pub unsafe extern "C" fn darc_rs_tor_decompress(
         None => FREEARC_ERRCODE_GENERAL,
     }
 }
+
+/// Drop-in under the archiver's own symbol name; the switch is an exclusion in
+/// Tornado.cpp rather than a redeclaration, as with the other codecs.
+///
+/// # Safety
+/// `callback` and `auxdata` must be what the C caller supplied.
+#[cfg(feature = "dropin")]
+#[no_mangle]
+pub unsafe extern "C" fn tor_decompress(
+    callback: CALLBACK_FUNC,
+    auxdata: *mut c_void,
+) -> c_int {
+    darc_rs_tor_decompress(callback, auxdata)
+}
