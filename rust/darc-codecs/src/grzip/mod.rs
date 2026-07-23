@@ -31,6 +31,7 @@
 pub mod block;
 pub mod bwt;
 pub mod lzp;
+pub mod mtf_ari;
 pub mod rec;
 pub mod st4;
 

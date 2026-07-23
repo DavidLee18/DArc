@@ -25,7 +25,7 @@
 //! Real blocks nest exactly once: the encoder emits `Mode == -2` only from
 //! `GRZip_CompressBlock`'s record-filter path, which then emits plain blocks.
 
-use super::{bwt, lzp, rec, st4, GrzError, GRZ_CRC_ERROR, GRZ_MAX_BLOCK_SIZE, GRZ_UNEXPECTED_EOF};
+use super::{bwt, lzp, mtf_ari, rec, st4, GrzError, GRZ_CRC_ERROR, GRZ_MAX_BLOCK_SIZE, GRZ_UNEXPECTED_EOF};
 
 /// `RESERVED` -- the constant stored in two header words as an integrity check.
 const RESERVED: i32 = 0;
@@ -185,17 +185,18 @@ fn decompress_block_at(input: &[u8], out: &mut [u8], depth: u32) -> Result<usize
 
 /// The entropy stage: MTF-arith or WFC-arith per `GRZ_Compression_MTF`.
 ///
-/// NOT YET PORTED -- `MTF_Ari.c` (620 lines) and `WFC_Ari.c` (759) are the last
-/// and largest pieces of GRZip, both heavily macro-driven with large context
-/// models. Until they land, every block that reaches the main pipeline is
-/// rejected, which is why nothing here is wired to `grzip_decompress` and the C
-/// decoder still runs. The stages after this point are ported and exercised by
-/// their own tests; this is the only hole.
+/// The WFC half (`WFC_Ari.c`, 759 lines) is not ported yet, so a block that
+/// selects it is rejected. That is the last remaining hole, and it is why
+/// nothing here is wired to `grzip_decompress` and the C decoder still runs.
 fn entropy_decode(
-    _body: &[u8],
-    _work: &mut [u8],
-    _out_size: usize,
-    _mode: i32,
+    body: &[u8],
+    work: &mut [u8],
+    out_size: usize,
+    mode: i32,
 ) -> Result<usize, GrzError> {
-    Err(GRZ_CRC_ERROR)
+    if mode & COMPRESSION_MTF != 0 {
+        mtf_ari::decode(body, work, out_size)
+    } else {
+        Err(GRZ_CRC_ERROR)
+    }
 }
