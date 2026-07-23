@@ -630,6 +630,20 @@ jobs:
         rust/difftest/tornado-check.sh
         rust/difftest/grzip-check.sh
 
+    # SREP is not an in-process codec: the archiver spawns a `srep` binary
+    # (arc.ini's [External compressor:srep]), so this compares files rather than
+    # callback streams and has no DARC_RUST/fingerprint story. srep-check.sh
+    # builds the C reference from srep/compile itself, but that build is done
+    # here too so a failure in it is attributed to SREP rather than to the
+    # differential run. The harness forces -hash=md5, so the ARM64 VMAC issue
+    # documented in it does not apply to this x86-64 runner regardless.
+    - name: SREP decoder differential test
+      run: |
+        chmod +x srep/compile rust/difftest/*.sh
+        ( cd srep && ./compile )
+        test -x Tests/srep || { echo "::error::srep/compile produced no Tests/srep"; exit 1; }
+        rust/difftest/srep-check.sh
+
     # Build the archiver twice and require identical archives. This is the check
     # that actually guards the format.
     - name: Archives identical with and without the Rust codecs

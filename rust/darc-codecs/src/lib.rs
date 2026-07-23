@@ -15,6 +15,7 @@ pub mod lz4;
 pub mod lzp;
 pub mod mm;
 pub mod rep;
+pub mod srep;
 pub mod tornado;
 pub mod tta;
 pub mod zstd;
