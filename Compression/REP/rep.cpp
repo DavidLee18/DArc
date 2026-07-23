@@ -496,6 +496,14 @@ finished:
 
 
 // Classical LZ77 decoder with sliding window
+// DARC_RUST=1 selects the Rust port of the decoder (rust/darc-codecs). It is
+// verified byte-identical to this function (rust/difftest/rep_ref.cpp), and
+// must be EXCLUDED here rather than merely provided alongside: with both
+// definitions present the link fails with "multiple definition of
+// rep_decompress" (GNU ld) or silently resolves from this object, the same
+// linkage trap the other ported codecs avoid. The encoder (rep_compress) is
+// still C -- REP is ported decode-first.
+#ifndef DARC_RUST
 int rep_decompress (unsigned BlockSize, int MinCompression, int MinMatchLen, int Barrier, int SmallestLen, int HashBits, int Amplifier, CALLBACK_FUNC *callback, void *auxdata)
 {
     int errcode, bufsize, ComprSize; byte *data0=NULL, *data, *buf0=NULL;
@@ -588,6 +596,7 @@ finished:
     BigFree(data0);  BigFree(buf0);  return errcode;
 }
 
+#endif  // !DARC_RUST (rep_decompress)
 
 /* to do:
 +1. sliding window, In() function to read data
