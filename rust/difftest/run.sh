@@ -18,6 +18,21 @@ set -uo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
+
+# rust/ is a cargo workspace, so build output lands in the WORKSPACE target
+# directory. It was rust/darc-codecs/target/ before the workspace existed, and
+# when that moved this script passed a path that no longer existed straight to
+# clang++, which reported "no such file or directory" for a library nobody had
+# asked it to find. Check it here instead, where the message can say what
+# actually went wrong.
+RUST_LIB="$ROOT/rust/target/release/libdarc_codecs.a"
+require_rust_lib () {
+  [ -f "$RUST_LIB" ] || {
+    echo "error: cargo built no $RUST_LIB" >&2
+    echo "       (workspace target dir; check 'cd rust && cargo build --release -p darc-codecs')" >&2
+    return 1
+  }
+}
 cd "$ROOT"
 REF=${REF:-/tmp/darc-delta-ref}
 RS=${RS:-/tmp/darc-delta-rs}
@@ -76,13 +91,14 @@ selftest () {
 
 # Build the same driver against the Rust port and diff it with the C original.
 build_rs () {
-  ( cd "$ROOT/rust/darc-codecs" && cargo build --release ) >/dev/null 2>&1 \
+  ( cd "$ROOT/rust" && cargo build --release -p darc-codecs ) >/dev/null 2>&1 \
     || { echo "error: cargo build failed" >&2; return 1; }
+  require_rust_lib || return 1
   clang++ -std=c++17 -O2 -w \
     -DUSE_RUST -DDELTA_LIBRARY -DFREEARC_UNIX -DFREEARC_INTEL_BYTE_ORDER -DFREEARC_64BIT \
     -I Compression -I . \
     -o "$RS" "$HERE/delta_ref.cpp" Compression/Delta/Delta.cpp Compression/Common.cpp \
-    "$ROOT/rust/darc-codecs/target/release/libdarc_codecs.a" \
+    "$RUST_LIB" \
     || { echo "error: failed to build the Rust driver" >&2; return 1; }
 }
 
@@ -196,11 +212,11 @@ sabotage () {
     local pat="${rest%%|*}" rep="${rest#*|}"
     cp "$bak" "$MUT_SRC"
     if ! apply_mutation "$pat" "$rep"; then status=1; continue; fi
-    ( cd "$ROOT/rust/darc-codecs" && cargo build --release ) >/dev/null 2>&1
+    ( cd "$ROOT/rust" && cargo build --release -p darc-codecs ) >/dev/null 2>&1
     clang++ -std=c++17 -O2 -w -DUSE_RUST -DDELTA_LIBRARY -DFREEARC_UNIX \
       -DFREEARC_INTEL_BYTE_ORDER -DFREEARC_64BIT -I Compression -I . \
       -o "$broken" "$HERE/delta_ref.cpp" Compression/Delta/Delta.cpp Compression/Common.cpp \
-      "$ROOT/rust/darc-codecs/target/release/libdarc_codecs.a" 2>/dev/null
+      "$RUST_LIB" 2>/dev/null
     local res n caught
     res=$(compare_with "$broken" quiet); n=${res%% *}; caught=${res##* }
     printf "  %-24s %2s of %2s inputs detect it\n" "$name" "$caught" "$n"
@@ -208,7 +224,7 @@ sabotage () {
   done
 
   cp "$bak" "$MUT_SRC"
-  ( cd "$ROOT/rust/darc-codecs" && cargo build --release ) >/dev/null 2>&1
+  ( cd "$ROOT/rust" && cargo build --release -p darc-codecs ) >/dev/null 2>&1
   rm -rf "$WORK"
   [ "$status" -eq 0 ] && echo "every mutation is caught by at least one input" \
                       || { echo "the differential test is blind to some errors" >&2; return 1; }

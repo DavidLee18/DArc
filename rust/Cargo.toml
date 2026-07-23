@@ -1,0 +1,74 @@
+# Workspace for the Rust port of DArc.
+#
+# Members are added as each piece of the C/Haskell tree is replaced. The port
+# proceeds codec by codec because archive-format compatibility is the binding
+# constraint: wire format 0.51 must keep round-tripping with DArc86 and every
+# released DArc, so a codec can only be swapped once its Rust implementation is
+# proven equivalent against the C one (see difftest/ and Tests/interop-test.sh).
+[workspace]
+resolver = "2"
+members = ["darc-codecs", "darc-crypto"]
+
+[workspace.package]
+edition = "2021"
+license = "GPL-2.0-or-later"
+publish = false
+
+# Vendored C is replaced by a dependency here ONLY where a crate exists that can
+# actually stand in. That is a much shorter list than it looks, so the versions
+# live here to keep the decision in one reviewable place:
+#
+# ADOPTED
+#   lz4_flex    pure Rust, replaced Compression/LZ4         (5,163 LOC of C)
+#   zstd-safe   binding; replaced Compression/Zstd/libzstd (32,375 LOC of C).
+#               Bundles zstd 1.5.7 against the vendored 1.5.6 -- same frame
+#               format, verified by decoding 1.5.6's own output.
+#   serpent     replaces the Serpent cipher in Compression/_Encryption. DArc's
+#               Serpent is standard Serpent, so the crate substitutes directly;
+#               checked against x86-64 DArc's own vectors in
+#               darc-crypto/tests/serpent_vectors.rs. (It was briefly thought
+#               non-standard -- that was ARM64 miscompiling ulong32, see below.)
+#
+# REJECTED, each after measuring rather than assuming. Do not re-try these
+# without new evidence:
+#
+#   ppmd-rust   DIFFERENT STREAM. DArc's PPMd is Shkarin var.H with Subbotin's
+#               carryless range coder (32-bit low, TOP=1<<24) and MAX_O=128;
+#               ppmd-rust is 7-Zip's Ppmd7 with Pavlov's range coder (64-bit
+#               Low) and max order 64. Same model, incompatible bytes -- it
+#               could not read a single existing -mppmd archive.
+#
+#   lzma-rs     ENCODER IS A STUB. Its raw decoder does read DArc's headerless
+#               LZMA1 streams when lc/lp/pb are supplied (feature
+#               "raw_decoder"), so the compatibility direction works. But
+#               measured against the 7-Zip SDK on the same input: 32,329 bytes
+#               against 118 on repetitive text (274x), and 50,872 against
+#               65,536 input on mixed data where LZMA-9 reaches roughly 0.4.
+#               Adopting it decode-only would remove no C and leave two
+#               decoders to maintain, so LZMA stays on the SDK.
+#
+#   ruzstd      DECODE ONLY, so it cannot replace the encoder. zstd-safe was
+#               taken instead.
+#
+#   NOTE ON THE ARM64 BUG that made serpent look un-adoptable: DArc's Serpent
+#   is miscompiled on ARM64. tomcrypt_macros.h:13 types ulong32 as 64-bit on
+#   every LP64 target except x86_64, and serpent.c's key expansion rotates it
+#   with a raw shift-or that only works at 32 bits. So an ARM64 C build of DArc
+#   encrypts -ae serpent differently from x86-64, and LTC_NO_TEST hides the
+#   failing self-test. Adopting the crate produces CORRECT Serpent everywhere,
+#   which is the desirable fix but means a Rust ARM64 build and a C ARM64 build
+#   disagree on -ae serpent. See rust/cryptref/serpent32.c.
+#
+# There is NO crate for libbsc, and none for any of the DArc-specific codecs --
+# Tornado, GRZip, MM/TTA, DisPack, REP, Dict, LZP, Delta, 4x4, SREP. Those are
+# Bulat Ziganshin's own formats; "add a package line" is not available for them
+# and they have to be hand-ported. That is ~15k lines of C before counting BSC.
+[workspace.dependencies]
+lz4_flex = { version = "0.14", default-features = false, features = ["std"] }
+
+# Kept from the darc-codecs manifest, where it had no effect once the crate
+# became a workspace member: cargo only honours [profile] in the workspace
+# root. See src/ffi.rs for why the ported codecs want wrapping arithmetic to
+# trap rather than wrap silently.
+[profile.release]
+overflow-checks = true

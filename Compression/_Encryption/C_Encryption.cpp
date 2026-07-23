@@ -1,5 +1,69 @@
 extern "C" {
 #include "C_Encryption.h"
+
+#ifdef DARC_RUST
+// ============================================================================
+// Rust-backed encryption. Replaces the vendored LibTomCrypt below with calls
+// into rust/darc-crypto (see rust/darc-crypto/WIRING.md). The whole file is
+// already inside extern "C" (line 1), so these definitions take C linkage and
+// resolve the same FFI symbols the LibTomCrypt versions did.
+// ============================================================================
+
+// Exports from libdarc_crypto.a; signatures mirror the Rust #[no_mangle] fns.
+int darc_rs_docrypt (int do_encryption, int cipher, int mode,
+                     const unsigned char *key, int key_len, int rounds,
+                     const unsigned char *iv, CALLBACK_FUNC *callback, void *auxdata);
+int darc_rs_pbkdf2_hmac_sha512 (const unsigned char *pwd, int pwd_len,
+                                const unsigned char *salt, int salt_len,
+                                int iterations, unsigned char *out, int out_len);
+int darc_rs_random_fill (unsigned char *buf, int len);
+
+// Cipher table; index = the LibTomCrypt registration order parse_ENCRYPTION
+// still stores. Values measured from the vendored library, not recalled.
+struct darc_cipher_desc { const char *name; int block_length; int max_key_length; };
+static const darc_cipher_desc cipher_descriptor[4] = {
+    {"aes",      16, 32},
+    {"blowfish",  8, 56},
+    {"serpent",  16, 32},
+    {"twofish",  16, 32},
+};
+static int find_cipher (const char *name)
+{
+    for (int i = 0; i < 4; i++)
+        if (strequ ((char*)name, (char*)cipher_descriptor[i].name))  return i;
+    return -1;
+}
+
+// Only name() survives: ShowCompressionMethod is the sole remaining caller.
+struct EncryptionMode
+{
+    int mode;
+    EncryptionMode (int _mode) {mode = _mode;}
+    char *name()
+    { switch (mode) { case 0: return (char*)"ctr"; case 1: return (char*)"cfb"; default: return (char*)""; } }
+};
+
+// Fortuna's ABI, kept for the Haskell FFI but reduced to OS entropy: the salt
+// is stored in the archive, so the generator must be secure, not reproducible.
+// The opaque state blob is unused. 0 is CRYPT_OK.
+int fortuna_size (void)                { return 64; }
+int fortuna_start (void *prng)         { (void)prng; return 0; }
+int fortuna_add_entropy (const unsigned char *in, unsigned long n, void *prng)
+                                       { (void)in; (void)n; (void)prng; return 0; }
+int fortuna_ready (void *prng)         { (void)prng; return 0; }
+unsigned long fortuna_read (unsigned char *out, unsigned long outlen, void *prng)
+{ (void)prng; return darc_rs_random_fill (out, (int)outlen) == 0 ? outlen : 0; }
+
+void Pbkdf2Hmac (const BYTE *pwd, int pwdSize, const BYTE *salt, int saltSize,
+                 int numIterations, BYTE *key, int keySize)
+{ darc_rs_pbkdf2_hmac_sha512 (pwd, pwdSize, salt, saltSize, numIterations, key, keySize); }
+
+int docrypt (enum TEncrypt DoEncryption, int cipher, int mode, BYTE *key, int keysize,
+             int rounds, BYTE *iv, CALLBACK_FUNC *callback, void *auxdata)
+{ return darc_rs_docrypt ((int)DoEncryption, cipher, mode, key, keysize, rounds, iv, callback, auxdata); }
+#endif  // DARC_RUST
+
+#ifndef DARC_RUST
 #define LTC_NO_CIPHERS
 #define   LTC_BLOWFISH
 #define   LTC_RIJNDAEL
@@ -47,6 +111,7 @@ extern "C" {
 #include "modes/cfb/cfb_encrypt.c"
 #include "modes/cfb/cfb_start.c"
 #include "prngs/fortuna.c"
+#endif  // !DARC_RUST (vendored LibTomCrypt includes)
 }
 
 
@@ -54,6 +119,7 @@ extern "C" {
 /* LibTomCrypt encryption library initialization   */
 /*-------------------------------------------------*/
 
+#ifndef DARC_RUST
 // Register all algorithms included in the program
 int register_all()
 {
@@ -143,6 +209,8 @@ struct EncryptionMode
     }
 };
 
+#endif  // !DARC_RUST (register_all, fortuna_size, EncryptionMode)
+
 // Find the encryption mode number by its name
 int find_mode (char *name)
 {
@@ -156,6 +224,7 @@ int find_mode (char *name)
 /* User-facing functions                           */
 /*-------------------------------------------------*/
 
+#ifndef DARC_RUST
 // Generate a key from the password and salt using numIterations hashing iterations (PKCS5#2)
 void Pbkdf2Hmac (const BYTE *pwd, int pwdSize, const BYTE *salt, int saltSize,
                  int numIterations, BYTE *key, int keySize)
@@ -197,6 +266,8 @@ Exit:
     return InSize;  // return the error code, or 0 if everything is fine
 }
 
+
+#endif  // !DARC_RUST (Pbkdf2Hmac, docrypt)
 
 /*-------------------------------------------------*/
 /* ENCRYPTION_METHOD class implementation          */

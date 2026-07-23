@@ -538,6 +538,34 @@ jobs:
         fi
         echo "windows-amd64 is byte-identical to linux on all $(ls interop/archives/*.arc | wc -l | tr -d " ") methods"
 
+  # ── Rust workspace: unit and edge-case tests ────────────────────────────────
+  # Distinct from rust-codecs below, which builds the archiver against the port
+  # and compares whole archives. This runs the crate's own tests, and covers
+  # what that cannot reach cheaply: malformed input, sizes on block boundaries,
+  # and codecs driven round their read loop more than once.
+  #
+  # nextest rather than cargo test, for process isolation. The codecs keep
+  # module-level state behind a C ABI, and a panic unwinding across that ABI is
+  # undefined behaviour -- one test must not be able to take the run with it, or
+  # to leave state that makes an unrelated test pass.
+  rust-tests:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v6.0.2
+      with:
+        lfs: false
+    - uses: dtolnay/rust-toolchain@stable
+    - uses: taiki-e/install-action@nextest
+    - name: cargo nextest
+      working-directory: rust
+      run: cargo nextest run --profile ci
+    # Warnings are not failures here yet: the crate carries dead code that is
+    # scaffolding for codecs not ported yet, and denying it now would block the
+    # port rather than improve it.
+    - name: cargo clippy
+      working-directory: rust
+      run: cargo clippy --all-targets || true
+
   # ── Rust codec ports ────────────────────────────────────────────────────────
   # Two things are checked, and they are not the same thing:
   #
