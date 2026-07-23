@@ -616,6 +616,18 @@ jobs:
     - name: Prove the differential test can fail
       run: rust/difftest/run.sh sabotage
 
+    # run.sh covers Delta only. Every codec ported since has its own harness,
+    # each compressing with C and requiring the C and Rust decoders to return
+    # the same original bytes over a corpus built for that codec's heuristics.
+    # They were runnable but unrun until now: a differential test nothing
+    # invokes is documentation, not a check.
+    - name: Per-codec differential tests (REP, TTA, MM)
+      run: |
+        chmod +x rust/difftest/*.sh
+        rust/difftest/rep-check.sh
+        rust/difftest/tta-check.sh
+        rust/difftest/mm-check.sh
+
     # Build the archiver twice and require identical archives. This is the check
     # that actually guards the format.
     - name: Archives identical with and without the Rust codecs

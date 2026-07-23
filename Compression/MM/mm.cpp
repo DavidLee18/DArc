@@ -238,6 +238,24 @@ finished:
 #endif  // !defined (FREEARC_DECOMPRESS_ONLY)
 
 
+// DARC_RUST=1 selects the Rust port of the decoder (rust/darc-codecs).
+//
+// mm_decompress is declared in C_MM.h, which C_MM.cpp pulls in inside its
+// extern "C" block, so this definition inherits C linkage and shares a symbol
+// with the Rust export. Excluded rather than redeclared: with both present the
+// linker resolves from this object and never pulls the Rust one -- and, both
+// being C-linkage, GNU ld reports a multiple definition. So the switch has to
+// remove this definition, not merely add a declaration elsewhere. The same is
+// true of the other codecs (C_Dict.cpp, C_LZP.cpp, rep.cpp, tta.cpp).
+//
+// The encoder (mm_compress), the diff routines it uses and all of mmdet.cpp
+// stay compiled; only this entry point is replaced. The undiff routines above
+// are left in place too: they are this function's whole body, but they are
+// plain non-static globals, so leaving them costs a few unreferenced bytes
+// while dropping them would widen the exclusion for no gain. Verified
+// byte-identical to the C decoder over a matrix of channel counts, word sizes,
+// header offsets and detector modes; see rust/difftest/mm-check.sh.
+#ifndef DARC_RUST
 int mm_decompress (CALLBACK_FUNC *callback, void *auxdata)
 {
     byte header[3];
@@ -301,6 +319,7 @@ finished:
     FreeAndNil (buf);
     return errcode;         // 0 if everything is fine, otherwise the error code
 }
+#endif  // !DARC_RUST (mm_decompress)
 
 
 
