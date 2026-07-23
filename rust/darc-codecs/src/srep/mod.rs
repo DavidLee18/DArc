@@ -49,6 +49,7 @@
 
 pub mod decode;
 pub mod future_lz;
+pub mod hashes;
 pub mod io_lz;
 pub mod matches;
 

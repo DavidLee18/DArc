@@ -32,6 +32,7 @@
 //!   first block can be decoded.
 
 use super::future_lz::{self, PendingHeap};
+use super::hashes::Hash;
 use super::io_lz::{self, Dictionary};
 use super::{parse_header, Strategy, ARCHIVE_HEADER_WORDS, BLOCK_HEADER_WORDS,
             BULAT_ZIGANSHIN_SIGNATURE, INDEX_LZ_FOOTER_WORDS, SREP_SIGNATURE, FOOTER_VERSION1};
@@ -122,6 +123,7 @@ pub fn decompress<R: Read + Seek, W: Read + Write + Seek>(
     let round = ah.strategy.round_matches();
     let future = !matches!(ah.strategy, Strategy::IoLz | Strategy::IoLzRounded);
     let l = ah.base_len;
+    let hash = Hash::from_num(ah.hash_num, ah.hash_size);
     let mut pending = PendingHeap::new();
 
     // v4 keeps every record in a footer, so the tail of the file has to be read
@@ -192,10 +194,11 @@ pub fn decompress<R: Read + Seek, W: Read + Write + Seek>(
         if hdr[0] == 0 && hdr[1] == 0 {
             break;
         }
-        // The block header carries the hash after its three words.
-        if ah.hash_size > 0 {
-            let mut h = vec![0u8; ah.hash_size as usize];
-            fin.read_exact(&mut h)?;
+        // The block header carries the hash after its three words. Keep it: it
+        // is checked against the decompressed data below.
+        let mut block_hash = vec![0u8; hash.stored_bytes()];
+        if !block_hash.is_empty() {
+            fin.read_exact(&mut block_hash)?;
         }
 
         let datasize = hdr[0] as u64; // literal bytes
@@ -250,6 +253,12 @@ pub fn decompress<R: Read + Seek, W: Read + Write + Seek>(
                 io_lz::decompress_block(&mut dict, round, l, block_start, &stat, &lits, &mut out)?;
             }
         }
+        // Integrity check on the decompressed data, exactly where the C does
+        // it (srep.cpp:1098). A mismatch is the C's fatal checksum error.
+        if hash.verify(&out, &block_hash).is_err() {
+            return Err(Error::BadData);
+        }
+
         fout.write_all(&out)?;
         origsize += origsize1;
     }
