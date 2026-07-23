@@ -10,6 +10,17 @@
 # is the only oracle. It is built from srep/compile, which is why that build
 # had to be fixed before any of this could run.
 #
+# ## The hash is forced to md5, and why
+#
+# SREP's default block hash is VMAC, which on this repo's ARM64 target is
+# miscompiled in the vendored LibTomCrypt (the ulong32 bug): the reference
+# `srep -d` intermittently rejects its OWN -m3f output with a VMAC checksum
+# error, while every deterministic hash round-trips cleanly. Since the hash is
+# orthogonal to the LZ format under test, the matrix forces -hash=md5 so the C
+# round-trip guard is reliable and the port's md5 verification is exercised. A
+# separate pass below covers the VMAC stream layout without depending on the C
+# decoding its own VMAC output.
+#
 # ## Block size is not a tuning knob here, it is the test
 #
 # The whole point of SREP is a dictionary larger than RAM: a match whose source
@@ -31,9 +42,10 @@ SREP="$ROOT/Tests/srep"
 [ -x "$SREP" ] || { (cd "$ROOT/srep" && ./compile) >/dev/null 2>&1; }
 [ -x "$SREP" ] || { echo "no Tests/srep -- run srep/compile" >&2; exit 1; }
 
-( cd "$ROOT/rust" && cargo build --release -p darc-codecs --example srep_dec ) >/dev/null 2>&1 \
+( cd "$ROOT/rust" && cargo build --release -p darc-codecs --bin srep ) >/dev/null 2>&1 \
   || { echo "cargo build failed" >&2; exit 1; }
-DEC="$ROOT/rust/target/release/examples/srep_dec"
+# The port's own `srep` binary, invoked exactly as arc.ini does: `srep -d in out`.
+DEC="$ROOT/rust/target/release/srep -d"
 
 # Inputs aimed at a long-range matcher: far-apart duplicate regions, repeated
 # sections separated by noise, long runs, and incompressible data where the
@@ -76,17 +88,35 @@ for opt in "-m3o" "-m1o" "-m2o" "-m4o" "-m5o" \
     n=$((n+1)); name=$(basename "$f")
     rm -f "$W/t.srep" "$W/t.out"
     # shellcheck disable=SC2086
-    "$SREP" $opt "$f" "$W/t.srep" >/dev/null 2>&1 || { echo "  [$opt] $name: C-compress FAILED"; fail=$((fail+1)); continue; }
+    "$SREP" $opt -hash=md5 "$f" "$W/t.srep" >/dev/null 2>&1 || { echo "  [$opt] $name: C-compress FAILED"; fail=$((fail+1)); continue; }
     "$SREP" -d "$W/t.srep" "$W/t.c" >/dev/null 2>&1 || { echo "  [$opt] $name: C-decompress FAILED"; fail=$((fail+1)); continue; }
     cmp -s "$f" "$W/t.c" || { echo "  [$opt] $name: C round-trip != original (harness bug)"; fail=$((fail+1)); continue; }
-    "$DEC" "$W/t.srep" "$W/t.out" >/dev/null 2>&1 || { echo "  [$opt] $name: RUST FAILED"; fail=$((fail+1)); continue; }
+    $DEC "$W/t.srep" "$W/t.out" >/dev/null 2>&1 || { echo "  [$opt] $name: RUST FAILED"; fail=$((fail+1)); continue; }
     cmp -s "$f" "$W/t.out" || { echo "  [$opt] $name: RUST != original"; fail=$((fail+1)); }
   done
-  "$SREP" $opt "$W/in/text" "$W/v.srep" >/dev/null 2>&1
+  "$SREP" $opt -hash=md5 "$W/in/text" "$W/v.srep" >/dev/null 2>&1
   v=$(od -An -tu4 -N12 "$W/v.srep" | head -1 | awk "{print \$3%256}")
   echo "  [$opt -> v$v] $n inputs, $fail differing"
   total=$((total+fail))
 done
+
+# VMAC stream-layout pass: the default hash, whose 16-byte seed and per-block
+# tag the port must consume correctly even though it does not verify them (see
+# srep/hashes.rs). The C's own VMAC decode is unreliable here, so this compares
+# the port against the ORIGINAL directly rather than gating on a C round-trip.
+vfail=0; vn=0
+for opt in "-m3" "-m3f -b16kb" "-m1o -b16kb"; do
+  for f in "$W"/in/*; do
+    vn=$((vn+1)); name=$(basename "$f")
+    rm -f "$W/t.srep" "$W/t.out"
+    # shellcheck disable=SC2086
+    "$SREP" $opt -hash=vmac "$f" "$W/t.srep" >/dev/null 2>&1 || { vfail=$((vfail+1)); continue; }
+    $DEC "$W/t.srep" "$W/t.out" >/dev/null 2>&1 || { echo "  [vmac $opt] $name: RUST FAILED"; vfail=$((vfail+1)); continue; }
+    cmp -s "$f" "$W/t.out" || { echo "  [vmac $opt] $name: RUST != original"; vfail=$((vfail+1)); }
+  done
+done
+echo "  [vmac carry] $vn inputs, $vfail differing"
+total=$((total+vfail))
 
 echo "srep decode: $total total differing"
 [ "$total" -eq 0 ] && echo "SREP decoder matches the C original byte for byte (v1-v4)" || exit 1
