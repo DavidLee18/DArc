@@ -77,12 +77,18 @@ PY
 # Small block sizes are not decoration: at the default 8 MB every corpus input
 # fits in one block, and the cross-block paths -- readback from the output file,
 # and matches pending across blocks -- are never reached.
+#
+# -m5 (SREP_METHOD5, exhaustive search) is deliberately absent: the reference
+# COMPRESSOR aborts on it for some inputs on Linux/glibc-x86-64 (a crash in a
+# match-finder path this port does not touch -- SREP is decode-only). It also
+# adds no format coverage, producing only v2 and v4, both already covered by
+# -m1o/-m2o/-m4o and -m1/-m2/-m3. Every format version stays covered without it.
 total=0
-for opt in "-m3o" "-m1o" "-m2o" "-m4o" "-m5o" \
-           "-m3f" "-m1f" "-m3" "-m1" "-m2" "-m5" \
-           "-m3o -b64kb" "-m1o -b64kb" "-m2o -b64kb" "-m3o -b16kb" "-m5o -b16kb" \
+for opt in "-m3o" "-m1o" "-m2o" "-m4o" \
+           "-m3f" "-m1f" "-m3" "-m1" "-m2" \
+           "-m3o -b64kb" "-m1o -b64kb" "-m2o -b64kb" "-m3o -b16kb" \
            "-m3f -b64kb" "-m3f -b16kb" "-m1f -b16kb" \
-           "-m3 -b64kb" "-m3 -b16kb" "-m1 -b16kb" "-m5 -b16kb"; do
+           "-m3 -b64kb" "-m3 -b16kb" "-m1 -b16kb"; do
   fail=0; n=0
   for f in "$W"/in/*; do
     n=$((n+1)); name=$(basename "$f")
