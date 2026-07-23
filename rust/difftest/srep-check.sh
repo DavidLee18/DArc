@@ -56,11 +56,21 @@ for n in (0,1,100,4096,65536):
     w(f"n_{n}", prng(3,n))
 PY
 
+# All four format versions, and both block regimes.
+#
+#   -mNo  -> I/O-LZ      : v1 when N=3 (rounded, 3-word records), else v2
+#   -mNf  -> Future-LZ   : v3, records stored with their source block
+#   -mN   -> Index-LZ    : v4, records in a footer  (the DEFAULT)
+#
+# Small block sizes are not decoration: at the default 8 MB every corpus input
+# fits in one block, and the cross-block paths -- readback from the output file,
+# and matches pending across blocks -- are never reached.
 total=0
-# -m3o gives format v1 (rounded matches, 3-word records); the rest give v2.
-# Small block sizes are what make the cross-block readback reachable.
 for opt in "-m3o" "-m1o" "-m2o" "-m4o" "-m5o" \
-           "-m3o -b64kb" "-m1o -b64kb" "-m2o -b64kb" "-m3o -b16kb" "-m5o -b16kb"; do
+           "-m3f" "-m1f" "-m3" "-m1" "-m2" "-m5" \
+           "-m3o -b64kb" "-m1o -b64kb" "-m2o -b64kb" "-m3o -b16kb" "-m5o -b16kb" \
+           "-m3f -b64kb" "-m3f -b16kb" "-m1f -b16kb" \
+           "-m3 -b64kb" "-m3 -b16kb" "-m1 -b16kb" "-m5 -b16kb"; do
   fail=0; n=0
   for f in "$W"/in/*; do
     n=$((n+1)); name=$(basename "$f")
@@ -78,5 +88,5 @@ for opt in "-m3o" "-m1o" "-m2o" "-m4o" "-m5o" \
   total=$((total+fail))
 done
 
-echo "srep decode (v1/v2, I/O-LZ): $total total differing"
-[ "$total" -eq 0 ] && echo "SREP I/O-LZ decoder matches the C original byte for byte" || exit 1
+echo "srep decode: $total total differing"
+[ "$total" -eq 0 ] && echo "SREP decoder matches the C original byte for byte (v1-v4)" || exit 1

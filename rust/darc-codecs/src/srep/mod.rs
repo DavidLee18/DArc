@@ -48,6 +48,7 @@
 #![allow(dead_code)] // WIP: the format layer lands before the block loop
 
 pub mod decode;
+pub mod future_lz;
 pub mod io_lz;
 pub mod matches;
 
