@@ -443,3 +443,18 @@ pub unsafe extern "C" fn darc_rs_dispack_decompress(
         None => FREEARC_ERRCODE_GENERAL,
     }
 }
+
+/// Drop-in under the archiver's own symbol name; the switch is an exclusion in
+/// C_DisPack.cpp rather than a redeclaration, as with the other codecs.
+///
+/// # Safety
+/// `callback` and `auxdata` must be what the C caller supplied.
+#[cfg(feature = "dropin")]
+#[no_mangle]
+pub unsafe extern "C" fn dispack_decompress(
+    block_size: u32,
+    callback: CALLBACK_FUNC,
+    auxdata: *mut c_void,
+) -> c_int {
+    darc_rs_dispack_decompress(block_size, callback, auxdata)
+}

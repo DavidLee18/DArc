@@ -68,8 +68,20 @@ DISPACK_METHOD::DISPACK_METHOD()
 enum {TAG_DATA = 0xC71B3AE1, TAG_EXE};
 bool is_tag (unsigned x)  {return (x^TAG_DATA) < 0x10;}
 
-// Decompression function
-int DISPACK_METHOD::decompress (CALLBACK_FUNC *callback, void *auxdata)
+// DARC_RUST=1 selects the Rust port of the decoder (rust/darc-codecs).
+//
+// The decode logic is split out of DISPACK_METHOD::decompress into this free
+// function so the switch is a link-time symbol replacement, matching the other
+// codecs. It is declared in C_DisPack.h, which this file includes inside its
+// extern "C" block, so it and the Rust export are the same C-linkage symbol.
+// With both present the linker resolves from this object and never pulls the
+// Rust one -- so the switch must remove this definition, not merely add a
+// declaration elsewhere. DisUnFilter and the rest of the codec stay compiled.
+//
+// Verified byte-identical over real i386 code across three block sizes; see
+// rust/difftest/dispack-check.sh.
+#ifndef DARC_RUST
+int dispack_decompress (MemSize BlockSize, CALLBACK_FUNC *callback, void *auxdata)
 {
     int   errcode = FREEARC_OK;     // Error code returned by last operation or FREEARC_OK
     BYTE *In = NULL,  *Out = NULL;  // Pointers to the input and output data, respectively
@@ -114,6 +126,13 @@ int DISPACK_METHOD::decompress (CALLBACK_FUNC *callback, void *auxdata)
 finished:
     BigFreeAndNil(In); BigFreeAndNil(Out);
     return errcode;
+}
+#endif  // !DARC_RUST
+
+// Decompression function
+int DISPACK_METHOD::decompress (CALLBACK_FUNC *callback, void *auxdata)
+{
+    return dispack_decompress (BlockSize, callback, auxdata);
 }
 
 #ifndef FREEARC_DECOMPRESS_ONLY
