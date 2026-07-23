@@ -8,7 +8,7 @@
 //! what wires them together; until then these are exercised by the differential
 //! harness rather than by the archiver.
 
-use crate::{delta, dict, dict_encode, lzp, mm, rep, tornado, tta};
+use crate::{delta, dict, dict_encode, grzip, lzp, mm, rep, tornado, tta};
 use crate::ffi::{Io, CALLBACK_FUNC, FREEARC_ERRCODE_GENERAL};
 use core::ffi::{c_int, c_void};
 
@@ -366,4 +366,34 @@ pub unsafe extern "C" fn tor_decompress(
     auxdata: *mut c_void,
 ) -> c_int {
     darc_rs_tor_decompress(callback, auxdata)
+}
+
+/// GRZip block decoder, for the differential harness only.
+///
+/// GRZip is still being ported -- there is no `grzip_decompress` drop-in yet,
+/// because the stream wrapper is not written. This exposes the block level,
+/// which is where every stage that *is* ported actually runs, so the harness
+/// can compare against `GRZip_DecompressBlock` before more code piles up on
+/// top of unverified code.
+///
+/// Returns the number of bytes written, or a negative GRZip error code.
+///
+/// # Safety
+/// `input`/`output` must be valid for `in_size`/`out_cap` bytes.
+#[no_mangle]
+pub unsafe extern "C" fn darc_rs_grzip_decompress_block(
+    input: *const u8,
+    in_size: c_int,
+    output: *mut u8,
+    out_cap: c_int,
+) -> c_int {
+    if input.is_null() || output.is_null() || in_size < 0 || out_cap < 0 {
+        return FREEARC_ERRCODE_GENERAL;
+    }
+    let inp = core::slice::from_raw_parts(input, in_size as usize);
+    let out = core::slice::from_raw_parts_mut(output, out_cap as usize);
+    match grzip::block::decompress_block(inp, out) {
+        Ok(n) => n as c_int,
+        Err(e) => e,
+    }
 }

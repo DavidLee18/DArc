@@ -1,18 +1,22 @@
 //! Inverse Burrows-Wheeler transform, ported from `Compression/GRZip/BWT.c`
 //! (`GRZip_BWT_Decode` :1052, `GRZip_FastBWT_Decode` :952).
 //!
-//! The encoder picks between two forward transforms and records which by
-//! setting `StrongBWT_Flag` in the stored first-byte position. Both produce the
-//! same permutation of the input, so a single inverse serves both -- the flag
-//! only selects how `FBP` is interpreted, and the C's two `_Decode` functions
-//! differ solely in their bounds. (`GRZip_StrongBWT_Decode` builds a Size+1
-//! entry table and so accepts `FBP == Size`; the fast one indexes a Size-entry
-//! table and does not.)
+//! (`GRZip_StrongBWT_Decode` :403, `GRZip_FastBWT_Decode` :952.)
 //!
-//! The inverse itself is the standard LF-mapping walk, written backwards: pair
-//! every byte with its occurrence index, take the cumulative counts as the
-//! first-column offsets, then follow the chain from `FBP` filling the output
-//! from the end.
+//! The encoder picks between two forward transforms and records which by
+//! setting `StrongBWT_Flag` in the stored first-byte position. **They are
+//! different transforms and each needs its own inverse.** Both walk the same
+//! LF mapping -- pair every byte with its occurrence index, take cumulative
+//! counts as first-column offsets, follow the chain filling the output
+//! backwards -- but the strong variant carries a sentinel row, so its table has
+//! `Size+1` entries with a gap at `FBP`, its prefix sum starts at 1, and its
+//! walk is anchored at 0 rather than at the stored position.
+//!
+//! An earlier version of this file ran one inverse for both, on the assumption
+//! that the flag only reinterpreted `FBP`. Every BWT block decoded to garbage
+//! while every ST4 block passed, which is precisely the signal that located it
+//! -- and it survived a local round-trip test, because that test exercised this
+//! file's own forward transform rather than the C's.
 //!
 //! `FBP` arrives from the block header and was never checked in the C until an
 //! earlier hardening pass; out of range it indexed off the end of the table.
@@ -20,42 +24,46 @@
 
 use super::{GrzError, GRZ_CRC_ERROR};
 
-/// `StrongBWT_Flag` -- set in the stored FBP to select the strong variant.
-const STRONG_BWT_FLAG: i32 = 1 << 30;
+/// `StrongBWT_Flag` (BWT.c:70), set in the stored FBP to select the strong
+/// variant.
+const STRONG_BWT_FLAG: i32 = 0x4000_0000;
 
-/// `GRZip_BWT_Decode`: validate `fbp`, then invert in place.
+/// `GRZip_BWT_Decode` (:1052): the flag picks which inverse runs.
+///
+/// These are **not** the same transform with different bounds, which is what an
+/// earlier version of this file assumed -- it ran one inverse for both and
+/// decoded every BWT block to garbage while the ST4 blocks passed, which is
+/// exactly the signal that found it. The strong variant carries a sentinel:
+/// its table has Size+1 entries with a gap at FBP, its prefix sum starts at 1
+/// rather than 0, and its walk starts from 0 rather than from the stored
+/// position.
 pub fn decode(buf: &mut [u8], size: usize, fbp: i32) -> Result<(), GrzError> {
     if size == 0 || buf.len() < size {
         return Err(GRZ_CRC_ERROR);
     }
-    let real = if (fbp & STRONG_BWT_FLAG) == 0 {
+    if (fbp & STRONG_BWT_FLAG) == 0 {
         // Fast variant: FBP indexes a table of exactly `size` entries.
         if fbp < 0 || fbp as usize >= size {
             return Err(GRZ_CRC_ERROR);
         }
-        fbp as usize
+        invert_fast(buf, size, fbp as usize);
     } else {
-        // Strong variant: FBP only splits fill loops over a size+1 table, so
-        // FBP == size is legitimate there.
         let real = fbp & !STRONG_BWT_FLAG;
-        if real < 0 || real as usize > size {
+        // The C accepts FBP == Size here (the table has Size+1 entries), but
+        // FBP == 0 leaves T[0] unwritten and the walk starts by reading it, so
+        // only 1..=Size is actually decodable.
+        if real < 1 || real as usize > size {
             return Err(GRZ_CRC_ERROR);
         }
-        // A strong FBP equal to `size` cannot start the walk below; the C's
-        // strong decoder handles it structurally rather than by indexing.
-        if real as usize >= size {
-            return Err(GRZ_CRC_ERROR);
-        }
-        real as usize
-    };
-    invert(buf, size, real);
+        invert_strong(buf, size, real as usize);
+    }
     Ok(())
 }
 
-/// The LF-mapping walk. `T[i]` packs the occurrence index of `buf[i]` among
-/// equal bytes into the high bits and the byte itself into the low eight, which
-/// is why a block is capped well below 2^24 bytes.
-fn invert(buf: &mut [u8], size: usize, mut fbp: usize) {
+/// `GRZip_FastBWT_Decode` (:952). The standard LF-mapping walk: pair each byte
+/// with its occurrence index, take cumulative counts as first-column offsets,
+/// then follow the chain from `fbp`, filling the output backwards.
+fn invert_fast(buf: &mut [u8], size: usize, mut fbp: usize) {
     let mut count = [0u32; 256];
     let mut t = vec![0u32; size];
 
@@ -64,7 +72,6 @@ fn invert(buf: &mut [u8], size: usize, mut fbp: usize) {
         t[i] = (count[c] << 8) | c as u32;
         count[c] += 1;
     }
-    // Exclusive prefix sums: the first row offset of each byte value.
     let mut sum: u32 = 0;
     for c in count.iter_mut() {
         sum += *c;
@@ -77,9 +84,44 @@ fn invert(buf: &mut [u8], size: usize, mut fbp: usize) {
         fbp = ((u >> 8) + count[c as usize]) as usize;
         buf[i] = c;
         if fbp >= size {
-            // Only reachable if the permutation is inconsistent, i.e. the block
-            // is corrupt. The remaining output is whatever was decoded so far;
-            // the caller's CRC rejects it. Stopping beats panicking on an index.
+            // Inconsistent permutation, i.e. a corrupt block. The caller's CRC
+            // rejects the partial output; stopping beats panicking on an index.
+            break;
+        }
+    }
+}
+
+/// `GRZip_StrongBWT_Decode` (:403). Same walk, but over a Size+1 table whose
+/// slot `fbp` is deliberately skipped -- the sentinel row -- with the prefix sum
+/// biased by one to account for it, and the walk anchored at 0.
+fn invert_strong(buf: &mut [u8], size: usize, fbp: usize) {
+    let mut count = [0u32; 256];
+    let mut t = vec![0u32; size + 1];
+
+    for i in 0..fbp {
+        let c = buf[i] as usize;
+        t[i] = (count[c] << 8) | c as u32;
+        count[c] += 1;
+    }
+    for i in fbp..size {
+        let c = buf[i] as usize;
+        t[i + 1] = (count[c] << 8) | c as u32;
+        count[c] += 1;
+    }
+    // Sum starts at 1, not 0: the sentinel occupies the first row.
+    let mut sum: u32 = 1;
+    for c in count.iter_mut() {
+        sum += *c;
+        *c = sum - *c;
+    }
+
+    let mut at = 0usize;
+    for i in (0..size).rev() {
+        let u = t[at];
+        let c = (u & 0xFF) as u8;
+        at = ((u >> 8) + count[c as usize]) as usize;
+        buf[i] = c;
+        if at > size {
             break;
         }
     }
@@ -122,7 +164,7 @@ mod tests {
         ] {
             let (mut last, fbp) = forward(case);
             let n = last.len();
-            invert(&mut last, n, fbp);
+            invert_fast(&mut last, n, fbp);
             assert_eq!(&last[..], case, "inverse BWT mismatch for {case:?}");
         }
     }
@@ -133,8 +175,11 @@ mod tests {
         assert!(decode(&mut buf, 4, -1).is_err());
         assert!(decode(&mut buf, 4, 4).is_err());
         assert!(decode(&mut buf, 4, i32::MAX).is_err());
-        // Strong flag with an in-range position is accepted.
+        // Strong flag with an in-range position is accepted; 0 is not, because
+        // it would leave the walk's first table slot unwritten.
         assert!(decode(&mut buf, 4, STRONG_BWT_FLAG | 2).is_ok());
+        assert!(decode(&mut buf, 4, STRONG_BWT_FLAG).is_err());
+        assert!(decode(&mut buf, 4, STRONG_BWT_FLAG | 5).is_err());
     }
 
     #[test]
