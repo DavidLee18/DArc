@@ -23,6 +23,8 @@ cabal.project.local~
 .ghc.environment.*
 /.mcabal/
 Tests/*arc
+# Standalone SREP binary, produced by srep/compile (external compressor per arc.ini)
+Tests/srep
 common.mak
 *_stub.h
 *.comb
