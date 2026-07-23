@@ -112,16 +112,18 @@ EXPECTED_TREE="$(tree_hash "$CORPUS")"
 # the double-free only ever appeared on a CI runner, whose longer checkout
 # paths change the stored block contents, and never reproduced locally.
 #
-# MM appears twice because its two decoder branches are chosen by the encoder:
+# MM appears three times because the encoder chooses which decoder branch runs.
 # "-mmm:2*16" pins the channel count and word size, so autodetection is skipped
-# and every block is filtered, while "-mmm:d1" lets the detector run and stores
-# whatever it cannot classify. Plain "-mmm" -- the default, mode 9 -- is absent
-# because it CRASHES: Model::_32bit_run and _32bit_diff_run (mmdet.cpp:263,
-# :356) walk the buffer with a `long *`, 64-bit on LP64, and hand Model::count
-# a difference of up to 2^63, which ucount then uses to index a 1024-entry row.
-# `arc a -mmm` segfaults on this very corpus. That is a pre-existing encoder
-# bug, unrelated to the decoder ports; mode 1 uses only the 8- and 16-bit
-# models and is unaffected.
+# entirely and every block is filtered. "-mmm:d1" runs the fast detector ({8,16}
+# models) and stores whatever it cannot classify. Plain "-mmm" is the archiver's
+# default and runs the full {8,16,24,32} model set.
+#
+# Plain "-mmm" was absent until mmdet's Model::_32bit_run/_32bit_diff_run were
+# fixed: they walked the buffer with a `long *`, 64-bit on LP64, so they read
+# pairs of samples as one and slotted a value up to 2^63>>24 into a 1024-entry
+# stats row. `arc a -mmm` segfaulted on this very corpus. Its fingerprint is
+# therefore new, with no older archives to be compatible with -- nothing could
+# write one.
 CASES="
 -m0:store
 -m1:m1
@@ -133,6 +135,7 @@ CASES="
 -mtta:tta
 -mmm:2*16:mm
 -mmm:d1:mm-auto
+-mmm:mm-d9
 -mlzma:lzma
 -mppmd:ppmd
 -mgrzip:grzip
