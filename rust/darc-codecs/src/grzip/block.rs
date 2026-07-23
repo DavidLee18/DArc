@@ -25,7 +25,7 @@
 //! Real blocks nest exactly once: the encoder emits `Mode == -2` only from
 //! `GRZip_CompressBlock`'s record-filter path, which then emits plain blocks.
 
-use super::{bwt, lzp, mtf_ari, rec, st4, GrzError, GRZ_CRC_ERROR, GRZ_MAX_BLOCK_SIZE, GRZ_UNEXPECTED_EOF};
+use super::{bwt, lzp, mtf_ari, rec, st4, wfc_ari, GrzError, GRZ_CRC_ERROR, GRZ_MAX_BLOCK_SIZE, GRZ_UNEXPECTED_EOF};
 
 /// `RESERVED` -- the constant stored in two header words as an integrity check.
 const RESERVED: i32 = 0;
@@ -184,10 +184,6 @@ fn decompress_block_at(input: &[u8], out: &mut [u8], depth: u32) -> Result<usize
 }
 
 /// The entropy stage: MTF-arith or WFC-arith per `GRZ_Compression_MTF`.
-///
-/// The WFC half (`WFC_Ari.c`, 759 lines) is not ported yet, so a block that
-/// selects it is rejected. That is the last remaining hole, and it is why
-/// nothing here is wired to `grzip_decompress` and the C decoder still runs.
 fn entropy_decode(
     body: &[u8],
     work: &mut [u8],
@@ -197,6 +193,6 @@ fn entropy_decode(
     if mode & COMPRESSION_MTF != 0 {
         mtf_ari::decode(body, work, out_size)
     } else {
-        Err(GRZ_CRC_ERROR)
+        wfc_ari::decode(body, work, out_size)
     }
 }

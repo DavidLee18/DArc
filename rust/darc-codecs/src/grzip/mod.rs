@@ -28,12 +28,14 @@
 
 #![allow(dead_code)] // WIP: stages land before the dispatcher that uses them
 
+pub mod ari;
 pub mod block;
 pub mod bwt;
 pub mod lzp;
 pub mod mtf_ari;
 pub mod rec;
 pub mod st4;
+pub mod wfc_ari;
 
 use core::ffi::c_int;
 

@@ -7,9 +7,8 @@
 # and it is where every ported stage actually runs.
 #
 # The mode word selects the pipeline: bit1 picks ST4 over BWT, bit2 picks the
-# MTF arithmetic coder over WFC, and the upper bits carry LZP parameters. Only
-# the MTF modes are tested, because WFC_Ari.c is not ported yet -- those modes
-# are asserted to REJECT cleanly rather than silently produce wrong bytes.
+# MTF arithmetic coder over WFC, and the upper bits carry LZP parameters. All
+# four transform/coder combinations are covered, with LZP off and on.
 set -uo pipefail
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 W="${TMPDIR:-/tmp}/grzip-check.$$"; mkdir -p "$W"
@@ -58,8 +57,8 @@ for n in (1,2,3,4,27,28,29,255,256,257,4096,65537):
     w(f"n_{n}", (b"the quick brown fox "*4000)[:n])
 PY
 
-total=0; wfc_bad=0
-for mode in 4 6 0x104 0x106 0x50104; do
+total=0
+for mode in 0 2 4 6 0x100 0x102 0x104 0x106 0x50104 0x50100; do
   fail=0; n=0
   for f in "$W"/in/*; do
     n=$((n+1)); name=$(basename "$f")
@@ -74,16 +73,5 @@ for mode in 4 6 0x104 0x106 0x50104; do
   total=$((total+fail))
 done
 
-# WFC is not ported. Assert it is REJECTED rather than quietly decoded wrong --
-# a stage that silently produces plausible bytes is worse than one that errors.
-for mode in 0 2; do
-  "$W/c"  c "$mode" < "$W/in/text" >| "$W/s" 2>/dev/null
-  if "$W/rs" d 4000000 < "$W/s" >| "$W/or" 2>/dev/null; then
-    echo "  [mode $mode] WFC is NOT ported but the port returned success"; wfc_bad=$((wfc_bad+1))
-  fi
-done
-[ "$wfc_bad" -eq 0 ] && echo "  [WFC modes] correctly rejected (not yet ported)"
-
 echo "grzip decode: $total total differing"
-[ "$total" -eq 0 ] && [ "$wfc_bad" -eq 0 ] \
-  && echo "GRZip MTF path matches the C original byte for byte" || exit 1
+[ "$total" -eq 0 ] && echo "GRZip decoder matches the C original byte for byte" || exit 1
