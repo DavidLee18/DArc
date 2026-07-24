@@ -30,7 +30,7 @@ Since Wine has no ARM64 emulation, the ARM64 binary cannot be exercised on the m
 
 Binaries land in `Tests/`, which despite the name is a build *output* directory, not a test suite — it holds the produced binaries (gitignored via `Tests/*arc`) alongside the committed `arc.groups` solid-ordering config.
 
-Prerequisites: `mhs`, `clang`, `make`, `liblua5.1-dev`, `libncurses-dev`. `libcurl` is optional and auto-detected — its absence adds `-DFREEARC_NOURL` and drops URL-archive support. CI pins MicroHs to a specific commit SHA with a checksum (`.github/workflows/build.yml`); match that commit when reproducing CI failures locally.
+Prerequisites: `mhs`, `clang`, `make`, `cargo`, `liblua5.1-dev`, `libncurses-dev`. **The Rust codecs are built and linked by default** — `cargo` is required. `DARC_NO_RUST=1` opts out and builds the C implementations instead; it exists so CI can build both and prove they produce identical archives. `libcurl` is optional and auto-detected — its absence adds `-DFREEARC_NOURL` and drops URL-archive support. CI pins MicroHs to a specific commit SHA with a checksum (`.github/workflows/build.yml`); match that commit when reproducing CI failures locally.
 
 ### Build-system gotchas
 
@@ -48,6 +48,7 @@ CPP defines are the main axis of variation, threaded through both the Haskell an
 | `FREEARC_UNIX` / `FREEARC_WIN` | Target OS |
 | `FREEARC_64BIT` | Set from `getconf LONG_BIT` |
 | `__MHS__` | Building under MicroHs rather than GHC |
+| `DARC_RUST` | Codec entry points come from the Rust crates (default; `DARC_NO_RUST=1` disables) |
 | `FREEARC_GUI` | Build the GUI binary instead of console |
 | `FREEARC_NOURL` | No libcurl/WinInet — URL support compiled out |
 | `FREEARC_NO_LUA` | No Lua — `Options.hs` stubs the interpreter out |

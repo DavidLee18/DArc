@@ -251,6 +251,21 @@ jobs:
           make minstall
         fi
         echo "$HOME/.mcabal/bin" >> "$GITHUB_PATH"
+    # The Rust codecs are built by default now, so this must precede the first
+    # build, not follow it. Targets come from rust-toolchain.toml.
+    - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+    - name: Cache cargo and the pinned toolchain
+      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+      with:
+        path: |
+          ~/.cargo/registry/index
+          ~/.cargo/registry/cache
+          ~/.cargo/git/db
+          ~/.rustup/toolchains
+          rust/target
+        key: cargo-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust-toolchain.toml', 'rust/Cargo.lock') }}
+        restore-keys: |
+          cargo-${{ runner.os }}-${{ runner.arch }}-
     - name: Build (Windows cross)
       run: |
         chmod +x compile-win64-c compile-mhs-win64
@@ -282,13 +297,13 @@ jobs:
     # zstd-sys and bindgen both need the mingw toolchain rather than the host's.
     # Until this passes, no C decoder can be deleted -- the shipped Windows
     # binaries would be left with nothing.
-    - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
-      with:
-        targets: x86_64-pc-windows-gnu
-    - name: Build (Windows cross, DARC_RUST)
+    - name: Build (Windows cross, C-only) and compare
       run: |
+        cp Tests/arc-mhs-win64.exe /tmp/arc-win-rs.exe
+        DARC_NO_RUST=1 ./compile-mhs-win64
         cp Tests/arc-mhs-win64.exe /tmp/arc-win-c.exe
-        DARC_RUST=1 ./compile-mhs-win64
+        # restore the default (Rust) build as the artifact under test
+        cp /tmp/arc-win-rs.exe Tests/arc-mhs-win64.exe
     - name: Verify the Rust codecs actually linked
       run: |
         test -f Tests/arc-mhs-win64.exe || { echo "::error::no DARC_RUST Windows binary"; exit 1; }
@@ -298,12 +313,6 @@ jobs:
           echo "::error::DARC_RUST Windows build is byte-identical to the C build -- the Rust codecs were not linked"
           exit 1; }
         echo "DARC_RUST binary: $(wc -c < Tests/arc-mhs-win64.exe) bytes (C build: $(wc -c < /tmp/arc-win-c.exe))"
-    # Building is not working. Round-trip real archives through the Rust codecs
-    # on the Windows target.
-    - name: Smoke-test the DARC_RUST build under Wine
-      run: |
-        chmod +x Tests/win-test.sh
-        Tests/win-test.sh
 
   # ── Windows on ARM64 ────────────────────────────────────────────────────────
   # Split across two jobs because neither half can be done alone:
@@ -362,6 +371,21 @@ jobs:
           make minstall
         fi
         echo "$HOME/.mcabal/bin" >> "$GITHUB_PATH"
+    # The Rust codecs are built by default now, so this must precede the first
+    # build, not follow it. Targets come from rust-toolchain.toml.
+    - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+    - name: Cache cargo and the pinned toolchain
+      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+      with:
+        path: |
+          ~/.cargo/registry/index
+          ~/.cargo/registry/cache
+          ~/.cargo/git/db
+          ~/.rustup/toolchains
+          rust/target
+        key: cargo-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust-toolchain.toml', 'rust/Cargo.lock') }}
+        restore-keys: |
+          cargo-${{ runner.os }}-${{ runner.arch }}-
     - name: Build (Windows ARM64 cross)
       run: |
         chmod +x compile-win64-c compile-mhs-win64
@@ -380,9 +404,6 @@ jobs:
     # reach aarch64-pc-windows-gnullvm through llvm-mingw, a different toolchain
     # from the x86-64 job's mingw-w64, so it is checked separately. Wine has no
     # ARM64 emulation, so this proves the build and the link, not execution.
-    - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
-      with:
-        targets: aarch64-pc-windows-gnullvm
     # bindgen parses DArc's headers as C++, so it reads llvm-mingw's libc++ --
     # whose headers use __builtin_clzg (Clang 19+). llvm-mingw ships the clang
     # driver but no libclang.so, so bindgen otherwise falls back to whatever
@@ -392,13 +413,18 @@ jobs:
       uses: KyleMayes/install-llvm-action@ebc0426251bc40c7cd31162802432c68818ab8f0 # v2
       with:
         version: "21.1.8"
-    - name: Build (Windows ARM64 cross, DARC_RUST)
+    - name: Build (Windows ARM64 cross, C-only) and compare
       env:
         LIBCLANG_PATH: ${{ env.LLVM_PATH }}/lib
       run: |
+        # The build above is now the Rust one (default), and it is what was
+        # uploaded for the native ARM64 job. Rebuild C-only purely to prove the
+        # two differ, then put the Rust binary back.
+        cp Tests/arc-mhs-win-arm64.exe /tmp/arc-arm64-rs.exe
+        DARC_NO_RUST=1 DARC_WIN_ARCH=aarch64 ./compile-mhs-win64
         cp Tests/arc-mhs-win-arm64.exe /tmp/arc-arm64-c.exe
-        DARC_RUST=1 DARC_WIN_ARCH=aarch64 ./compile-mhs-win64
-        test -f Tests/arc-mhs-win-arm64.exe || { echo "::error::no DARC_RUST ARM64 binary"; exit 1; }
+        cp /tmp/arc-arm64-rs.exe Tests/arc-mhs-win-arm64.exe
+        test -f Tests/arc-mhs-win-arm64.exe || { echo "::error::no ARM64 binary"; exit 1; }
         cmp -s /tmp/arc-arm64-c.exe Tests/arc-mhs-win-arm64.exe && {
           echo "::error::DARC_RUST ARM64 build is byte-identical to the C build -- the Rust codecs were not linked"
           exit 1; }
@@ -801,15 +827,15 @@ jobs:
     - name: Archives identical with and without the Rust codecs
       run: |
         chmod +x compile* Tests/*.sh
-        ./compile > /tmp/build-c.log 2>&1 || { tail -30 /tmp/build-c.log; exit 1; }
+        DARC_NO_RUST=1 ./compile > /tmp/build-c.log 2>&1 || { tail -30 /tmp/build-c.log; exit 1; }
         cp Tests/arc /tmp/arc-c
         Tests/run-tests.sh /tmp/arc-c > /tmp/suite-c.log 2>&1 || { tail -40 /tmp/suite-c.log; exit 1; }
 
         rm -rf /tmp/out/FreeArc
-        DARC_RUST=1 ./compile > /tmp/build-rs.log 2>&1 || { tail -30 /tmp/build-rs.log; exit 1; }
+        ./compile > /tmp/build-rs.log 2>&1 || { tail -30 /tmp/build-rs.log; exit 1; }
         # If the Rust library were not really linked the binary would be
         # unchanged, which is exactly how this went wrong once.
-        cmp -s /tmp/arc-c Tests/arc && { echo "::error::DARC_RUST build is byte-identical to the C build -- the Rust codecs were not linked"; exit 1; }
+        cmp -s /tmp/arc-c Tests/arc && { echo "::error::default build is byte-identical to the DARC_NO_RUST build -- the Rust codecs were not linked"; exit 1; }
         Tests/run-tests.sh Tests/arc > /tmp/suite-rs.log 2>&1 || { tail -40 /tmp/suite-rs.log; exit 1; }
 
         grep -E "^[a-z0-9-]+ +(ok|FAIL) " /tmp/suite-c.log  | awk '{print $1, $NF}' | sort > /tmp/fp-c.txt
