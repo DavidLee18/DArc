@@ -424,3 +424,310 @@ mod tests {
         }
     }
 }
+
+/// `bsc_qlfc_adaptive_decode` (qlfc.cpp:1437).
+///
+/// Structurally identical to [`static_decode`]: same preamble, same
+/// (rank, run) pairs, same context updates. Two things differ, and they are the
+/// entire distinction between the coders:
+///
+/// * the probability comes from a learned [`ProbabilityMixer`] via `Mixup`
+///   rather than the fixed-weight `mix3`, and every branch also calls
+///   `UpdateBit0`/`UpdateBit1` on that mixer;
+/// * the tuning constants are the `M_` family rather than `F_`.
+///
+/// The mixer *selection* indices are read from the source, not inferred:
+/// the exponent mixers are `[max(history, bitSize)][bitSize]`, the escape mixer
+/// is indexed by the running `context`, and the mantissa mixers by `bitSize`.
+///
+/// The C duplicates the whole body rather than sharing it, and so does this.
+/// An abstraction over the two would have to be right in every branch of both;
+/// a wrong shared helper is a worse failure than duplication, and the
+/// duplication is at least checkable line-against-line.
+pub fn adaptive_decode(input: &[u8], output: &mut [u8]) -> Result<usize, i32> {
+    let mut model = QlfcModel1::new();
+    let mut coder = RangeDecoder::new(input);
+
+    let mut mtf = [0u8; ALPHABET_SIZE];
+    let mut context_rank0 = 0usize;
+    let mut context_rank4 = 0usize;
+    let mut context_run = 0usize;
+    let mut max_rank = 7i32;
+    let mut avg_rank = 0i32;
+    let mut rank_history = [0u8; ALPHABET_SIZE];
+    let mut run_history = [0u8; ALPHABET_SIZE];
+
+    let n = coder.decode_word() as usize;
+    if n > output.len() {
+        return Err(LIBBSC_DATA_CORRUPT);
+    }
+
+    // Alphabet preamble -- identical to the static coder's.
+    let mut used_char = [0u8; ALPHABET_SIZE];
+    let mut prev_char: i32 = -1;
+    for rank in 0..ALPHABET_SIZE {
+        let mut current_char: i32 = 0;
+        for bit in (0..8).rev() {
+            let (mut bit0, mut bit1) = (false, false);
+            for c in 0..ALPHABET_SIZE as i32 {
+                if (c == prev_char || used_char[c as usize] == 0) && current_char == (c >> (bit + 1)) {
+                    if c & (1 << bit) != 0 { bit1 = true } else { bit0 = true }
+                    if bit0 && bit1 { break }
+                }
+            }
+            if bit0 && bit1 {
+                current_char += current_char + coder.decode_bit() as i32;
+            } else if bit0 {
+                current_char += current_char;
+            } else if bit1 {
+                current_char += current_char + 1;
+            }
+        }
+        mtf[rank] = current_char as u8;
+        if current_char == prev_char {
+            max_rank = bit_scan_reverse(rank as u32 - 1) as i32;
+            break;
+        }
+        prev_char = current_char;
+        used_char[current_char as usize] = 1;
+    }
+    if !(0..=7).contains(&max_rank) {
+        return Err(LIBBSC_DATA_CORRUPT);
+    }
+
+    let mut i = 0usize;
+    while i < n {
+        if coder.overrun() > MAX_OVERRUN {
+            return Err(LIBBSC_DATA_CORRUPT);
+        }
+
+        let current_char = mtf[0] as usize;
+        let history = rank_history[current_char] as usize;
+        let state = model_rank_state(context_rank4, context_run, history);
+
+        let mut rank: i32 = 1;
+        if avg_rank < 32 {
+            let p = model.mixer_of_rank[current_char].mixup(
+                model.rank.char_model[current_char] as i32,
+                model.rank.state_model[state] as i32,
+                model.rank.static_model as i32,
+            ) as u32;
+            if coder.decode_bit_p(p) != 0 {
+                ProbabilityCounter::update_bit1(&mut model.rank.state_model[state], M_RANK_TS_TH1, M_RANK_TS_AR1);
+                ProbabilityCounter::update_bit1(&mut model.rank.char_model[current_char], M_RANK_TC_TH1, M_RANK_TC_AR1);
+                ProbabilityCounter::update_bit1(&mut model.rank.static_model, M_RANK_TP_TH1, M_RANK_TP_AR1);
+                model.mixer_of_rank[current_char].update_bit1(M_RANK_TM_LR0, M_RANK_TM_LR1, M_RANK_TM_LR2, M_RANK_TM_TH1, M_RANK_TM_AR1);
+
+                let mut bit_rank_size: usize = 1;
+                let mut k: usize = 0;
+                // mixerOfRankExponent[max(history,1)][1] to start.
+                let mut mrow = history.max(1).min(7);
+                let mut mcol = 1usize;
+                loop {
+                    if bit_rank_size as i32 == max_rank { break }
+                    let p = model.mixer_of_rank_exponent[mrow][mcol].mixup(
+                        model.rank.exponent.char_model[current_char][k] as i32,
+                        model.rank.exponent.state_model[state][k] as i32,
+                        model.rank.exponent.static_model[k] as i32,
+                    ) as u32;
+                    if coder.decode_bit_p(p) != 0 {
+                        ProbabilityCounter::update_bit1(&mut model.rank.exponent.state_model[state][k], M_RANK_ES_TH1, M_RANK_ES_AR1);
+                        ProbabilityCounter::update_bit1(&mut model.rank.exponent.char_model[current_char][k], M_RANK_EC_TH1, M_RANK_EC_AR1);
+                        ProbabilityCounter::update_bit1(&mut model.rank.exponent.static_model[k], M_RANK_EP_TH1, M_RANK_EP_AR1);
+                        model.mixer_of_rank_exponent[mrow][mcol].update_bit1(M_RANK_EM_LR0, M_RANK_EM_LR1, M_RANK_EM_LR2, M_RANK_EM_TH1, M_RANK_EM_AR1);
+                        k += 1;
+                        bit_rank_size += 1;
+                        if k >= 8 || bit_rank_size > 7 { return Err(LIBBSC_DATA_CORRUPT) }
+                        mrow = history.max(bit_rank_size).min(7);
+                        mcol = bit_rank_size.min(7);
+                    } else {
+                        ProbabilityCounter::update_bit0(&mut model.rank.exponent.state_model[state][k], M_RANK_ES_TH0, M_RANK_ES_AR0);
+                        ProbabilityCounter::update_bit0(&mut model.rank.exponent.char_model[current_char][k], M_RANK_EC_TH0, M_RANK_EC_AR0);
+                        ProbabilityCounter::update_bit0(&mut model.rank.exponent.static_model[k], M_RANK_EP_TH0, M_RANK_EP_AR0);
+                        model.mixer_of_rank_exponent[mrow][mcol].update_bit0(M_RANK_EM_LR0, M_RANK_EM_LR1, M_RANK_EM_LR2, M_RANK_EM_TH0, M_RANK_EM_AR0);
+                        break;
+                    }
+                }
+
+                rank_history[current_char] = bit_rank_size as u8;
+
+                for _ in (0..bit_rank_size).rev() {
+                    let idx = rank as usize;
+                    if idx >= ALPHABET_SIZE { return Err(LIBBSC_DATA_CORRUPT) }
+                    let (c, s, st) = {
+                        let m = &model.rank.mantissa[bit_rank_size];
+                        (m.char_model[current_char][idx] as i32,
+                         m.state_model[state][idx] as i32,
+                         m.static_model[idx] as i32)
+                    };
+                    let p = model.mixer_of_rank_mantissa[bit_rank_size].mixup(c, s, st) as u32;
+                    let b = coder.decode_bit_p(p);
+                    {
+                        let m = &mut model.rank.mantissa[bit_rank_size];
+                        if b != 0 {
+                            ProbabilityCounter::update_bit1(&mut m.state_model[state][idx], M_RANK_MS_TH1, M_RANK_MS_AR1);
+                            ProbabilityCounter::update_bit1(&mut m.char_model[current_char][idx], M_RANK_MC_TH1, M_RANK_MC_AR1);
+                            ProbabilityCounter::update_bit1(&mut m.static_model[idx], M_RANK_MP_TH1, M_RANK_MP_AR1);
+                        } else {
+                            ProbabilityCounter::update_bit0(&mut m.state_model[state][idx], M_RANK_MS_TH0, M_RANK_MS_AR0);
+                            ProbabilityCounter::update_bit0(&mut m.char_model[current_char][idx], M_RANK_MC_TH0, M_RANK_MC_AR0);
+                            ProbabilityCounter::update_bit0(&mut m.static_model[idx], M_RANK_MP_TH0, M_RANK_MP_AR0);
+                        }
+                    }
+                    if b != 0 {
+                        model.mixer_of_rank_mantissa[bit_rank_size].update_bit1(M_RANK_MM_LR0, M_RANK_MM_LR1, M_RANK_MM_LR2, M_RANK_MM_TH1, M_RANK_MM_AR1);
+                    } else {
+                        model.mixer_of_rank_mantissa[bit_rank_size].update_bit0(M_RANK_MM_LR0, M_RANK_MM_LR1, M_RANK_MM_LR2, M_RANK_MM_TH0, M_RANK_MM_AR0);
+                    }
+                    rank += rank + b as i32;
+                }
+            } else {
+                rank_history[current_char] = 0;
+                ProbabilityCounter::update_bit0(&mut model.rank.state_model[state], M_RANK_TS_TH0, M_RANK_TS_AR0);
+                ProbabilityCounter::update_bit0(&mut model.rank.char_model[current_char], M_RANK_TC_TH0, M_RANK_TC_AR0);
+                ProbabilityCounter::update_bit0(&mut model.rank.static_model, M_RANK_TP_TH0, M_RANK_TP_AR0);
+                model.mixer_of_rank[current_char].update_bit0(M_RANK_TM_LR0, M_RANK_TM_LR1, M_RANK_TM_LR2, M_RANK_TM_TH0, M_RANK_TM_AR0);
+            }
+        } else {
+            rank = 0;
+            let mut context: usize = 1;
+            for _ in (0..=max_rank).rev() {
+                if context >= ALPHABET_SIZE { return Err(LIBBSC_DATA_CORRUPT) }
+                let p = model.mixer_of_rank_escape[context].mixup(
+                    model.rank.escape.char_model[current_char][context] as i32,
+                    model.rank.escape.state_model[state][context] as i32,
+                    model.rank.escape.static_model[context] as i32,
+                ) as u32;
+                let b = coder.decode_bit_p(p);
+                if b != 0 {
+                    ProbabilityCounter::update_bit1(&mut model.rank.escape.state_model[state][context], M_RANK_PS_TH1, M_RANK_PS_AR1);
+                    ProbabilityCounter::update_bit1(&mut model.rank.escape.char_model[current_char][context], M_RANK_PC_TH1, M_RANK_PC_AR1);
+                    ProbabilityCounter::update_bit1(&mut model.rank.escape.static_model[context], M_RANK_PP_TH1, M_RANK_PP_AR1);
+                    model.mixer_of_rank_escape[context].update_bit1(M_RANK_PM_LR0, M_RANK_PM_LR1, M_RANK_PM_LR2, M_RANK_PM_TH1, M_RANK_PM_AR1);
+                } else {
+                    ProbabilityCounter::update_bit0(&mut model.rank.escape.state_model[state][context], M_RANK_PS_TH0, M_RANK_PS_AR0);
+                    ProbabilityCounter::update_bit0(&mut model.rank.escape.char_model[current_char][context], M_RANK_PC_TH0, M_RANK_PC_AR0);
+                    ProbabilityCounter::update_bit0(&mut model.rank.escape.static_model[context], M_RANK_PP_TH0, M_RANK_PP_AR0);
+                    model.mixer_of_rank_escape[context].update_bit0(M_RANK_PM_LR0, M_RANK_PM_LR1, M_RANK_PM_LR2, M_RANK_PM_TH0, M_RANK_PM_AR0);
+                }
+                context += context + b as usize;
+                rank += rank + b as i32;
+            }
+            rank_history[current_char] = bit_scan_reverse(rank as u32) as u8;
+        }
+
+        let r = rank as usize;
+        if r >= ALPHABET_SIZE { return Err(LIBBSC_DATA_CORRUPT) }
+        for j in 0..r { mtf[j] = mtf[j + 1] }
+        mtf[r] = current_char as u8;
+
+        avg_rank = (avg_rank * 124 + rank * 4) >> 7;
+        rank -= 1;
+
+        let history = run_history[current_char] as usize;
+        let state = model_run_state(context_rank0, context_run, rank.max(0) as usize, history);
+
+        let p = model.mixer_of_run[current_char].mixup(
+            model.run.char_model[current_char] as i32,
+            model.run.state_model[state] as i32,
+            model.run.static_model as i32,
+        ) as u32;
+        if coder.decode_bit_p(p) != 0 {
+            ProbabilityCounter::update_bit1(&mut model.run.state_model[state], M_RUN_TS_TH1, M_RUN_TS_AR1);
+            ProbabilityCounter::update_bit1(&mut model.run.char_model[current_char], M_RUN_TC_TH1, M_RUN_TC_AR1);
+            ProbabilityCounter::update_bit1(&mut model.run.static_model, M_RUN_TP_TH1, M_RUN_TP_AR1);
+            model.mixer_of_run[current_char].update_bit1(M_RUN_TM_LR0, M_RUN_TM_LR1, M_RUN_TM_LR2, M_RUN_TM_TH1, M_RUN_TM_AR1);
+
+            let mut run_size: i64 = 1;
+            let mut bit_run_size: usize = 1;
+            let mut k: usize = 0;
+            let mut mrow = history.max(1).min(31);
+            let mut mcol = 1usize;
+            loop {
+                if k >= 32 { return Err(LIBBSC_DATA_CORRUPT) }
+                let p = model.mixer_of_run_exponent[mrow][mcol].mixup(
+                    model.run.exponent.char_model[current_char][k] as i32,
+                    model.run.exponent.state_model[state][k] as i32,
+                    model.run.exponent.static_model[k] as i32,
+                ) as u32;
+                if coder.decode_bit_p(p) != 0 {
+                    ProbabilityCounter::update_bit1(&mut model.run.exponent.state_model[state][k], M_RUN_ES_TH1, M_RUN_ES_AR1);
+                    ProbabilityCounter::update_bit1(&mut model.run.exponent.char_model[current_char][k], M_RUN_EC_TH1, M_RUN_EC_AR1);
+                    ProbabilityCounter::update_bit1(&mut model.run.exponent.static_model[k], M_RUN_EP_TH1, M_RUN_EP_AR1);
+                    model.mixer_of_run_exponent[mrow][mcol].update_bit1(M_RUN_EM_LR0, M_RUN_EM_LR1, M_RUN_EM_LR2, M_RUN_EM_TH1, M_RUN_EM_AR1);
+                    k += 1;
+                    bit_run_size += 1;
+                    if bit_run_size >= 32 { return Err(LIBBSC_DATA_CORRUPT) }
+                    mrow = history.max(bit_run_size).min(31);
+                    mcol = bit_run_size.min(31);
+                } else {
+                    ProbabilityCounter::update_bit0(&mut model.run.exponent.state_model[state][k], M_RUN_ES_TH0, M_RUN_ES_AR0);
+                    ProbabilityCounter::update_bit0(&mut model.run.exponent.char_model[current_char][k], M_RUN_EC_TH0, M_RUN_EC_AR0);
+                    ProbabilityCounter::update_bit0(&mut model.run.exponent.static_model[k], M_RUN_EP_TH0, M_RUN_EP_AR0);
+                    model.mixer_of_run_exponent[mrow][mcol].update_bit0(M_RUN_EM_LR0, M_RUN_EM_LR1, M_RUN_EM_LR2, M_RUN_EM_TH0, M_RUN_EM_AR0);
+                    break;
+                }
+            }
+
+            run_history[current_char] =
+                ((run_history[current_char] as i32 + 3 * bit_run_size as i32 + 3) >> 2) as u8;
+
+            let mut context: usize = 1;
+            for _ in (0..bit_run_size).rev() {
+                if context >= 32 { return Err(LIBBSC_DATA_CORRUPT) }
+                let (c, s, st) = {
+                    let m = &model.run.mantissa[bit_run_size];
+                    (m.char_model[current_char][context] as i32,
+                     m.state_model[state][context] as i32,
+                     m.static_model[context] as i32)
+                };
+                let p = model.mixer_of_run_mantissa[bit_run_size].mixup(c, s, st) as u32;
+                let b = coder.decode_bit_p(p);
+                {
+                    let m = &mut model.run.mantissa[bit_run_size];
+                    if b != 0 {
+                        ProbabilityCounter::update_bit1(&mut m.state_model[state][context], M_RUN_MS_TH1, M_RUN_MS_AR1);
+                        ProbabilityCounter::update_bit1(&mut m.char_model[current_char][context], M_RUN_MC_TH1, M_RUN_MC_AR1);
+                        ProbabilityCounter::update_bit1(&mut m.static_model[context], M_RUN_MP_TH1, M_RUN_MP_AR1);
+                    } else {
+                        ProbabilityCounter::update_bit0(&mut m.state_model[state][context], M_RUN_MS_TH0, M_RUN_MS_AR0);
+                        ProbabilityCounter::update_bit0(&mut m.char_model[current_char][context], M_RUN_MC_TH0, M_RUN_MC_AR0);
+                        ProbabilityCounter::update_bit0(&mut m.static_model[context], M_RUN_MP_TH0, M_RUN_MP_AR0);
+                    }
+                }
+                if b != 0 {
+                    model.mixer_of_run_mantissa[bit_run_size].update_bit1(M_RUN_MM_LR0, M_RUN_MM_LR1, M_RUN_MM_LR2, M_RUN_MM_TH1, M_RUN_MM_AR1);
+                } else {
+                    model.mixer_of_run_mantissa[bit_run_size].update_bit0(M_RUN_MM_LR0, M_RUN_MM_LR1, M_RUN_MM_LR2, M_RUN_MM_TH0, M_RUN_MM_AR0);
+                }
+                run_size += run_size + b as i64;
+                // Same quirk as the static coder, written the other way round:
+                // only runs of at most 5 bits accumulate into the context.
+                if bit_run_size <= 5 { context += context + b as usize } else { context += 1 }
+            }
+
+            context_rank0 = ((context_rank0 << 1) | usize::from(rank == 0)) & 0x7;
+            context_rank4 = ((context_rank4 << 2) | (rank.clamp(0, 3) as usize)) & 0xff;
+            context_run = ((context_run << 1) | usize::from(run_size < 3)) & 0xf;
+
+            if run_size < 0 || i as i64 + run_size > n as i64 { return Err(LIBBSC_DATA_CORRUPT) }
+            for _ in 0..run_size { output[i] = current_char as u8; i += 1 }
+        } else {
+            run_history[current_char] = ((run_history[current_char] as i32 + 2) >> 2) as u8;
+            ProbabilityCounter::update_bit0(&mut model.run.state_model[state], M_RUN_TS_TH0, M_RUN_TS_AR0);
+            ProbabilityCounter::update_bit0(&mut model.run.char_model[current_char], M_RUN_TC_TH0, M_RUN_TC_AR0);
+            ProbabilityCounter::update_bit0(&mut model.run.static_model, M_RUN_TP_TH0, M_RUN_TP_AR0);
+            model.mixer_of_run[current_char].update_bit0(M_RUN_TM_LR0, M_RUN_TM_LR1, M_RUN_TM_LR2, M_RUN_TM_TH0, M_RUN_TM_AR0);
+
+            context_rank0 = ((context_rank0 << 1) | usize::from(rank == 0)) & 0x7;
+            context_rank4 = ((context_rank4 << 2) | (rank.clamp(0, 3) as usize)) & 0xff;
+            context_run = ((context_run << 1) | 1) & 0xf;
+
+            if i >= n { return Err(LIBBSC_DATA_CORRUPT) }
+            output[i] = current_char as u8;
+            i += 1;
+        }
+    }
+
+    Ok(n)
+}
