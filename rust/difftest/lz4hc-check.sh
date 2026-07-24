@@ -2,18 +2,10 @@
 # Differential-test the LZ4-HC encoder port against the C LZ4_compress_HC.
 #
 # LZ4-HC is encoder-only and emits ordinary LZ4 blocks, so the format-valid rule
-# would have allowed a port that merely decodes correctly. It turned out that
-# both strategies DArc can reach -- `lz4mid` (levels 1-2) and the `lz4hc` hash
-# chain (levels 3-9) -- port exactly, so this harness gates on the much stronger
-# property instead:
-#
-#   * levels 1-9      BYTE-IDENTICAL to the C encoder, and
-#   * levels 10-12    decode correctly, with the size gap reported.
-#
-# Levels 10-12 select the C's `lz4opt` optimal parser, which is not ported; they
-# clamp to level 9. That gap is measured rather than asserted, because asserting
-# it would be pinning a known difference rather than catching a regression. It
-# is small and not one-sided: level 10 comes out *smaller* than the C.
+# would have allowed a port that merely decodes correctly. All three strategies
+# port exactly -- `lz4mid` (1-2), the `lz4hc` hash chain (3-9) and the `lz4opt`
+# optimal parser (10-12) -- so this harness gates on the much stronger property:
+# EVERY level must be BYTE-IDENTICAL to the C encoder.
 #
 # Every block is additionally decoded with the *C* LZ4_decompress_safe rather
 # than lz4_flex. Two Rust implementations could otherwise share a misreading of
@@ -60,6 +52,34 @@ w("skew",     bytes((0 if (i*2654435761>>28)&7 else (i%251)) for i in range(1500
 w("sparse",   b"".join((b"\x00"*300 + bytes([i%251])) for i in range(500)))
 w("noise",    prng(9, 200000))
 w("alphabet", bytes(i%256 for i in range(200000)))
+# Built for the OPTIMAL parser (levels 10-12), which most inputs never really
+# exercise: a match longer than `sufficient_len` (64 at level 10) short-circuits
+# straight to immediate encoding, and incompressible data yields no matches to
+# price at all -- so highly repetitive AND random inputs both skip the price
+# table. This interleaves SHORT matches (20-40 bytes, under sufficient_len) with
+# literal runs past 269 bytes, which is where `literalsPrice` picks up its extra
+# length byte. Without it, changing the cost of every sequence moved only 2 of
+# 24 inputs.
+pool = [bytes(((i*7+j*13) % 251) for j in range(20 + (i % 21))) for i in range(24)]
+seg = bytearray()
+for i in range(400):
+    seg += prng(1000+i, 280 + (i*37) % 400)
+    seg += pool[i % len(pool)]
+w("priced", bytes(seg))
+# The above gives one candidate match per region, which makes the parser
+# degenerate to greedy -- prices never decide anything. This one supplies
+# COMPETING matches: a small vocabulary emitted in varying order, so phrases
+# recur partially at many distances and the parser must weigh "short match now"
+# against "literals now, longer match later". Long noise runs are injected so
+# some of those decisions carry a literal run past 269 bytes.
+vocab = [bytes(((i*29+j*7) % 26) + 97 for j in range(3 + (i % 10))) for i in range(120)]
+txt = bytearray(); st = 12345
+for i in range(6000):
+    st = (st*1103515245+12345) & 0xffffffff
+    txt += vocab[(st >> 16) % len(vocab)] + b" "
+    if i % 200 == 0:
+        txt += prng(7000+i, 300 + (i % 300))
+w("competing", bytes(txt))
 # Offsets are 16 bits, so a match further back than 65535 cannot be encoded.
 # These straddle that window, where an off-by-one in lowest_match_index shows.
 w("window",   prng(3,70000) + prng(3,70000)[:2000])
@@ -86,18 +106,13 @@ for lvl in 1 2 3 4 5 6 7 8 9 10 11 12; do
       identical=$((identical+1))
     else
       ndiff=$((ndiff+1)); names="$names $bn"
-      # Levels 1-9 must match the C exactly.
-      [ "$lvl" -le 9 ] && { echo "  [L$lvl] $bn: differs from the C encoder"; fail=$((fail+1)); }
+      echo "  [L$lvl] $bn: differs from the C encoder"; fail=$((fail+1))
     fi
   done
-  pct=$(python3 -c "print(f'{($rtot-$ctot)*100.0/$ctot:+.3f}%')" 2>/dev/null || echo "n/a")
-  if [ "$lvl" -le 9 ]; then
-    echo "  [L$lvl] $nfile inputs, $((nfile-ndiff)) byte-identical to the C"
-  else
-    echo "  [L$lvl] $nfile inputs, $ndiff differ (lz4opt not ported), size $pct:$names"
-  fi
+  strat=$([ "$lvl" -le 2 ] && echo lz4mid || { [ "$lvl" -le 9 ] && echo lz4hc || echo lz4opt; })
+  echo "  [L$lvl] ($strat) $nfile inputs, $((nfile-ndiff)) byte-identical to the C"
 done
 
 [ "$tested" -gt 0 ] || { echo "no inputs were compressed -- harness reached nothing"; exit 1; }
 [ "$fail" -eq 0 ] || { echo "lz4hc: $fail failures"; exit 1; }
-echo "lz4hc: $identical/$tested byte-identical; levels 1-9 match the C exactly, all levels decode"
+echo "lz4hc: $identical/$tested byte-identical -- every level matches the C exactly"

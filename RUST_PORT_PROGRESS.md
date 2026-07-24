@@ -211,15 +211,16 @@ Verified by deleting `rep.cpp`, `Delta.cpp` and `dict.cpp` from the working
 tree and re-running: all harnesses still pass. Bumping `DARC_C_REF_SHA` changes
 what "correct" means for every harness, so it is a deliberate act.
 
-### 7. Port `lz4hc.c` to Rust — DONE
+### 7. Port `lz4hc.c` to Rust — DONE, all three strategies
 
-`rust/darc-codecs/src/lz4hc.rs` ports both strategies DArc can select, and came
-out **byte-identical to the C for levels 1-9** (24 inputs per level,
-`rust/difftest/lz4hc-check.sh`) — stronger than the format-valid rule required.
-Levels 10-12 select the C's `lz4opt` optimal parser, which is not ported and
-clamps to level 9; that measures as a wash (level 10 is 0.12% *smaller* than
-the C, level 11 within 0.005%, only level 12 worse, by 0.027%). `lz4:hc` is
-level 9, so the path in actual use is exact.
+`rust/darc-codecs/src/lz4hc.rs` ports **every** strategy — `lz4mid` (levels
+1-2), the `lz4hc` hash chain (3-9) and the `lz4opt` optimal parser (10-12) —
+and is **byte-identical to the C at all twelve levels** (26 inputs per level,
+`rust/difftest/lz4hc-check.sh`, which gates on identity rather than size).
+
+The optimal parser landed in a follow-up. It also needed `chainSwap`, skipped
+the first time round because the hash-chain parser passes 0 for it at every
+call site; `LZ4HC_FindLongerMatch` is its only caller.
 
 All 292 KB of vendored C is gone (`lz4.c`, `lz4.h`, `lz4hc.c`, `lz4hc.h`,
 6,319 lines) and LZ4 is Rust-only, like zstd. `LZ4_compressBound` became an
@@ -236,10 +237,22 @@ both caught *only* by the repetitive corpus inputs:
   and only 0.08% larger — comfortably inside any ratio budget, so a
   size-threshold harness would have passed and hidden it. That is the argument
   for gating on byte-identity wherever it is achievable.
+- **`chainSwap`'s accelerating stride** is part of the result, not a speed
+  trick: changing `kTrigger` from 4 to 3 changes which matches are found.
 - **`lz4mid` fills its hash tables with a stale `ipIndex`** — the one captured
   at the top of the loop, which its own catch-back invalidates
   (`lz4hc.c:677-679`). Recomputing it is the obvious "cleanup" and makes output
   diverge on exactly the repetitive inputs.
+
+**One measured blind spot, recorded rather than papered over.**
+`literalsPrice`'s `1 + (litlen - RUN_MASK)/255` term is the only part of the
+port the harness cannot exercise: `/255`→`/254`, `>=`→`>`, and even
+multiplying the term by 10 all leave every input byte-identical, while a change
+to `sequencePrice`'s token cost is caught on 5 inputs. The cause is structural,
+not a thin corpus — at a given position every candidate path shares the same
+`llen`, so a constant added there cancels out of every comparison. Two corpus
+inputs were built specifically to break that (`priced`, `competing`) and did
+not. Those three lines are verified by transcription against the C only.
 
 ### 8. Hand-port PPMD (1,065 lines)
 

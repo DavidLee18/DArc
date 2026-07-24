@@ -9,21 +9,19 @@
 //!
 //! HC is **encoder-only** and emits ordinary LZ4 blocks, so the standing
 //! "format-valid is acceptable for standard formats" rule would have allowed an
-//! encoder that merely decodes correctly. Both strategies DArc can actually
-//! select turned out to port exactly, so this goes further and is
-//! **byte-identical to the C for levels 1-9** -- verified over 24 inputs per
-//! level by `rust/difftest/lz4hc-check.sh`.
+//! encoder that merely decodes correctly. Every strategy ported exactly, so this
+//! goes further and is **byte-identical to the C at all twelve levels** --
+//! verified over 26 inputs per level by `rust/difftest/lz4hc-check.sh`, which
+//! gates on that identity rather than on a size budget.
 //!
-//! Two strategies are implemented, matching the C's own selection table:
+//! All three strategies from the C's selection table are implemented:
 //!
 //! * [`compress_mid`] -- `LZ4MID_compressBlock`, levels 1-2.
-//! * The hash chain below -- `LZ4HC_compress_hashChain`, levels 3-9, including
-//!   the three-match lookahead parser and `patternAnalysis`. DArc's `lz4:hc`
-//!   keyword is level 9, so this is the path that gets used.
-//!
-//! Levels 10-12 select the C's `lz4opt` optimal parser, which is **not** ported;
-//! they clamp to level 9. That is the only knowing departure, and it measures as
-//! a wash -- see [`level_searches`].
+//! * The hash chain -- `LZ4HC_compress_hashChain`, levels 3-9, including the
+//!   three-match lookahead parser and `patternAnalysis`. DArc's `lz4:hc`
+//!   keyword is level 9, so this is the path that normally gets used.
+//! * [`compress_optimal`] -- `LZ4HC_compress_optimal`, levels 10-12, including
+//!   `chainSwap`, which only this parser enables.
 //!
 //! Deliberately not ported, because DArc never reaches them:
 //!
@@ -31,22 +29,25 @@
 //!   `LZ4_compress_HC`, so there is no external dictionary, no prefix carried
 //!   between blocks, and `limit` is always `limitedOutput`. That removes every
 //!   `extDict`/`dictCtx` branch from the search.
-//! * **`chainSwap`.** The hash-chain parser passes 0 for it at every call site
-//!   (`lz4hc.c:1117`, `:1171`, `:1216`); only the optimal parser turns it on.
-//! * **`favorDecSpeed`.** Likewise always `favorCompressionRatio` here.
+//! * **`favorDecSpeed`.** Reachable only via `LZ4_favorDecompressionSpeed()`,
+//!   which DArc never calls; the one-shot entry point zeroes the context.
 //!
 //! ## Where byte-identity actually came from
 //!
-//! Two details decided it, and neither is visible from the function signatures.
-//! Both were caught only by the repetitive corpus inputs (`runs`, `skew`),
-//! which is why those files are load-bearing rather than filler:
+//! Three details decided it, none visible from the function signatures, and
+//! each caught by only a couple of corpus inputs -- which is why those inputs
+//! are load-bearing rather than filler:
 //!
 //! * `patternAnalysis` (levels 9+) short-circuits chains of a single repeated
 //!   byte. Without it the output was still valid and only 0.08% larger -- small
-//!   enough to have passed a ratio budget and hidden the difference.
+//!   enough to have passed a ratio budget and hidden the difference. Caught only
+//!   by `runs` and `skew`.
 //! * `lz4mid` fills its hash tables using the `ipIndex` captured at the top of
 //!   the loop, which its own catch-back leaves stale. Recomputing it is the
 //!   obvious "fix" and makes the output diverge.
+//! * `chainSwap` walks along a match looking for the position whose chain jumps
+//!   furthest back. Its accelerating stride (`kTrigger`) is part of the result,
+//!   not just a speed trick: changing it changes which matches are found.
 
 /// Minimum length of a match the LZ4 format can encode.
 const MINMATCH: i32 = 4;
@@ -242,12 +243,17 @@ impl HashChain {
     }
 
     /// `LZ4HC_InsertAndGetWiderMatch` (`lz4hc.c:885`), reduced to the
-    /// no-dictionary, no-`chainSwap`, no-`favorDecSpeed` case -- see the module
-    /// header for why each of those drops out.
+    /// no-dictionary, no-`favorDecSpeed` case -- see the module header for why
+    /// each of those drops out. (`favorDecSpeed` is reachable only through
+    /// `LZ4_favorDecompressionSpeed()`, which DArc never calls; the one-shot
+    /// `LZ4_compress_HC` zeroes the context, so it is always 0 here.)
     ///
     /// `i_low_limit` bounds how far back the match may be extended; passing
     /// `i_low_limit == ip` forbids backward extension entirely, which is what
     /// makes this double as `LZ4HC_InsertAndFindBestMatch` (`lz4hc.c:1117`).
+    ///
+    /// `chain_swap` is used only by the optimal parser (`lz4hc.c:1812`); the
+    /// hash-chain parser passes 0 at every call site.
     fn get_wider_match(
         &mut self,
         src: &[u8],
@@ -257,6 +263,7 @@ impl HashChain {
         mut longest: i32,
         max_nb_attempts: i32,
         pattern_analysis: bool,
+        chain_swap: bool,
     ) -> Match {
         let ip_index = ip as u32 + BASE;
         // `withinStartDistance` (lz4hc.c:901): while the whole block is still
@@ -272,6 +279,8 @@ impl HashChain {
         let mut s_back = 0i32;
         let mut repeat = Repeat::Untested;
         let mut src_pattern_length = 0i32;
+        // Persists across chain steps once chain_swap sets it, as in the C.
+        let mut match_chain_pos = 0u32;
 
         let Some(pattern) = read32(src, ip) else { return NO_MATCH };
 
@@ -295,19 +304,60 @@ impl HashChain {
                 _ => false,
             };
 
+            let mut match_length = 0i32;
             if !filtered && read32(src, m) == Some(pattern) {
                 let back = if look_back_length != 0 {
                     count_back(src, ip, m, i_low_limit)
                 } else {
                     0
                 };
-                let mut match_length =
+                match_length =
                     MINMATCH + count_forward(src, ip + MINMATCH, m + MINMATCH, i_high_limit);
                 match_length -= back; // `back` is negative: the match grew leftwards
                 if match_length > longest {
                     longest = match_length;
                     offset = (ip_index - match_index) as i32;
                     s_back = back;
+                }
+            }
+
+            // ---- Chain swap (lz4hc.c:964-985) ----
+            //
+            // Having tied the best length so far, look along the match for the
+            // position whose chain jumps furthest back, and continue from there
+            // instead. It scans with an accelerating stride that resets whenever
+            // it finds a better jump, so a long match costs far fewer probes
+            // than one step per byte. Only the optimal parser enables this.
+            if chain_swap && match_length == longest {
+                debug_assert_eq!(look_back_length, 0); // search forward only
+                if match_index + longest as u32 <= ip_index {
+                    const K_TRIGGER: i32 = 4;
+                    let mut distance_to_next_match = 1u32;
+                    let end = longest - MINMATCH + 1;
+                    let mut accel = 1i32 << K_TRIGGER;
+                    let mut pos = 0i32;
+                    while pos < end {
+                        let candidate_dist = self.chain_table
+                            [((match_index.wrapping_add(pos as u32)) & 0xFFFF) as usize]
+                            as u32;
+                        // `step = (accel++ >> kTrigger)` -- post-increment, so the
+                        // stride uses the value from before this probe.
+                        let step = accel >> K_TRIGGER;
+                        accel += 1;
+                        if candidate_dist > distance_to_next_match {
+                            distance_to_next_match = candidate_dist;
+                            match_chain_pos = pos as u32;
+                            accel = 1 << K_TRIGGER;
+                        }
+                        pos += step;
+                    }
+                    if distance_to_next_match > 1 {
+                        if distance_to_next_match > match_index {
+                            break; // avoid overflow
+                        }
+                        match_index -= distance_to_next_match;
+                        continue;
+                    }
                 }
             }
 
@@ -325,7 +375,7 @@ impl HashChain {
             // `(U32)((BASE-1) - matchIndex) >= 3`, which is always true for
             // every index at or above BASE.
             let dist_next_match = self.chain_table[(match_index & 0xFFFF) as usize] as u32;
-            if pattern_analysis && dist_next_match == 1 {
+            if pattern_analysis && dist_next_match == 1 && match_chain_pos == 0 {
                 let match_candidate_idx = match_index - 1;
                 if repeat == Repeat::Untested {
                     if is_byte_repeat(pattern) {
@@ -378,11 +428,16 @@ impl HashChain {
                 }
             }
 
-            // Step to the previous position sharing this hash.
-            if dist_next_match > match_index {
+            // Step to the previous position sharing this hash. Note the index
+            // is `matchIndex + matchChainPos`, not `matchIndex`: chain_swap may
+            // have picked a different position along the match to follow.
+            let step_dist =
+                self.chain_table[((match_index.wrapping_add(match_chain_pos)) & 0xFFFF) as usize]
+                    as u32;
+            if step_dist > match_index {
                 break; // would underflow; unreachable while match_index >= BASE
             }
-            match_index -= dist_next_match;
+            match_index -= step_dist;
         }
 
         Match { off: offset, len: longest, back: s_back }
@@ -472,6 +527,66 @@ fn encode_sequence(
     *ip += match_length;
     *anchor = *ip;
     false
+}
+
+// ---------------------------------------------------------------------------
+// lz4opt -- the price-based optimal parser (levels 10-12)
+// ---------------------------------------------------------------------------
+
+/// `LZ4_OPT_NUM` (`lz4hc.c:77`) -- how far ahead the parser plans.
+const OPT_NUM: usize = 1 << 12;
+/// `TRAILING_LITERALS` (`lz4hc.c:1835`).
+const TRAILING_LITERALS: usize = 3;
+
+/// One position in the price table (`LZ4HC_optimal_t`, `lz4hc.c:1770`).
+#[derive(Clone, Copy, Default)]
+struct Opt {
+    price: i32,
+    off: i32,
+    mlen: i32,
+    litlen: i32,
+}
+
+/// `LZ4HC_literalsPrice` (`lz4hc.c:1778`) -- cost in bytes of a literal run,
+/// including the extra length bytes once it exceeds `RUN_MASK`.
+///
+/// **Measured blind spot, recorded so it is not mistaken for coverage.** The
+/// `1 + (litlen - RUN_MASK) / 255` term is the one part of this port the
+/// differential harness cannot exercise. Established by sabotage, not assumed:
+/// `/255`->`/254`, `>=`->`>`, and even multiplying the whole term by **10** all
+/// leave every input byte-identical at every level, while changing
+/// `sequence_price`'s token cost is caught on 5 inputs immediately. So the
+/// pricing machinery *is* reached; this term simply never decides anything.
+///
+/// The cause is structural rather than a thin corpus: at any given position all
+/// candidate paths share the same `llen`, so a constant added here cancels out
+/// of every comparison. It could only fail to cancel in the literal-extension
+/// step, where `baseLitlen` would have to land within `MINMATCH` of a 255
+/// boundary above 269. Adding inputs with longer literal runs was tried (the
+/// `priced` and `competing` corpus files) and did not move it.
+///
+/// Treat these three lines as verified by transcription against `lz4hc.c` only.
+/// If they ever change, re-read the C -- the harness will not tell you.
+#[inline]
+fn literals_price(litlen: i32) -> i32 {
+    let mut price = litlen;
+    if litlen >= RUN_MASK {
+        price += 1 + (litlen - RUN_MASK) / 255;
+    }
+    price
+}
+
+/// `LZ4HC_sequencePrice` (`lz4hc.c:1788`) -- a full sequence: token, 16-bit
+/// offset, the literal run, and any extra match-length bytes.
+#[inline]
+fn sequence_price(litlen: i32, mlen: i32) -> i32 {
+    debug_assert!(mlen >= MINMATCH);
+    let mut price = 1 + 2; // token + 16-bit offset
+    price += literals_price(litlen);
+    if mlen >= ML_MASK + MINMATCH {
+        price += 1 + (mlen - (ML_MASK + MINMATCH)) / 255;
+    }
+    price
 }
 
 /// `LZ4MID_HASHLOG` -- one bit smaller than the hash-chain table, because
@@ -634,43 +749,289 @@ fn compress_mid(src: &[u8], out: &mut Out) -> Option<usize> {
     Some(anchor as usize)
 }
 
-/// Search depth for a compression level, from `k_clTable` (`lz4hc.c:92-106`).
-///
-/// The table selects three strategies. `lz4mid` (levels 1-2) and `lz4hc` (the
-/// hash chain, levels 3-9) are both ported, so those levels reproduce the C
-/// exactly. Levels 10-12 would use `lz4opt`, the price-based optimal parser,
-/// which is not ported; they clamp to level 9.
-///
-/// Clamping 10-12 is the one place this port knowingly departs from the C, and
-/// the cost is **data-dependent** -- do not quote a single number for it. On
-/// the harness corpus it is a wash: level 10 comes out 0.12% *smaller* than the
-/// C (its shallower 96-deep search loses to a 256-deep chain), level 11 is
-/// within 0.005%, and level 12 is 0.027% worse. On a whole-archive test over
-/// mixed source text it reached **0.52%** worse at level 12 (45,579 -> 45,816).
-/// So the honest summary is "a fraction of a percent, sometimes better,
-/// occasionally half a percent worse", not "negligible".
-///
-/// DArc's `lz4:hc` keyword is level 9, so the path that actually gets used is
-/// byte-for-byte identical; only an explicit `lz4:c10`/`c11`/`c12` is affected.
-///
-/// A level below 1 means "default", which is 9 (`lz4hc.c:112-113`).
-fn level_searches(level: i32) -> i32 {
-    let level = if level < 1 { 9 } else { level.min(12) };
-    match level {
-        3 => 4,
-        4 => 8,
-        5 => 16,
-        6 => 32,
-        7 => 64,
-        8 => 128,
-        _ => 256, // 9, and 10-12 clamped
+impl HashChain {
+    /// `LZ4HC_FindLongerMatch` (`lz4hc.c:1801`) -- the optimal parser's only
+    /// entry into the match finder. `iLowLimit == ip`, so it never searches
+    /// past `ip` and `back` is always 0; `patternAnalysis` and `chainSwap` are
+    /// both hardcoded on here, unlike the hash-chain parser.
+    fn find_longer_match(
+        &mut self,
+        src: &[u8],
+        ip: i32,
+        i_high_limit: i32,
+        min_len: i32,
+        nb_searches: i32,
+    ) -> Match {
+        let md = self.get_wider_match(src, ip, ip, i_high_limit, min_len, nb_searches, true, true);
+        if md.len <= min_len {
+            return NO_MATCH;
+        }
+        // The `favorDecSpeed` shortcut that would clamp 19..36 to 18 is absent:
+        // it is unreachable from DArc (see get_wider_match).
+        md
     }
 }
 
-/// Whether a level selects the `lz4mid` strategy rather than the hash chain.
-fn uses_mid(level: i32) -> bool {
+/// `LZ4HC_compress_optimal` (`lz4hc.c:1820`) -- levels 10-12.
+///
+/// Rather than committing to a match as it finds one, this prices every
+/// position up to `OPT_NUM` ahead, keeps the cheapest way to reach each, then
+/// walks the table backwards to recover the cheapest path and emits it. Prices
+/// are in bytes of output, so the optimum it finds is a genuine size optimum
+/// for the sequences it considered.
+///
+/// `full_update` is `cLevel >= LZ4HC_CLEVEL_MAX` (`lz4hc.c:1409`), i.e. level 12
+/// only; it makes the parser search at positions it would otherwise skip.
+///
+/// Returns the final `anchor`, or `None` on output overflow.
+#[allow(clippy::too_many_arguments)]
+fn compress_optimal(
+    src: &[u8],
+    out: &mut Out,
+    ctx: &mut HashChain,
+    nb_searches: i32,
+    mut sufficient_len: i32,
+    full_update: bool,
+) -> Option<i32> {
+    let iend = src.len() as i32;
+    let mflimit = iend - MFLIMIT;
+    let matchlimit = iend - LASTLITERALS;
+
+    if sufficient_len >= OPT_NUM as i32 {
+        sufficient_len = OPT_NUM as i32 - 1;
+    }
+
+    // C sizes this OPT_NUM + TRAILING_LITERALS. The extra MINMATCH is slack for
+    // the `opt[cur + MINMATCH]` lookahead in the full_update test: the C's own
+    // invariants keep that in range, but an out-of-range index here would be a
+    // panic across the C ABI rather than a stray read, so it is bought cheaply.
+    let mut opt = vec![Opt::default(); OPT_NUM + TRAILING_LITERALS + MINMATCH as usize];
+
+    let mut ip = 0i32;
+    let mut anchor = 0i32;
+
+    'main: while ip <= mflimit {
+        let llen = ip - anchor;
+        let first_match = ctx.find_longer_match(src, ip, matchlimit, MINMATCH - 1, nb_searches);
+        if first_match.len == 0 {
+            ip += 1;
+            continue;
+        }
+
+        if first_match.len > sufficient_len {
+            // Good enough: encode it immediately rather than pricing a path.
+            if encode_sequence(src, out, &mut ip, &mut anchor, first_match.len, first_match.off) {
+                return None;
+            }
+            continue;
+        }
+
+        // Seed prices: the first MINMATCH positions as pure literals ...
+        for r_pos in 0..MINMATCH {
+            let cost = literals_price(llen + r_pos);
+            let o = &mut opt[r_pos as usize];
+            o.mlen = 1;
+            o.off = 0;
+            o.litlen = llen + r_pos;
+            o.price = cost;
+        }
+        // ... then every length of the first match.
+        for mlen in MINMATCH..=first_match.len {
+            let cost = sequence_price(llen, mlen);
+            let o = &mut opt[mlen as usize];
+            o.mlen = mlen;
+            o.off = first_match.off;
+            o.litlen = llen;
+            o.price = cost;
+        }
+        let mut last_match_pos = first_match.len;
+        for add_lit in 1..=TRAILING_LITERALS as i32 {
+            let base = opt[last_match_pos as usize].price;
+            let o = &mut opt[(last_match_pos + add_lit) as usize];
+            o.mlen = 1;
+            o.off = 0;
+            o.litlen = add_lit;
+            o.price = base + literals_price(add_lit);
+        }
+
+        // Extend the price table position by position.
+        let mut best_mlen = 0i32;
+        let mut best_off = 0i32;
+        let mut cur = 0i32;
+        let mut jumped = false;
+
+        let mut c = 1i32;
+        while c < last_match_pos {
+            let cur_ptr = ip + c;
+            if cur_ptr > mflimit {
+                break;
+            }
+            // No point searching here if the next position is already at least
+            // as cheap. Level 12 additionally allows a short match through when
+            // cost rises sharply just after.
+            if full_update {
+                if opt[(c + 1) as usize].price <= opt[c as usize].price
+                    && opt[(c + MINMATCH) as usize].price < opt[c as usize].price + 3
+                {
+                    c += 1;
+                    continue;
+                }
+            } else if opt[(c + 1) as usize].price <= opt[c as usize].price {
+                c += 1;
+                continue;
+            }
+
+            let min_len = if full_update { MINMATCH - 1 } else { last_match_pos - c };
+            let new_match = ctx.find_longer_match(src, cur_ptr, matchlimit, min_len, nb_searches);
+            if new_match.len == 0 {
+                c += 1;
+                continue;
+            }
+
+            if new_match.len > sufficient_len || new_match.len + c >= OPT_NUM as i32 {
+                best_mlen = new_match.len;
+                best_off = new_match.off;
+                last_match_pos = c + 1;
+                cur = c;
+                jumped = true;
+                break;
+            }
+
+            // Before the match: price the leading literals.
+            let base_litlen = opt[c as usize].litlen;
+            for litlen in 1..MINMATCH {
+                let price = opt[c as usize].price - literals_price(base_litlen)
+                    + literals_price(base_litlen + litlen);
+                let pos = (c + litlen) as usize;
+                if price < opt[pos].price {
+                    opt[pos].mlen = 1;
+                    opt[pos].off = 0;
+                    opt[pos].litlen = base_litlen + litlen;
+                    opt[pos].price = price;
+                }
+            }
+
+            // Then every length of the match found at this position.
+            for ml in MINMATCH..=new_match.len {
+                let pos = (c + ml) as usize;
+                let (ll, price) = if opt[c as usize].mlen == 1 {
+                    let ll = opt[c as usize].litlen;
+                    let prev = if c > ll { opt[(c - ll) as usize].price } else { 0 };
+                    (ll, prev + sequence_price(ll, ml))
+                } else {
+                    (0, opt[c as usize].price + sequence_price(0, ml))
+                };
+                // `- (int)favorDecSpeed` is `- 0` here.
+                if pos as i32 > last_match_pos + TRAILING_LITERALS as i32
+                    || price <= opt[pos].price
+                {
+                    if ml == new_match.len && last_match_pos < pos as i32 {
+                        last_match_pos = pos as i32;
+                    }
+                    opt[pos].mlen = ml;
+                    opt[pos].off = new_match.off;
+                    opt[pos].litlen = ll;
+                    opt[pos].price = price;
+                }
+            }
+
+            for add_lit in 1..=TRAILING_LITERALS as i32 {
+                let base = opt[last_match_pos as usize].price;
+                let o = &mut opt[(last_match_pos + add_lit) as usize];
+                o.mlen = 1;
+                o.off = 0;
+                o.litlen = add_lit;
+                o.price = base + literals_price(add_lit);
+            }
+
+            c += 1;
+        }
+
+        if !jumped {
+            best_mlen = opt[last_match_pos as usize].mlen;
+            best_off = opt[last_match_pos as usize].off;
+            cur = last_match_pos - best_mlen;
+        }
+
+        // Reverse traversal: rewrite each visited slot with the sequence that
+        // the cheapest path actually takes from it.
+        {
+            let mut candidate_pos = cur;
+            let mut selected_ml = best_mlen;
+            let mut selected_off = best_off;
+            loop {
+                let next_ml = opt[candidate_pos as usize].mlen;
+                let next_off = opt[candidate_pos as usize].off;
+                opt[candidate_pos as usize].mlen = selected_ml;
+                opt[candidate_pos as usize].off = selected_off;
+                selected_ml = next_ml;
+                selected_off = next_off;
+                if next_ml > candidate_pos {
+                    break; // first match to encode reached
+                }
+                if next_ml <= 0 {
+                    break; // C asserts this cannot happen; do not spin if it does
+                }
+                candidate_pos -= next_ml;
+            }
+        }
+
+        // Emit the recovered path in order.
+        let mut r_pos = 0i32;
+        while r_pos < last_match_pos {
+            let ml = opt[r_pos as usize].mlen;
+            let offset = opt[r_pos as usize].off;
+            if ml == 1 {
+                ip += 1;
+                r_pos += 1;
+                continue; // literal; several may run together
+            }
+            r_pos += ml;
+            if encode_sequence(src, out, &mut ip, &mut anchor, ml, offset) {
+                return None;
+            }
+        }
+        continue 'main;
+    }
+
+    Some(anchor)
+}
+
+/// Search depth for a compression level, from `k_clTable` (`lz4hc.c:92-106`).
+///
+/// Which strategy and parameters a compression level selects, transcribed from
+/// `k_clTable` (`lz4hc.c:92-106`). All three are ported, so every level DArc
+/// accepts reproduces the C exactly.
+///
+/// A level below 1 means "default", which is 9; anything above 12 is clamped to
+/// 12 (`lz4hc.c:112-114`).
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Strategy {
+    /// Levels 1-2.
+    Mid,
+    /// Levels 3-9, carrying `nbSearches`.
+    HashChain(i32),
+    /// Levels 10-12, carrying `nbSearches`, `targetLength` and `fullUpdate`.
+    Optimal(i32, i32, bool),
+}
+
+fn level_params(level: i32) -> Strategy {
     let level = if level < 1 { 9 } else { level.min(12) };
-    level <= 2
+    match level {
+        1 | 2 => Strategy::Mid,
+        3 => Strategy::HashChain(4),
+        4 => Strategy::HashChain(8),
+        5 => Strategy::HashChain(16),
+        6 => Strategy::HashChain(32),
+        7 => Strategy::HashChain(64),
+        8 => Strategy::HashChain(128),
+        9 => Strategy::HashChain(256),
+        10 => Strategy::Optimal(96, 64, false),
+        11 => Strategy::Optimal(512, 128, false),
+        // `fullUpdate` is `cLevel >= LZ4HC_CLEVEL_MAX` (lz4hc.c:1409), so only
+        // level 12 gets it. targetLength is LZ4_OPT_NUM, clamped inside.
+        _ => Strategy::Optimal(16384, OPT_NUM as i32, true),
+    }
 }
 
 /// `LZ4_compressBound` (`lz4.h`) -- the exact bound `C_LZ4.cpp:66` sizes its
@@ -689,9 +1050,13 @@ pub fn compress_hc(src: &[u8], dst: &mut [u8], level: i32) -> usize {
     }
     let mut out = Out { buf: dst, pos: 0 };
     let input_size = src.len() as i32;
-    let max_nb_attempts = level_searches(level);
+    let strategy = level_params(level);
+    let max_nb_attempts = match strategy {
+        Strategy::HashChain(n) => n,
+        _ => 0,
+    };
     // `patternAnalysis` (lz4hc.c:1133) is tied to the search depth, not the
-    // level number: "levels 9+".
+    // level number: "levels 9+". (The optimal parser hardcodes it on instead.)
     let pattern_analysis = max_nb_attempts > 128;
 
     let iend = input_size;
@@ -701,16 +1066,24 @@ pub fn compress_hc(src: &[u8], dst: &mut [u8], level: i32) -> usize {
     let mut ip = 0i32;
     let mut anchor = 0i32;
 
-    if input_size >= LZ4_MIN_LENGTH && uses_mid(level) {
+    if input_size >= LZ4_MIN_LENGTH && strategy == Strategy::Mid {
         match compress_mid(src, &mut out) {
             Some(a) => anchor = a as i32,
+            None => return 0,
+        }
+    } else if let (true, Strategy::Optimal(nb, target, full)) =
+        (input_size >= LZ4_MIN_LENGTH, strategy)
+    {
+        let mut ctx = HashChain::new();
+        match compress_optimal(src, &mut out, &mut ctx, nb, target, full) {
+            Some(a) => anchor = a,
             None => return 0,
         }
     } else if input_size >= LZ4_MIN_LENGTH {
         let mut ctx = HashChain::new();
 
         'main: while ip <= mflimit {
-            let mut m1 = ctx.get_wider_match(src, ip, ip, matchlimit, MINMATCH - 1, max_nb_attempts, pattern_analysis);
+            let mut m1 = ctx.get_wider_match(src, ip, ip, matchlimit, MINMATCH - 1, max_nb_attempts, pattern_analysis, false);
             if m1.len < MINMATCH {
                 ip += 1;
                 continue;
@@ -732,7 +1105,7 @@ pub fn compress_hc(src: &[u8], dst: &mut [u8], level: i32) -> usize {
                     // ---- _Search2 (lz4hc.c:1165) ----
                     if ip + m1.len <= mflimit {
                         start2 = ip + m1.len - 2;
-                        m2 = ctx.get_wider_match(src, start2, ip, matchlimit, m1.len, max_nb_attempts, pattern_analysis);
+                        m2 = ctx.get_wider_match(src, start2, ip, matchlimit, m1.len, max_nb_attempts, pattern_analysis, false);
                         start2 += m2.back;
                     } else {
                         m2 = NO_MATCH; // do not search further
@@ -777,7 +1150,7 @@ pub fn compress_hc(src: &[u8], dst: &mut [u8], level: i32) -> usize {
 
                 if start2 + m2.len <= mflimit {
                     start3 = start2 + m2.len - 3;
-                    m3 = ctx.get_wider_match(src, start3, start2, matchlimit, m2.len, max_nb_attempts, pattern_analysis);
+                    m3 = ctx.get_wider_match(src, start3, start2, matchlimit, m2.len, max_nb_attempts, pattern_analysis, false);
                     start3 += m3.back;
                 } else {
                     start3 = start2;
