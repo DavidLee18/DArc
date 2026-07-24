@@ -8,7 +8,7 @@
 //! what wires them together; until then these are exercised by the differential
 //! harness rather than by the archiver.
 
-use crate::{bsc, delta, dict, dict_encode, dispack, grzip, lz4, lzp, mm, rep, tornado, tta};
+use crate::{bsc, delta, dict, dict_encode, dispack, grzip, lz4, lzp, mm, rep, tornado, tta, zstd};
 use crate::ffi::{Io, CALLBACK_FUNC, FREEARC_ERRCODE_GENERAL};
 use core::ffi::{c_int, c_void};
 
@@ -608,4 +608,90 @@ pub unsafe extern "C" fn darc_rs_lz4_compress_block(
     let s = core::slice::from_raw_parts(src, src_size as usize);
     let d = core::slice::from_raw_parts_mut(dst, dst_cap as usize);
     lz4::compress_block(s, d).map_or(0, |n| n as c_int)
+}
+
+/// zstd streaming decompress, replacing `zstd_stream_decompress` in
+/// `C_Zstd.cpp`. `zstd-safe` bundles zstd 1.5.7 while the repository vendored
+/// 1.5.6; the frame format is unchanged between them, which
+/// `tests/zstd_vectors.rs` proves against frames the vendored build produced.
+///
+/// # Safety
+/// `callback` and `auxdata` must be what the C caller supplied.
+#[no_mangle]
+pub unsafe extern "C" fn darc_rs_zstd_stream_decompress(
+    callback: CALLBACK_FUNC,
+    auxdata: *mut c_void,
+) -> c_int {
+    match Io::new(callback, auxdata) {
+        Some(io) => zstd::decompress_stream(&io),
+        None => FREEARC_ERRCODE_GENERAL,
+    }
+}
+
+/// zstd streaming compress, replacing `zstd_stream_compress`.
+///
+/// # Safety
+/// `callback` and `auxdata` must be what the C caller supplied.
+#[no_mangle]
+pub unsafe extern "C" fn darc_rs_zstd_stream_compress(
+    level: c_int,
+    window_log: c_int,
+    workers: c_int,
+    callback: CALLBACK_FUNC,
+    auxdata: *mut c_void,
+) -> c_int {
+    let io = match Io::new(callback, auxdata) {
+        Some(io) => io,
+        None => return FREEARC_ERRCODE_GENERAL,
+    };
+    let params = zstd::Params {
+        level,
+        window_log: window_log.max(0) as u32,
+        workers: workers.max(0) as u32,
+    };
+    zstd::compress_stream(&io, params)
+}
+
+/// `ZSTD_minCLevel` / `ZSTD_maxCLevel`, for `parse_ZSTD`'s level clamping.
+#[no_mangle]
+pub extern "C" fn darc_rs_zstd_min_clevel() -> c_int {
+    zstd::min_c_level()
+}
+
+#[no_mangle]
+pub extern "C" fn darc_rs_zstd_max_clevel() -> c_int {
+    zstd::max_c_level()
+}
+
+/// `ZSTD_sizeof_CCtx` for a context configured as `ZSTD_METHOD` would, for
+/// `GetCompressionMem`. Returns 0 when the parameters are rejected; the caller
+/// falls back to its own default.
+#[no_mangle]
+pub extern "C" fn darc_rs_zstd_sizeof_cctx(level: c_int, window_log: c_int) -> usize {
+    zstd::sizeof_cctx(level, window_log.max(0) as u32)
+}
+
+/// # Safety
+/// `callback` and `auxdata` must be what the C caller supplied.
+#[cfg(feature = "dropin")]
+#[no_mangle]
+pub unsafe extern "C" fn zstd_stream_decompress(
+    callback: CALLBACK_FUNC,
+    auxdata: *mut c_void,
+) -> c_int {
+    darc_rs_zstd_stream_decompress(callback, auxdata)
+}
+
+/// # Safety
+/// `callback` and `auxdata` must be what the C caller supplied.
+#[cfg(feature = "dropin")]
+#[no_mangle]
+pub unsafe extern "C" fn zstd_stream_compress(
+    level: c_int,
+    window_log: c_int,
+    workers: c_int,
+    callback: CALLBACK_FUNC,
+    auxdata: *mut c_void,
+) -> c_int {
+    darc_rs_zstd_stream_compress(level, window_log, workers, callback, auxdata)
 }

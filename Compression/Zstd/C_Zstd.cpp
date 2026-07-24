@@ -12,6 +12,25 @@ extern "C" {
 #include "C_Zstd.h"
 }
 
+// DARC_RUST=1 replaces both streaming entry points with the Rust port
+// (rust/darc-codecs, via the zstd-safe crate). They are declared in C_Zstd.h,
+// which is included inside this file's extern "C" block, so the C definitions
+// below and the Rust exports are the same C-linkage symbols -- leaving both is
+// a multiple definition on GNU ld and silently prefers the C one on macOS.
+// So the switch must REMOVE these definitions, not merely add a declaration.
+//
+// zstd-safe bundles zstd 1.5.7 against the 1.5.6 vendored here; the frame
+// format is unchanged, which rust/darc-codecs/tests/zstd_vectors.rs proves
+// against frames this build produced rather than assuming from the changelog.
+#ifdef DARC_RUST
+extern "C" {
+int    darc_rs_zstd_min_clevel  (void);
+int    darc_rs_zstd_max_clevel  (void);
+size_t darc_rs_zstd_sizeof_cctx (int level, int windowLog);
+}
+#endif
+
+#ifndef DARC_RUST
 #include "libzstd/zstd.h"
 
 static const size_t ZSTD_IN_BUFSZ  = 1 << 17;  // 128 KiB
@@ -113,6 +132,8 @@ done:
   return result;
 }
 
+#endif  // !DARC_RUST
+
 /*-------------------------------------------------*/
 /* ZSTD_METHOD                                     */
 /*-------------------------------------------------*/
@@ -140,12 +161,16 @@ MemSize ZSTD_METHOD::GetCompressionMem (void)
 {
   // Rough upper bound: zstd level-22 with default window can use ~256 MiB per thread.
   // Use the library's own estimate when possible via a transient context.
+#ifdef DARC_RUST
+  size_t est = darc_rs_zstd_sizeof_cctx(Level, WindowLog);
+#else
   ZSTD_CCtx *c = ZSTD_createCCtx();
   if (!c) return 64*mb;
   ZSTD_CCtx_setParameter(c, ZSTD_c_compressionLevel, Level);
   if (WindowLog > 0) ZSTD_CCtx_setParameter(c, ZSTD_c_windowLog, WindowLog);
   size_t est = ZSTD_sizeof_CCtx(c);
   ZSTD_freeCCtx(c);
+#endif
   if (Workers > 0) est = est * (Workers+1);
   return (MemSize)(est ? est : 64*mb);
 }
@@ -206,8 +231,13 @@ COMPRESSION_METHOD* parse_ZSTD (char** parameters)
   if (error) { delete p; return NULL; }
 
   // Clamp to zstd's advertised range.
+#ifdef DARC_RUST
+  if (p->Level < darc_rs_zstd_min_clevel()) p->Level = darc_rs_zstd_min_clevel();
+  if (p->Level > darc_rs_zstd_max_clevel()) p->Level = darc_rs_zstd_max_clevel();
+#else
   if (p->Level < ZSTD_minCLevel()) p->Level = ZSTD_minCLevel();
   if (p->Level > ZSTD_maxCLevel()) p->Level = ZSTD_maxCLevel();
+#endif
   return p;
 }
 
