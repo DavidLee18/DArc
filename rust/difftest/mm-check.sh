@@ -13,6 +13,10 @@
 # block boundary -- the one piece of state that spans the whole stream.
 set -uo pipefail
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+# The C reference comes from a pinned revision, not the working tree -- see
+# c-reference.sh for why.
+. "$ROOT/rust/difftest/c-reference.sh"
+CREF="$(darc_c_reference "$ROOT")" || exit 1
 W="${TMPDIR:-/tmp}/mm-check.$$"; mkdir -p "$W"
 trap 'rm -rf "$W"' EXIT
 
@@ -27,9 +31,9 @@ LIB="$ROOT/rust/target/release/libdarc_codecs.a"
 cc() { # cc <output> [args appended after the sources]
   local out="$1"; shift
   clang++ -std=c++17 -O2 -w -DFREEARC_UNIX -DFREEARC_INTEL_BYTE_ORDER -DFREEARC_64BIT \
-    -I"$ROOT" -I"$ROOT/Compression" \
-    "$ROOT/rust/difftest/mm_ref.cpp" "$ROOT/rust/difftest/mm_ccodec.cpp" \
-    "$ROOT/Compression/Common.cpp" "$@" -o "$out"
+    -I"$CREF" -I"$CREF/Compression" \
+    "$CREF/rust/difftest/mm_ref.cpp" "$CREF/rust/difftest/mm_ccodec.cpp" \
+    "$CREF/Compression/Common.cpp" "$@" -o "$out"
 }
 cc "$W/c"                    || exit 1
 cc "$W/rs" -DUSE_RUST "$LIB" || exit 1
