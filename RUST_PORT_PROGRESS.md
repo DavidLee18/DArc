@@ -293,7 +293,36 @@ not a thin corpus — at a given position every candidate path shares the same
 inputs were built specifically to break that (`priced`, `competing`) and did
 not. Those three lines are verified by transcription against the C only.
 
-### 8. Hand-port PPMD (1,065 lines)
+### 8. Port the DisPack ENCODER — reconnaissance done, port not started
+
+The first encoder to take, and the only one whose completion deletes a whole
+directory. Cheaper than `DisPack.cpp`'s 31 KB suggests: most of that file is
+opcode tables that are **already ported** for the decode side
+(`rust/darc-codecs/src/dispack/tables.rs`), so the encoder can reuse them.
+
+The encoder is one contiguous `#ifndef FREEARC_DECOMPRESS_ONLY` block,
+`DisPack.cpp:328-656` — **329 lines** — which also makes the eventual deletion
+clean rather than surgical:
+
+| piece | lines | what it is |
+|---|---|---|
+| `DataBuffer` | 332-370 | the multi-stream output buffer (`ST_MAX` streams) |
+| `DisFilterCtx` | 371-599 | `DetectJumpTable`, `ProcessInstr` (418-564, the bulk), `Flush` (565-598) |
+| `DisFilter` | 600-654 | driver: main loop, then a checkpoint/undo tail so the last `MAXINSTR` bytes never read past the end, then escape-encodes any remainder |
+| `detect()` | `C_DisPack.cpp:142` | ~35 lines, EXE-type detection that decides whether to filter at all |
+
+Two things to get right, both already known from the decode port:
+
+- **`detect()` gates everything.** DisPack only filters what it sees as x86
+  code; everything else is stored and the filter never runs. A corpus of
+  ordinary data tests the store path and nothing else — this already produced a
+  green-but-empty first pass once. The `dispack-check.sh` corpus cross-compiles
+  real i386 `.text` and rewrites E8 placeholders into backward calls, which is
+  what `detect()` keys on; reuse it.
+- **Byte-exactness is required**, not format-validity: DisPack is DArc's own
+  format. `-mdispack` has a fingerprint case (`6a46351e39373082`).
+
+### 9. Hand-port PPMD (1,065 lines)
 
 The last real hand-portable codec besides 4x4. **No crate path:** `ppmd-rust`
 was measured and rejected — DArc's PPMD is Shkarin var.H with **Subbotin's**
@@ -302,7 +331,7 @@ carryless range coder (32-bit `low`, `TOP=1<<24`, `MAX_O` 128); `ppmd-rust` is
 different stream. Do not revisit the crate. `-mppmd` already has a fingerprint
 case.
 
-### 9. Decide explicitly whether to port 4x4 — recommendation: no
+### 10. Decide explicitly whether to port 4x4 — recommendation: no
 
 Threading meta-codec; its decode delegates to the library dispatcher
 `Decompress()` per block, so the only portable logic is block framing
@@ -312,7 +341,7 @@ exe preset, not this codec). A Rust decode would be an FFI shim calling C
 `Decompress`, which under `DARC_RUST` dispatches back to Rust drop-ins
 (Rust→C→Rust). Record the decision so it is not re-litigated.
 
-### 10. Port the Haskell application layer (17,843 lines, 41 files)
+### 11. Port the Haskell application layer (17,843 lines, 41 files)
 
 The largest remaining piece. Suggested order (from `CLAUDE.md`):
 `Arc.hs:71` (`doMain`) → `Cmdline.hs:35` (`parseCmdline`) → `Arc.hs:110` (`run`)
@@ -344,7 +373,7 @@ Facts that shape the port:
 When this lands, MicroHs and the `compat-ghc`/`compat-oldtime` shims become
 removable too, and the build collapses to cargo.
 
-### 11. Performance: measure before optimising
+### 12. Performance: measure before optimising
 
 Several Rust ports are deliberately scalar where the C is vectorised: BSC's LZP
 and adler32, the QLFC SIMD variants, and the BSC fast coder's SIMD MTF shuffles.
@@ -352,7 +381,7 @@ and adler32, the QLFC SIMD variants, and the BSC fast coder's SIMD MTF shuffles.
 bottleneck. Scalar is a *shipped configuration* of libbsc (i386,
 `-DLIBBSC_NO_UNALIGNED_ACCESS`), not a subset, so correctness is not at issue.
 
-### 12. C-side bugs
+### 13. C-side bugs
 
 **Fixed: SREP heap overflow that produced corrupt archives (PR #74).** Recorded
 because the diagnosis is reusable and two obvious hypotheses were both wrong.
@@ -387,7 +416,7 @@ at the same rate).
   which ship with correct vectors and would have caught the above on the first
   ARM64 build. Re-enable at least in CI (it will fail until the bug is fixed).
 
-### 13. Build/quality odds and ends
+### 14. Build/quality odds and ends
 
 - **`-mtor` is 35% larger on llvm-mingw builds** (34,771 → 47,043 for the
   identical spec `tor:434kb`; 11 other methods differ by <0.5%). Output is
