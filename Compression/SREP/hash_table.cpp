@@ -34,7 +34,17 @@ struct SliceHash
     check_slices    = int((MIN_MATCH-L)/slice_size) - io_accelerator;  // if less that this amount of slices around match has the same hashes, then we are sure that match can't be extended to MIN_MATCH size
     if (io_accelerator<0 || check_slices<=0)
          memreq = 0;                                                   // no need in SliceHash since each potential match is almost guaranteed to have MIN_MATCH matched bytes
-    else memreq = filesize/L * sizeof(entry);                          // one `entry` per L input bytes
+    // One `entry` per L input bytes, ROUNDED UP. `filesize/L` truncates, so a
+    // file whose size is not a multiple of L got no slot for its final partial
+    // chunk, and prepare_buffer() -- which indexes by offset/L -- wrote one
+    // entry past the end of h[].
+    //
+    // This corrupts the heap rather than crashing, so the visible symptom was an
+    // srep archive that failed its own checksum on decompression, intermittently
+    // (~1-6% of runs, depending on heap layout). Caught by ASan:
+    //   WRITE of size 4 ... 0 bytes after 876-byte region, SliceHash::prepare_buffer
+    // with filesize=900000, L=4096 -> 219 entries allocated, chunk 219 written.
+    else memreq = (filesize/L + 1) * sizeof(entry);
   }
 
   // Actual memory allocation (should be performed after allocation of more frequently accessed arrays of the HashTable)

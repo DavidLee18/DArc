@@ -25,6 +25,10 @@ cabal.project.local~
 Tests/*arc
 # Standalone SREP binary, produced by srep/compile (external compressor per arc.ini)
 Tests/srep
+# ...and the debug bundle a sanitizer build leaves beside it. `Tests/srep`
+# does not match a `.dSYM` directory, so `git add -A` once swept 964 KB of
+# DWARF into a commit.
+Tests/*.dSYM/
 common.mak
 *_stub.h
 *.comb
