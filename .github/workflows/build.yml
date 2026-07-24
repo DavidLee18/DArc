@@ -797,7 +797,7 @@ jobs:
     # the same original bytes over a corpus built for that codec's heuristics.
     # They were runnable but unrun until now: a differential test nothing
     # invokes is documentation, not a check.
-    - name: Per-codec differential tests (REP, TTA, MM, Tornado, GRZip, DisPack, BSC)
+    - name: Per-codec differential tests (REP, TTA, MM, Tornado, GRZip, DisPack, BSC, LZ4-HC)
       run: |
         chmod +x rust/difftest/*.sh
         rust/difftest/rep-check.sh
@@ -812,6 +812,10 @@ jobs:
         rust/difftest/bsc-bwt-check.sh
         rust/difftest/bsc-st-check.sh
         rust/difftest/bsc-full-check.sh
+        # LZ4-HC is the one ENCODER-side harness: it requires the Rust encoder
+        # to be byte-identical to the C for every level DArc can select (1-9),
+        # and decodes each block with the C decoder rather than lz4_flex.
+        rust/difftest/lz4hc-check.sh
 
     # SREP is not an in-process codec: the archiver spawns a `srep` binary
     # (arc.ini's [External compressor:srep]), so this compares files rather than

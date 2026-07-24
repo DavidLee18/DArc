@@ -14,6 +14,7 @@ pub mod dict_encode;
 pub mod dispack;
 pub mod grzip;
 pub mod lz4;
+pub mod lz4hc;
 pub mod lzp;
 pub mod mm;
 pub mod rep;

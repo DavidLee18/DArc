@@ -21,13 +21,11 @@
 # codecs (Tornado, GRZip, PPMD, MM, Dict, REP, Delta, DisPack), forked far past
 # re-syncing. LibTomCrypt (_Encryption, 1.17) and the 7-Zip SDK have no upstream
 # git tag to pin against.
-
-lib lz4 1.10.0 https://github.com/lz4/lz4/archive/refs/tags/v1.10.0.tar.gz 537512904744b35e232912055ccf8ec66d768639ff3abe5788d90d792ec5f48b Compression/LZ4 lz4-1.10.0/lib
-file Compression/LZ4/lz4.c 9396f7de527bc8435de9c7569fb7998e56545a84b4f3c2d808c0235c01774539
-file Compression/LZ4/lz4.h 26b82efc53d1570f3b54eef02e9c4764c1ad374ff03cac04e2ced5ea4d4c552f
-file Compression/LZ4/lz4hc.c 126cafafdb91767e6e55238298a910903851b35b2cee27ce80ae2280469ee232
-file Compression/LZ4/lz4hc.h e43824e8a9ba16f54100c4ccbccfa5782a858ca9ab83c48aac303fea3e76e21e
-
+#
+# No longer vendored at all, so nothing is left here to pin: zstd (now the
+# zstd-safe crate) and lz4 (now lz4_flex plus DArc's own LZ4-HC port in
+# rust/darc-codecs/src/lz4hc.rs). Their entries were removed with the C, not
+# left behind -- a lock naming files that no longer exist fails the verifier.
 
 lib libbsc 3.3.12 https://github.com/IlyaGrebnov/libbsc/archive/refs/tags/v3.3.12.tar.gz 3d8eee9351468bdd3fb3bc28dda0e24cfc0332997eb0210ea7bd548d77c3d194 Compression/BSC/libbsc libbsc-3.3.12/libbsc
 file Compression/BSC/libbsc/adler32/adler32.cpp c3e5b237ee3cbdc225e02004823e6151c3c3152c1767010d881caa15b911a77e
