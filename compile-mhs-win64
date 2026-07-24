@@ -109,6 +109,22 @@ if [ -n "${DARC_RUST:-}" ]; then
   export "AR_${rt_env}=$rust_ar"
   export "BINDGEN_EXTRA_CLANG_ARGS_${rt_env}=--target=$triple$rust_incs"
 
+  # bindgen parses DArc's headers as C++ (build.rs passes -x c++), so it reads
+  # the toolchain's C++ standard library. llvm-mingw ships libc++ headers that
+  # use builtins such as __builtin_clzg, which only a matching clang knows --
+  # bindgen's default libclang is older and fails on them. Use the cross
+  # toolchain's own libclang, which by construction matches its own headers.
+  if [ "$toolchain" = llvm ]; then
+    llvm_bin=$(dirname "$(command -v "$triple-clang" 2>/dev/null || command -v "$rust_cc")")
+    for d in "$llvm_bin/../lib" "$llvm_bin/../lib64"; do
+      if ls "$d"/libclang.so* >/dev/null 2>&1 || ls "$d"/libclang.dylib >/dev/null 2>&1; then
+        export LIBCLANG_PATH=$(cd "$d" && pwd); break
+      fi
+    done
+    [ -n "${LIBCLANG_PATH:-}" ] &&
+      echo "using $LIBCLANG_PATH/libclang for bindgen (matches llvm-mingw's libc++)"
+  fi
+
   echo "building Rust codecs and crypto for $rust_target"
   ( cd rust && cargo build --release -p darc-codecs -p darc-crypto \
       --features darc-codecs/dropin --target "$rust_target" ) ||
@@ -172,6 +188,12 @@ case "$toolchain" in
   llvm) cxx_libs="-lc++ -lc++abi -lunwind" ;;
 esac
 win_libs="-static $cxx_libs -lwinpthread -lwinmm -lws2_32 -ladvapi32 -lshell32 -luser32 -lkernel32 -lwininet -Wl,--allow-multiple-definition"
+# Rust's std imports Windows APIs the C side never touched: the Nt*/Rtl* native
+# calls live in ntdll, GetUserProfileDirectoryW in userenv, and its RNG in
+# bcrypt. Without these the link fails with a wall of "undefined reference to
+# NtOpenFile / RtlNtStatusToDosError". Only added under DARC_RUST so the pure-C
+# link line stays exactly as it was.
+[ -n "${DARC_RUST:-}" ] && win_libs="$win_libs -lntdll -luserenv -lbcrypt"
 
 # Build MHSCCLIBS from C objects (one space-separated string)
 linker_inputs=""
