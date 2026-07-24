@@ -371,6 +371,22 @@ jobs:
           make minstall
         fi
         echo "$HOME/.mcabal/bin" >> "$GITHUB_PATH"
+    # bindgen parses DArc's headers as C++, so it reads llvm-mingw's libc++ --
+    # whose headers use __builtin_clzg (Clang 19+). llvm-mingw ships the clang
+    # driver but no libclang.so, so bindgen otherwise falls back to whatever
+    # older libclang is on the box and dies on that builtin. Same pinned LLVM
+    # the Linux build job uses.
+    - name: Install LLVM and Clang (for bindgen)
+      uses: KyleMayes/install-llvm-action@ebc0426251bc40c7cd31162802432c68818ab8f0 # v2
+      with:
+        version: "21.1.8"
+    # Exported for EVERY later step, not just one: each cargo build in this job
+    # runs bindgen, and attaching this to a single step is exactly how the first
+    # build ended up on a stale libclang.
+    - name: Point bindgen at the pinned libclang
+      run: |
+        test -d "$LLVM_PATH/lib" || { echo "::error::no $LLVM_PATH/lib"; exit 1; }
+        echo "LIBCLANG_PATH=$LLVM_PATH/lib" >> "$GITHUB_ENV"
     # The Rust codecs are built by default now, so this must precede the first
     # build, not follow it. Targets come from rust-toolchain.toml.
     - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
@@ -404,18 +420,7 @@ jobs:
     # reach aarch64-pc-windows-gnullvm through llvm-mingw, a different toolchain
     # from the x86-64 job's mingw-w64, so it is checked separately. Wine has no
     # ARM64 emulation, so this proves the build and the link, not execution.
-    # bindgen parses DArc's headers as C++, so it reads llvm-mingw's libc++ --
-    # whose headers use __builtin_clzg (Clang 19+). llvm-mingw ships the clang
-    # driver but no libclang.so, so bindgen otherwise falls back to whatever
-    # older libclang is on the box and dies on that builtin. Same pinned LLVM
-    # the Linux build job uses.
-    - name: Install LLVM and Clang (for bindgen)
-      uses: KyleMayes/install-llvm-action@ebc0426251bc40c7cd31162802432c68818ab8f0 # v2
-      with:
-        version: "21.1.8"
     - name: Build (Windows ARM64 cross, C-only) and compare
-      env:
-        LIBCLANG_PATH: ${{ env.LLVM_PATH }}/lib
       run: |
         # The build above is now the Rust one (default), and it is what was
         # uploaded for the native ARM64 job. Rebuild C-only purely to prove the
