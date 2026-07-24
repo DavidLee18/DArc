@@ -8,7 +8,7 @@
 //! what wires them together; until then these are exercised by the differential
 //! harness rather than by the archiver.
 
-use crate::{bsc, delta, dict, dict_encode, dispack, grzip, lz4, lzp, mm, rep, tornado, tta, zstd};
+use crate::{bsc, delta, dict, dict_encode, dispack, grzip, lz4, lz4hc, lzp, mm, rep, tornado, tta, zstd};
 use crate::ffi::{Io, CALLBACK_FUNC, FREEARC_ERRCODE_GENERAL};
 use core::ffi::{c_int, c_void};
 
@@ -601,9 +601,7 @@ pub unsafe extern "C" fn darc_rs_lz4_decompress_block(
 ///
 /// Output is NOT byte-identical to the C library's. LZ4 is a match finder and
 /// encoders legitimately choose different matches; that is acceptable under the
-/// format-valid rule, and `-mlz4` has no fingerprint case. LZ4-HC is not covered
-/// (`lz4_flex` has no high-compression mode), so `C_LZ4.cpp` keeps calling the C
-/// `LZ4_compress_HC` when a compressor level is set.
+/// format-valid rule, and `-mlz4` has no fingerprint case.
 ///
 /// # Safety
 /// `src` must be valid for `src_size` bytes, `dst` for `dst_cap` bytes.
@@ -620,6 +618,33 @@ pub unsafe extern "C" fn darc_rs_lz4_compress_block(
     let s = core::slice::from_raw_parts(src, src_size as usize);
     let d = core::slice::from_raw_parts_mut(dst, dst_cap as usize);
     lz4::compress_block(s, d).map_or(0, |n| n as c_int)
+}
+
+/// LZ4 high-compression encode, mirroring `LZ4_compress_HC`: returns the
+/// compressed length, or 0 when the block does not fit -- which `C_LZ4.cpp`
+/// treats as "store this block raw", not as an error.
+///
+/// HC is encoder-only and emits ordinary LZ4 blocks, so no existing archive
+/// depends on this matching the C byte for byte; what it owes is the ratio.
+/// See `lz4hc.rs` for which strategies are reproduced and which levels are
+/// clamped.
+///
+/// # Safety
+/// `src` must be valid for `src_size` bytes, `dst` for `dst_cap` bytes.
+#[no_mangle]
+pub unsafe extern "C" fn darc_rs_lz4_compress_hc_block(
+    src: *const u8,
+    src_size: c_int,
+    dst: *mut u8,
+    dst_cap: c_int,
+    level: c_int,
+) -> c_int {
+    if src.is_null() || dst.is_null() || src_size < 0 || dst_cap < 0 {
+        return FREEARC_ERRCODE_GENERAL;
+    }
+    let s = core::slice::from_raw_parts(src, src_size as usize);
+    let d = core::slice::from_raw_parts_mut(dst, dst_cap as usize);
+    lz4hc::compress_hc(s, d, level) as c_int
 }
 
 /// zstd streaming decompress, replacing `zstd_stream_decompress` in

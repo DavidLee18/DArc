@@ -2,27 +2,44 @@
 
 extern "C" {
 #include "C_LZ4.h"
-#include "lz4.c"
-#ifndef FREEARC_DECOMPRESS_ONLY
-#include "lz4hc.c"
-#endif
 }
 
 // DArc LZ4 wire format version byte
 #define LZ4_VERSION_BYTE 1
 
-// DARC_RUST=1 routes the raw LZ4 block codec through lz4_flex (rust/darc-codecs)
-// instead of the vendored C. The block format is a fixed specification, so the
-// Rust decoder reads every block the C library ever wrote.
+// The LZ4 codec is Rust-only: the vendored lz4.c/lz4hc.c (292 KB) are gone, so
+// unlike most codecs here there is no DARC_NO_RUST fallback to guard against.
 //
-// This gates the call sites rather than excluding `#include "lz4.c"`: lz4hc.c
-// builds on lz4.c's internals, and lz4_flex has no high-compression mode, so
-// LZ4_compress_HC must keep its C implementation. Deleting the vendored tree
-// therefore waits on an HC story -- see the note in exports.rs.
-#ifdef DARC_RUST
-extern "C" int darc_rs_lz4_decompress_block (const unsigned char *src, int srcSize, unsigned char *dst, int dstCap);
-extern "C" int darc_rs_lz4_compress_block   (const unsigned char *src, int srcSize, unsigned char *dst, int dstCap);
-#endif
+// The fast encoder and the decoder come from lz4_flex; the high-compression
+// encoder is DArc's own port in rust/darc-codecs/src/lz4hc.rs. Deleting the C
+// waited on that port precisely because lz4hc.c does `#include "lz4.c"` for
+// shared internals, which made the two files a unit that had to go together.
+//
+// The block format is a fixed specification, so the Rust decoder reads every
+// block the C library ever wrote; and for every level DArc can select, the HC
+// port is byte-identical to the C encoder (rust/difftest/lz4hc-check.sh).
+extern "C" int darc_rs_lz4_decompress_block  (const unsigned char *src, int srcSize, unsigned char *dst, int dstCap);
+extern "C" int darc_rs_lz4_compress_block    (const unsigned char *src, int srcSize, unsigned char *dst, int dstCap);
+extern "C" int darc_rs_lz4_compress_hc_block (const unsigned char *src, int srcSize, unsigned char *dst, int dstCap, int level);
+
+// `LZ4_compressBound` (lz4.h). Kept as an inline formula rather than a call so
+// the header does not have to survive: it is a fixed part of the format's
+// worst case, not a tunable.
+static inline int LZ4_compressBound (int isize)
+{
+  return isize + isize/255 + 16;
+}
+
+// sizeof(LZ4_stream_t) and sizeof(LZ4_streamHC_t) as the vendored v1.10.0
+// reported them, measured rather than assumed.
+//
+// These are NOT free to update to whatever the Rust side happens to allocate.
+// SetCompressionMem() subtracts the state size before splitting what is left
+// into buffers, so the value decides BlockSize -- and BlockSize decides where
+// block boundaries fall in the archive. Changing either number silently
+// changes the bytes DArc writes.
+#define LZ4_SIZEOF_STATE     16416
+#define LZ4_SIZEOF_STATE_HC  262200
 
 int LZ4_METHOD::decompress (CALLBACK_FUNC *callback, void *auxdata)
 {
@@ -42,11 +59,7 @@ int LZ4_METHOD::decompress (CALLBACK_FUNC *callback, void *auxdata)
             WRITE (In, InSize);
         } else {
             READ  (In, InSize);
-#ifdef DARC_RUST
             OutSize = darc_rs_lz4_decompress_block (In, InSize, Out, BlockSize);
-#else
-            OutSize = LZ4_decompress_safe ((const char*)In, (char*)Out, InSize, BlockSize);
-#endif
             if (OutSize<0)  ReturnErrorCode(FREEARC_ERRCODE_BAD_COMPRESSED_DATA);
             WRITE (Out, OutSize);
         }
@@ -72,12 +85,8 @@ int LZ4_METHOD::compress (CALLBACK_FUNC *callback, void *auxdata)
         READ_LEN_OR_EOF (InSize, In, BlockSize);
         if (FirstTime) {BYTE v = LZ4_VERSION_BYTE;  WRITE (&v, 1);}
         OutSize = Compressor
-                ? LZ4_compress_HC      ((const char*)In, (char*)Out, InSize, dstCap, Compressor)
-#ifdef DARC_RUST
-                : darc_rs_lz4_compress_block (In, InSize, Out, dstCap);
-#else
-                : LZ4_compress_default ((const char*)In, (char*)Out, InSize, dstCap);
-#endif
+                ? darc_rs_lz4_compress_hc_block (In, InSize, Out, dstCap, Compressor)
+                : darc_rs_lz4_compress_block    (In, InSize, Out, dstCap);
         if (OutSize<=0  ||  (MinCompression>0 && OutSize >= (double(InSize)*MinCompression)/100)) {
             // Stored (uncompressible) block: signal with negative length
             WRITE4 (-InSize);
@@ -94,13 +103,13 @@ finished:
 
 MemSize LZ4_METHOD::GetCompressionMem()
 {
-  return BlockSize*2 + (Compressor? LZ4_sizeofStateHC() : LZ4_sizeofState());
+  return BlockSize*2 + (Compressor? LZ4_SIZEOF_STATE_HC : LZ4_SIZEOF_STATE);
 }
 
 void LZ4_METHOD::SetCompressionMem (MemSize mem)
 {
   // Reserve ~256 KB for LZ4 state; rest split between in/out buffers
-  MemSize state = Compressor? LZ4_sizeofStateHC() : LZ4_sizeofState();
+  MemSize state = Compressor? LZ4_SIZEOF_STATE_HC : LZ4_SIZEOF_STATE;
   MemSize avail = (mem > state + 2*kb) ? (mem - state) / 2 : 64*kb;
   if (avail < 64*kb) avail = 64*kb;           // sanity floor
   if (avail > 256*mb) avail = 256*mb;         // sanity ceiling

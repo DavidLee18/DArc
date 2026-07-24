@@ -220,5 +220,5 @@ These build separately from the main binary and are not covered by `./compile-O2
 ## Conventions
 
 - Commit messages are plain English, imperative, occasionally prefixed with a gitmoji on merges. Recent history uses a `Component: what changed` shape (`Win64 build: add LZMA/7z/zstd SDK sources, fix link`).
-- Codecs vendored from upstream projects (LZMA/7-Zip SDK, libbsc, Lua) are kept close to pristine so they can be re-synced. (zstd is no longer vendored — it comes from the `zstd-safe` crate.) Prefer adapting DArc's wrapper (`Compression/C_*.cpp`) over patching vendored sources.
+- Codecs vendored from upstream projects (LZMA/7-Zip SDK, libbsc, Lua) are kept close to pristine so they can be re-synced. (zstd and LZ4 are no longer vendored: zstd comes from the `zstd-safe` crate, and LZ4 from `lz4_flex` plus DArc's own LZ4-HC port in `rust/darc-codecs/src/lz4hc.rs`.) Prefer adapting DArc's wrapper (`Compression/C_*.cpp`) over patching vendored sources.
 - Haskell here predates AMP and modern `base`, and is compiled with a long list of `-X` flags (`NoMonomorphismRestriction`, `OverlappingInstances`, `NondecreasingIndentation`, …) plus `-w` to accept it. Match the surrounding style rather than modernizing — a "cleanup" that assumes `Applicative f => Monad f` will break the build.

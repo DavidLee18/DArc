@@ -56,7 +56,7 @@ CC="$triple-g++$cc_suffix"
 command -v "$CC" >/dev/null 2>&1 ||
   { echo "error: $CC not found in PATH -- $arch needs $toolchain" >&2; exit 2; }
 # DARC_RUST must reach the codec wrappers here, not just the Haskell link:
-# C_Zstd.cpp, C_LZ4.cpp and the rest key off it to hand their entry points to
+# C_BSC.cpp, C_GRZip.cpp and the rest key off it to hand their entry points to
 # the Rust staticlib. Compiling them without it binds the C implementations and
 # leaves the staticlib unused in the link -- the failure ./compile documents.
 RUST_DEF=""

@@ -23,10 +23,12 @@ and delete the C and Haskell that the Rust replaces.
 
 ### Wired ≠ pruned
 
-Keep these separate when reporting progress. The first deletion has landed:
-`Compression/Zstd/libzstd` (2.2 MB, 68 files) is gone and zstd is Rust-only.
-Everything else is still present -- every other `#ifndef DARC_RUST` block and
-vendored tree remains, because `DARC_NO_RUST=1` still builds them.
+Keep these separate when reporting progress. Four deletions have landed --
+zstd's `libzstd` (52,856 lines), Delta/Dict/REP (2,912) and LZ4's `lz4.c`/
+`lz4hc.c` (6,319) -- for a running total of **62,087 lines of C removed**.
+Those four codecs are Rust-only, with no `DARC_NO_RUST` fallback. Everything
+else is still present: every other `#ifndef DARC_RUST` block and vendored tree
+remains, because `DARC_NO_RUST=1` still builds them.
 
 | codec | Rust module | wired under `DARC_RUST` | C pruned |
 |---|---|---|---|
@@ -35,7 +37,7 @@ vendored tree remains, because `DARC_NO_RUST=1` still builds them.
 | Dict | `dict`, `dict_encode` | yes (both directions) | **YES** |
 | DisPack | `dispack` | yes | no |
 | GRZip | `grzip` | yes | no |
-| LZ4 | `lz4` (`lz4_flex`, pure Rust) | yes (decode + default encode) | no |
+| LZ4 | `lz4` (`lz4_flex`) + `lz4hc` (own HC port) | yes (decode + both encoders) | **YES — 6,319 lines deleted** |
 | LZP | `lzp` | yes (both directions) | no |
 | MM | `mm` | yes | no |
 | REP | `rep` | yes (both directions, byte-exact) | **YES** |
@@ -51,7 +53,8 @@ the 7-Zip SDK), and the Haskell layer (17,843).
 **zstd is a binding, not a port.** `zstd-safe`/`zstd-sys` compiles the same C,
 fetched by cargo instead of vendored. The value is 2.2 MB leaving the repo and
 maintenance moving upstream — that is the accepted rationale; do not re-litigate
-it. LZ4 by contrast is genuinely Rust.
+it. LZ4 by contrast is genuinely Rust: `lz4_flex` for the fast encoder and the
+decoder, and DArc's own HC port, byte-identical to the C for levels 1-9.
 
 ### Build paths and Rust support
 
@@ -63,9 +66,15 @@ it. LZ4 by contrast is genuinely Rust.
 
 ### Branch state
 
-`main` = `588522d` (PR #66 merged: LZ4 + zstd wired, the Rust codecs
-cross-compiling for both Windows targets, every action SHA-pinned, the Rust
-toolchain pinned, CI caching). Post-merge CI green, 12/12.
+`main` = `59bb492` (PR #71 merged: `Delta.cpp`, `dict.cpp`, `rep.cpp` deleted —
+2,912 lines). PR #71's own CI was green 12/12 before merge; **post-merge CI on
+`59bb492` was not yet watched at reboot time** — check it first on resume
+(`gh run list --branch main --limit 1`).
+
+Prior landmarks: `588522d` (PR #66: LZ4 + zstd wired, Rust codecs
+cross-compiling for both Windows targets, every action SHA-pinned, Rust
+toolchain pinned, CI caching); `5c2c6ce` is the pinned C-reference SHA
+(`DARC_C_REF_SHA`), the last revision holding the full C codec set.
 
 ---
 
@@ -202,18 +211,35 @@ Verified by deleting `rep.cpp`, `Delta.cpp` and `dict.cpp` from the working
 tree and re-running: all harnesses still pass. Bumping `DARC_C_REF_SHA` changes
 what "correct" means for every harness, so it is a deliberate act.
 
-### 7. Port `lz4hc.c` to Rust — blocks pruning `Compression/LZ4`
+### 7. Port `lz4hc.c` to Rust — DONE
 
-`lz4_flex` has no high-compression mode, and `lz4hc.c` does `#include "lz4.c"`
-for shared code (`lz4hc.c:56-66`), so the two files are a unit: **`lz4.c` cannot
-be deleted while HC is kept**, and all 292 KB is all-or-nothing. Decided: port
-HC rather than drop it.
+`rust/darc-codecs/src/lz4hc.rs` ports both strategies DArc can select, and came
+out **byte-identical to the C for levels 1-9** (24 inputs per level,
+`rust/difftest/lz4hc-check.sh`) — stronger than the format-valid rule required.
+Levels 10-12 select the C's `lz4opt` optimal parser, which is not ported and
+clamps to level 9; that measures as a wash (level 10 is 0.12% *smaller* than
+the C, level 11 within 0.005%, only level 12 worse, by 0.027%). `lz4:hc` is
+level 9, so the path in actual use is exact.
 
-LZ4-HC is **encoder-only** and emits standard LZ4 blocks — the Rust decoder
-already reads HC-produced archives. So this is purely about preserving
-compression ratio when creating archives (66,063 vs 71,029 bytes on the test
-corpus, ~7.5%). Also needed: `LZ4_compressBound` (trivial formula,
-`C_LZ4.cpp:66`).
+All 292 KB of vendored C is gone (`lz4.c`, `lz4.h`, `lz4hc.c`, `lz4hc.h`,
+6,319 lines) and LZ4 is Rust-only, like zstd. `LZ4_compressBound` became an
+inline formula in the wrapper; `LZ4_sizeofState{,HC}` became the two measured
+constants 16416 and 262200 — **not** free to re-derive from what Rust
+allocates, because `SetCompressionMem` subtracts them before sizing
+`BlockSize`, which decides where block boundaries land in the archive.
+
+Two details decided byte-identity, neither visible from the signatures, and
+both caught *only* by the repetitive corpus inputs:
+
+- **`patternAnalysis`** (enabled when `nbSearches > 128`, i.e. levels 9+)
+  short-circuits chains of one repeated byte. Without it output was still valid
+  and only 0.08% larger — comfortably inside any ratio budget, so a
+  size-threshold harness would have passed and hidden it. That is the argument
+  for gating on byte-identity wherever it is achievable.
+- **`lz4mid` fills its hash tables with a stale `ipIndex`** — the one captured
+  at the top of the loop, which its own catch-back invalidates
+  (`lz4hc.c:677-679`). Recomputing it is the obvious "cleanup" and makes output
+  diverge on exactly the repetitive inputs.
 
 ### 8. Hand-port PPMD (1,065 lines)
 
@@ -381,6 +407,15 @@ all. Do not read silence as success.
 
 **Link order matters on GNU ld.** A staticlib placed before the objects that
 reference it links on macOS and fails on Linux.
+
+**A glob is not a survey — enumerate every consumer.** When the C reference
+moved to the pinned tree, the harnesses were converted by globbing `*-check.sh`,
+which silently skipped `rust/difftest/run.sh` (CI's Delta/Dict/LZP "Codec
+differential test" + sabotage steps, named differently). Deleting `Delta.cpp`
+then failed only that job: `no such file: Compression/Delta/Delta.cpp`. The same
+shape cost three CI rounds in one session (`compile` vs `compile-mhs-win64`,
+toolchain vs `LIBCLANG_PATH`, `*-check.sh` vs `run.sh`). When a file moves or is
+deleted, list *every* consumer, not the ones matching the obvious pattern.
 
 **`long` is 4 bytes on Windows and 8 on LP64.** This family has produced a dozen
 bugs here. It is also why bindgen must be given an explicit `--target` when

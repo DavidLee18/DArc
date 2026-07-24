@@ -1,0 +1,979 @@
+//! LZ4 high-compression encoder, ported from the vendored `lz4hc.c` (lz4 v1.10.0).
+//!
+//! `lz4_flex` provides the fast encoder and the decoder but has **no
+//! high-compression mode**, which is the one thing keeping `Compression/LZ4`
+//! alive: `lz4hc.c` does `#include "lz4.c"` for shared internals, so the two
+//! files are a unit and neither can be deleted while HC is wanted.
+//!
+//! ## What is reproduced
+//!
+//! HC is **encoder-only** and emits ordinary LZ4 blocks, so the standing
+//! "format-valid is acceptable for standard formats" rule would have allowed an
+//! encoder that merely decodes correctly. Both strategies DArc can actually
+//! select turned out to port exactly, so this goes further and is
+//! **byte-identical to the C for levels 1-9** -- verified over 24 inputs per
+//! level by `rust/difftest/lz4hc-check.sh`.
+//!
+//! Two strategies are implemented, matching the C's own selection table:
+//!
+//! * [`compress_mid`] -- `LZ4MID_compressBlock`, levels 1-2.
+//! * The hash chain below -- `LZ4HC_compress_hashChain`, levels 3-9, including
+//!   the three-match lookahead parser and `patternAnalysis`. DArc's `lz4:hc`
+//!   keyword is level 9, so this is the path that gets used.
+//!
+//! Levels 10-12 select the C's `lz4opt` optimal parser, which is **not** ported;
+//! they clamp to level 9. That is the only knowing departure, and it measures as
+//! a wash -- see [`level_searches`].
+//!
+//! Deliberately not ported, because DArc never reaches them:
+//!
+//! * **Dictionary and streaming paths.** `C_LZ4.cpp` calls the one-shot
+//!   `LZ4_compress_HC`, so there is no external dictionary, no prefix carried
+//!   between blocks, and `limit` is always `limitedOutput`. That removes every
+//!   `extDict`/`dictCtx` branch from the search.
+//! * **`chainSwap`.** The hash-chain parser passes 0 for it at every call site
+//!   (`lz4hc.c:1117`, `:1171`, `:1216`); only the optimal parser turns it on.
+//! * **`favorDecSpeed`.** Likewise always `favorCompressionRatio` here.
+//!
+//! ## Where byte-identity actually came from
+//!
+//! Two details decided it, and neither is visible from the function signatures.
+//! Both were caught only by the repetitive corpus inputs (`runs`, `skew`),
+//! which is why those files are load-bearing rather than filler:
+//!
+//! * `patternAnalysis` (levels 9+) short-circuits chains of a single repeated
+//!   byte. Without it the output was still valid and only 0.08% larger -- small
+//!   enough to have passed a ratio budget and hidden the difference.
+//! * `lz4mid` fills its hash tables using the `ipIndex` captured at the top of
+//!   the loop, which its own catch-back leaves stale. Recomputing it is the
+//!   obvious "fix" and makes the output diverge.
+
+/// Minimum length of a match the LZ4 format can encode.
+const MINMATCH: i32 = 4;
+/// The block format requires the last 5 bytes to be literals.
+const LASTLITERALS: i32 = 5;
+/// No match may start within the last 12 bytes.
+const MFLIMIT: i32 = 12;
+/// `lz4.c:249` -- shorter inputs are emitted as a single literal run.
+const LZ4_MIN_LENGTH: i32 = MFLIMIT + 1;
+
+const ML_BITS: u32 = 4;
+const ML_MASK: i32 = (1 << ML_BITS) - 1;
+const RUN_MASK: i32 = 15;
+/// `lz4hc.c:76` -- the match length above which the parser stops trimming.
+const OPTIMAL_ML: i32 = (ML_MASK - 1) + MINMATCH;
+
+/// The largest offset an LZ4 block can encode: the offset field is 16 bits.
+const DISTANCE_MAX: u32 = 65535;
+
+const HASH_LOG: u32 = 15;
+const HASHTABLE_SIZE: usize = 1 << HASH_LOG;
+/// `LZ4HC_MAXD` -- the chain table is indexed by the low 16 bits of a position
+/// (`DELTANEXTU16`, `lz4hc.c:228`).
+const MAXD: usize = 1 << 16;
+
+/// `LZ4HC_init_internal` (`lz4hc.c:242-259`) starts a fresh context at a 64 KB
+/// index offset: `nextToUpdate = dictLimit = lowLimit = 64 KB`. That offset is
+/// load-bearing, not cosmetic -- the hash table is zero-filled, so slot 0 means
+/// "never written", and keeping every real position at or above 64 KB is what
+/// makes an untouched slot compare below `lowest_match_index` and be rejected.
+/// Reproducing the offset reproduces that behaviour exactly.
+const BASE: u32 = 65536;
+
+/// `HASH_FUNCTION` (`lz4hc.c:121`), a Knuth multiplicative hash of 4 bytes.
+#[inline]
+fn hash4(v: u32) -> usize {
+    (v.wrapping_mul(2654435761) >> (32 - HASH_LOG)) as usize
+}
+
+/// Bounds-checked 4-byte little-endian read.
+///
+/// Every caller is already guarded by the parser's own limits, so `None` should
+/// be unreachable. It returns `None` rather than a placeholder precisely so a
+/// mistake cannot fabricate a match: two out-of-range reads yielding the same
+/// sentinel would compare equal and invent a match that does not exist.
+#[inline]
+fn read32(src: &[u8], p: i32) -> Option<u32> {
+    if p < 0 {
+        return None;
+    }
+    let p = p as usize;
+    src.get(p..p + 4).map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+}
+
+/// Bounds-checked 2-byte read, used only by the speculative pre-filter.
+#[inline]
+fn read16(src: &[u8], p: i32) -> Option<u16> {
+    if p < 0 {
+        return None;
+    }
+    let p = p as usize;
+    src.get(p..p + 2).map(|b| u16::from_le_bytes([b[0], b[1]]))
+}
+
+/// `LZ4_count` -- common bytes going forward from `a`/`b`, stopping at `limit`.
+#[inline]
+fn count_forward(src: &[u8], mut a: i32, mut b: i32, limit: i32) -> i32 {
+    let start = a;
+    while a < limit {
+        match (src.get(a as usize), src.get(b as usize)) {
+            (Some(x), Some(y)) if x == y => {
+                a += 1;
+                b += 1;
+            }
+            _ => break,
+        }
+    }
+    a - start
+}
+
+/// `LZ4HC_countBack` (`lz4hc.c:202-220`) -- common bytes going *backwards*,
+/// returned as a **negative** count. `m_min` is 0 here: with no external
+/// dictionary the match can never precede the start of the block.
+///
+/// The C steps 4 bytes at a time; this is the byte-at-a-time equivalent, which
+/// returns the same value.
+#[inline]
+fn count_back(src: &[u8], ip: i32, m: i32, i_min: i32) -> i32 {
+    let mut back = 0i32;
+    let min = core::cmp::max(i_min - ip, -m);
+    while back > min {
+        let (a, b) = (ip + back - 1, m + back - 1);
+        match (src.get(a as usize), src.get(b as usize)) {
+            (Some(x), Some(y)) if x == y => back -= 1,
+            _ => break,
+        }
+    }
+    back
+}
+
+/// `LZ4HC_countPattern` (`lz4hc.c:820`), reduced to a run of one byte value.
+///
+/// The caller only ever reaches this after the repeat test below has confirmed
+/// all four bytes of the 32-bit pattern are equal, so the C's word-at-a-time
+/// comparison against a replicated pattern degenerates to counting a byte run --
+/// and `LZ4HC_rotatePattern` becomes a no-op, which is why it is absent here.
+#[inline]
+fn count_pattern(src: &[u8], start: i32, end: i32, byte: u8) -> i32 {
+    let mut p = start;
+    while p < end && src.get(p as usize) == Some(&byte) {
+        p += 1;
+    }
+    p - start
+}
+
+/// `LZ4HC_reverseCountPattern` (`lz4hc.c:854`) -- the same run, counted
+/// backwards from `start` and not passing `low`.
+#[inline]
+fn reverse_count_pattern(src: &[u8], start: i32, low: i32, byte: u8) -> i32 {
+    let mut p = start;
+    while p > low && src.get((p - 1) as usize) == Some(&byte) {
+        p -= 1;
+    }
+    start - p
+}
+
+/// Whether the 32-bit sample is a repetition of a single byte.
+///
+/// The C writes this as `((pattern & 0xFFFF) == (pattern >> 16)) &
+/// ((pattern & 0xFF) == (pattern >> 24))` (`lz4hc.c:992`). Those two together
+/// force all four bytes equal: the first gives `b0==b2, b1==b3`, the second
+/// `b0==b3`, and the pair collapses to `b0==b1==b2==b3`.
+#[inline]
+fn is_byte_repeat(pattern: u32) -> bool {
+    (pattern & 0xFFFF) == (pattern >> 16) && (pattern & 0xFF) == (pattern >> 24)
+}
+
+/// Tri-state from `repeat_state_e` (`lz4hc.c:880`): the repeat test is run at
+/// most once per search, and its answer cached for the rest of the chain walk.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Repeat {
+    Untested,
+    Not,
+    Confirmed,
+}
+
+/// A candidate match: length, offset (distance back), and how far the match was
+/// extended *backwards* from the search position (negative, `lz4hc.c:360`).
+#[derive(Clone, Copy, Default, PartialEq, Eq, Debug)]
+struct Match {
+    off: i32,
+    len: i32,
+    back: i32,
+}
+
+const NO_MATCH: Match = Match { off: 0, len: 0, back: 0 };
+
+/// The hash-chain index: a hash table of most-recent positions plus a table of
+/// 16-bit deltas linking each position to the previous one with the same hash.
+struct HashChain {
+    hash_table: Vec<u32>,
+    chain_table: Vec<u16>,
+    next_to_update: u32,
+}
+
+impl HashChain {
+    fn new() -> Self {
+        HashChain {
+            hash_table: vec![0u32; HASHTABLE_SIZE],
+            chain_table: vec![0u16; MAXD],
+            next_to_update: BASE,
+        }
+    }
+
+    /// `LZ4HC_Insert` (`lz4hc.c:781`) -- index every position up to, but not
+    /// including, `pos`.
+    fn insert(&mut self, src: &[u8], pos: i32) {
+        let target = pos as u32 + BASE;
+        let mut idx = self.next_to_update;
+        while idx < target {
+            let p = (idx - BASE) as i32;
+            let Some(v) = read32(src, p) else { break };
+            let h = hash4(v);
+            let mut delta = idx - self.hash_table[h];
+            if delta > DISTANCE_MAX {
+                delta = DISTANCE_MAX;
+            }
+            self.chain_table[(idx & 0xFFFF) as usize] = delta as u16;
+            self.hash_table[h] = idx;
+            idx += 1;
+        }
+        self.next_to_update = target;
+    }
+
+    /// `LZ4HC_InsertAndGetWiderMatch` (`lz4hc.c:885`), reduced to the
+    /// no-dictionary, no-`chainSwap`, no-`favorDecSpeed` case -- see the module
+    /// header for why each of those drops out.
+    ///
+    /// `i_low_limit` bounds how far back the match may be extended; passing
+    /// `i_low_limit == ip` forbids backward extension entirely, which is what
+    /// makes this double as `LZ4HC_InsertAndFindBestMatch` (`lz4hc.c:1117`).
+    fn get_wider_match(
+        &mut self,
+        src: &[u8],
+        ip: i32,
+        i_low_limit: i32,
+        i_high_limit: i32,
+        mut longest: i32,
+        max_nb_attempts: i32,
+        pattern_analysis: bool,
+    ) -> Match {
+        let ip_index = ip as u32 + BASE;
+        // `withinStartDistance` (lz4hc.c:901): while the whole block is still
+        // within one 64 KB window of the start, nothing is out of reach.
+        let lowest_match_index = if BASE + DISTANCE_MAX + 1 > ip_index {
+            BASE
+        } else {
+            ip_index - DISTANCE_MAX
+        };
+        let look_back_length = ip - i_low_limit;
+        let mut nb_attempts = max_nb_attempts;
+        let mut offset = 0i32;
+        let mut s_back = 0i32;
+        let mut repeat = Repeat::Untested;
+        let mut src_pattern_length = 0i32;
+
+        let Some(pattern) = read32(src, ip) else { return NO_MATCH };
+
+        self.insert(src, ip);
+        let mut match_index = self.hash_table[hash4(pattern)];
+
+        while match_index >= lowest_match_index && nb_attempts > 0 {
+            nb_attempts -= 1;
+            debug_assert!(match_index < ip_index);
+            let m = (match_index - BASE) as i32;
+
+            // Speculative pre-filter (lz4hc.c:933): if the two bytes at the end
+            // of the best match so far already disagree, this candidate cannot
+            // beat it. When either probe falls outside the block the check is
+            // skipped rather than failed -- skipping can only admit more
+            // candidates to the full test below, never reject a real match.
+            let probe_ip = i_low_limit + longest - 1;
+            let probe_m = m - look_back_length + longest - 1;
+            let filtered = match (read16(src, probe_ip), read16(src, probe_m)) {
+                (Some(a), Some(b)) => a != b,
+                _ => false,
+            };
+
+            if !filtered && read32(src, m) == Some(pattern) {
+                let back = if look_back_length != 0 {
+                    count_back(src, ip, m, i_low_limit)
+                } else {
+                    0
+                };
+                let mut match_length =
+                    MINMATCH + count_forward(src, ip + MINMATCH, m + MINMATCH, i_high_limit);
+                match_length -= back; // `back` is negative: the match grew leftwards
+                if match_length > longest {
+                    longest = match_length;
+                    offset = (ip_index - match_index) as i32;
+                    s_back = back;
+                }
+            }
+
+            // ---- Pattern analysis (lz4hc.c:987-1059) ----
+            //
+            // A chain delta of 1 means the previous position with this hash is
+            // the byte immediately before, which is what a run of one repeated
+            // byte looks like. Walking such a chain one step at a time burns
+            // the whole attempt budget crossing the run; this jumps straight to
+            // the useful end of it. The C enables it only for `nbSearches > 128`
+            // -- levels 9 and up -- which is why levels 3..8 never take it.
+            //
+            // `LZ4HC_protectDictEnd` is omitted: it guards reading MINMATCH
+            // bytes off the end of a dictionary, and with no dictionary it is
+            // `(U32)((BASE-1) - matchIndex) >= 3`, which is always true for
+            // every index at or above BASE.
+            let dist_next_match = self.chain_table[(match_index & 0xFFFF) as usize] as u32;
+            if pattern_analysis && dist_next_match == 1 {
+                let match_candidate_idx = match_index - 1;
+                if repeat == Repeat::Untested {
+                    if is_byte_repeat(pattern) {
+                        repeat = Repeat::Confirmed;
+                        src_pattern_length =
+                            count_pattern(src, ip + 4, i_high_limit, pattern as u8) + 4;
+                    } else {
+                        repeat = Repeat::Not;
+                    }
+                }
+                if repeat == Repeat::Confirmed && match_candidate_idx >= lowest_match_index {
+                    let mp = (match_candidate_idx - BASE) as i32;
+                    if read32(src, mp) == Some(pattern) {
+                        let byte = pattern as u8;
+                        let forward_len = count_pattern(src, mp + 4, i_high_limit, byte) + 4;
+                        let raw_back = reverse_count_pattern(src, mp, 0, byte);
+                        // Clamp so the segment never starts below the window.
+                        let back_len = (match_candidate_idx
+                            - (match_candidate_idx - raw_back as u32).max(lowest_match_index))
+                            as i32;
+                        let segment_len = back_len + forward_len;
+
+                        if segment_len >= src_pattern_length && forward_len <= src_pattern_length {
+                            // The segment holds a whole source pattern: jump to
+                            // where it ends, which may extend into a real match.
+                            match_index = match_candidate_idx + forward_len as u32
+                                - src_pattern_length as u32;
+                        } else {
+                            // Otherwise take the far end of the current segment.
+                            match_index = match_candidate_idx - back_len as u32;
+                            if look_back_length == 0 {
+                                let max_ml = segment_len.min(src_pattern_length);
+                                if longest < max_ml {
+                                    if ip_index - match_index > DISTANCE_MAX {
+                                        break;
+                                    }
+                                    longest = max_ml;
+                                    offset = (ip_index - match_index) as i32;
+                                }
+                                let dist_to_next =
+                                    self.chain_table[(match_index & 0xFFFF) as usize] as u32;
+                                if dist_to_next > match_index {
+                                    break; // avoid overflow
+                                }
+                                match_index -= dist_to_next;
+                            }
+                        }
+                        continue; // skip the ordinary chain step
+                    }
+                }
+            }
+
+            // Step to the previous position sharing this hash.
+            if dist_next_match > match_index {
+                break; // would underflow; unreachable while match_index >= BASE
+            }
+            match_index -= dist_next_match;
+        }
+
+        Match { off: offset, len: longest, back: s_back }
+    }
+}
+
+/// Output cursor over the destination buffer.
+struct Out<'a> {
+    buf: &'a mut [u8],
+    pos: usize,
+}
+
+impl<'a> Out<'a> {
+    #[inline]
+    fn push(&mut self, b: u8) {
+        self.buf[self.pos] = b;
+        self.pos += 1;
+    }
+}
+
+/// `LZ4HC_encodeSequence` (`lz4hc.c:268`). Returns `true` on output overflow,
+/// which abandons the whole compression (`limitedOutput`).
+///
+/// Advances `ip` past the match and moves `anchor` to it, as the C does through
+/// its `UPDATABLE` macro.
+fn encode_sequence(
+    src: &[u8],
+    out: &mut Out,
+    ip: &mut i32,
+    anchor: &mut i32,
+    match_length: i32,
+    offset: i32,
+) -> bool {
+    debug_assert!(match_length >= MINMATCH);
+    debug_assert!(offset > 0 && offset as u32 <= DISTANCE_MAX);
+
+    let lit_len = (*ip - *anchor) as usize;
+
+    // The C reserves the token byte before checking, so the check counts it.
+    if out.pos + 1 + lit_len / 255 + lit_len + (2 + 1 + LASTLITERALS as usize) > out.buf.len() {
+        return true;
+    }
+
+    let token_pos = out.pos;
+    out.pos += 1;
+
+    if lit_len >= RUN_MASK as usize {
+        let mut len = lit_len - RUN_MASK as usize;
+        out.buf[token_pos] = (RUN_MASK as u8) << ML_BITS;
+        while len >= 255 {
+            out.push(255);
+            len -= 255;
+        }
+        out.push(len as u8);
+    } else {
+        out.buf[token_pos] = (lit_len as u8) << ML_BITS;
+    }
+
+    let a = *anchor as usize;
+    out.buf[out.pos..out.pos + lit_len].copy_from_slice(&src[a..a + lit_len]);
+    out.pos += lit_len;
+
+    out.push(offset as u8);
+    out.push((offset >> 8) as u8);
+
+    let mut ml = (match_length - MINMATCH) as usize;
+    if out.pos + ml / 255 + (1 + LASTLITERALS as usize) > out.buf.len() {
+        return true;
+    }
+    if ml >= ML_MASK as usize {
+        out.buf[token_pos] += ML_MASK as u8;
+        ml -= ML_MASK as usize;
+        while ml >= 510 {
+            out.push(255);
+            out.push(255);
+            ml -= 510;
+        }
+        if ml >= 255 {
+            ml -= 255;
+            out.push(255);
+        }
+        out.push(ml as u8);
+    } else {
+        out.buf[token_pos] += ml as u8;
+    }
+
+    *ip += match_length;
+    *anchor = *ip;
+    false
+}
+
+/// `LZ4MID_HASHLOG` -- one bit smaller than the hash-chain table, because
+/// `lz4mid` keeps *two* tables inside the same allocation (`lz4hc.c:142`).
+const MID_HASHLOG: u32 = HASH_LOG - 1;
+const MID_HASHTABLE_SIZE: usize = 1 << MID_HASHLOG;
+
+/// `LZ4MID_hash4` (`lz4hc.c:145`).
+#[inline]
+fn mid_hash4(v: u32) -> usize {
+    (v.wrapping_mul(2654435761) >> (32 - MID_HASHLOG)) as usize
+}
+
+/// `LZ4MID_hash7` (`lz4hc.c:149`) -- hashes the low **56** bits, so the shift
+/// by 8 is part of the hash, not an alignment fix.
+#[inline]
+fn mid_hash8(v: u64) -> usize {
+    (((v << 8).wrapping_mul(58295818150454627)) >> (64 - MID_HASHLOG)) as usize
+}
+
+#[inline]
+fn read64(src: &[u8], p: i32) -> Option<u64> {
+    if p < 0 {
+        return None;
+    }
+    let p = p as usize;
+    src.get(p..p + 8).map(|b| u64::from_le_bytes(b.try_into().unwrap()))
+}
+
+/// `LZ4MID_compressBlock` (`lz4hc.c:529`) -- the strategy the C selects for
+/// levels 1-2, with the dictionary paths dropped.
+///
+/// It is not a shallower hash chain but a different shape: two hash tables (a
+/// 4-byte and an 8-byte hash) holding a single most-recent position each, a
+/// greedy match with a one-byte lookahead, and backward extension after the
+/// fact. That dual hash is why it beats a 4-deep chain despite being faster --
+/// clamping levels 1-2 onto the chain matcher measured ~0.9% *worse*.
+fn compress_mid(src: &[u8], out: &mut Out) -> Option<usize> {
+    let input_size = src.len() as i32;
+    let iend = input_size;
+    let mflimit = iend - MFLIMIT;
+    let matchlimit = iend - LASTLITERALS;
+    // `ilimit` (lz4hc.c:539) bounds where an 8-byte hash may still be read.
+    let ilimit_idx = (iend - 8) as u32 + BASE;
+
+    let mut hash4 = vec![0u32; MID_HASHTABLE_SIZE];
+    let mut hash8 = vec![0u32; MID_HASHTABLE_SIZE];
+
+    let mut ip = 0i32;
+    let mut anchor = 0i32;
+
+    macro_rules! addpos8 {
+        ($p:expr, $idx:expr) => {
+            if let Some(v) = read64(src, $p) {
+                hash8[mid_hash8(v)] = $idx;
+            }
+        };
+    }
+    macro_rules! addpos4 {
+        ($p:expr, $idx:expr) => {
+            if let Some(v) = read32(src, $p) {
+                hash4[mid_hash4(v)] = $idx;
+            }
+        };
+    }
+
+    'outer: while ip <= mflimit {
+        let ip_index = ip as u32 + BASE;
+        let mut match_length;
+        let mut match_distance;
+
+        // A zero-filled slot reads as index 0, which is more than
+        // LZ4_DISTANCE_MAX below any real index -- that is what rejects
+        // never-written slots, so no separate emptiness test is needed.
+        'found: {
+            // Long match first.
+            if let Some(v) = read64(src, ip) {
+                let h8 = mid_hash8(v);
+                let pos8 = hash8[h8];
+                hash8[h8] = ip_index;
+                if ip_index - pos8 <= DISTANCE_MAX {
+                    let m = (pos8 - BASE) as i32;
+                    match_length = count_forward(src, ip, m, matchlimit);
+                    if match_length >= MINMATCH {
+                        match_distance = (ip_index - pos8) as i32;
+                        break 'found;
+                    }
+                }
+            }
+            // Then a short match, with a one-byte lookahead for a longer one.
+            if let Some(v) = read32(src, ip) {
+                let h4 = mid_hash4(v);
+                let pos4 = hash4[h4];
+                hash4[h4] = ip_index;
+                if ip_index - pos4 <= DISTANCE_MAX {
+                    let m = (pos4 - BASE) as i32;
+                    match_length = count_forward(src, ip, m, matchlimit);
+                    if match_length >= MINMATCH {
+                        match_distance = (ip_index - pos4) as i32;
+                        if let Some(v2) = read64(src, ip + 1) {
+                            let h8 = mid_hash8(v2);
+                            let pos8 = hash8[h8];
+                            let m2_distance = ip_index + 1 - pos8;
+                            if m2_distance <= DISTANCE_MAX && ip < mflimit {
+                                let m2 = (pos8 - BASE) as i32;
+                                let ml2 = count_forward(src, ip + 1, m2, matchlimit);
+                                if ml2 > match_length {
+                                    hash8[h8] = ip_index + 1;
+                                    ip += 1;
+                                    match_length = ml2;
+                                    match_distance = m2_distance as i32;
+                                }
+                            }
+                        }
+                        break 'found;
+                    }
+                }
+            }
+            // No match: step forward, accelerating over incompressible data.
+            ip += 1 + ((ip - anchor) >> 9);
+            continue 'outer;
+        }
+
+        // Catch back (lz4hc.c:672): extend the match leftwards.
+        while ip > anchor
+            && ip > match_distance
+            && src[(ip - 1) as usize] == src[(ip - match_distance - 1) as usize]
+        {
+            ip -= 1;
+            match_length += 1;
+        }
+
+        // These use `ip_index` as captured at the TOP of the loop, which the
+        // catch-back above (and the `ip += 1` lookahead before it) may have left
+        // stale relative to `ip`. That is what the C does -- it never recomputes
+        // `ipIndex` here (`lz4hc.c:677-679`) -- and reproducing the staleness is
+        // required for identical output: recomputing it diverges on exactly the
+        // repetitive inputs where catch-back actually moves `ip`.
+        addpos8!(ip + 1, ip_index + 1);
+        addpos8!(ip + 2, ip_index + 2);
+        addpos4!(ip + 1, ip_index + 1);
+
+        if encode_sequence(src, out, &mut ip, &mut anchor, match_length, match_distance) {
+            return None;
+        }
+
+        // Fill the tables with the end of the match.
+        let end_idx = ip as u32 + BASE;
+        if end_idx - 2 < ilimit_idx {
+            if ip > 5 {
+                addpos8!(ip - 5, end_idx - 5);
+            }
+            addpos8!(ip - 3, end_idx - 3);
+            addpos8!(ip - 2, end_idx - 2);
+            addpos4!(ip - 2, end_idx - 2);
+            addpos4!(ip - 1, end_idx - 1);
+        }
+    }
+
+    Some(anchor as usize)
+}
+
+/// Search depth for a compression level, from `k_clTable` (`lz4hc.c:92-106`).
+///
+/// The table selects three strategies. `lz4mid` (levels 1-2) and `lz4hc` (the
+/// hash chain, levels 3-9) are both ported, so those levels reproduce the C
+/// exactly. Levels 10-12 would use `lz4opt`, the price-based optimal parser,
+/// which is not ported; they clamp to level 9.
+///
+/// Clamping 10-12 is the one place this port knowingly departs from the C, and
+/// the cost is **data-dependent** -- do not quote a single number for it. On
+/// the harness corpus it is a wash: level 10 comes out 0.12% *smaller* than the
+/// C (its shallower 96-deep search loses to a 256-deep chain), level 11 is
+/// within 0.005%, and level 12 is 0.027% worse. On a whole-archive test over
+/// mixed source text it reached **0.52%** worse at level 12 (45,579 -> 45,816).
+/// So the honest summary is "a fraction of a percent, sometimes better,
+/// occasionally half a percent worse", not "negligible".
+///
+/// DArc's `lz4:hc` keyword is level 9, so the path that actually gets used is
+/// byte-for-byte identical; only an explicit `lz4:c10`/`c11`/`c12` is affected.
+///
+/// A level below 1 means "default", which is 9 (`lz4hc.c:112-113`).
+fn level_searches(level: i32) -> i32 {
+    let level = if level < 1 { 9 } else { level.min(12) };
+    match level {
+        3 => 4,
+        4 => 8,
+        5 => 16,
+        6 => 32,
+        7 => 64,
+        8 => 128,
+        _ => 256, // 9, and 10-12 clamped
+    }
+}
+
+/// Whether a level selects the `lz4mid` strategy rather than the hash chain.
+fn uses_mid(level: i32) -> bool {
+    let level = if level < 1 { 9 } else { level.min(12) };
+    level <= 2
+}
+
+/// `LZ4_compressBound` (`lz4.h`) -- the exact bound `C_LZ4.cpp:66` sizes its
+/// output buffer with.
+pub fn compress_bound(n: usize) -> usize {
+    n + n / 255 + 16
+}
+
+/// High-compression encode of one block, mirroring `LZ4_compress_HC`.
+///
+/// Returns the compressed length, or `0` when the result does not fit in `dst`
+/// -- which `C_LZ4.cpp` treats as "store this block raw", not as an error.
+pub fn compress_hc(src: &[u8], dst: &mut [u8], level: i32) -> usize {
+    if src.len() > i32::MAX as usize {
+        return 0;
+    }
+    let mut out = Out { buf: dst, pos: 0 };
+    let input_size = src.len() as i32;
+    let max_nb_attempts = level_searches(level);
+    // `patternAnalysis` (lz4hc.c:1133) is tied to the search depth, not the
+    // level number: "levels 9+".
+    let pattern_analysis = max_nb_attempts > 128;
+
+    let iend = input_size;
+    let mflimit = iend - MFLIMIT;
+    let matchlimit = iend - LASTLITERALS;
+
+    let mut ip = 0i32;
+    let mut anchor = 0i32;
+
+    if input_size >= LZ4_MIN_LENGTH && uses_mid(level) {
+        match compress_mid(src, &mut out) {
+            Some(a) => anchor = a as i32,
+            None => return 0,
+        }
+    } else if input_size >= LZ4_MIN_LENGTH {
+        let mut ctx = HashChain::new();
+
+        'main: while ip <= mflimit {
+            let mut m1 = ctx.get_wider_match(src, ip, ip, matchlimit, MINMATCH - 1, max_nb_attempts, pattern_analysis);
+            if m1.len < MINMATCH {
+                ip += 1;
+                continue;
+            }
+
+            // Saved, in case the parser later decides it skipped too far.
+            let mut start0 = ip;
+            let mut m0 = m1;
+            let mut start2 = ip;
+            let mut m2 = NO_MATCH;
+            let mut start3;
+            let mut m3;
+
+            // The C threads this section with `goto _Search2` / `goto _Search3`;
+            // `state` reproduces those jumps exactly.
+            let mut state = 2u8;
+            loop {
+                if state == 2 {
+                    // ---- _Search2 (lz4hc.c:1165) ----
+                    if ip + m1.len <= mflimit {
+                        start2 = ip + m1.len - 2;
+                        m2 = ctx.get_wider_match(src, start2, ip, matchlimit, m1.len, max_nb_attempts, pattern_analysis);
+                        start2 += m2.back;
+                    } else {
+                        m2 = NO_MATCH; // do not search further
+                    }
+
+                    if m2.len <= m1.len {
+                        // No better match => encode ML1 immediately.
+                        if encode_sequence(src, &mut out, &mut ip, &mut anchor, m1.len, m1.off) {
+                            return 0;
+                        }
+                        continue 'main;
+                    }
+
+                    if start0 < ip && start2 < ip + m0.len {
+                        // Squeezing ML1 between ML0 and ML2: restore Match1.
+                        ip = start0;
+                        m1 = m0;
+                    }
+
+                    if start2 - ip < 3 {
+                        // First match too small: drop it.
+                        ip = start2;
+                        m1 = m2;
+                        continue;
+                    }
+                    state = 3;
+                    continue;
+                }
+
+                // ---- _Search3 (lz4hc.c:1198) ----
+                if start2 - ip < OPTIMAL_ML {
+                    let mut new_ml = m1.len.min(OPTIMAL_ML);
+                    if ip + new_ml > start2 + m2.len - MINMATCH {
+                        new_ml = (start2 - ip) + m2.len - MINMATCH;
+                    }
+                    let correction = new_ml - (start2 - ip);
+                    if correction > 0 {
+                        start2 += correction;
+                        m2.len -= correction;
+                    }
+                }
+
+                if start2 + m2.len <= mflimit {
+                    start3 = start2 + m2.len - 3;
+                    m3 = ctx.get_wider_match(src, start3, start2, matchlimit, m2.len, max_nb_attempts, pattern_analysis);
+                    start3 += m3.back;
+                } else {
+                    start3 = start2;
+                    m3 = NO_MATCH;
+                }
+
+                if m3.len <= m2.len {
+                    // No better match => encode ML1 and ML2.
+                    if start2 < ip + m1.len {
+                        m1.len = start2 - ip;
+                    }
+                    if encode_sequence(src, &mut out, &mut ip, &mut anchor, m1.len, m1.off) {
+                        return 0;
+                    }
+                    ip = start2;
+                    if encode_sequence(src, &mut out, &mut ip, &mut anchor, m2.len, m2.off) {
+                        return 0;
+                    }
+                    continue 'main;
+                }
+
+                if start3 < ip + m1.len + 3 {
+                    if start3 >= ip + m1.len {
+                        // Seq1 can be written now; Seq2 goes away and Seq3
+                        // becomes the new Seq1.
+                        if start2 < ip + m1.len {
+                            let correction = ip + m1.len - start2;
+                            start2 += correction;
+                            m2.len -= correction;
+                            if m2.len < MINMATCH {
+                                start2 = start3;
+                                m2 = m3;
+                            }
+                        }
+                        if encode_sequence(src, &mut out, &mut ip, &mut anchor, m1.len, m1.off) {
+                            return 0;
+                        }
+                        ip = start3;
+                        m1 = m3;
+                        start0 = start2;
+                        m0 = m2;
+                        state = 2;
+                        continue;
+                    }
+                    start2 = start3;
+                    m2 = m3;
+                    continue; // state stays 3
+                }
+
+                // Three ascending matches; write the first.
+                if start2 < ip + m1.len {
+                    if start2 - ip < OPTIMAL_ML {
+                        if m1.len > OPTIMAL_ML {
+                            m1.len = OPTIMAL_ML;
+                        }
+                        if ip + m1.len > start2 + m2.len - MINMATCH {
+                            m1.len = (start2 - ip) + m2.len - MINMATCH;
+                        }
+                        let correction = m1.len - (start2 - ip);
+                        if correction > 0 {
+                            start2 += correction;
+                            m2.len -= correction;
+                        }
+                    } else {
+                        m1.len = start2 - ip;
+                    }
+                }
+                if encode_sequence(src, &mut out, &mut ip, &mut anchor, m1.len, m1.off) {
+                    return 0;
+                }
+
+                // ML2 becomes ML1, ML3 becomes ML2; look for a new ML3.
+                ip = start2;
+                m1 = m2;
+                start2 = start3;
+                m2 = m3;
+                // state stays 3
+            }
+        }
+    }
+
+    // ---- Encode last literals (lz4hc.c:1308) ----
+    let last_run = (iend - anchor) as usize;
+    let ll_add = (last_run + 255 - RUN_MASK as usize) / 255;
+    if out.pos + 1 + ll_add + last_run > out.buf.len() {
+        return 0;
+    }
+    if last_run >= RUN_MASK as usize {
+        let mut acc = last_run - RUN_MASK as usize;
+        out.push((RUN_MASK as u8) << ML_BITS);
+        while acc >= 255 {
+            out.push(255);
+            acc -= 255;
+        }
+        out.push(acc as u8);
+    } else {
+        out.push((last_run as u8) << ML_BITS);
+    }
+    let a = anchor as usize;
+    out.buf[out.pos..out.pos + last_run].copy_from_slice(&src[a..a + last_run]);
+    out.pos += last_run;
+
+    out.pos
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn prng(seed: u32, n: usize) -> Vec<u8> {
+        let mut s = seed;
+        (0..n)
+            .map(|_| {
+                s = s.wrapping_mul(1103515245).wrapping_add(12345);
+                (s >> 16) as u8
+            })
+            .collect()
+    }
+
+    /// Every HC block must decode, through the same decoder DArc ships.
+    fn round_trip(src: &[u8], level: i32) -> usize {
+        let mut enc = vec![0u8; compress_bound(src.len())];
+        let n = compress_hc(src, &mut enc, level);
+        assert!(n > 0, "compress_hc returned 0 for {} bytes", src.len());
+        let mut dec = vec![0u8; src.len()];
+        let m = crate::lz4::decompress_block(&enc[..n], &mut dec).expect("decode HC block");
+        assert_eq!(m, src.len(), "decoded length differs at level {level}");
+        assert_eq!(dec, src, "decoded bytes differ at level {level}");
+        n
+    }
+
+    #[test]
+    fn round_trips_every_level() {
+        let corpus: Vec<Vec<u8>> = vec![
+            b"the quick brown fox jumps over the lazy dog. ".repeat(3000),
+            b"\x5a".repeat(80_000),
+            b"\x00\xff".repeat(40_000),
+            prng(9, 200_000),
+            (0..200_000u32).map(|i| (i % 256) as u8).collect(),
+        ];
+        for level in [1, 2, 3, 5, 9, 12] {
+            for src in &corpus {
+                round_trip(src, level);
+            }
+        }
+    }
+
+    /// Sizes around the parsing limits: below `LZ4_MIN_LENGTH`, straddling
+    /// `MFLIMIT`, and just past the first indexable position.
+    #[test]
+    fn round_trips_boundary_sizes() {
+        for len in [0usize, 1, 4, 12, 13, 14, 15, 16, 17, 63, 64, 65, 254, 255, 256, 4096] {
+            let src: Vec<u8> = (0..len).map(|i| (i * 7 % 251) as u8).collect();
+            round_trip(&src, 9);
+            let runs: Vec<u8> = (0..len).map(|i| (i / 7 % 3) as u8).collect();
+            round_trip(&runs, 9);
+        }
+    }
+
+    /// Offsets are 16 bits, so a match further back than 65535 must not be
+    /// emitted. An input longer than one window with a repeat exactly at the
+    /// boundary is the case that catches an off-by-one there.
+    #[test]
+    fn round_trips_across_the_64k_window() {
+        let mut src = prng(3, 70_000);
+        let head: Vec<u8> = src[..2000].to_vec();
+        src.extend_from_slice(&head);
+        round_trip(&src, 9);
+        round_trip(&src, 3);
+    }
+
+    /// The whole point of HC is that it compresses *better* than the fast
+    /// encoder. A port that merely round-trips could be emitting all literals.
+    #[test]
+    fn beats_the_fast_encoder() {
+        let src: Vec<u8> = b"compression algorithms rearrange data so that \
+                             statistical redundancy can be removed by an entropy coder. "
+            .repeat(900);
+        let mut fast = vec![0u8; compress_bound(src.len())];
+        let fast_n = crate::lz4::compress_block(&src, &mut fast).expect("fast encode");
+        let hc_n = round_trip(&src, 9);
+        assert!(
+            hc_n < fast_n,
+            "HC ({hc_n}) should beat the fast encoder ({fast_n})"
+        );
+    }
+
+    /// A tight output buffer must return 0 ("store raw"), never write past the
+    /// end and never panic.
+    #[test]
+    fn tight_output_buffer_returns_zero() {
+        let src = prng(11, 50_000); // incompressible
+        for cap in [0usize, 1, 8, 64, 1024, src.len() / 2] {
+            let mut out = vec![0u8; cap];
+            let n = compress_hc(&src, &mut out, 9);
+            assert!(n <= cap, "wrote {n} into a {cap}-byte buffer");
+        }
+    }
+}
