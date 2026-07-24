@@ -47,6 +47,7 @@
 pub mod adler32;
 pub mod header;
 pub mod lzp;
+pub mod model;
 pub mod model_consts;
 pub mod predictor;
 pub mod rangecoder;
