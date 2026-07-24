@@ -8,7 +8,7 @@
 //! what wires them together; until then these are exercised by the differential
 //! harness rather than by the archiver.
 
-use crate::{delta, dict, dict_encode, dispack, grzip, lzp, mm, rep, tornado, tta};
+use crate::{bsc, delta, dict, dict_encode, dispack, grzip, lzp, mm, rep, tornado, tta};
 use crate::ffi::{Io, CALLBACK_FUNC, FREEARC_ERRCODE_GENERAL};
 use core::ffi::{c_int, c_void};
 
@@ -457,4 +457,36 @@ pub unsafe extern "C" fn dispack_decompress(
     auxdata: *mut c_void,
 ) -> c_int {
     darc_rs_dispack_decompress(block_size, callback, auxdata)
+}
+
+/// BSC QLFC coder-level decode, for the differential harness.
+///
+/// BSC is still being ported; this exposes the entropy stage alone so the range
+/// coder, mixer, model and decode bodies can be verified against the C before
+/// the block dispatcher and the inverse transforms exist.
+///
+/// # Safety
+/// `input`/`output` must be valid for `in_size`/`out_cap` bytes.
+#[no_mangle]
+pub unsafe extern "C" fn darc_rs_bsc_qlfc_decode(
+    input: *const u8,
+    in_size: c_int,
+    output: *mut u8,
+    out_cap: c_int,
+    coder: c_int,
+) -> c_int {
+    if input.is_null() || output.is_null() || in_size < 0 || out_cap < 0 {
+        return FREEARC_ERRCODE_GENERAL;
+    }
+    let inp = core::slice::from_raw_parts(input, in_size as usize);
+    let out = core::slice::from_raw_parts_mut(output, out_cap as usize);
+    let r = match coder {
+        1 => bsc::qlfc::static_decode(inp, out),
+        2 => bsc::qlfc::adaptive_decode(inp, out),
+        _ => return FREEARC_ERRCODE_GENERAL, // fast coder not ported yet
+    };
+    match r {
+        Ok(n) => n as c_int,
+        Err(e) => e,
+    }
 }
