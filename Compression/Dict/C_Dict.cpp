@@ -6,44 +6,8 @@ extern "C" {
 // DARC_RUST=1 selects the Rust port. Both halves are ported now -- the
 // encoder (phases 1-7) and the decoder -- so the whole C implementation is
 // excluded, not just one entry point.
-#ifndef DARC_RUST
-#include "dict.cpp"
-#endif
 
 #ifndef FREEARC_DECOMPRESS_ONLY
-#ifndef DARC_RUST
-int dict_compress (MemSize BlockSize, int MinCompression, int MinWeakChars, int MinLargeCnt, int MinMediumCnt, int MinSmallCnt, int MinRatio, CALLBACK_FUNC *callback, void *auxdata)
-{
-    BYTE* In = NULL;  // pointer to the input data
-    BYTE* Out= NULL;  // pointer to the output data
-    int x;            // code of the error that occurred
-    while ( (x = callback ("read", (In = (BYTE*) malloc(BlockSize)), BlockSize, auxdata)) > 0 )
-    {
-        unsigned InSize, OutSize;     // number of bytes in the input and output buffers, respectively
-        In = (BYTE*) realloc(In,InSize=x);
-        x = DictEncode(In,InSize,&Out,&OutSize,MinWeakChars,MinLargeCnt,MinMediumCnt,MinSmallCnt,MinRatio);
-        if (x || OutSize/MinCompression>=InSize/100) {
-            // compressing the data [well enough] failed, so write the original data instead
-            int WrSize=-InSize;
-            FreeAndNil(Out);
-            // Write the original block and exit if a write error occurred / no more data is needed
-            checked_write (&WrSize, sizeof(WrSize));
-            checked_write (In, InSize);
-            FreeAndNil(In);
-        } else {
-            // the data was compressed successfully, we can free the input buffer before writing it out
-            // (in order to free more memory for the next algorithm in the compression chain)
-            FreeAndNil(In);
-            // Write the compressed block and exit if a write error occurred / no more data is needed
-            checked_write (&OutSize, sizeof(OutSize));
-            checked_write (Out, OutSize);
-            FreeAndNil(Out);
-        }
-    }
-finished:
-    FreeAndNil(In); FreeAndNil(Out); return x;  // 0 if everything is fine, otherwise the error code
-}
-#endif  // !DARC_RUST
 #endif  // !defined (FREEARC_DECOMPRESS_ONLY)
 
 
@@ -57,43 +21,6 @@ finished:
 //
 // The port is verified byte-identical to DictDecode over 11 inputs including
 // prose, records, source and binary -- see rust/difftest.
-#ifndef DARC_RUST
-int dict_decompress (MemSize BlockSize, int MinCompression, int MinWeakChars, int MinLargeCnt, int MinMediumCnt, int MinSmallCnt, int MinRatio, CALLBACK_FUNC *callback, void *auxdata)
-{
-  BYTE* In = NULL;  // pointer to the input data
-  BYTE* Out= NULL;  // pointer to the output data
-  int x;            // code of the error that occurred
-  for(;;) {
-    int InSize; unsigned OutSize;   // number of bytes in the input and output buffers, respectively
-    // Read block header; 0 bytes = clean EOF (end of compressed stream)
-    x = callback ("read", &InSize, sizeof(InSize), auxdata);
-    if (x == 0)  { x=0; goto finished; }
-    if (x != sizeof(InSize))  { if (x>=0) x=FREEARC_ERRCODE_IO; goto finished; }
-    if (InSize<0) {
-        // copy the uncompressed data as is
-        In = (BYTE*) malloc(-InSize);
-        checked_read  (In, -InSize);
-        checked_write (In, -InSize);
-        FreeAndNil(In);
-    } else {
-        // Perform the decoding and obtain the size of the output data
-        In  = (BYTE*) malloc(InSize);
-        Out = (BYTE*) malloc(BlockSize);
-        checked_read  (In, InSize);
-        x = DictDecode (In, InSize, Out, &OutSize);
-        //x = DictDecode (InSize, callback, auxdata);   // for operating within a fixed amount of memory
-        if (x) break;
-        FreeAndNil(In);
-        Out = (BYTE*) realloc (Out, OutSize);
-        checked_write (Out, OutSize);
-        FreeAndNil(Out);
-    }
-  }
-finished:
-  FreeAndNil(In); FreeAndNil(Out);
-  return x<=0? x : FREEARC_ERRCODE_IO;  // 0 if everything is fine, otherwise the error code
-}
-#endif  // !DARC_RUST
 
 
 /*-------------------------------------------------*/

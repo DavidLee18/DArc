@@ -4,7 +4,6 @@ extern "C" {
 
 
 #define REP_LIBRARY
-#include "rep.cpp"
 
 /*-------------------------------------------------*/
 /* Implementation of the REP_METHOD class          */
@@ -59,6 +58,26 @@ void REP_METHOD::ShowCompressionMethod (char *buf)
     sprintf (HashSizeLogStr, HashSizeLog!=defaults.HashSizeLog? ":h%d" : "", HashSizeLog);
     sprintf (MinMatchLenStr, MinMatchLen!=defaults.MinMatchLen? ":%d"  : "", MinMatchLen);
     sprintf (buf, "rep:%s%s%s%s%s%s%s", BlockSizeStr, MinCompressionStr, MinMatchLenStr, BarrierStr, SmallestLenStr, HashSizeLogStr, AmplifierStr);
+}
+
+// Moved here verbatim from rep.cpp when that file was deleted: the Rust port
+// replaced rep_compress/rep_decompress, but GetCompressionMem below still needs
+// these two pure helpers to reproduce the encoder's hash sizing. They affect
+// only the reported memory estimate, never archive bytes.
+//
+// sqrtb(36,2) == 4
+inline static unsigned sqrtb (unsigned n, unsigned base = 2)
+{
+    int result;
+    for (result=1; (n/=base*base) != 0; result *= base);
+    return result;
+}
+
+// The hash size should match the number of values we want to store in it, but
+// not exceed a quarter of the buffer size.
+static MemSize CalcHashSize (MemSize HashBits, MemSize BlockSize, MemSize k)
+{
+    return HashBits>0? (1<<HashBits) : roundup_to_power_of(BlockSize/3*2,2) / mymax(k,16);
 }
 
 // Compute how much memory is required to compress with the given method

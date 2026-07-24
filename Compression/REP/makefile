@@ -10,5 +10,5 @@ OPT_FLAGS   = -O3 \
 DEBUG_FLAGS = -g0
 CFLAGS = $(CODE_FLAGS) $(OPT_FLAGS) $(DEBUG_FLAGS) $(DEFINES)
 
-$(TEMPDIR)/C_REP.o: C_REP.cpp C_REP.h rep.cpp makefile
+$(TEMPDIR)/C_REP.o: C_REP.cpp C_REP.h makefile
 	$(GCC) -c $(CFLAGS) -o $*.o $<

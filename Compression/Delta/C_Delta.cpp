@@ -15,9 +15,6 @@ extern "C" {
 //
 // The port is verified byte-identical to Delta.cpp over 23 inputs and ~280
 // detected tables, in both directions -- see rust/difftest.
-#ifndef DARC_RUST
-#include "Delta.cpp"
-#endif
 
 /*-------------------------------------------------*/
 /* DELTA_METHOD class implementation                 */

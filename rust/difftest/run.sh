@@ -18,6 +18,10 @@ set -uo pipefail
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
+# The C reference comes from a pinned revision, not the working tree -- see
+# c-reference.sh. Delta.cpp no longer exists in the checkout.
+. "$HERE/c-reference.sh"
+CREF="$(darc_c_reference "$ROOT")" || exit 1
 
 # rust/ is a cargo workspace, so build output lands in the WORKSPACE target
 # directory. It was rust/darc-codecs/target/ before the workspace existed, and
@@ -44,8 +48,8 @@ build_ref () {
   # unrelated to the driver.
   clang++ -std=c++17 -O2 -w \
     -DDELTA_LIBRARY -DFREEARC_UNIX -DFREEARC_INTEL_BYTE_ORDER -DFREEARC_64BIT \
-    -I Compression -I . \
-    -o "$REF" "$HERE/delta_ref.cpp" Compression/Delta/Delta.cpp Compression/Common.cpp \
+    -I "$CREF/Compression" -I "$CREF" \
+    -o "$REF" "$CREF/rust/difftest/delta_ref.cpp" "$CREF/Compression/Delta/Delta.cpp" "$CREF/Compression/Common.cpp" \
     || { echo "error: failed to build the reference driver" >&2; return 1; }
   echo "built $REF"
 }
@@ -96,8 +100,8 @@ build_rs () {
   require_rust_lib || return 1
   clang++ -std=c++17 -O2 -w \
     -DUSE_RUST -DDELTA_LIBRARY -DFREEARC_UNIX -DFREEARC_INTEL_BYTE_ORDER -DFREEARC_64BIT \
-    -I Compression -I . \
-    -o "$RS" "$HERE/delta_ref.cpp" Compression/Delta/Delta.cpp Compression/Common.cpp \
+    -I "$CREF/Compression" -I "$CREF" \
+    -o "$RS" "$CREF/rust/difftest/delta_ref.cpp" "$CREF/Compression/Delta/Delta.cpp" "$CREF/Compression/Common.cpp" \
     "$RUST_LIB" \
     || { echo "error: failed to build the Rust driver" >&2; return 1; }
 }
@@ -214,8 +218,8 @@ sabotage () {
     if ! apply_mutation "$pat" "$rep"; then status=1; continue; fi
     ( cd "$ROOT/rust" && cargo build --release -p darc-codecs ) >/dev/null 2>&1
     clang++ -std=c++17 -O2 -w -DUSE_RUST -DDELTA_LIBRARY -DFREEARC_UNIX \
-      -DFREEARC_INTEL_BYTE_ORDER -DFREEARC_64BIT -I Compression -I . \
-      -o "$broken" "$HERE/delta_ref.cpp" Compression/Delta/Delta.cpp Compression/Common.cpp \
+      -DFREEARC_INTEL_BYTE_ORDER -DFREEARC_64BIT -I "$CREF/Compression" -I "$CREF" \
+      -o "$broken" "$CREF/rust/difftest/delta_ref.cpp" "$CREF/Compression/Delta/Delta.cpp" "$CREF/Compression/Common.cpp" \
       "$RUST_LIB" 2>/dev/null
     local res n caught
     res=$(compare_with "$broken" quiet); n=${res%% *}; caught=${res##* }

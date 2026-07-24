@@ -58,7 +58,9 @@ pub unsafe extern "C" fn darc_rs_delta_decompress(
 
 /// # Safety
 /// `callback` and `auxdata` must be what the C caller supplied.
-#[cfg(feature = "dropin")]
+/// Exported unconditionally: the C implementation this used to shadow has
+/// been deleted, so there is nothing left to collide with and the
+/// DARC_NO_RUST build needs this symbol to link.
 #[no_mangle]
 pub unsafe extern "C" fn delta_compress(
     block_size: u32,
@@ -71,7 +73,9 @@ pub unsafe extern "C" fn delta_compress(
 
 /// # Safety
 /// `callback` and `auxdata` must be what the C caller supplied.
-#[cfg(feature = "dropin")]
+/// Exported unconditionally: the C implementation this used to shadow has
+/// been deleted, so there is nothing left to collide with and the
+/// DARC_NO_RUST build needs this symbol to link.
 #[no_mangle]
 pub unsafe extern "C" fn delta_decompress(
     block_size: u32,
@@ -108,7 +112,9 @@ pub unsafe extern "C" fn darc_rs_dict_decompress(
 ///
 /// # Safety
 /// `callback` and `auxdata` must be what the C caller supplied.
-#[cfg(feature = "dropin")]
+/// Exported unconditionally: the C implementation this used to shadow has
+/// been deleted, so there is nothing left to collide with and the
+/// DARC_NO_RUST build needs this symbol to link.
 #[no_mangle]
 #[allow(clippy::too_many_arguments)]
 pub unsafe extern "C" fn dict_decompress(
@@ -227,7 +233,9 @@ pub unsafe extern "C" fn darc_rs_rep_compress(
 
 /// # Safety
 /// `callback` and `auxdata` must be what the C caller supplied.
-#[cfg(feature = "dropin")]
+/// Exported unconditionally: the C implementation this used to shadow has
+/// been deleted, so there is nothing left to collide with and the
+/// DARC_NO_RUST build needs this symbol to link.
 #[no_mangle]
 #[allow(clippy::too_many_arguments)]
 pub unsafe extern "C" fn rep_compress(
@@ -239,7 +247,9 @@ pub unsafe extern "C" fn rep_compress(
 
 /// # Safety
 /// `callback` and `auxdata` must be what the C caller supplied.
-#[cfg(feature = "dropin")]
+/// Exported unconditionally: the C implementation this used to shadow has
+/// been deleted, so there is nothing left to collide with and the
+/// DARC_NO_RUST build needs this symbol to link.
 #[no_mangle]
 #[allow(clippy::too_many_arguments)]
 pub unsafe extern "C" fn rep_decompress(
@@ -327,7 +337,9 @@ pub unsafe extern "C" fn darc_rs_dict_compress(
 
 /// # Safety
 /// `callback` and `auxdata` must be what the C caller supplied.
-#[cfg(feature = "dropin")]
+/// Exported unconditionally: the C implementation this used to shadow has
+/// been deleted, so there is nothing left to collide with and the
+/// DARC_NO_RUST build needs this symbol to link.
 #[no_mangle]
 #[allow(clippy::too_many_arguments)]
 pub unsafe extern "C" fn dict_compress(
