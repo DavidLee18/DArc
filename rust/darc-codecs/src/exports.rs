@@ -166,12 +166,14 @@ pub unsafe extern "C" fn darc_rs_lzp_compress(
     }
 }
 
-/// Drop-in under the archiver's own symbol names; see the note above on why the
-/// switch is an exclusion in C_LZP.cpp rather than a redeclaration.
+/// Drop-in under the archiver's own symbol names.
+///
+/// Exported unconditionally: the C implementation this used to shadow has been
+/// deleted (LZP is ported in BOTH directions), so there is nothing left to
+/// collide with and the DARC_NO_RUST build needs these symbols to link.
 ///
 /// # Safety
 /// `callback` and `auxdata` must be what the C caller supplied.
-#[cfg(feature = "dropin")]
 #[no_mangle]
 #[allow(clippy::too_many_arguments)]
 pub unsafe extern "C" fn lzp_compress(
@@ -183,7 +185,7 @@ pub unsafe extern "C" fn lzp_compress(
 
 /// # Safety
 /// `callback` and `auxdata` must be what the C caller supplied.
-#[cfg(feature = "dropin")]
+/// Exported unconditionally, for the same reason as `lzp_compress` above.
 #[no_mangle]
 #[allow(clippy::too_many_arguments)]
 pub unsafe extern "C" fn lzp_decompress(
