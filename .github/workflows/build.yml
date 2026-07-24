@@ -12,6 +12,30 @@ on:
 permissions:
   contents: read
 
+# Cancel a PR's earlier runs when a new commit supersedes them: pushing a
+# follow-up leaves the previous run testing a SHA that is no longer HEAD, and
+# this repo does not otherwise stop it -- a 12-job matrix kept running for an
+# obsolete commit.
+#
+# `main` is deliberately EXCLUDED from cancellation. Each post-merge run is the
+# verification signal for one specific merge, and merges land back to back here
+# (#71 through #74 in a single session); cancelling an in-flight main run when
+# the next merge arrives would silently destroy the evidence that the previous
+# merge was good.
+#
+# Non-PR runs therefore get a group unique to the run itself, so they can
+# neither cancel each other nor queue behind each other. Only pull_request runs
+# share a group (keyed by PR number, which is stable across commits) and so only
+# they cancel.
+#
+# The group expression is deliberately ONE line. Folding it with `>-` looks
+# tidier but does not fold: YAML preserves newlines on continuation lines that
+# are indented deeper than the first content line, so the group string ends up
+# containing literal newlines. Verified by parsing the file, not by eye.
+concurrency:
+  group: build-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || format('run-{0}', github.run_id) }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   build:
     runs-on: ${{ matrix.os }}
