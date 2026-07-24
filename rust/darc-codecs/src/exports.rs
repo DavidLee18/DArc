@@ -516,3 +516,18 @@ pub unsafe extern "C" fn darc_rs_bsc_bwt_decode(
     };
     bsc::bwt::bwt_decode(buf, n as usize, index, num_indexes, idx)
 }
+
+/// BSC inverse sort-transform (ST3..ST8), for the differential harness. Mirrors
+/// `bsc_st_decode`: inverts `data` in place. Returns `LIBBSC_NO_ERROR` (0) or a
+/// negative libbsc code.
+///
+/// # Safety
+/// `data` must be valid for `n` bytes.
+#[no_mangle]
+pub unsafe extern "C" fn darc_rs_bsc_st_decode(data: *mut u8, n: c_int, k: c_int, index: c_int) -> c_int {
+    if data.is_null() || n < 0 || k < 0 {
+        return FREEARC_ERRCODE_GENERAL;
+    }
+    let buf = core::slice::from_raw_parts_mut(data, n as usize);
+    bsc::st::st_decode(buf, n as usize, k as u32, index)
+}

@@ -53,6 +53,7 @@ pub mod model_consts;
 pub mod predictor;
 pub mod qlfc;
 pub mod rangecoder;
+pub mod st;
 pub mod tables;
 
 /// Error codes (`libbsc.h:41-47`).

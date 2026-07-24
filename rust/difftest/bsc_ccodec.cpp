@@ -44,4 +44,12 @@ int darc_bsc_bwt_encode (unsigned char *T, int n, unsigned char *num_indexes, in
 
 int darc_bsc_bwt_decode (unsigned char *T, int n, int index, unsigned char num_indexes, int *indexes, int features)
 { return bsc_bwt_decode(T, n, index, num_indexes, indexes, features); }
+
+/* Forward sort-transform (ST3..ST8) and its inverse, for the inverse-ST
+ * differential harness. */
+int darc_bsc_st_encode (unsigned char *T, int n, int k, int features)
+{ return bsc_st_encode(T, n, k, features); }
+
+int darc_bsc_st_decode (unsigned char *T, int n, int k, int index, int features)
+{ return bsc_st_decode(T, n, k, index, features); }
 }
