@@ -29,22 +29,27 @@ trap 'rm -rf "$W"' EXIT
   || { echo "cargo build failed" >&2; exit 1; }
 LIB="$ROOT/rust/target/release/libdarc_codecs.a"
 
-# The staticlib goes AFTER the sources that reference it: GNU ld resolves an
-# archive only against the undefined symbols it has already seen.
 # The Rust variant compiles the pinned C_LZP.cpp with -DDARC_RUST, exactly as
 # production does: that excludes the C lzp_compress/lzp_decompress so the Rust
 # staticlib supplies them instead. Without it the two definitions collide --
 # the drop-ins are no longer feature-gated, now that the C is deleted.
-cc() { local out="$1"; shift
+#
+# $lib is a SEPARATE parameter, placed after every source, and is not folded
+# into "$@" with the -D flags. GNU ld resolves an archive only against the
+# undefined symbols it has already seen, so a staticlib listed before the
+# sources contributes nothing -- it links on macOS and fails on Linux with
+# "undefined reference". Passing it through "$@" did exactly that and only CI
+# caught it.
+cc() { local out="$1" lib="$2"; shift 2
   clang++ -std=c++17 -O2 -w -DFREEARC_UNIX -DFREEARC_INTEL_BYTE_ORDER -DFREEARC_64BIT \
     -I"$CREF" -I"$CREF/Compression" "$@" \
     "$CREF/rust/difftest/lzp_ref.cpp" \
     "$CREF/Compression/LZP/C_LZP.cpp" \
     "$CREF/Compression/CompressionLibrary.cpp" \
     "$CREF/Compression/Common.cpp" \
-    -o "$out"; }
-cc "$W/c" || { echo "C reference build failed" >&2; exit 1; }
-cc "$W/rs" -DUSE_RUST -DDARC_RUST "$LIB" || { echo "Rust driver build failed" >&2; exit 1; }
+    ${lib:+"$lib"} -o "$out"; }
+cc "$W/c"  ""                              || { echo "C reference build failed" >&2; exit 1; }
+cc "$W/rs" "$LIB" -DUSE_RUST -DDARC_RUST   || { echo "Rust driver build failed" >&2; exit 1; }
 
 python3 - "$W/in" <<'PY'
 import os,sys
