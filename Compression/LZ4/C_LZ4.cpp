@@ -11,6 +11,19 @@ extern "C" {
 // DArc LZ4 wire format version byte
 #define LZ4_VERSION_BYTE 1
 
+// DARC_RUST=1 routes the raw LZ4 block codec through lz4_flex (rust/darc-codecs)
+// instead of the vendored C. The block format is a fixed specification, so the
+// Rust decoder reads every block the C library ever wrote.
+//
+// This gates the call sites rather than excluding `#include "lz4.c"`: lz4hc.c
+// builds on lz4.c's internals, and lz4_flex has no high-compression mode, so
+// LZ4_compress_HC must keep its C implementation. Deleting the vendored tree
+// therefore waits on an HC story -- see the note in exports.rs.
+#ifdef DARC_RUST
+extern "C" int darc_rs_lz4_decompress_block (const unsigned char *src, int srcSize, unsigned char *dst, int dstCap);
+extern "C" int darc_rs_lz4_compress_block   (const unsigned char *src, int srcSize, unsigned char *dst, int dstCap);
+#endif
+
 int LZ4_METHOD::decompress (CALLBACK_FUNC *callback, void *auxdata)
 {
     int errcode = FREEARC_OK;
@@ -29,7 +42,11 @@ int LZ4_METHOD::decompress (CALLBACK_FUNC *callback, void *auxdata)
             WRITE (In, InSize);
         } else {
             READ  (In, InSize);
+#ifdef DARC_RUST
+            OutSize = darc_rs_lz4_decompress_block (In, InSize, Out, BlockSize);
+#else
             OutSize = LZ4_decompress_safe ((const char*)In, (char*)Out, InSize, BlockSize);
+#endif
             if (OutSize<0)  ReturnErrorCode(FREEARC_ERRCODE_BAD_COMPRESSED_DATA);
             WRITE (Out, OutSize);
         }
@@ -56,7 +73,11 @@ int LZ4_METHOD::compress (CALLBACK_FUNC *callback, void *auxdata)
         if (FirstTime) {BYTE v = LZ4_VERSION_BYTE;  WRITE (&v, 1);}
         OutSize = Compressor
                 ? LZ4_compress_HC      ((const char*)In, (char*)Out, InSize, dstCap, Compressor)
+#ifdef DARC_RUST
+                : darc_rs_lz4_compress_block (In, InSize, Out, dstCap);
+#else
                 : LZ4_compress_default ((const char*)In, (char*)Out, InSize, dstCap);
+#endif
         if (OutSize<=0  ||  (MinCompression>0 && OutSize >= (double(InSize)*MinCompression)/100)) {
             // Stored (uncompressible) block: signal with negative length
             WRITE4 (-InSize);
