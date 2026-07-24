@@ -1,0 +1,19 @@
+# Pinned Rust toolchain.
+#
+# Once DARC_RUST is the default, Rust compiles code that ships in every release
+# binary, so it needs the same treatment MicroHs already gets: a pin, not a
+# floating channel. release.yml says it of itself -- "a release built against a
+# different compiler revision than CI validates would be a silent difference
+# between what is tested and what is shipped" -- and that applies to rustc the
+# moment it stops being optional.
+#
+# Targets live here rather than in each workflow's `targets:` input so there is
+# ONE place to change. rustup installs them on demand, including for the Windows
+# cross-builds driven by compile-mhs-win64.
+[toolchain]
+channel = "1.97.1"
+components = ["rustfmt", "clippy"]
+targets = [
+    "x86_64-pc-windows-gnu",       # windows-amd64, via mingw-w64
+    "aarch64-pc-windows-gnullvm",  # windows-arm64, via llvm-mingw
+]
