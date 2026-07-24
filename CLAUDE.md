@@ -147,7 +147,7 @@ foreign import ccall safe "Compression.h Compress"
   c_compress :: CMethod -> FunPtr CALLBACK_FUNC -> FunPtr CALLBACK_FUNC -> ...
 ```
 
-Streaming is **callback-driven**: `type CALLBACK_FUNC = CString -> Ptr CChar -> CInt -> VoidPtr -> IO CInt` (`:332`). C drives the loop and calls back into Haskell with `"read"`/`"write"` requests. `CompressionLibrary.cpp` dispatches on the method name to the right `Compression/C_*.cpp` wrapper, each adapting a vendored codec (`LZMA/`, `Zstd/`, `BSC/`, `PPMD/`, `Tornado/`, …). `Compression/External/C_External.cpp` handles methods implemented by spawning external binaries (precomp, ecm, ppmonstr, srep).
+Streaming is **callback-driven**: `type CALLBACK_FUNC = CString -> Ptr CChar -> CInt -> VoidPtr -> IO CInt` (`:332`). C drives the loop and calls back into Haskell with `"read"`/`"write"` requests. `CompressionLibrary.cpp` dispatches on the method name to the right `Compression/C_*.cpp` wrapper, each adapting a vendored codec (`LZMA/`, `BSC/`, `PPMD/`, `Tornado/`, …) or, increasingly, forwarding to `rust/darc-codecs`. `Compression/External/C_External.cpp` handles methods implemented by spawning external binaries (precomp, ecm, ppmonstr, srep).
 
 > **MicroHs constraint worth knowing before you touch this.** GHC creates callbacks with `foreign import ccall "wrapper"`. MicroHs has no dynamic-wrapper FFI, so `CompressionLib.hs:334–360` substitutes a single `foreign export ccall darc_haskell_callback` plus a **global single-slot `IORef`** holding the current Haskell callback (the function pointer is fetched from C via `darc_get_haskell_callback_ptr` in `Environment.cpp`, to dodge a forward-declaration ordering bug in mhs-generated C). Single-slot means concurrent FFI compression calls are constrained on the MicroHs path — a real limit, not an implementation detail.
 
@@ -220,5 +220,5 @@ These build separately from the main binary and are not covered by `./compile-O2
 ## Conventions
 
 - Commit messages are plain English, imperative, occasionally prefixed with a gitmoji on merges. Recent history uses a `Component: what changed` shape (`Win64 build: add LZMA/7z/zstd SDK sources, fix link`).
-- Codecs vendored from upstream projects (LZMA/7-Zip SDK, zstd, libbsc, Lua) are kept close to pristine so they can be re-synced. Prefer adapting DArc's wrapper (`Compression/C_*.cpp`) over patching vendored sources.
+- Codecs vendored from upstream projects (LZMA/7-Zip SDK, libbsc, Lua) are kept close to pristine so they can be re-synced. (zstd is no longer vendored — it comes from the `zstd-safe` crate.) Prefer adapting DArc's wrapper (`Compression/C_*.cpp`) over patching vendored sources.
 - Haskell here predates AMP and modern `base`, and is compiled with a long list of `-X` flags (`NoMonomorphismRestriction`, `OverlappingInstances`, `NondecreasingIndentation`, …) plus `-w` to accept it. Match the surrounding style rather than modernizing — a "cleanup" that assumes `Applicative f => Monad f` will break the build.

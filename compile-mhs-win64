@@ -63,10 +63,13 @@ mkdir -p "$WINOUT"
 # long-width family of bugs this repository has fixed a dozen times, so the
 # target is passed explicitly rather than left to default.
 rust_libs=""
-# ON by default; DARC_NO_RUST=1 opts out. See ./compile.
-if [ -z "${DARC_NO_RUST:-}" ]; then
+# The staticlibs are ALWAYS built and linked, even under DARC_NO_RUST: zstd has
+# no C implementation left, so C_Zstd.o resolves zstd_stream_* from the crate
+# either way. DARC_NO_RUST only drops the `dropin` feature and -DDARC_RUST, so
+# every other codec compiles and binds its C. Same arrangement as ./compile.
+if true; then
   command -v cargo >/dev/null 2>&1 ||
-    { echo "error: cargo not found in PATH -- it is required to build DArc (set DARC_NO_RUST=1 for a C-only build)" >&2; exit 1; }
+    { echo "error: cargo not found in PATH -- it is required to build DArc, in both modes: zstd has no C implementation left" >&2; exit 1; }
 
   case "$arch" in
     x86_64)  rust_target="x86_64-pc-windows-gnu"      ;;
@@ -144,9 +147,11 @@ if [ -z "${DARC_NO_RUST:-}" ]; then
       echo "using $LIBCLANG_PATH/libclang for bindgen (matches llvm-mingw's libc++)"
   fi
 
-  echo "building Rust codecs and crypto for $rust_target"
+  rust_features=""
+  [ -z "${DARC_NO_RUST:-}" ] && rust_features="--features darc-codecs/dropin"
+  echo "building Rust codecs and crypto for $rust_target${DARC_NO_RUST:+ (dropins off)}"
   ( cd rust && cargo build --release -p darc-codecs -p darc-crypto \
-      --features darc-codecs/dropin --target "$rust_target" ) ||
+      $rust_features --target "$rust_target" ) ||
     { echo "error: cargo build failed for $rust_target" >&2; exit 1; }
 
   rust_libs="$PWD/rust/target/$rust_target/release/libdarc_codecs.a"
@@ -156,7 +161,7 @@ if [ -z "${DARC_NO_RUST:-}" ]; then
   done
 
   # Reaches the per-codec makefiles through win32-common.mak; make imports it.
-  export DARC_EXTRA_DEFINES="-DDARC_RUST"
+  [ -z "${DARC_NO_RUST:-}" ] && export DARC_EXTRA_DEFINES="-DDARC_RUST"
 fi
 
 # 1) Build C/C++ objects for the Windows target with __MHS__ defined
@@ -193,7 +198,6 @@ c_objs=(
   "$WINOUT/sdk_CpuArch.o" "$WINOUT/sdk_Alloc.o"
 )
 [[ -f "$WINOUT/C_BCJ.o" ]] && c_objs+=("$WINOUT/C_BCJ.o")
-for zo in "$WINOUT"/zstd_*.o; do [[ -f "$zo" ]] && c_objs+=("$zo"); done
 
 # Windows system libs (mingw provides these).
 #
@@ -212,7 +216,8 @@ win_libs="-static $cxx_libs -lwinpthread -lwinmm -lws2_32 -ladvapi32 -lshell32 -
 # bcrypt. Without these the link fails with a wall of "undefined reference to
 # NtOpenFile / RtlNtStatusToDosError". Only added under DARC_RUST so the pure-C
 # link line stays exactly as it was.
-[ -z "${DARC_NO_RUST:-}" ] && win_libs="$win_libs -lntdll -luserenv -lbcrypt"
+# Rust std is linked in BOTH modes now, so its Windows imports always apply.
+win_libs="$win_libs -lntdll -luserenv -lbcrypt"
 
 # Build MHSCCLIBS from C objects (one space-separated string)
 linker_inputs=""
