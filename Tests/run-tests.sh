@@ -140,6 +140,7 @@ CASES="
 -mppmd:ppmd
 -mgrzip:grzip
 -mdispack:dispack
+-mbsc:bsc
 -mdict -s-:dict-nonsolid
 -mrep+lzma:chain-rep-lzma
 -mdelta+lzma:chain-delta-lzma
