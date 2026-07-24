@@ -558,7 +558,11 @@ jobs:
     - uses: taiki-e/install-action@nextest
     - name: cargo nextest
       working-directory: rust
-      run: cargo nextest run --profile ci
+      # --features zstd keeps the zstd frame-compatibility vectors running. That
+      # binding is off by default because zstd-sys compiles C, which would force
+      # a C cross-compiler for every target the archiver cross-builds to; here a
+      # native compiler is present, so the tests still run.
+      run: cargo nextest run --profile ci --features darc-codecs/zstd
     # Warnings are not failures here yet: the crate carries dead code that is
     # scaffolding for codecs not ported yet, and denying it now would block the
     # port rather than improve it.

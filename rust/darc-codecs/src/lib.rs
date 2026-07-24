@@ -20,6 +20,9 @@ pub mod rep;
 pub mod srep;
 pub mod tornado;
 pub mod tta;
+// Behind a feature: zstd-sys compiles C, which would force a C cross-compiler
+// for every shipped target. Nothing calls this yet -- see Cargo.toml.
+#[cfg(feature = "zstd")]
 pub mod zstd;
 pub mod ffi;
 

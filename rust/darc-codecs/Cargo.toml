@@ -18,6 +18,16 @@ crate-type = ["staticlib", "rlib"]   # staticlib to link; rlib so tests can use 
 # the differential harness does not.
 dropin = []
 
+# Zstandard, via the zstd-safe binding. OFF by default and deliberately so:
+# zstd-sys compiles the vendored zstd C sources, which means a build of this
+# crate would need a C cross-compiler for every target the archiver ships to
+# (x86_64-w64-mingw32-gcc, aarch64-w64-mingw32-clang, ...). Nothing in the
+# archiver calls this module -- zstd is adopted but not yet wired, the C
+# Compression/Zstd is still what runs -- so paying that toolchain cost by
+# default buys nothing and blocks cross-compiling the codecs at all. Enable it
+# when zstd is actually wired in.
+zstd = ["dep:zstd-safe"]
+
 [dependencies]
 # Replaces Compression/LZ4 (5,163 LOC). DArc uses the raw LZ4 BLOCK format --
 # LZ4_compress_default / LZ4_decompress_safe -- which is a fixed specification,
@@ -32,7 +42,7 @@ lz4_flex = { workspace = true }
 # "std" is required for the WriteBuf impl on Vec<u8>; "legacy" keeps the
 # decoder able to read frames from zstd versions older than the vendored
 # 1.5.6, which is the direction that matters for old archives.
-zstd-safe = { version = "7.2", features = ["std", "legacy"] }
+zstd-safe = { version = "7.2", features = ["std", "legacy"], optional = true }
 
 # SREP block-hash verification. These are the seedless standard hashes its
 # -hash=md5/sha1/sha512 options select; each is a fixed reference algorithm, so
