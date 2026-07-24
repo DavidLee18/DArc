@@ -42,6 +42,122 @@ done
 WINOUT=${WINOUT:-/tmp/out/FreeArc-win64-mhs-$arch-$toolchain}
 mkdir -p "$WINOUT"
 
+# ── Optional Rust codecs, cross-compiled for the Windows target ──────────────
+#
+# DARC_RUST=1 builds rust/darc-codecs + darc-crypto for this target and links
+# them, the same switch ./compile offers natively. This must run BEFORE any C is
+# compiled: the codec headers key off DARC_RUST, so adding the define after
+# compile-win64-c would leave the C++ symbols bound while the staticlibs sat
+# unused in the link -- the mistake ./compile documents at length.
+#
+# Two crates in the tree compile C of their own (zstd-sys) or parse DArc's
+# headers with clang (bindgen), so both need the CROSS toolchain, not the host's:
+#
+#   CC_<target>                      cc-rs, for zstd-sys' vendored C
+#   AR_<target>                      the matching archiver
+#   BINDGEN_EXTRA_CLANG_ARGS_<target>  so clang finds the mingw headers
+#
+# The bindgen args matter for correctness, not just for finding stdio.h:
+# `long` is 4 bytes on Windows and 8 on LP64, so bindings generated against the
+# HOST would be silently wrong about every long in the ABI. That is the same
+# long-width family of bugs this repository has fixed a dozen times, so the
+# target is passed explicitly rather than left to default.
+rust_libs=""
+if [ -n "${DARC_RUST:-}" ]; then
+  command -v cargo >/dev/null 2>&1 ||
+    { echo "error: DARC_RUST is set but cargo was not found in PATH" >&2; exit 1; }
+
+  case "$arch" in
+    x86_64)  rust_target="x86_64-pc-windows-gnu"      ;;
+    aarch64) rust_target="aarch64-pc-windows-gnullvm" ;;
+  esac
+
+  if ! rustup target list --installed 2>/dev/null | grep -qx "$rust_target"; then
+    echo "adding Rust target $rust_target"
+    rustup target add "$rust_target" ||
+      { echo "error: could not add Rust target $rust_target" >&2; exit 1; }
+  fi
+
+  # Same compiler compile-win64-c picked, but the C driver rather than the C++.
+  # Debian's mingw-w64 suffixes the driver with the threading model; Homebrew's
+  # and llvm-mingw do not ship those variants, so fall back to the plain name
+  # rather than failing on a host whose toolchain is simply laid out differently.
+  rust_cc="$triple-gcc$cc_suffix"
+  command -v "$rust_cc" >/dev/null 2>&1 || rust_cc="$triple-gcc"
+  command -v "$rust_cc" >/dev/null 2>&1 ||
+    { echo "error: neither $triple-gcc$cc_suffix nor $triple-gcc found -- needed to cross-compile the Rust codecs" >&2; exit 1; }
+  rust_ar="$triple-ar"
+
+  # Ask the cross compiler for its own header search path rather than deriving
+  # one from its location. Debian's mingw-w64, Homebrew's and llvm-mingw lay
+  # these out differently, and on Homebrew the driver on PATH is a symlink into
+  # the Cellar, so walking up from it lands somewhere with no headers at all --
+  # which fails as "stdio.h not found" only once bindgen runs.
+  #
+  # For llvm-mingw, pass --sysroot and let clang supply the rest. Handing it
+  # another toolchain's -I list does not work: stdint.h is a COMPILER BUILTIN
+  # living in the resource dir, so mixing llvm-mingw's include list with a
+  # separately installed libclang leaves clang without its own builtins and
+  # every fixed-width type ("unknown type name 'uint64_t'") disappears.
+  # For GCC-mingw the extracted -I list is right, because there the same
+  # toolchain provides both the headers and the parse.
+  rust_incs=""
+  if [ "$toolchain" = llvm ]; then
+    llvm_mingw_root=$(dirname "$(dirname "$(command -v "$triple-clang" 2>/dev/null || command -v "$rust_cc")")")
+    [ -d "$llvm_mingw_root/$triple" ] ||
+      { echo "error: no sysroot at $llvm_mingw_root/$triple" >&2; exit 1; }
+    rust_incs=" --sysroot=$llvm_mingw_root/$triple"
+  else
+    while IFS= read -r d; do
+      [ -d "$d" ] && rust_incs="$rust_incs -I$d"
+    done < <(printf '' | "$rust_cc" -E -Wp,-v - 2>&1 | sed -n 's/^ \(\/.*\)$/\1/p')
+    [ -n "$rust_incs" ] ||
+      { echo "error: $rust_cc reported no include directories -- cannot configure bindgen" >&2; exit 1; }
+  fi
+
+  # Env-var suffix is the target triple with - turned into _, and left LOWER
+  # case: cc-rs and bindgen both look the target up as written. Upper-casing it
+  # makes every one of these silently not match, which shows up only as bindgen
+  # failing to find stdio.h -- the host compiler having been used instead.
+  rt_env=$(echo "$rust_target" | tr '-' '_')
+  export "CC_${rt_env}=$rust_cc"
+  export "AR_${rt_env}=$rust_ar"
+  export "BINDGEN_EXTRA_CLANG_ARGS_${rt_env}=--target=$triple$rust_incs"
+
+  # bindgen parses DArc's headers as C++ (build.rs passes -x c++), so it reads
+  # the toolchain's C++ standard library. llvm-mingw ships libc++ headers that
+  # use builtins such as __builtin_clzg, which only a matching clang knows --
+  # bindgen's default libclang is older and fails on them. Use the cross
+  # toolchain's own libclang, which by construction matches its own headers.
+  # A caller (CI) may already point this at a modern LLVM, which is the reliable
+  # way to satisfy it: llvm-mingw ships the clang DRIVER but not libclang.so, so
+  # there is often nothing to find next to the cross compiler.
+  if [ "$toolchain" = llvm ] && [ -z "${LIBCLANG_PATH:-}" ]; then
+    llvm_bin=$(dirname "$(command -v "$triple-clang" 2>/dev/null || command -v "$rust_cc")")
+    for d in "$llvm_bin/../lib" "$llvm_bin/../lib64"; do
+      if ls "$d"/libclang.so* >/dev/null 2>&1 || ls "$d"/libclang.dylib >/dev/null 2>&1; then
+        export LIBCLANG_PATH=$(cd "$d" && pwd); break
+      fi
+    done
+    [ -n "${LIBCLANG_PATH:-}" ] &&
+      echo "using $LIBCLANG_PATH/libclang for bindgen (matches llvm-mingw's libc++)"
+  fi
+
+  echo "building Rust codecs and crypto for $rust_target"
+  ( cd rust && cargo build --release -p darc-codecs -p darc-crypto \
+      --features darc-codecs/dropin --target "$rust_target" ) ||
+    { echo "error: cargo build failed for $rust_target" >&2; exit 1; }
+
+  rust_libs="$PWD/rust/target/$rust_target/release/libdarc_codecs.a"
+  rust_libs="$rust_libs $PWD/rust/target/$rust_target/release/libdarc_crypto.a"
+  for l in $rust_libs; do
+    [ -f "$l" ] || { echo "error: cargo produced no $l" >&2; exit 1; }
+  done
+
+  # Reaches the per-codec makefiles through win32-common.mak; make imports it.
+  export DARC_EXTRA_DEFINES="-DDARC_RUST"
+fi
+
 # 1) Build C/C++ objects for the Windows target with __MHS__ defined
 MHS=1 WINOUT="$WINOUT" DARC_WIN_ARCH="$arch" DARC_WIN_TOOLCHAIN="$toolchain" ./compile-win64-c
 
@@ -51,6 +167,7 @@ MHS=1 WINOUT="$WINOUT" DARC_WIN_ARCH="$arch" DARC_WIN_TOOLCHAIN="$toolchain" ./c
 # 3) MHS cross-compile setup
 # mhs targets.conf has [environment] block that pulls cc/ccflags/cclibs/conf from env vars
 defines="-DFREEARC_WIN -DFREEARC_INTEL_BYTE_ORDER -DFREEARC_64BIT -DFREEARC_NOURL -DFREEARC_NO_LUA"
+[ -n "${DARC_RUST:-}" ] && defines="$defines -DDARC_RUST"
 
 c_objs=(
   "$WINOUT/Environment.o" "$WINOUT/URL.o" "$WINOUT/Common.o"
@@ -89,6 +206,12 @@ case "$toolchain" in
   llvm) cxx_libs="-lc++ -lc++abi -lunwind" ;;
 esac
 win_libs="-static $cxx_libs -lwinpthread -lwinmm -lws2_32 -ladvapi32 -lshell32 -luser32 -lkernel32 -lwininet -Wl,--allow-multiple-definition"
+# Rust's std imports Windows APIs the C side never touched: the Nt*/Rtl* native
+# calls live in ntdll, GetUserProfileDirectoryW in userenv, and its RNG in
+# bcrypt. Without these the link fails with a wall of "undefined reference to
+# NtOpenFile / RtlNtStatusToDosError". Only added under DARC_RUST so the pure-C
+# link line stays exactly as it was.
+[ -n "${DARC_RUST:-}" ] && win_libs="$win_libs -lntdll -luserenv -lbcrypt"
 
 # Build MHSCCLIBS from C objects (one space-separated string)
 linker_inputs=""
@@ -148,7 +271,7 @@ case "$toolchain" in
     cc_quirks="-include errno.h -Wno-incompatible-function-pointer-types" ;;
 esac
 export MHSCCFLAGS="-O2 $cc_quirks -I. -ICompression -IHsLua/src $runtime_defs $defines $gui_flag"
-export MHSCCLIBS="$linker_inputs $win_libs"
+export MHSCCLIBS="$linker_inputs $rust_libs $win_libs"
 # Neither MicroHs runtime config fits a mingw cross-build on its own, so use
 # "mingw" and supply what it is missing (see runtime_defs above).
 #

@@ -52,14 +52,14 @@ jobs:
           - os: macos-latest
             label: macos-arm64
     steps:
-    - uses: actions/checkout@v6.0.2
+    - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
       with:
         lfs: false
         ref: ${{ github.event.inputs.tag || github.ref }}
 
     - name: Install LLVM and Clang
       if: runner.os == 'Linux'
-      uses: KyleMayes/install-llvm-action@v2
+      uses: KyleMayes/install-llvm-action@ebc0426251bc40c7cd31162802432c68818ab8f0 # v2
       with:
         version: "21.1.8"
 
@@ -73,18 +73,53 @@ jobs:
       if: runner.os == 'macOS'
       run: brew install ncurses || true
 
+    # Rust is no longer optional once DARC_RUST is the default: it compiles code
+    # that ships in every binary. The version and the cross targets come from
+    # rust-toolchain.toml so there is a single place to change them.
+    - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+    - name: Cache cargo and the pinned toolchain
+      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+      with:
+        path: |
+          ~/.cargo/registry/index
+          ~/.cargo/registry/cache
+          ~/.cargo/git/db
+          ~/.rustup/toolchains
+          rust/target
+        key: cargo-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust-toolchain.toml', 'rust/Cargo.lock') }}
+        restore-keys: |
+          cargo-${{ runner.os }}-${{ runner.arch }}-
+    # MicroHs is built from source in every job; `make minstall` dominates the
+    # short jobs. Keyed on the pinned commit, so a pin bump invalidates it.
+    - name: Cache MicroHs
+      id: cache-mhs
+      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+      with:
+        path: ~/.mcabal
+        key: mcabal-${{ runner.os }}-${{ runner.arch }}-05a3fbd5d73ae6a37111a6ced5b57bb1717b8975
+    # `make minstall` dominates the short jobs. Keyed on the pinned
+    # MicroHs commit, so bumping the pin invalidates it.
+    - name: Cache MicroHs
+      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+      with:
+        path: |
+          ~/.mcabal
+          ~/.local/bin
+        key: mcabal-${{ runner.os }}-${{ runner.arch }}-05a3fbd5d73ae6a37111a6ced5b57bb1717b8975
     - name: Install MicroHs
       run: |
-        set -euo pipefail
-        curl -fsSL "https://github.com/augustss/MicroHs/archive/$MICROHS_SHA.tar.gz" -o /tmp/microhs.tar.gz
-        if command -v sha256sum >/dev/null; then
-          echo "$MICROHS_SHA256  /tmp/microhs.tar.gz" | sha256sum -c -
-        else
-          echo "$MICROHS_SHA256  /tmp/microhs.tar.gz" | shasum -a 256 -c -
+        if [ ! -x "$HOME/.mcabal/bin/mhs" ]; then
+          set -euo pipefail
+          curl -fsSL "https://github.com/augustss/MicroHs/archive/$MICROHS_SHA.tar.gz" -o /tmp/microhs.tar.gz
+          if command -v sha256sum >/dev/null; then
+            echo "$MICROHS_SHA256  /tmp/microhs.tar.gz" | sha256sum -c -
+          else
+            echo "$MICROHS_SHA256  /tmp/microhs.tar.gz" | shasum -a 256 -c -
+          fi
+          tar -xzf /tmp/microhs.tar.gz -C /tmp
+          cd "/tmp/MicroHs-$MICROHS_SHA"
+          make minstall
         fi
-        tar -xzf /tmp/microhs.tar.gz -C /tmp
-        cd "/tmp/MicroHs-$MICROHS_SHA"
-        make minstall
         echo "$HOME/.mcabal/bin" >> "$GITHUB_PATH"
 
     - name: Build
@@ -127,7 +162,7 @@ jobs:
         rm -rf "dist/$stage"
         ls -l dist/
 
-    - uses: actions/upload-artifact@v4
+    - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
       with:
         name: ${{ matrix.label }}
         path: dist/*
@@ -154,7 +189,7 @@ jobs:
             label: windows-arm64
             exe: arc-mhs-win-arm64.exe
     steps:
-    - uses: actions/checkout@v6.0.2
+    - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
       with:
         lfs: false
         ref: ${{ github.event.inputs.tag || github.ref }}
@@ -181,14 +216,49 @@ jobs:
         tar -xJf /tmp/"$tarball" -C /opt
         echo "/opt/llvm-mingw-$ver-ucrt-ubuntu-22.04-x86_64/bin" >> "$GITHUB_PATH"
 
+    # Rust is no longer optional once DARC_RUST is the default: it compiles code
+    # that ships in every binary. The version and the cross targets come from
+    # rust-toolchain.toml so there is a single place to change them.
+    - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+    - name: Cache cargo and the pinned toolchain
+      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+      with:
+        path: |
+          ~/.cargo/registry/index
+          ~/.cargo/registry/cache
+          ~/.cargo/git/db
+          ~/.rustup/toolchains
+          rust/target
+        key: cargo-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust-toolchain.toml', 'rust/Cargo.lock') }}
+        restore-keys: |
+          cargo-${{ runner.os }}-${{ runner.arch }}-
+    # MicroHs is built from source in every job; `make minstall` dominates the
+    # short jobs. Keyed on the pinned commit, so a pin bump invalidates it.
+    - name: Cache MicroHs
+      id: cache-mhs
+      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+      with:
+        path: ~/.mcabal
+        key: mcabal-${{ runner.os }}-${{ runner.arch }}-05a3fbd5d73ae6a37111a6ced5b57bb1717b8975
+    # `make minstall` dominates the short jobs. Keyed on the pinned
+    # MicroHs commit, so bumping the pin invalidates it.
+    - name: Cache MicroHs
+      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+      with:
+        path: |
+          ~/.mcabal
+          ~/.local/bin
+        key: mcabal-${{ runner.os }}-${{ runner.arch }}-05a3fbd5d73ae6a37111a6ced5b57bb1717b8975
     - name: Install MicroHs
       run: |
-        set -euo pipefail
-        curl -fsSL "https://github.com/augustss/MicroHs/archive/$MICROHS_SHA.tar.gz" -o /tmp/microhs.tar.gz
-        echo "$MICROHS_SHA256  /tmp/microhs.tar.gz" | sha256sum -c -
-        tar -xzf /tmp/microhs.tar.gz -C /tmp
-        cd "/tmp/MicroHs-$MICROHS_SHA"
-        make minstall
+        if [ ! -x "$HOME/.mcabal/bin/mhs" ]; then
+          set -euo pipefail
+          curl -fsSL "https://github.com/augustss/MicroHs/archive/$MICROHS_SHA.tar.gz" -o /tmp/microhs.tar.gz
+          echo "$MICROHS_SHA256  /tmp/microhs.tar.gz" | sha256sum -c -
+          tar -xzf /tmp/microhs.tar.gz -C /tmp
+          cd "/tmp/MicroHs-$MICROHS_SHA"
+          make minstall
+        fi
         echo "$HOME/.mcabal/bin" >> "$GITHUB_PATH"
 
     - name: Build (Windows cross)
@@ -233,7 +303,7 @@ jobs:
         rm -rf "dist/$stage"
         ls -l dist/
 
-    - uses: actions/upload-artifact@v4
+    - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
       with:
         name: ${{ matrix.label }}
         path: dist/*
@@ -247,12 +317,12 @@ jobs:
     needs: windows-cross
     runs-on: windows-11-arm
     steps:
-    - uses: actions/checkout@v6.0.2
+    - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
       with:
         lfs: false
         ref: ${{ github.event.inputs.tag || github.ref }}
 
-    - uses: actions/download-artifact@v4
+    - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
       with:
         name: windows-arm64
         path: dist
@@ -274,7 +344,7 @@ jobs:
     needs: [ build, windows-cross, windows-arm64-verify ]
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/download-artifact@v4
+    - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
       with:
         path: dist
         merge-multiple: true

@@ -32,6 +32,10 @@ lz4_flex = { workspace = true }
 # "std" is required for the WriteBuf impl on Vec<u8>; "legacy" keeps the
 # decoder able to read frames from zstd versions older than the vendored
 # 1.5.6, which is the direction that matters for old archives.
+# Mandatory: C_Zstd.cpp routes through this under DARC_RUST, so the archiver
+# needs it. zstd-sys compiles the zstd C sources, which means any build of
+# this crate needs a C compiler for the target -- acceptable, since the
+# archiver is a C/C++ program and already has one for every target it builds.
 zstd-safe = { version = "7.2", features = ["std", "legacy"] }
 
 # SREP block-hash verification. These are the seedless standard hashes its
