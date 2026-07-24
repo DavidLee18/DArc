@@ -47,6 +47,7 @@
 pub mod adler32;
 pub mod header;
 pub mod lzp;
+pub mod rangecoder;
 
 /// Error codes (`libbsc.h:41-47`).
 pub const LIBBSC_NO_ERROR: i32 = 0;
