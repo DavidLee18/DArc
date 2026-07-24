@@ -1,13 +1,12 @@
 //! BSC (libbsc) decoder, ported from `Compression/BSC/`.
 //!
-//! **Work in progress.** The block header and Adler-32 are ported; the four
-//! decode stages are not, so nothing is wired to `BSC_METHOD::decompress` and
-//! the C decoder still runs.
+//! Complete and wired: under `DARC_RUST`, `BSC_METHOD::decompress` routes every
+//! block through [`dispatch::decompress`]. The encoder is still C.
 //!
-//! BSC is the largest remaining codec at 17,368 lines, but its **decode
-//! surface is about 4,800** -- most of the bulk is `libsais.c`'s forward
-//! suffix-array construction, which only the compressor uses. The decode path
-//! needs, in the order a block flows through it:
+//! BSC is the largest codec at 17,368 lines, but its **decode surface is about
+//! 4,800** -- most of the bulk is `libsais.c`'s forward suffix-array
+//! construction, which only the compressor uses. The decode path needs, in the
+//! order a block flows through it:
 //!
 //! | stage | from | approx |
 //! |---|---|---|

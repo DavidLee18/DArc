@@ -483,7 +483,8 @@ pub unsafe extern "C" fn darc_rs_bsc_qlfc_decode(
     let r = match coder {
         1 => bsc::qlfc::static_decode(inp, out),
         2 => bsc::qlfc::adaptive_decode(inp, out),
-        _ => return FREEARC_ERRCODE_GENERAL, // fast coder not ported yet
+        3 => bsc::qlfc::fast_decode(inp, out),
+        _ => return FREEARC_ERRCODE_GENERAL,
     };
     match r {
         Ok(n) => n as c_int,

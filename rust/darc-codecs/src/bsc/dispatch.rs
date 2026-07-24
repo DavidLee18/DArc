@@ -17,12 +17,9 @@
 //! parameter ranges and the `blockSize`/`index` bounds) -- before touching the
 //! payload.
 //!
-//! ## The one unported coder
-//!
-//! `CODER_QLFC_FAST` (3) is not ported yet, so a block coded with it is rejected
-//! (`LIBBSC_DATA_CORRUPT`) rather than mis-decoded. That is a real gap for
-//! wiring -- a fast-coder archive would fail to extract -- and must be closed,
-//! or gated against, before the Rust dispatcher replaces the C one.
+//! All three QLFC coders are handled: static, adaptive, and fast
+//! (`CODER_QLFC_FAST`, via [`qlfc::fast_decode`]). The coder segmentation
+//! wrapper `bsc_coder_decompress` sits in [`qlfc::decompress`].
 
 use super::header::{self, BlockHeader};
 use super::{

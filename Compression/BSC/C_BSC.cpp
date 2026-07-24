@@ -51,12 +51,9 @@ extern "C" {
 #include "libbsc/st/st.cpp"
 #include "libbsc/adler32/adler32.cpp"
 
-// DARC_RUST=1 routes decoding through the Rust port (rust/darc-codecs). Unlike
-// the other codecs this is a per-block *gate*, not a whole-symbol replacement:
-// the Rust decoder covers the static and adaptive QLFC coders (which includes
-// the default -mbsc), but the fast coder (c3) is not ported. So the vendored
-// bsc_decompress stays compiled and a c3 block still extracts through it --
-// selected by the coder bits in each block header, so no c3 archive regresses.
+// DARC_RUST=1 routes decoding through the Rust port (rust/darc-codecs). The
+// Rust decoder covers all three QLFC coders (static, adaptive, fast) and both
+// block sorters (BWT, ST3..ST8), so every -mbsc block decodes in Rust.
 #ifdef DARC_RUST
 extern "C" int darc_rs_bsc_decompress_block (const unsigned char *input, int inSize, unsigned char *output, int outCap);
 #endif
@@ -180,14 +177,7 @@ int bsc_stream_decompress (CALLBACK_FUNC *callback, void *auxdata)
     }
 
 #ifdef DARC_RUST
-    // Gate on the coder: static/adaptive go to Rust, the unported fast coder to
-    // the C path. mode == 0 (stored) unpacks to coder 0, which is not fast.
-    int mode  = *(int *)(inBuf + 8);
-    int coder = (mode >> 5) & 0x7;
-    if (coder == LIBBSC_CODER_QLFC_FAST)
-      err = bsc_decompress(inBuf, compressed, outBuf, dataSize, features);
-    else
-      err = darc_rs_bsc_decompress_block(inBuf, compressed, outBuf, dataSize);
+    err = darc_rs_bsc_decompress_block(inBuf, compressed, outBuf, dataSize);
 #else
     err = bsc_decompress(inBuf, compressed, outBuf, dataSize, features);
 #endif

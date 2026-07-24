@@ -9,8 +9,8 @@
 # the rest of BSC is wired, so the foundation is proven before more is built on
 # it (the ordering that worked for GRZip).
 #
-# Coder 1 = QLFC static (libbsc default), 2 = adaptive. Coder 3 (fast) needs
-# QlfcStatisticalModel2, which is not ported yet.
+# Coder 1 = QLFC static (libbsc default), 2 = adaptive, 3 = fast (Model2, no
+# mixer). All three are ported.
 set -uo pipefail
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 W="${TMPDIR:-/tmp}/bsc-check.$$"; mkdir -p "$W"
@@ -58,8 +58,8 @@ for n in (1,2,3,16,17,255,256,257,4096,65537):
 PY
 
 total=0; tested=0
-for coder in 1 2; do
-  name=$([ "$coder" = 1 ] && echo static || echo adaptive)
+for coder in 1 2 3; do
+  name=$([ "$coder" = 1 ] && echo static || { [ "$coder" = 2 ] && echo adaptive || echo fast; })
   fail=0; n=0; enc=0
   for f in "$W"/in/*; do
     n=$((n+1)); bn=$(basename "$f")
@@ -81,4 +81,4 @@ done
 
 [ "$tested" -gt 0 ] || { echo "no inputs were coded -- harness reached nothing"; exit 1; }
 echo "bsc qlfc decode: $total total differing ($tested coded blocks)"
-[ "$total" -eq 0 ] && echo "BSC QLFC (static + adaptive) matches the C original byte for byte" || exit 1
+[ "$total" -eq 0 ] && echo "BSC QLFC (static + adaptive + fast) matches the C original byte for byte" || exit 1

@@ -44,8 +44,8 @@ use super::model_consts::*;
 use super::predictor::ProbabilityCounter;
 use super::rangecoder::RangeDecoder;
 use super::{
-    CODER_QLFC_ADAPTIVE, CODER_QLFC_STATIC, LIBBSC_BAD_PARAMETER, LIBBSC_DATA_CORRUPT,
-    LIBBSC_UNEXPECTED_EOB,
+    CODER_QLFC_ADAPTIVE, CODER_QLFC_FAST, CODER_QLFC_STATIC, LIBBSC_BAD_PARAMETER,
+    LIBBSC_DATA_CORRUPT, LIBBSC_UNEXPECTED_EOB,
 };
 
 /// `bsc_bit_scan_reverse(x)` = `clz(x) ^ 31`, i.e. the index of the highest set
@@ -74,18 +74,18 @@ const MAX_OVERRUN: usize = 64;
 /// coder-level differential harness exercises; the whole-codec path reaches the
 /// multi-block layout for larger inputs.
 pub fn decompress(input: &[u8], output: &mut [u8], coder: u32) -> Result<usize, i32> {
-    if coder != CODER_QLFC_STATIC && coder != CODER_QLFC_ADAPTIVE {
-        return Err(LIBBSC_BAD_PARAMETER); // fast coder not ported / bad value
+    if coder != CODER_QLFC_STATIC && coder != CODER_QLFC_ADAPTIVE && coder != CODER_QLFC_FAST {
+        return Err(LIBBSC_BAD_PARAMETER);
     }
     if input.is_empty() {
         return Err(LIBBSC_UNEXPECTED_EOB);
     }
 
     let decode_block = |inp: &[u8], out: &mut [u8]| -> Result<usize, i32> {
-        if coder == CODER_QLFC_STATIC {
-            static_decode(inp, out)
-        } else {
-            adaptive_decode(inp, out)
+        match coder {
+            CODER_QLFC_STATIC => static_decode(inp, out),
+            CODER_QLFC_ADAPTIVE => adaptive_decode(inp, out),
+            _ => fast_decode(inp, out),
         }
     };
 
@@ -127,6 +127,248 @@ pub fn decompress(input: &[u8], output: &mut [u8], coder: u32) -> Result<usize, 
         data_size += out_size;
     }
     Ok(data_size)
+}
+
+/// `QlfcStatisticalModel2` (`qlfc_model.h:243`): the fast coder's model. Unlike
+/// Model1 there is no mixer -- just raw probability counters, so it is flat i16
+/// arrays. Init values come from `bsc_qlfc_init_static_model`: Rank counters to
+/// 4096, Run counters to 1024.
+struct Model2 {
+    rank_exp: Vec<i16>, // [ALPHABET_SIZE][8]
+    rank_man: Vec<i16>, // [ALPHABET_SIZE][8][ALPHABET_SIZE]
+    run_exp: Vec<i16>,  // [ALPHABET_SIZE][32]
+    run_man: Vec<i16>,  // [ALPHABET_SIZE][32][32]
+}
+
+impl Model2 {
+    fn new() -> Self {
+        Model2 {
+            rank_exp: vec![4096; ALPHABET_SIZE * 8],
+            rank_man: vec![4096; ALPHABET_SIZE * 8 * ALPHABET_SIZE],
+            run_exp: vec![1024; ALPHABET_SIZE * 32],
+            run_man: vec![1024; ALPHABET_SIZE * 32 * 32],
+        }
+    }
+    #[inline]
+    fn re(&self, c: usize, k: usize) -> i32 {
+        self.rank_exp[c * 8 + k] as i32
+    }
+    #[inline]
+    fn re_mut(&mut self, c: usize, k: usize) -> &mut i16 {
+        &mut self.rank_exp[c * 8 + k]
+    }
+    #[inline]
+    fn rm(&self, c: usize, k: usize, r: usize) -> i32 {
+        self.rank_man[(c * 8 + k) * ALPHABET_SIZE + r] as i32
+    }
+    #[inline]
+    fn rm_mut(&mut self, c: usize, k: usize, r: usize) -> &mut i16 {
+        &mut self.rank_man[(c * 8 + k) * ALPHABET_SIZE + r]
+    }
+    #[inline]
+    fn rue(&self, c: usize, k: usize) -> i32 {
+        self.run_exp[c * 32 + k] as i32
+    }
+    #[inline]
+    fn rue_mut(&mut self, c: usize, k: usize) -> &mut i16 {
+        &mut self.run_exp[c * 32 + k]
+    }
+    #[inline]
+    fn rum(&self, c: usize, k: usize, r: usize) -> i32 {
+        self.run_man[(c * 32 + k) * 32 + r] as i32
+    }
+    #[inline]
+    fn rum_mut(&mut self, c: usize, k: usize, r: usize) -> &mut i16 {
+        &mut self.run_man[(c * 32 + k) * 32 + r]
+    }
+}
+
+/// `bsc_qlfc_fast_decode` (`qlfc.cpp:2013`): the fast coder. Structurally the
+/// static/adaptive decoder without the mixer -- direct `PeakBit`/`DecodeBit`
+/// against `Model2` counters, with the update deltas as literal constants read
+/// from the source. The SIMD `MTFTable` shuffles in the C are only a faster form
+/// of the scalar move-to-front (`#else` branch), so the scalar form here is the
+/// format, exactly as for LZP and the other QLFC coders.
+///
+/// Bounds that the C leaves implicit are made explicit for `arc t`: the
+/// run-exponent loop (`while (true)` in the C) is capped at the 32-entry array,
+/// every MTF rank and output write is range-checked.
+pub fn fast_decode(input: &[u8], output: &mut [u8]) -> Result<usize, i32> {
+    let mut model = Model2::new();
+    let mut coder = RangeDecoder::new(input);
+
+    let n = coder.decode_word() as usize;
+    if n > output.len() {
+        return Err(LIBBSC_DATA_CORRUPT);
+    }
+
+    // --- Alphabet preamble: rebuild the initial MTF table (as static/adaptive,
+    // but the equiprobable bit is coded DecodeBit<1>(1), same 50% split). -------
+    let mut mtf = [0u8; ALPHABET_SIZE];
+    let mut used_char = [0u8; ALPHABET_SIZE];
+    let mut prev_char: i32 = -1;
+    for rank in 0..ALPHABET_SIZE {
+        let mut current_char: i32 = 0;
+        for bit in (0..8).rev() {
+            let (mut bit0, mut bit1) = (false, false);
+            for c in 0..ALPHABET_SIZE as i32 {
+                if c == prev_char || used_char[c as usize] == 0 {
+                    if current_char == (c >> (bit + 1)) {
+                        if c & (1 << bit) != 0 {
+                            bit1 = true;
+                        } else {
+                            bit0 = true;
+                        }
+                        if bit0 && bit1 {
+                            break;
+                        }
+                    }
+                }
+            }
+            if bit0 && bit1 {
+                current_char += current_char + coder.decode_bit_shift(1, 1) as i32;
+            } else if bit0 {
+                current_char += current_char;
+            } else if bit1 {
+                current_char += current_char + 1;
+            }
+        }
+
+        mtf[rank] = current_char as u8;
+        if current_char == prev_char {
+            break;
+        }
+        prev_char = current_char;
+        used_char[current_char as usize] = 1;
+    }
+
+    // --- Main loop: (rank, run length) pairs. ---------------------------------
+    let mut op = 0usize;
+    while op < n {
+        if coder.overrun() > MAX_OVERRUN {
+            return Err(LIBBSC_DATA_CORRUPT);
+        }
+
+        let current_char = mtf[0] as usize;
+
+        // --- Rank: unary exponent then mantissa, or the rank-0 swap. ----------
+        let p = model.re(current_char, 0);
+        if coder.peak_bit(p as u32, 13) != 0 {
+            ProbabilityCounter::update_bit_r1(model.re_mut(current_char, 0), 83, 4);
+            coder.decode_bit1(p as u32, 13);
+
+            let mut bit_rank_size = 1i32;
+            while bit_rank_size < 7 {
+                let p = model.re(current_char, bit_rank_size as usize);
+                if coder.peak_bit(p as u32, 13) != 0 {
+                    ProbabilityCounter::update_bit_r1(model.re_mut(current_char, bit_rank_size as usize), 122, 4);
+                    bit_rank_size += 1;
+                    coder.decode_bit1(p as u32, 13);
+                } else {
+                    ProbabilityCounter::update_bit_r1(model.re_mut(current_char, bit_rank_size as usize), 8114, 4);
+                    coder.decode_bit0(p as u32, 13);
+                    break;
+                }
+            }
+
+            let man_k = bit_rank_size as usize;
+            let mut rank = 1usize;
+            while {
+                bit_rank_size -= 1;
+                bit_rank_size >= 0
+            } {
+                if rank >= ALPHABET_SIZE {
+                    return Err(LIBBSC_DATA_CORRUPT);
+                }
+                let pm = model.rm(current_char, man_k, rank);
+                let b = coder.decode_bit_shift(pm as u32, 13);
+                ProbabilityCounter::update_bit_r(b, model.rm_mut(current_char, man_k, rank), 7999, 235, 7);
+                rank += rank + b as usize;
+            }
+            if rank >= ALPHABET_SIZE {
+                return Err(LIBBSC_DATA_CORRUPT);
+            }
+
+            // Move-to-front: shift MTFTable[0..rank] up, put currentChar at rank.
+            let cc = mtf[0];
+            for r in 0..rank {
+                mtf[r] = mtf[r + 1];
+            }
+            mtf[rank] = cc;
+        } else {
+            // Rank 0: swap the top two entries.
+            mtf[0] = mtf[1];
+            mtf[1] = current_char as u8;
+            ProbabilityCounter::update_bit_r1(model.re_mut(current_char, 0), 8016, 4);
+            coder.decode_bit0(p as u32, 13);
+        }
+
+        // currentChar has moved in the MTF table; recover the symbol just placed.
+        let sym = current_char as u8;
+
+        // --- Run length: unary exponent then mantissa, or a single symbol. ----
+        let p = model.rue(current_char, 0);
+        if coder.peak_bit(p as u32, 11) != 0 {
+            ProbabilityCounter::update_bit_r1(model.rue_mut(current_char, 0), 42, 5);
+            coder.decode_bit1(p as u32, 11);
+
+            let mut bit_run_size = 1i32;
+            loop {
+                if bit_run_size >= 32 {
+                    return Err(LIBBSC_DATA_CORRUPT);
+                }
+                let p = model.rue(current_char, bit_run_size as usize);
+                if coder.peak_bit(p as u32, 11) != 0 {
+                    ProbabilityCounter::update_bit_r1(model.rue_mut(current_char, bit_run_size as usize), 142, 4);
+                    bit_run_size += 1;
+                    coder.decode_bit1(p as u32, 11);
+                } else {
+                    ProbabilityCounter::update_bit_r1(model.rue_mut(current_char, bit_run_size as usize), 1962, 4);
+                    coder.decode_bit0(p as u32, 11);
+                    break;
+                }
+            }
+
+            let man_k = bit_run_size as usize;
+            let mut run_size = 1usize;
+            if bit_run_size <= 5 {
+                while {
+                    bit_run_size -= 1;
+                    bit_run_size >= 0
+                } {
+                    let pm = model.rum(current_char, man_k, run_size);
+                    let b = coder.decode_bit_shift(pm as u32, 11);
+                    ProbabilityCounter::update_bit_r(b, model.rum_mut(current_char, man_k, run_size), 1951, 147, 6);
+                    run_size += run_size + b as usize;
+                }
+            } else {
+                for context in 1..=bit_run_size as usize {
+                    let pm = model.rum(current_char, man_k, context);
+                    let b = coder.decode_bit_shift(pm as u32, 11);
+                    ProbabilityCounter::update_bit_r(b, model.rum_mut(current_char, man_k, context), 1987, 46, 5);
+                    run_size += run_size + b as usize;
+                }
+            }
+
+            for _ in 0..run_size {
+                if op >= output.len() {
+                    return Err(LIBBSC_DATA_CORRUPT);
+                }
+                output[op] = sym;
+                op += 1;
+            }
+        } else {
+            if op >= output.len() {
+                return Err(LIBBSC_DATA_CORRUPT);
+            }
+            output[op] = sym;
+            op += 1;
+            ProbabilityCounter::update_bit_r1(model.rue_mut(current_char, 0), 2025, 5);
+            coder.decode_bit0(p as u32, 11);
+        }
+    }
+
+    Ok(n)
 }
 
 /// `bsc_qlfc_static_decode`. Returns the number of bytes written.

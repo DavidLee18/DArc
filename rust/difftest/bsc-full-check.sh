@@ -8,9 +8,9 @@
 # point -- header validate -> QLFC -> BWT/ST -> LZP -> Adler-32 -- after each
 # stage was proven in isolation.
 #
-# ST7/ST8 have no CPU encoder (NOT_SUPPORTED without CUDA) and the fast coder is
-# not ported, so neither is exercised here; bsc_compress declining a combination
-# is treated as a skip, not a failure.
+# ST7/ST8 have no CPU encoder (NOT_SUPPORTED without CUDA), so they are not
+# exercised here; bsc_compress declining a combination is treated as a skip, not
+# a failure. All three coders (static, adaptive, fast) are covered.
 set -uo pipefail
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 W="${TMPDIR:-/tmp}/bsc-full-check.$$"; mkdir -p "$W"
@@ -61,12 +61,12 @@ PY
 # sorter: 1=BWT 3..6=ST; coder: 1=static 2=adaptive; lzp: "0 0" off / defaults on
 total=0; tested=0
 for sorter in 1 3 4 5 6; do
-  for coder in 1 2; do
+  for coder in 1 2 3; do
     for lzp in "0 0" "16 128"; do
       fail=0; enc=0
       lname=$([ "$lzp" = "0 0" ] && echo noLZP || echo LZP)
       sname=$([ "$sorter" = 1 ] && echo BWT || echo "ST$sorter")
-      cname=$([ "$coder" = 1 ] && echo static || echo adaptive)
+      cname=$([ "$coder" = 1 ] && echo static || { [ "$coder" = 2 ] && echo adaptive || echo fast; })
       tag="$sname/$cname/$lname"
       for f in "$W"/in/*; do
         bn=$(basename "$f")
