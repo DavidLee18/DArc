@@ -58,7 +58,7 @@ it. LZ4 by contrast is genuinely Rust.
 |---|---|---|
 | `./compile` | linux-amd64, linux-arm64, macos-arm64 | yes |
 | `compile-mhs-win64` | windows-amd64, windows-arm64 | yes (x86-64 green; ARM64 in progress) |
-| `compile-ghc`, `compile-ghc-win64` | not shipped | **to be deleted, see task 11** |
+| `compile-ghc`, `compile-ghc-win64` | not shipped | **to be deleted — §2 item 2** |
 
 Nothing in `.github/workflows/` references the two GHC scripts.
 
@@ -108,7 +108,18 @@ no CI or release job builds them. Also update the references in `README.md` and
 Once this and item 1 are done, every remaining build path has Rust, and
 `DARC_RUST` can become the default. **That is the gate for all pruning.**
 
-### 3. Flip `DARC_RUST` to the default, then prune
+### 3. Toolchain plumbing for the flip — DONE
+
+Landed on `rust-prune-prep`: `release.yml` had **no Rust setup at all** (it
+builds every shipped binary), `build.yml`'s build matrix had none either, the
+Rust toolchain was pinned nowhere, and **not one of the 39 action uses was
+pinned by SHA**. Now: `rust-toolchain.toml` pins 1.97.1 plus both Windows cross
+targets (single source — no `targets:` inputs in the workflows), every action is
+pinned to a full commit SHA, and cargo/rustup/`rust/target` plus `~/.mcabal` are
+cached. The MicroHs rebuild is guarded inside the script on `mhs` already
+existing, so the `PATH` export still runs on a cache hit.
+
+### 4. Flip `DARC_RUST` to the default, then prune
 
 In dependency order once the gate above is open:
 
@@ -122,7 +133,15 @@ In dependency order once the gate above is open:
 - **Leave vendored trees pristine** (libbsc, LZMA SDK) per `CLAUDE.md`, or make
   that an explicit, recorded exception.
 
-### 4. Preserve the differential-test oracle
+Two mechanical prerequisites, neither done:
+
+- **Stop `Compression/Zstd/makefile` compiling libzstd.** The wrapper no longer
+  calls it, but the makefile still builds the whole tree into `C_Zstd.o`, so the
+  directory cannot simply be deleted.
+- **Pin the difftest harnesses to a git revision** (item 5) before any C decoder
+  goes.
+
+### 5. Preserve the differential-test oracle
 
 11 harnesses and 16 `_ref`/`_ccodec` shims compile the **C** codec as the
 reference Rust is compared against. Deleting the C decoders destroys the only
@@ -130,7 +149,7 @@ thing that can prove Rust ≡ C. Decision taken: **pin the harnesses to a git
 revision** (build the C reference from `git show <sha>:path`) rather than
 keeping a second copy in the tree.
 
-### 5. Port `lz4hc.c` to Rust — blocks pruning `Compression/LZ4`
+### 6. Port `lz4hc.c` to Rust — blocks pruning `Compression/LZ4`
 
 `lz4_flex` has no high-compression mode, and `lz4hc.c` does `#include "lz4.c"`
 for shared code (`lz4hc.c:56-66`), so the two files are a unit: **`lz4.c` cannot
@@ -143,7 +162,7 @@ compression ratio when creating archives (66,063 vs 71,029 bytes on the test
 corpus, ~7.5%). Also needed: `LZ4_compressBound` (trivial formula,
 `C_LZ4.cpp:66`).
 
-### 6. Hand-port PPMD (1,065 lines)
+### 7. Hand-port PPMD (1,065 lines)
 
 The last real hand-portable codec besides 4x4. **No crate path:** `ppmd-rust`
 was measured and rejected — DArc's PPMD is Shkarin var.H with **Subbotin's**
@@ -152,7 +171,7 @@ carryless range coder (32-bit `low`, `TOP=1<<24`, `MAX_O` 128); `ppmd-rust` is
 different stream. Do not revisit the crate. `-mppmd` already has a fingerprint
 case.
 
-### 7. Decide explicitly whether to port 4x4 — recommendation: no
+### 8. Decide explicitly whether to port 4x4 — recommendation: no
 
 Threading meta-codec; its decode delegates to the library dispatcher
 `Decompress()` per block, so the only portable logic is block framing
@@ -162,7 +181,7 @@ exe preset, not this codec). A Rust decode would be an FFI shim calling C
 `Decompress`, which under `DARC_RUST` dispatches back to Rust drop-ins
 (Rust→C→Rust). Record the decision so it is not re-litigated.
 
-### 8. Port the Haskell application layer (17,843 lines, 41 files)
+### 9. Port the Haskell application layer (17,843 lines, 41 files)
 
 The largest remaining piece. Suggested order (from `CLAUDE.md`):
 `Arc.hs:71` (`doMain`) → `Cmdline.hs:35` (`parseCmdline`) → `Arc.hs:110` (`run`)
@@ -194,7 +213,7 @@ Facts that shape the port:
 When this lands, MicroHs and the `compat-ghc`/`compat-oldtime` shims become
 removable too, and the build collapses to cargo.
 
-### 9. Performance: measure before optimising
+### 10. Performance: measure before optimising
 
 Several Rust ports are deliberately scalar where the C is vectorised: BSC's LZP
 and adler32, the QLFC SIMD variants, and the BSC fast coder's SIMD MTF shuffles.
@@ -202,7 +221,7 @@ and adler32, the QLFC SIMD variants, and the BSC fast coder's SIMD MTF shuffles.
 bottleneck. Scalar is a *shipped configuration* of libbsc (i386,
 `-DLIBBSC_NO_UNALIGNED_ACCESS`), not a subset, so correctness is not at issue.
 
-### 10. Deferred C-side bugs (both verified still present)
+### 11. Deferred C-side bugs (both verified still present)
 
 - **ARM64 `ulong32` miscompilation.** `tomcrypt_macros.h:13` types `ulong32` as
   `unsigned` only for `__x86_64__`/sparc64 and `unsigned long` otherwise — 64-bit
@@ -217,7 +236,7 @@ bottleneck. Scalar is a *shipped configuration* of libbsc (i386,
   which ship with correct vectors and would have caught the above on the first
   ARM64 build. Re-enable at least in CI (it will fail until the bug is fixed).
 
-### 11. Build/quality odds and ends
+### 12. Build/quality odds and ends
 
 - **`-mtor` is 35% larger on llvm-mingw builds** (34,771 → 47,043 for the
   identical spec `tor:434kb`; 11 other methods differ by <0.5%). Output is
