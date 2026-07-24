@@ -14,6 +14,10 @@
 # decode surface, so both must be exercised (the "path never reached" trap).
 set -uo pipefail
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+# The C reference comes from a pinned revision, not the working tree -- see
+# c-reference.sh for why.
+. "$ROOT/rust/difftest/c-reference.sh"
+CREF="$(darc_c_reference "$ROOT")" || exit 1
 W="${TMPDIR:-/tmp}/bsc-bwt-check.$$"; mkdir -p "$W"
 trap 'rm -rf "$W"' EXIT
 
@@ -25,9 +29,9 @@ LIB="$ROOT/rust/target/release/libdarc_codecs.a"
 # trails the sources so it links on GNU ld.
 cc() { local out="$1"; shift
   clang++ -std=c++17 -O2 -w -DFREEARC_UNIX -DFREEARC_INTEL_BYTE_ORDER -DFREEARC_64BIT \
-    -I"$ROOT" -I"$ROOT/Compression" \
-    "$ROOT/rust/difftest/bsc_bwt_ref.cpp" "$ROOT/rust/difftest/bsc_ccodec.cpp" \
-    "$ROOT/Compression/BSC/libbsc/bwt/libsais/libsais.c" "$@" -o "$out"; }
+    -I"$CREF" -I"$CREF/Compression" \
+    "$CREF/rust/difftest/bsc_bwt_ref.cpp" "$CREF/rust/difftest/bsc_ccodec.cpp" \
+    "$CREF/Compression/BSC/libbsc/bwt/libsais/libsais.c" "$@" -o "$out"; }
 cc "$W/c"                    || exit 1
 cc "$W/rs" -DUSE_RUST "$LIB" || exit 1
 

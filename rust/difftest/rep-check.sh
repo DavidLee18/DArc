@@ -7,6 +7,10 @@
 # defines an archive format.
 set -uo pipefail
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+# The C reference comes from a pinned revision, not the working tree -- see
+# c-reference.sh for why.
+. "$ROOT/rust/difftest/c-reference.sh"
+CREF="$(darc_c_reference "$ROOT")" || exit 1
 W="${TMPDIR:-/tmp}/rep-check.$$"; mkdir -p "$W"
 trap 'rm -rf "$W"' EXIT
 
@@ -22,9 +26,9 @@ LIB="$ROOT/rust/target/release/libdarc_codecs.a"
 cc() { # cc <output> [args appended after the sources]
   local out="$1"; shift
   clang++ -std=c++17 -O2 -w -DFREEARC_UNIX -DFREEARC_INTEL_BYTE_ORDER -DFREEARC_64BIT \
-    -DREP_LIBRARY -I"$ROOT" -I"$ROOT/Compression" \
-    "$ROOT/rust/difftest/rep_ref.cpp" "$ROOT/Compression/REP/rep.cpp" \
-    "$ROOT/Compression/Common.cpp" "$@" -o "$out"
+    -DREP_LIBRARY -I"$CREF" -I"$CREF/Compression" \
+    "$CREF/rust/difftest/rep_ref.cpp" "$CREF/Compression/REP/rep.cpp" \
+    "$CREF/Compression/Common.cpp" "$@" -o "$out"
 }
 cc "$W/c"                    || exit 1
 cc "$W/rs" -DUSE_RUST "$LIB" || exit 1

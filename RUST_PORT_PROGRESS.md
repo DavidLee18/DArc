@@ -174,13 +174,25 @@ Two mechanical prerequisites, neither done:
 - **Pin the difftest harnesses to a git revision** (item 6) before any C decoder
   goes.
 
-### 6. Preserve the differential-test oracle
+### 6. Preserve the differential-test oracle — DONE
 
-11 harnesses and 16 `_ref`/`_ccodec` shims compile the **C** codec as the
-reference Rust is compared against. Deleting the C decoders destroys the only
-thing that can prove Rust ≡ C. Decision taken: **pin the harnesses to a git
-revision** (build the C reference from `git show <sha>:path`) rather than
-keeping a second copy in the tree.
+`rust/difftest/c-reference.sh` extracts `Compression/` at a pinned revision
+(`DARC_C_REF_SHA`) with `git archive`, copies the CURRENT shims in beside it so
+their `#include "../../Compression/..."` paths resolve into the pinned tree, and
+exports `CREF`. The ten Compression-based harnesses compile their C reference
+from `$CREF` while the Rust staticlib and harness logic stay current.
+`srep-check.sh` is deliberately excluded: its oracle is the `srep` **binary**
+from `srep/compile`, not sources under `Compression/`.
+
+The reference is **always** the pinned revision, even while the C is still in
+the tree. A fallback that only engaged after deletion would sit untested until
+it became load-bearing — how the MicroHs cache guard shipped broken. A fixed
+oracle also cannot drift, so a concurrent C change cannot mask a Rust
+regression.
+
+Verified by deleting `rep.cpp`, `Delta.cpp` and `dict.cpp` from the working
+tree and re-running: all harnesses still pass. Bumping `DARC_C_REF_SHA` changes
+what "correct" means for every harness, so it is a deliberate act.
 
 ### 7. Port `lz4hc.c` to Rust — blocks pruning `Compression/LZ4`
 

@@ -35,6 +35,8 @@
 # block silently tests nothing that matters.
 set -uo pipefail
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+# No c-reference.sh here: SREP's oracle is the `srep` BINARY built from
+# srep/compile, not sources under Compression/, and srep/ is not being deleted.
 W="${TMPDIR:-/tmp}/srep-check.$$"; mkdir -p "$W"
 trap 'rm -rf "$W"' EXIT
 
