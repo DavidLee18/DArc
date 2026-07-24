@@ -9,5 +9,5 @@ OPT_FLAGS   = -O3 \
 DEBUG_FLAGS = -g0
 CFLAGS = $(CODE_FLAGS) $(OPT_FLAGS) $(DEBUG_FLAGS) $(DEFINES)
 
-$(TEMPDIR)/C_Dict.o: C_Dict.cpp C_Dict.h dict.cpp makefile
+$(TEMPDIR)/C_Dict.o: C_Dict.cpp C_Dict.h makefile
 	$(GCC) -c $(CFLAGS) -o $*.o $<

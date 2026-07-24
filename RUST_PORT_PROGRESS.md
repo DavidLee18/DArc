@@ -31,14 +31,14 @@ vendored tree remains, because `DARC_NO_RUST=1` still builds them.
 | codec | Rust module | wired under `DARC_RUST` | C pruned |
 |---|---|---|---|
 | BSC | `bsc/` | yes | no |
-| Delta | `delta` | yes (both directions) | no |
-| Dict | `dict`, `dict_encode` | yes (both directions) | no |
+| Delta | `delta` | yes (both directions) | **YES** |
+| Dict | `dict`, `dict_encode` | yes (both directions) | **YES** |
 | DisPack | `dispack` | yes | no |
 | GRZip | `grzip` | yes | no |
 | LZ4 | `lz4` (`lz4_flex`, pure Rust) | yes (decode + default encode) | no |
 | LZP | `lzp` | yes (both directions) | no |
 | MM | `mm` | yes | no |
-| REP | `rep` | yes (both directions, byte-exact) | no |
+| REP | `rep` | yes (both directions, byte-exact) | **YES** |
 | SREP | `srep` | external binary, no `DARC_RUST` wiring | no |
 | Tornado | `tornado` | yes | no |
 | TTA | `tta` | yes | no |
@@ -159,8 +159,16 @@ binaries differ, and all 24 fingerprints are identical across them.
   bytes (an LDM heuristic differing between 1.5.6 and 1.5.7) while every other
   setting stayed identical. Decode is unaffected and verified: all six archives
   written by the vendored build still extract byte-identically.
-- **Delta, Dict, REP** — the three codecs ported in both directions, so whole
-  files go (`Delta.cpp`, `dict.cpp`, `rep.cpp`).
+- ~~**Delta, Dict, REP**~~ — **DONE.** `Delta.cpp`, `dict.cpp` and `rep.cpp`
+  deleted (2,815 lines). Like zstd they are now Rust-only, so their drop-ins
+  left the `dropin` feature gate; LZP's stayed gated, because its C survives and
+  ungating it would be a multiple definition under `DARC_NO_RUST`.
+
+  Two things the wrappers still needed from the deleted files, neither of which
+  a "which entry points does it call?" check would have found: `C_REP.cpp` uses
+  `sqrtb` and `CalcHashSize` for its memory estimate (moved into the wrapper
+  verbatim), and `C_Dict.cpp` still had a guarded C `dict_decompress` calling
+  `DictDecode`. Both surfaced only as build errors.
 - Everything else is decode-only, so its encoder keeps the file alive; pruning
   there is surgical, not file deletion.
 - **Leave vendored trees pristine** (libbsc, LZMA SDK) per `CLAUDE.md`, or make

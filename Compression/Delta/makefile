@@ -10,5 +10,5 @@ OPT_FLAGS   = -O3 \
 DEBUG_FLAGS = -g0
 CFLAGS = $(CODE_FLAGS) $(OPT_FLAGS) $(DEBUG_FLAGS) $(DEFINES)
 
-$(TEMPDIR)/C_Delta.o: C_Delta.cpp C_Delta.h Delta.cpp makefile
+$(TEMPDIR)/C_Delta.o: C_Delta.cpp C_Delta.h makefile
 	$(GCC) -c $(CFLAGS) -o $*.o $<
