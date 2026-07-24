@@ -97,7 +97,7 @@ macOS is covered by CI (`macos-latest`) and builds with no extra dependencies be
 
 **All Platforms:**
 - **"No such file or directory" during compilation**: The `compile` scripts generate `common.mak` (copied from `unix-common.mak` or `win32-common.mak`) before invoking `make`. Run a `compile` script rather than calling `make` directly in a fresh checkout.
-- **Stale object files after switching build paths**: The MicroHs and GHC builds share `/tmp/out/`. If you switch between `./compile-O2` and `./compile-ghc`, remove `/tmp/out/` to avoid link errors from objects built with mismatched `-D__MHS__`.
+- **Stale object files after switching build paths**: the makefiles do not rebuild when a `-D` changes, so remove `/tmp/out/` when switching between a stock and a `DARC_RUST=1` build.
 
 ---
 
