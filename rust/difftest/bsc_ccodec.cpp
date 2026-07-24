@@ -34,4 +34,14 @@ int darc_bsc_coder_decode_block (const unsigned char *in, unsigned char *out, in
 { return bsc_coder_decode_block(in, out, coder); }
 
 int darc_bsc_init (int features) { return bsc_init(features); }
+
+/* Forward BWT (with auxiliary indexes) and its inverse, for the inverse-BWT
+ * differential harness. The encoder is the same libsais forward transform a
+ * real archive was built with, so the index / num_indexes / transformed bytes
+ * it produces are exactly the format the Rust inverse must read. */
+int darc_bsc_bwt_encode (unsigned char *T, int n, unsigned char *num_indexes, int *indexes, int features)
+{ return bsc_bwt_encode(T, n, num_indexes, indexes, features); }
+
+int darc_bsc_bwt_decode (unsigned char *T, int n, int index, unsigned char num_indexes, int *indexes, int features)
+{ return bsc_bwt_decode(T, n, index, num_indexes, indexes, features); }
 }

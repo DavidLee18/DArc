@@ -490,3 +490,29 @@ pub unsafe extern "C" fn darc_rs_bsc_qlfc_decode(
         Err(e) => e,
     }
 }
+
+/// BSC inverse-BWT, for the differential harness. Mirrors `bsc_bwt_decode`:
+/// inverts `data` in place, choosing the aux vs single-index path from
+/// `num_indexes`. Returns `LIBBSC_NO_ERROR` (0) or a negative libbsc code.
+///
+/// # Safety
+/// `data` must be valid for `n` bytes; `indexes` for `num_indexes` `i32`s.
+#[no_mangle]
+pub unsafe extern "C" fn darc_rs_bsc_bwt_decode(
+    data: *mut u8,
+    n: c_int,
+    index: c_int,
+    num_indexes: u8,
+    indexes: *const i32,
+) -> c_int {
+    if data.is_null() || n < 0 {
+        return FREEARC_ERRCODE_GENERAL;
+    }
+    let buf = core::slice::from_raw_parts_mut(data, n as usize);
+    let idx: &[i32] = if indexes.is_null() || num_indexes == 0 {
+        &[]
+    } else {
+        core::slice::from_raw_parts(indexes, num_indexes as usize)
+    };
+    bsc::bwt::bwt_decode(buf, n as usize, index, num_indexes, idx)
+}

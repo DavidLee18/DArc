@@ -45,6 +45,7 @@
 #![allow(dead_code)] // WIP: layers land before the decoder that uses them
 
 pub mod adler32;
+pub mod bwt;
 pub mod header;
 pub mod lzp;
 pub mod model;
