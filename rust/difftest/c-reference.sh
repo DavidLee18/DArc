@@ -31,8 +31,13 @@
 # harness. Do it only to pick up a genuine C-side fix, and say so in the commit.
 
 # Last revision containing the full C codec set (zstd's libzstd was removed in
-# 5c2c6ce itself, and has no harness).
-DARC_C_REF_SHA="5c2c6ce"
+# this commit itself, and has no harness).
+#
+# The FULL 40-character hash, not an abbreviation: `git fetch origin <sha>`
+# rejects a short SHA outright ("couldn't find remote ref"), which is how the
+# shallow-clone fetch below is able to work at all. Abbreviations can also grow
+# ambiguous as history does.
+DARC_C_REF_SHA="5c2c6ce1244db759a17aea61cb243f3ace41fe61"
 
 # Usage: darc_c_reference <repo-root>   → echoes the reference tree's path
 darc_c_reference() {
@@ -44,8 +49,15 @@ darc_c_reference() {
   # extract the pinned C only once.
   if [ ! -d "$cref/Compression" ]; then
     rm -rf "$cref"; mkdir -p "$cref"
+    # CI checks out shallow (actions/checkout defaults to fetch-depth: 1), so
+    # the pinned commit is usually absent. Fetch just that one commit rather
+    # than making every job clone full history.
+    if ! git -C "$root" rev-parse --verify --quiet "$sha^{commit}" >/dev/null; then
+      git -C "$root" fetch --depth=1 --quiet origin "$sha" 2>/dev/null || true
+    fi
     git -C "$root" rev-parse --verify --quiet "$sha^{commit}" >/dev/null || {
-      echo "c-reference: pinned revision $sha not found -- fetch history first" >&2
+      echo "c-reference: pinned revision $sha is not available and could not be" >&2
+      echo "fetched. In CI, give the checkout enough history (fetch-depth: 0)." >&2
       return 1; }
     git -C "$root" archive "$sha" Compression | tar -x -C "$cref" || {
       echo "c-reference: could not extract Compression/ at $sha" >&2
