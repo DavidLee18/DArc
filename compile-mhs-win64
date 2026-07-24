@@ -93,12 +93,27 @@ if [ -n "${DARC_RUST:-}" ]; then
   # these out differently, and on Homebrew the driver on PATH is a symlink into
   # the Cellar, so walking up from it lands somewhere with no headers at all --
   # which fails as "stdio.h not found" only once bindgen runs.
+  #
+  # For llvm-mingw, pass --sysroot and let clang supply the rest. Handing it
+  # another toolchain's -I list does not work: stdint.h is a COMPILER BUILTIN
+  # living in the resource dir, so mixing llvm-mingw's include list with a
+  # separately installed libclang leaves clang without its own builtins and
+  # every fixed-width type ("unknown type name 'uint64_t'") disappears.
+  # For GCC-mingw the extracted -I list is right, because there the same
+  # toolchain provides both the headers and the parse.
   rust_incs=""
-  while IFS= read -r d; do
-    [ -d "$d" ] && rust_incs="$rust_incs -I$d"
-  done < <(printf '' | "$rust_cc" -E -Wp,-v - 2>&1 | sed -n 's/^ \(\/.*\)$/\1/p')
-  [ -n "$rust_incs" ] ||
-    { echo "error: $rust_cc reported no include directories -- cannot configure bindgen" >&2; exit 1; }
+  if [ "$toolchain" = llvm ]; then
+    llvm_mingw_root=$(dirname "$(dirname "$(command -v "$triple-clang" 2>/dev/null || command -v "$rust_cc")")")
+    [ -d "$llvm_mingw_root/$triple" ] ||
+      { echo "error: no sysroot at $llvm_mingw_root/$triple" >&2; exit 1; }
+    rust_incs=" --sysroot=$llvm_mingw_root/$triple"
+  else
+    while IFS= read -r d; do
+      [ -d "$d" ] && rust_incs="$rust_incs -I$d"
+    done < <(printf '' | "$rust_cc" -E -Wp,-v - 2>&1 | sed -n 's/^ \(\/.*\)$/\1/p')
+    [ -n "$rust_incs" ] ||
+      { echo "error: $rust_cc reported no include directories -- cannot configure bindgen" >&2; exit 1; }
+  fi
 
   # Env-var suffix is the target triple with - turned into _, and left LOWER
   # case: cc-rs and bindgen both look the target up as written. Upper-casing it
