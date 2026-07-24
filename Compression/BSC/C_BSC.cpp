@@ -51,6 +51,13 @@ extern "C" {
 #include "libbsc/st/st.cpp"
 #include "libbsc/adler32/adler32.cpp"
 
+// DARC_RUST=1 routes decoding through the Rust port (rust/darc-codecs). The
+// Rust decoder covers all three QLFC coders (static, adaptive, fast) and both
+// block sorters (BWT, ST3..ST8), so every -mbsc block decodes in Rust.
+#ifdef DARC_RUST
+extern "C" int darc_rs_bsc_decompress_block (const unsigned char *input, int inSize, unsigned char *output, int outCap);
+#endif
+
 static int bsc_initialized = 0;
 static int ensure_bsc_init(int features)
 {
@@ -169,7 +176,11 @@ int bsc_stream_decompress (CALLBACK_FUNC *callback, void *auxdata)
       if (!outBuf) { result = FREEARC_ERRCODE_NOT_ENOUGH_MEMORY; break; }
     }
 
+#ifdef DARC_RUST
+    err = darc_rs_bsc_decompress_block(inBuf, compressed, outBuf, dataSize);
+#else
     err = bsc_decompress(inBuf, compressed, outBuf, dataSize, features);
+#endif
     if (err != LIBBSC_NO_ERROR) { result = FREEARC_ERRCODE_BAD_COMPRESSED_DATA; break; }
 
     full_write(callback, outBuf, dataSize, auxdata);

@@ -8,7 +8,7 @@
 //! what wires them together; until then these are exercised by the differential
 //! harness rather than by the archiver.
 
-use crate::{delta, dict, dict_encode, dispack, grzip, lzp, mm, rep, tornado, tta};
+use crate::{bsc, delta, dict, dict_encode, dispack, grzip, lzp, mm, rep, tornado, tta};
 use crate::ffi::{Io, CALLBACK_FUNC, FREEARC_ERRCODE_GENERAL};
 use core::ffi::{c_int, c_void};
 
@@ -457,4 +457,99 @@ pub unsafe extern "C" fn dispack_decompress(
     auxdata: *mut c_void,
 ) -> c_int {
     darc_rs_dispack_decompress(block_size, callback, auxdata)
+}
+
+/// BSC QLFC coder-level decode, for the differential harness.
+///
+/// BSC is still being ported; this exposes the entropy stage alone so the range
+/// coder, mixer, model and decode bodies can be verified against the C before
+/// the block dispatcher and the inverse transforms exist.
+///
+/// # Safety
+/// `input`/`output` must be valid for `in_size`/`out_cap` bytes.
+#[no_mangle]
+pub unsafe extern "C" fn darc_rs_bsc_qlfc_decode(
+    input: *const u8,
+    in_size: c_int,
+    output: *mut u8,
+    out_cap: c_int,
+    coder: c_int,
+) -> c_int {
+    if input.is_null() || output.is_null() || in_size < 0 || out_cap < 0 {
+        return FREEARC_ERRCODE_GENERAL;
+    }
+    let inp = core::slice::from_raw_parts(input, in_size as usize);
+    let out = core::slice::from_raw_parts_mut(output, out_cap as usize);
+    let r = match coder {
+        1 => bsc::qlfc::static_decode(inp, out),
+        2 => bsc::qlfc::adaptive_decode(inp, out),
+        3 => bsc::qlfc::fast_decode(inp, out),
+        _ => return FREEARC_ERRCODE_GENERAL,
+    };
+    match r {
+        Ok(n) => n as c_int,
+        Err(e) => e,
+    }
+}
+
+/// BSC inverse-BWT, for the differential harness. Mirrors `bsc_bwt_decode`:
+/// inverts `data` in place, choosing the aux vs single-index path from
+/// `num_indexes`. Returns `LIBBSC_NO_ERROR` (0) or a negative libbsc code.
+///
+/// # Safety
+/// `data` must be valid for `n` bytes; `indexes` for `num_indexes` `i32`s.
+#[no_mangle]
+pub unsafe extern "C" fn darc_rs_bsc_bwt_decode(
+    data: *mut u8,
+    n: c_int,
+    index: c_int,
+    num_indexes: u8,
+    indexes: *const i32,
+) -> c_int {
+    if data.is_null() || n < 0 {
+        return FREEARC_ERRCODE_GENERAL;
+    }
+    let buf = core::slice::from_raw_parts_mut(data, n as usize);
+    let idx: &[i32] = if indexes.is_null() || num_indexes == 0 {
+        &[]
+    } else {
+        core::slice::from_raw_parts(indexes, num_indexes as usize)
+    };
+    bsc::bwt::bwt_decode(buf, n as usize, index, num_indexes, idx)
+}
+
+/// BSC inverse sort-transform (ST3..ST8), for the differential harness. Mirrors
+/// `bsc_st_decode`: inverts `data` in place. Returns `LIBBSC_NO_ERROR` (0) or a
+/// negative libbsc code.
+///
+/// # Safety
+/// `data` must be valid for `n` bytes.
+#[no_mangle]
+pub unsafe extern "C" fn darc_rs_bsc_st_decode(data: *mut u8, n: c_int, k: c_int, index: c_int) -> c_int {
+    if data.is_null() || n < 0 || k < 0 {
+        return FREEARC_ERRCODE_GENERAL;
+    }
+    let buf = core::slice::from_raw_parts_mut(data, n as usize);
+    bsc::st::st_decode(buf, n as usize, k as u32, index)
+}
+
+/// BSC block dispatcher, for the whole-codec differential harness. Mirrors
+/// `bsc_decompress`: decode one framed block (28-byte header + payload) into
+/// `output`. Returns `LIBBSC_NO_ERROR` (0) or a negative libbsc code.
+///
+/// # Safety
+/// `input` must be valid for `in_size` bytes, `output` for `out_cap` bytes.
+#[no_mangle]
+pub unsafe extern "C" fn darc_rs_bsc_decompress_block(
+    input: *const u8,
+    in_size: c_int,
+    output: *mut u8,
+    out_cap: c_int,
+) -> c_int {
+    if input.is_null() || output.is_null() || in_size < 0 || out_cap < 0 {
+        return FREEARC_ERRCODE_GENERAL;
+    }
+    let inp = core::slice::from_raw_parts(input, in_size as usize);
+    let out = core::slice::from_raw_parts_mut(output, out_cap as usize);
+    bsc::dispatch::decompress(inp, out)
 }

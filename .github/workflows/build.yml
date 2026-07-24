@@ -621,7 +621,7 @@ jobs:
     # the same original bytes over a corpus built for that codec's heuristics.
     # They were runnable but unrun until now: a differential test nothing
     # invokes is documentation, not a check.
-    - name: Per-codec differential tests (REP, TTA, MM, Tornado, GRZip, DisPack)
+    - name: Per-codec differential tests (REP, TTA, MM, Tornado, GRZip, DisPack, BSC)
       run: |
         chmod +x rust/difftest/*.sh
         rust/difftest/rep-check.sh
@@ -630,6 +630,12 @@ jobs:
         rust/difftest/tornado-check.sh
         rust/difftest/grzip-check.sh
         rust/difftest/dispack-check.sh
+        # BSC, stage by stage (QLFC entropy, inverse BWT, inverse ST) then the
+        # whole block codec end to end.
+        rust/difftest/bsc-check.sh
+        rust/difftest/bsc-bwt-check.sh
+        rust/difftest/bsc-st-check.sh
+        rust/difftest/bsc-full-check.sh
 
     # SREP is not an in-process codec: the archiver spawns a `srep` binary
     # (arc.ini's [External compressor:srep]), so this compares files rather than
