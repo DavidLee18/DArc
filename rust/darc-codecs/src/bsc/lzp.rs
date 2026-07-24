@@ -8,15 +8,32 @@
 //! and to GRZip's (`crate::grzip::lzp`). Different flag, different hash,
 //! different framing; they share only the idea.
 //!
-//! ## Only the scalar loop is ported, and that is exact
+//! ## This is the whole decoder, in its portable formulation
 //!
-//! `bsc_lzp_decode_block` has two bodies: an unrolled path that processes four
-//! positions at a time using unaligned 64-bit loads, taken only when
-//! `hashSize <= 17` on x86-64/AArch64, and a scalar loop that finishes the
-//! tail and handles every other case. They must compute the same thing -- the C
-//! runs one and then the other on the same buffer -- so the scalar loop is the
-//! definition and this ports that. The differential harness is what confirms
-//! the equivalence rather than my reading of the 64-bit bit-mixing.
+//! `bsc_lzp_decode_block` has two loop bodies: an unrolled path processing four
+//! positions at a time via unaligned 64-bit loads, and a scalar loop. The
+//! unrolled one is guarded by
+//!
+//! ```text
+//! #if !defined(LIBBSC_NO_UNALIGNED_ACCESS) && (defined(LIBBSC_x86_64) || defined(LIBBSC_AArch64))
+//! ```
+//!
+//! so on i386, 32-bit ARM, or any build defining `LIBBSC_NO_UNALIGNED_ACCESS`
+//! it does not exist and the scalar loop decodes every stream alone. Scalar-only
+//! is therefore a *shipped configuration of libbsc*, not a subset of one: any
+//! valid stream must decode under it. They are also one algorithm rather than
+//! two -- both bodies share the `lookup` table, and the scalar loop re-derives
+//! `context` from the last four output bytes to resume exactly where the
+//! unrolled prefix stopped.
+//!
+//! Verified rather than assumed: an archiver built with
+//! `-DLIBBSC_NO_UNALIGNED_ACCESS` extracts a `-mbsc` archive produced by the
+//! normal vectorized build byte-for-byte identically.
+//!
+//! What is genuinely not reproduced here is the *speed*: on x86-64 and AArch64
+//! the C decodes four positions per iteration and this does one. That is a
+//! throughput difference, not an output one, and worth measuring before
+//! deciding whether to reproduce the unrolled path.
 //!
 //! ## The escape
 //!
