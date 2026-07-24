@@ -52,4 +52,13 @@ int darc_bsc_st_encode (unsigned char *T, int n, int k, int features)
 
 int darc_bsc_st_decode (unsigned char *T, int n, int k, int index, int features)
 { return bsc_st_decode(T, n, k, index, features); }
+
+/* The whole codec, for the end-to-end differential harness: bsc_compress builds
+ * a real framed block (header + entropy + block-sort + optional LZP), and the C
+ * and Rust dispatchers both invert it. */
+int darc_bsc_compress (const unsigned char *in, unsigned char *out, int n, int lzpHashSize, int lzpMinLen, int blockSorter, int coder, int features)
+{ return bsc_compress(in, out, n, lzpHashSize, lzpMinLen, blockSorter, coder, features); }
+
+int darc_bsc_decompress (const unsigned char *in, int inSize, unsigned char *out, int outSize, int features)
+{ return bsc_decompress(in, inSize, out, outSize, features); }
 }

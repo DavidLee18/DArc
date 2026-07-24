@@ -43,7 +43,10 @@ use super::model::{model_rank_state, model_run_state, QlfcModel1, ALPHABET_SIZE}
 use super::model_consts::*;
 use super::predictor::ProbabilityCounter;
 use super::rangecoder::RangeDecoder;
-use super::LIBBSC_DATA_CORRUPT;
+use super::{
+    CODER_QLFC_ADAPTIVE, CODER_QLFC_STATIC, LIBBSC_BAD_PARAMETER, LIBBSC_DATA_CORRUPT,
+    LIBBSC_UNEXPECTED_EOB,
+};
 
 /// `bsc_bit_scan_reverse(x)` = `clz(x) ^ 31`, i.e. the index of the highest set
 /// bit. Undefined for 0 in the C (`__builtin_clz(0)`); callers never pass 0.
@@ -60,6 +63,71 @@ fn bit_scan_reverse(x: u32) -> u32 {
 /// treated as truncated. The coder legitimately reads a little past the end
 /// while flushing.
 const MAX_OVERRUN: usize = 64;
+
+/// `bsc_coder_decompress` (`coder.cpp:278`): the multi-block coder wrapper.
+///
+/// The coder splits a block into `bsc_coder_num_blocks(n)` sub-blocks, each
+/// independently QLFC-coded (or stored verbatim when it would not shrink), with
+/// a header of `n_blocks` in byte 0 then an 8-byte `(decompressedSize,
+/// codedSize)` pair per sub-block, little-endian. The single-block case (byte 0
+/// == 1) is just one coded block after the count byte -- which is what the
+/// coder-level differential harness exercises; the whole-codec path reaches the
+/// multi-block layout for larger inputs.
+pub fn decompress(input: &[u8], output: &mut [u8], coder: u32) -> Result<usize, i32> {
+    if coder != CODER_QLFC_STATIC && coder != CODER_QLFC_ADAPTIVE {
+        return Err(LIBBSC_BAD_PARAMETER); // fast coder not ported / bad value
+    }
+    if input.is_empty() {
+        return Err(LIBBSC_UNEXPECTED_EOB);
+    }
+
+    let decode_block = |inp: &[u8], out: &mut [u8]| -> Result<usize, i32> {
+        if coder == CODER_QLFC_STATIC {
+            static_decode(inp, out)
+        } else {
+            adaptive_decode(inp, out)
+        }
+    };
+
+    let n_blocks = input[0] as usize;
+    if n_blocks == 0 {
+        return Err(LIBBSC_UNEXPECTED_EOB);
+    }
+    if n_blocks == 1 {
+        return decode_block(&input[1..], output);
+    }
+
+    let header_len = 1 + 8 * n_blocks;
+    if input.len() < header_len {
+        return Err(LIBBSC_UNEXPECTED_EOB);
+    }
+    let word = |at: usize| -> usize {
+        i32::from_le_bytes([input[at], input[at + 1], input[at + 2], input[at + 3]]) as usize
+    };
+
+    let mut ip = header_len;
+    let mut op = 0usize;
+    let mut data_size = 0usize;
+    for b in 0..n_blocks {
+        let out_size = word(1 + 8 * b); // decompressed size (field 0)
+        let in_size = word(1 + 8 * b + 4); // coded size (field 4)
+        if ip + in_size > input.len() || op + out_size > output.len() {
+            return Err(LIBBSC_UNEXPECTED_EOB);
+        }
+        if in_size != out_size {
+            let got = decode_block(&input[ip..ip + in_size], &mut output[op..op + out_size])?;
+            if got != out_size {
+                return Err(LIBBSC_DATA_CORRUPT);
+            }
+        } else {
+            output[op..op + out_size].copy_from_slice(&input[ip..ip + in_size]);
+        }
+        ip += in_size;
+        op += out_size;
+        data_size += out_size;
+    }
+    Ok(data_size)
+}
 
 /// `bsc_qlfc_static_decode`. Returns the number of bytes written.
 pub fn static_decode(input: &[u8], output: &mut [u8]) -> Result<usize, i32> {

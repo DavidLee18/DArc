@@ -531,3 +531,24 @@ pub unsafe extern "C" fn darc_rs_bsc_st_decode(data: *mut u8, n: c_int, k: c_int
     let buf = core::slice::from_raw_parts_mut(data, n as usize);
     bsc::st::st_decode(buf, n as usize, k as u32, index)
 }
+
+/// BSC block dispatcher, for the whole-codec differential harness. Mirrors
+/// `bsc_decompress`: decode one framed block (28-byte header + payload) into
+/// `output`. Returns `LIBBSC_NO_ERROR` (0) or a negative libbsc code.
+///
+/// # Safety
+/// `input` must be valid for `in_size` bytes, `output` for `out_cap` bytes.
+#[no_mangle]
+pub unsafe extern "C" fn darc_rs_bsc_decompress_block(
+    input: *const u8,
+    in_size: c_int,
+    output: *mut u8,
+    out_cap: c_int,
+) -> c_int {
+    if input.is_null() || output.is_null() || in_size < 0 || out_cap < 0 {
+        return FREEARC_ERRCODE_GENERAL;
+    }
+    let inp = core::slice::from_raw_parts(input, in_size as usize);
+    let out = core::slice::from_raw_parts_mut(output, out_cap as usize);
+    bsc::dispatch::decompress(inp, out)
+}
