@@ -76,12 +76,23 @@ rust_lib=""
 # The Rust codecs are ON by default. DARC_NO_RUST=1 opts out and builds the C
 # implementations instead -- kept so CI can build both and prove they produce
 # identical archives, and so a bisect can still reach a pure-C binary.
+command -v cargo >/dev/null 2>&1 || {
+  echo "error: cargo not found in PATH -- it is required to build DArc" >&2; exit 1; }
+
+# The Rust staticlibs are ALWAYS linked, even under DARC_NO_RUST: zstd has no C
+# implementation left, so C_Zstd.o resolves zstd_stream_* from the crate either
+# way. What DARC_NO_RUST changes is the `dropin` feature and the -DDARC_RUST
+# define -- without them the other codecs compile and bind their C, which is
+# what makes the two builds comparable.
+rust_features=""
 if [ -z "${DARC_NO_RUST:-}" ]; then
-  command -v cargo >/dev/null 2>&1 || {
-    echo "error: cargo not found in PATH -- it is required to build DArc (set DARC_NO_RUST=1 for a C-only build)" >&2; exit 1; }
-  echo "building Rust codecs and crypto"
-  ( cd rust && cargo build --release -p darc-codecs -p darc-crypto --features darc-codecs/dropin ) || {
-    echo "error: cargo build failed" >&2; exit 1; }
+  rust_features="--features darc-codecs/dropin"
+fi
+echo "building Rust codecs and crypto${DARC_NO_RUST:+ (dropins off)}"
+( cd rust && cargo build --release -p darc-codecs -p darc-crypto $rust_features ) || {
+  echo "error: cargo build failed" >&2; exit 1; }
+
+if true; then
   # rust/ is a cargo workspace, so build output lands in the WORKSPACE target
   # directory, not each member's. Both staticlibs are linked: codecs supply the
   # ported compression methods, darc-crypto the encryption (docrypt, PBKDF2,
@@ -90,10 +101,12 @@ if [ -z "${DARC_NO_RUST:-}" ]; then
   for l in $rust_lib; do
     [ -f "$l" ] || { echo "error: cargo produced no $l" >&2; exit 1; }
   done
-  defines="$defines -DDARC_RUST"
-  # Reaches the per-codec makefiles through unix-common.mak, which appends
-  # DARC_EXTRA_DEFINES to DEFINES; make imports it from the environment.
-  export DARC_EXTRA_DEFINES="-DDARC_RUST"
+  if [ -z "${DARC_NO_RUST:-}" ]; then
+    defines="$defines -DDARC_RUST"
+    # Reaches the per-codec makefiles through unix-common.mak, which appends
+    # DARC_EXTRA_DEFINES to DEFINES; make imports it from the environment.
+    export DARC_EXTRA_DEFINES="-DDARC_RUST"
+  fi
 fi
 
 cp unix-common.mak common.mak

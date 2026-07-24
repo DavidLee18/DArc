@@ -23,9 +23,10 @@ and delete the C and Haskell that the Rust replaces.
 
 ### Wired ≠ pruned
 
-Keep these separate when reporting progress. **Nothing has been deleted from
-the repository yet.** Every `#ifndef DARC_RUST` block and every vendored tree is
-still present, because the stock build is still the default and uses all of it.
+Keep these separate when reporting progress. The first deletion has landed:
+`Compression/Zstd/libzstd` (2.2 MB, 68 files) is gone and zstd is Rust-only.
+Everything else is still present -- every other `#ifndef DARC_RUST` block and
+vendored tree remains, because `DARC_NO_RUST=1` still builds them.
 
 | codec | Rust module | wired under `DARC_RUST` | C pruned |
 |---|---|---|---|
@@ -41,7 +42,7 @@ still present, because the stock build is still the default and uses all of it.
 | SREP | `srep` | external binary, no `DARC_RUST` wiring | no |
 | Tornado | `tornado` | yes | no |
 | TTA | `tta` | yes | no |
-| zstd | `zstd` (`zstd-safe` binding) | yes | no |
+| zstd | `zstd` (`zstd-safe` binding) | yes | **YES — 2.2 MB deleted** |
 | Encryption | `darc-crypto` | yes | no |
 
 **Not ported at all:** PPMD (1,065 lines), 4x4 (700), LZMA (25,385 — stays on
@@ -143,9 +144,21 @@ binaries differ, and all 24 fingerprints are identical across them.
 
 ### 5. Prune, in dependency order:
 
-- **`Compression/Zstd`** (2.2 MB) — the one tree with no blocking gap. The
-  wrapper no longer calls it; the makefile still *compiles* it, so that must
-  stop first.
+- ~~**`Compression/Zstd`** (2.2 MB)~~ — **DONE.** No difftest referenced it and
+  `-mzstd` is in no fingerprint case, so the oracle-pinning prerequisite did not
+  apply; that only blocks codecs that *have* a harness. zstd is now Rust-only:
+  there is no C to fall back to, so its entry points left the `dropin` feature
+  gate and the Rust staticlib is linked even under `DARC_NO_RUST` (which
+  otherwise still binds every other codec's C).
+
+  **Worth knowing:** before this, the vendored 1.5.6 objects were `ld -r`-merged
+  into `C_Zstd.o`, which defines the same `ZSTD_*` symbols as zstd-sys's 1.5.7
+  inside the staticlib. An object always beats an archive member, so the "Rust"
+  path was in fact still executing the vendored 1.5.6. Deleting the tree is what
+  actually switched it to the crate -- which is why `-mzstd:long20` moved by 9
+  bytes (an LDM heuristic differing between 1.5.6 and 1.5.7) while every other
+  setting stayed identical. Decode is unaffected and verified: all six archives
+  written by the vendored build still extract byte-identically.
 - **Delta, Dict, REP** — the three codecs ported in both directions, so whole
   files go (`Delta.cpp`, `dict.cpp`, `rep.cpp`).
 - Everything else is decode-only, so its encoder keeps the file alive; pruning

@@ -671,9 +671,12 @@ pub extern "C" fn darc_rs_zstd_sizeof_cctx(level: c_int, window_log: c_int) -> u
     zstd::sizeof_cctx(level, window_log.max(0) as u32)
 }
 
+/// Exported unconditionally, unlike the other drop-ins: the vendored libzstd is
+/// gone, so there is no C definition of this symbol to collide with, and the
+/// DARC_NO_RUST build needs it to link at all.
+///
 /// # Safety
 /// `callback` and `auxdata` must be what the C caller supplied.
-#[cfg(feature = "dropin")]
 #[no_mangle]
 pub unsafe extern "C" fn zstd_stream_decompress(
     callback: CALLBACK_FUNC,
@@ -682,9 +685,12 @@ pub unsafe extern "C" fn zstd_stream_decompress(
     darc_rs_zstd_stream_decompress(callback, auxdata)
 }
 
+/// Exported unconditionally, unlike the other drop-ins: the vendored libzstd is
+/// gone, so there is no C definition of this symbol to collide with, and the
+/// DARC_NO_RUST build needs it to link at all.
+///
 /// # Safety
 /// `callback` and `auxdata` must be what the C caller supplied.
-#[cfg(feature = "dropin")]
 #[no_mangle]
 pub unsafe extern "C" fn zstd_stream_compress(
     level: c_int,

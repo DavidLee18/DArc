@@ -1,7 +1,13 @@
 /*-------------------------------------------------*/
-/* DArc streaming wrapper around zstd 1.5.6.        */
+/* DArc wrapper around Zstandard.                   */
 /*                                                 */
-/* zstd: (c) Meta Platforms, Inc. BSD-3-Clause.    */
+/* The codec itself is the `zstd-safe` crate, fetched by cargo -- the vendored
+   libzstd tree that used to live beside this file is gone. This wrapper is now
+   only DArc's COMPRESSION_METHOD plumbing: parameter parsing, memory
+   estimation and the method registration, all forwarding to rust/darc-codecs.
+
+   Unlike the other codecs there is no DARC_NO_RUST fallback here, because
+   there is no longer any C to fall back to. */
 /*-------------------------------------------------*/
 
 #include <stdio.h>
@@ -12,127 +18,22 @@ extern "C" {
 #include "C_Zstd.h"
 }
 
-// DARC_RUST=1 replaces both streaming entry points with the Rust port
-// (rust/darc-codecs, via the zstd-safe crate). They are declared in C_Zstd.h,
-// which is included inside this file's extern "C" block, so the C definitions
-// below and the Rust exports are the same C-linkage symbols -- leaving both is
-// a multiple definition on GNU ld and silently prefers the C one on macOS.
-// So the switch must REMOVE these definitions, not merely add a declaration.
+// zstd_stream_compress / zstd_stream_decompress are defined in
+// rust/darc-codecs and declared in C_Zstd.h, which is included inside this
+// file's extern "C" block -- so they are the same C-linkage symbols and this
+// file simply calls them.
 //
-// zstd-safe bundles zstd 1.5.7 against the 1.5.6 vendored here; the frame
-// format is unchanged, which rust/darc-codecs/tests/zstd_vectors.rs proves
-// against frames this build produced rather than assuming from the changelog.
-#ifdef DARC_RUST
+// zstd-safe bundles zstd 1.5.7 where this repository used to vendor 1.5.6. The
+// frame format is unchanged between them, which rust/darc-codecs/tests/
+// zstd_vectors.rs proves against frames the vendored build actually produced,
+// rather than taking it from the changelog.
 extern "C" {
 int    darc_rs_zstd_min_clevel  (void);
 int    darc_rs_zstd_max_clevel  (void);
 size_t darc_rs_zstd_sizeof_cctx (int level, int windowLog);
 }
-#endif
 
-#ifndef DARC_RUST
-#include "libzstd/zstd.h"
 
-static const size_t ZSTD_IN_BUFSZ  = 1 << 17;  // 128 KiB
-static const size_t ZSTD_OUT_BUFSZ = 1 << 17;
-
-#ifndef FREEARC_DECOMPRESS_ONLY
-
-int zstd_stream_compress (int Level, int WindowLog, int Workers,
-                          CALLBACK_FUNC *callback, void *auxdata)
-{
-  ZSTD_CCtx *cctx = ZSTD_createCCtx();
-  if (!cctx) return FREEARC_ERRCODE_NOT_ENOUGH_MEMORY;
-
-  if (ZSTD_isError(ZSTD_CCtx_setParameter(cctx, ZSTD_c_compressionLevel, Level))) {
-    ZSTD_freeCCtx(cctx); return FREEARC_ERRCODE_GENERAL;
-  }
-  if (WindowLog > 0) {
-    ZSTD_CCtx_setParameter(cctx, ZSTD_c_windowLog, WindowLog);
-    ZSTD_CCtx_setParameter(cctx, ZSTD_c_enableLongDistanceMatching, 1);
-  }
-  if (Workers > 0) {
-    ZSTD_CCtx_setParameter(cctx, ZSTD_c_nbWorkers, Workers);
-  }
-
-  void *inBuf  = malloc(ZSTD_IN_BUFSZ);
-  void *outBuf = malloc(ZSTD_OUT_BUFSZ);
-  if (!inBuf || !outBuf) { free(inBuf); free(outBuf); ZSTD_freeCCtx(cctx); return FREEARC_ERRCODE_NOT_ENOUGH_MEMORY; }
-
-  int result = FREEARC_OK;
-  int finished = 0;
-  while (!finished) {
-    int got = callback("read", inBuf, (int)ZSTD_IN_BUFSZ, auxdata);
-    if (got < 0) { result = got; break; }
-
-    ZSTD_inBuffer  in  = { inBuf,  (size_t)got, 0 };
-    ZSTD_EndDirective mode = (got == 0) ? ZSTD_e_end : ZSTD_e_continue;
-
-    int drained = 0;
-    while (!drained) {
-      ZSTD_outBuffer out = { outBuf, ZSTD_OUT_BUFSZ, 0 };
-      size_t remaining = ZSTD_compressStream2(cctx, &out, &in, mode);
-      if (ZSTD_isError(remaining)) { result = FREEARC_ERRCODE_GENERAL; goto done; }
-
-      if (out.pos > 0) {
-        int w = callback("write", outBuf, (int)out.pos, auxdata);
-        if (w < 0) { result = w; goto done; }
-      }
-
-      if (mode == ZSTD_e_end) {
-        drained = (remaining == 0);
-      } else {
-        drained = (in.pos == in.size);
-      }
-    }
-
-    if (got == 0) finished = 1;
-  }
-
-done:
-  free(inBuf); free(outBuf); ZSTD_freeCCtx(cctx);
-  return result;
-}
-
-#endif  // !FREEARC_DECOMPRESS_ONLY
-
-int zstd_stream_decompress (CALLBACK_FUNC *callback, void *auxdata)
-{
-  ZSTD_DCtx *dctx = ZSTD_createDCtx();
-  if (!dctx) return FREEARC_ERRCODE_NOT_ENOUGH_MEMORY;
-
-  void *inBuf  = malloc(ZSTD_IN_BUFSZ);
-  void *outBuf = malloc(ZSTD_OUT_BUFSZ);
-  if (!inBuf || !outBuf) { free(inBuf); free(outBuf); ZSTD_freeDCtx(dctx); return FREEARC_ERRCODE_NOT_ENOUGH_MEMORY; }
-
-  int result = FREEARC_OK;
-  size_t last_ret = 0;
-  for (;;) {
-    int got = callback("read", inBuf, (int)ZSTD_IN_BUFSZ, auxdata);
-    if (got < 0) { result = got; break; }
-    if (got == 0) {
-      if (last_ret != 0) result = FREEARC_ERRCODE_BAD_COMPRESSED_DATA;
-      break;
-    }
-
-    ZSTD_inBuffer in = { inBuf, (size_t)got, 0 };
-    while (in.pos < in.size) {
-      ZSTD_outBuffer out = { outBuf, ZSTD_OUT_BUFSZ, 0 };
-      last_ret = ZSTD_decompressStream(dctx, &out, &in);
-      if (ZSTD_isError(last_ret)) { result = FREEARC_ERRCODE_BAD_COMPRESSED_DATA; goto done; }
-      if (out.pos > 0) {
-        int w = callback("write", outBuf, (int)out.pos, auxdata);
-        if (w < 0) { result = w; goto done; }
-      }
-    }
-  }
-
-done:
-  free(inBuf); free(outBuf); ZSTD_freeDCtx(dctx);
-  return result;
-}
-
-#endif  // !DARC_RUST
 
 /*-------------------------------------------------*/
 /* ZSTD_METHOD                                     */
@@ -161,16 +62,7 @@ MemSize ZSTD_METHOD::GetCompressionMem (void)
 {
   // Rough upper bound: zstd level-22 with default window can use ~256 MiB per thread.
   // Use the library's own estimate when possible via a transient context.
-#ifdef DARC_RUST
   size_t est = darc_rs_zstd_sizeof_cctx(Level, WindowLog);
-#else
-  ZSTD_CCtx *c = ZSTD_createCCtx();
-  if (!c) return 64*mb;
-  ZSTD_CCtx_setParameter(c, ZSTD_c_compressionLevel, Level);
-  if (WindowLog > 0) ZSTD_CCtx_setParameter(c, ZSTD_c_windowLog, WindowLog);
-  size_t est = ZSTD_sizeof_CCtx(c);
-  ZSTD_freeCCtx(c);
-#endif
   if (Workers > 0) est = est * (Workers+1);
   return (MemSize)(est ? est : 64*mb);
 }
@@ -231,13 +123,8 @@ COMPRESSION_METHOD* parse_ZSTD (char** parameters)
   if (error) { delete p; return NULL; }
 
   // Clamp to zstd's advertised range.
-#ifdef DARC_RUST
   if (p->Level < darc_rs_zstd_min_clevel()) p->Level = darc_rs_zstd_min_clevel();
   if (p->Level > darc_rs_zstd_max_clevel()) p->Level = darc_rs_zstd_max_clevel();
-#else
-  if (p->Level < ZSTD_minCLevel()) p->Level = ZSTD_minCLevel();
-  if (p->Level > ZSTD_maxCLevel()) p->Level = ZSTD_maxCLevel();
-#endif
   return p;
 }
 

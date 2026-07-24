@@ -193,7 +193,6 @@ c_objs=(
   "$WINOUT/sdk_CpuArch.o" "$WINOUT/sdk_Alloc.o"
 )
 [[ -f "$WINOUT/C_BCJ.o" ]] && c_objs+=("$WINOUT/C_BCJ.o")
-for zo in "$WINOUT"/zstd_*.o; do [[ -f "$zo" ]] && c_objs+=("$zo"); done
 
 # Windows system libs (mingw provides these).
 #
