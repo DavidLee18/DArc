@@ -114,7 +114,10 @@ if [ -n "${DARC_RUST:-}" ]; then
   # use builtins such as __builtin_clzg, which only a matching clang knows --
   # bindgen's default libclang is older and fails on them. Use the cross
   # toolchain's own libclang, which by construction matches its own headers.
-  if [ "$toolchain" = llvm ]; then
+  # A caller (CI) may already point this at a modern LLVM, which is the reliable
+  # way to satisfy it: llvm-mingw ships the clang DRIVER but not libclang.so, so
+  # there is often nothing to find next to the cross compiler.
+  if [ "$toolchain" = llvm ] && [ -z "${LIBCLANG_PATH:-}" ]; then
     llvm_bin=$(dirname "$(command -v "$triple-clang" 2>/dev/null || command -v "$rust_cc")")
     for d in "$llvm_bin/../lib" "$llvm_bin/../lib64"; do
       if ls "$d"/libclang.so* >/dev/null 2>&1 || ls "$d"/libclang.dylib >/dev/null 2>&1; then

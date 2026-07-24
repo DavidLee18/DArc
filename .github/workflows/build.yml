@@ -317,7 +317,18 @@ jobs:
     - uses: dtolnay/rust-toolchain@stable
       with:
         targets: aarch64-pc-windows-gnullvm
+    # bindgen parses DArc's headers as C++, so it reads llvm-mingw's libc++ --
+    # whose headers use __builtin_clzg (Clang 19+). llvm-mingw ships the clang
+    # driver but no libclang.so, so bindgen otherwise falls back to whatever
+    # older libclang is on the box and dies on that builtin. Same pinned LLVM
+    # the Linux build job uses.
+    - name: Install LLVM and Clang (for bindgen)
+      uses: KyleMayes/install-llvm-action@v2
+      with:
+        version: "21.1.8"
     - name: Build (Windows ARM64 cross, DARC_RUST)
+      env:
+        LIBCLANG_PATH: ${{ env.LLVM_PATH }}/lib
       run: |
         cp Tests/arc-mhs-win-arm64.exe /tmp/arc-arm64-c.exe
         DARC_RUST=1 DARC_WIN_ARCH=aarch64 ./compile-mhs-win64
