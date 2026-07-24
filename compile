@@ -57,7 +57,7 @@ if [ -n "${DARC_SANITIZE:-}" ]; then
   export DARC_DEBUG_FLAGS="-g -fsanitize=${DARC_SANITIZE} -fno-omit-frame-pointer"
   echo "sanitizer build: -fsanitize=${DARC_SANITIZE}"
 fi
-# Optional Rust codecs: DARC_RUST=1 ./compile
+# Rust codecs: ON by default. DARC_NO_RUST=1 ./compile builds the C instead.
 #
 # This must run BEFORE any C is compiled. C_Delta.h keys off DARC_RUST, and
 # C_Delta.cpp is built by Compression/compile below -- adding the define after
@@ -66,16 +66,19 @@ fi
 #
 # Builds rust/darc-codecs and links it, and defines DARC_RUST so the affected
 # headers declare their codec entry points extern "C" -- which is what makes the
-# archiver bind to the Rust symbols instead of the C++ ones. Off by default
-# while the port is partial.
+# archiver bind to the Rust symbols instead of the C++ ones.
 #
-# Keeping it a switch rather than a replacement is deliberate: it makes the two
-# implementations directly comparable through the real archiver, so the test
-# suite's archive fingerprints can prove they produce identical bytes.
+# The opt-out is kept rather than removed: it makes the two implementations
+# directly comparable through the real archiver, so the test suite's archive
+# fingerprints can prove they produce identical bytes. That comparison is what
+# licenses deleting the C, so it outlives the switch being "optional".
 rust_lib=""
-if [ -n "${DARC_RUST:-}" ]; then
+# The Rust codecs are ON by default. DARC_NO_RUST=1 opts out and builds the C
+# implementations instead -- kept so CI can build both and prove they produce
+# identical archives, and so a bisect can still reach a pure-C binary.
+if [ -z "${DARC_NO_RUST:-}" ]; then
   command -v cargo >/dev/null 2>&1 || {
-    echo "error: DARC_RUST is set but cargo was not found in PATH" >&2; exit 1; }
+    echo "error: cargo not found in PATH -- it is required to build DArc (set DARC_NO_RUST=1 for a C-only build)" >&2; exit 1; }
   echo "building Rust codecs and crypto"
   ( cd rust && cargo build --release -p darc-codecs -p darc-crypto --features darc-codecs/dropin ) || {
     echo "error: cargo build failed" >&2; exit 1; }

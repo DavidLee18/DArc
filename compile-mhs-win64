@@ -42,11 +42,11 @@ done
 WINOUT=${WINOUT:-/tmp/out/FreeArc-win64-mhs-$arch-$toolchain}
 mkdir -p "$WINOUT"
 
-# ── Optional Rust codecs, cross-compiled for the Windows target ──────────────
+# ── Rust codecs, cross-compiled for the Windows target ──────────────────────
 #
-# DARC_RUST=1 builds rust/darc-codecs + darc-crypto for this target and links
-# them, the same switch ./compile offers natively. This must run BEFORE any C is
-# compiled: the codec headers key off DARC_RUST, so adding the define after
+# Builds rust/darc-codecs + darc-crypto for this target and links them. This is
+# the default; DARC_NO_RUST=1 opts out. It must run BEFORE any C is compiled:
+# the codec headers key off DARC_RUST, so adding the define after
 # compile-win64-c would leave the C++ symbols bound while the staticlibs sat
 # unused in the link -- the mistake ./compile documents at length.
 #
@@ -63,9 +63,10 @@ mkdir -p "$WINOUT"
 # long-width family of bugs this repository has fixed a dozen times, so the
 # target is passed explicitly rather than left to default.
 rust_libs=""
-if [ -n "${DARC_RUST:-}" ]; then
+# ON by default; DARC_NO_RUST=1 opts out. See ./compile.
+if [ -z "${DARC_NO_RUST:-}" ]; then
   command -v cargo >/dev/null 2>&1 ||
-    { echo "error: DARC_RUST is set but cargo was not found in PATH" >&2; exit 1; }
+    { echo "error: cargo not found in PATH -- it is required to build DArc (set DARC_NO_RUST=1 for a C-only build)" >&2; exit 1; }
 
   case "$arch" in
     x86_64)  rust_target="x86_64-pc-windows-gnu"      ;;
@@ -167,7 +168,7 @@ MHS=1 WINOUT="$WINOUT" DARC_WIN_ARCH="$arch" DARC_WIN_TOOLCHAIN="$toolchain" ./c
 # 3) MHS cross-compile setup
 # mhs targets.conf has [environment] block that pulls cc/ccflags/cclibs/conf from env vars
 defines="-DFREEARC_WIN -DFREEARC_INTEL_BYTE_ORDER -DFREEARC_64BIT -DFREEARC_NOURL -DFREEARC_NO_LUA"
-[ -n "${DARC_RUST:-}" ] && defines="$defines -DDARC_RUST"
+[ -z "${DARC_NO_RUST:-}" ] && defines="$defines -DDARC_RUST"
 
 c_objs=(
   "$WINOUT/Environment.o" "$WINOUT/URL.o" "$WINOUT/Common.o"
@@ -211,7 +212,7 @@ win_libs="-static $cxx_libs -lwinpthread -lwinmm -lws2_32 -ladvapi32 -lshell32 -
 # bcrypt. Without these the link fails with a wall of "undefined reference to
 # NtOpenFile / RtlNtStatusToDosError". Only added under DARC_RUST so the pure-C
 # link line stays exactly as it was.
-[ -n "${DARC_RUST:-}" ] && win_libs="$win_libs -lntdll -luserenv -lbcrypt"
+[ -z "${DARC_NO_RUST:-}" ] && win_libs="$win_libs -lntdll -luserenv -lbcrypt"
 
 # Build MHSCCLIBS from C objects (one space-separated string)
 linker_inputs=""
