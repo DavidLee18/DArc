@@ -57,15 +57,14 @@ it. LZ4 by contrast is genuinely Rust.
 | path | targets | Rust support |
 |---|---|---|
 | `./compile` | linux-amd64, linux-arm64, macos-arm64 | yes |
-| `compile-mhs-win64` | windows-amd64, windows-arm64 | yes (x86-64 green; ARM64 in progress) |
-| `compile-ghc`, `compile-ghc-win64` | not shipped | **to be deleted — §2 item 2** |
-
-Nothing in `.github/workflows/` references the two GHC scripts.
+| `compile-mhs-win64` | windows-amd64, windows-arm64 | yes, both green |
+| `compile-ghc`, `compile-ghc-win64` | *removed* | deleted; the Haskell layer goes to Rust |
 
 ### Branch state
 
-`main` = `209d437` (BSC merged, PR #65). Work continues on `rust-prune-prep`,
-which carries the LZ4 + zstd wiring and the Windows cross-build.
+`main` = `588522d` (PR #66 merged: LZ4 + zstd wired, the Rust codecs
+cross-compiling for both Windows targets, every action SHA-pinned, the Rust
+toolchain pinned, CI caching). Post-merge CI green, 12/12.
 
 ---
 
@@ -73,7 +72,7 @@ which carries the LZ4 + zstd wiring and the Windows cross-build.
 
 Ordered roughly by what unblocks what.
 
-### 1. Finish the Windows ARM64 Rust cross-build — IN PROGRESS
+### 1. Windows Rust cross-build — DONE
 
 `compile-mhs-win64` cross-compiles the crates for
 `aarch64-pc-windows-gnullvm` via llvm-mingw. x86-64
@@ -89,7 +88,12 @@ ARM64 has taken four attempts, each a real and different failure:
    worked), but `stdint.h` is a **compiler builtin** in the resource dir, so
    feeding one toolchain's `-I` list to another's libclang strips clang of its
    own builtins.
-4. Current: `--target` + `--sysroot`, letting clang supply its own builtins.
+4. Fixed by `--target` + `--sysroot`, letting clang supply its own builtins.
+
+Both targets are green: x86-64 builds, links and round-trips archives under
+Wine; ARM64 builds and links, and is exercised on a real `windows-11-arm`
+runner. Each job asserts the `DARC_RUST` binary is **not** byte-identical to
+the C one — the "staticlibs built then silently ignored" failure.
 
 **If this keeps failing, stop patching the toolchain and remove the cause:**
 have bindgen parse a small **C-only** shim header. The bindings only need
@@ -97,16 +101,23 @@ have bindgen parse a small **C-only** shim header. The bindings only need
 is what drags the entire C++ standard library into a cross-compile that
 otherwise would not need it, and every one of these failures came from that.
 
-### 2. Delete `compile-ghc` and `compile-ghc-win64`
+### 2. Delete `compile-ghc` and `compile-ghc-win64` — DONE
 
-Do **not** add Rust support to them — they go away with the Haskell port. Safe:
-no CI or release job builds them. Also update the references in `README.md` and
-`CLAUDE.md` (build table, the `/tmp/out` stale-object note, the
-`compat-ghc`/`compat-oldtime` include-path table). `compat-ghc/` and
-`compat-oldtime/` must **stay** — MicroHs needs both.
+Removed rather than given Rust support, since the GHC path goes away with the
+Haskell port. Neither was built by CI or by the release workflow. `README.md`
+and `CLAUDE.md` updated with them.
 
-Once this and item 1 are done, every remaining build path has Rust, and
-`DARC_RUST` can become the default. **That is the gate for all pruning.**
+`compat-ghc/` and `compat-oldtime/` **stay** — both MicroHs builds use both.
+Note the *reason* for keeping them in separate directories is now gone (it was
+that the Wine GHC build had to see one and not the other), so they could be
+folded together; left alone because both disappear with the Haskell port.
+
+Also worth knowing: `HsLua/` is **not** GHC-only, whatever CLAUDE.md used to
+say — `./compile` builds the vendored Lua from `HsLua/src`. Only the Windows
+cross-build sets `FREEARC_NO_LUA`.
+
+**Every remaining build path now has Rust support, so the gate is open:
+`DARC_RUST` can become the default.**
 
 ### 3. Toolchain plumbing for the flip — DONE
 

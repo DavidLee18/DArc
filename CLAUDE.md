@@ -10,12 +10,11 @@ The codebase is roughly half Haskell (application logic, archive format, UI) and
 
 ## Building
 
-**The primary compiler is MicroHs (`mhs`), not GHC.** MicroHs is a lightweight Haskell compiler that emits C. GHC is a secondary, optional path used to produce a faster native binary.
+**The compiler is MicroHs (`mhs`).** MicroHs is a lightweight Haskell compiler that emits C. There is no GHC build any more: `compile-ghc` and `compile-ghc-win64` were removed once the Haskell layer was slated for porting to Rust, and neither was built by CI or by the release workflow.
 
 ```bash
 ./compile-O2          # console binary  -> Tests/arc      (MicroHs, the default)
 ./compile-GUI-O2      # GUI binary      -> Tests/freearc
-./compile-ghc         # console binary  -> Tests/arc-ghc  (GHC 9.4.7+, Linux x64)
 ./compile-mhs-win64   # cross-compile   -> Tests/arc-mhs-win64.exe (mingw-w64)
 make clean            # remove object files from all tempdirs
 
@@ -25,7 +24,7 @@ make clean            # remove object files from all tempdirs
 DARC_WIN_ARCH=aarch64 ./compile-mhs-win64
 ```
 
-`DARC_WIN_ARCH` (`x86_64` by default, or `aarch64`) is read by both `compile-mhs-win64` and `compile-win64-c` and picks the cross toolchain, the target Windows version and the output name. Clang needs two flags GCC does not — see the `cc_quirks` block in `compile-mhs-win64` for what each is for. `compile-ghc-win64` is x86-64 only; there is no GHC bindist for this target.
+`DARC_WIN_ARCH` (`x86_64` by default, or `aarch64`) is read by both `compile-mhs-win64` and `compile-win64-c` and picks the cross toolchain, the target Windows version and the output name. Clang needs two flags GCC does not — see the `cc_quirks` block in `compile-mhs-win64` for what each is for.
 
 Since Wine has no ARM64 emulation, the ARM64 binary cannot be exercised on the machine that cross-builds it. CI runs `Tests/win-test.sh` against it on a real `windows-11-arm` runner instead, and the release workflow's `publish` job waits on that result. `win-test.sh` detects whether it is on Windows or on a Unix host and adds Wine only in the latter case; it works in relative paths throughout, because MSYS rewrites POSIX-looking arguments before handing them to a native `.exe`.
 
@@ -36,7 +35,7 @@ Prerequisites: `mhs`, `clang`, `make`, `liblua5.1-dev`, `libncurses-dev`. `libcu
 ### Build-system gotchas
 
 - **`common.mak` is generated, not committed.** The `compile` scripts do `cp unix-common.mak common.mak` (or `win32-common.mak`) before invoking `make`. Running `make` directly in a clean tree fails until you've run a `compile` script at least once.
-- **Object files are shared across build paths via `/tmp/out/`.** `compile` uses `/tmp/out/FreeArc`; `compile-ghc` uses a *separate* `/tmp/out/FreeArc-ghc-c` specifically to avoid picking up objects built with `-D__MHS__`. If you switch between the MicroHs and GHC paths, stale objects in `/tmp/out/` are a likely culprit for link errors.
+- **Object files are shared across build paths via `/tmp/out/`.** `compile` uses `/tmp/out/FreeArc`; each Windows target gets its own directory. The makefiles do **not** rebuild when a `-D` changes, so switching between a stock and a `DARC_RUST=1` build without `rm -rf /tmp/out` links stale objects against the wrong libraries.
 - **`Compression/compile` is a hand-rolled loop**, not a real dependency graph — it just `cd`s into each codec directory and runs `make`. It does not detect header changes across directories. After editing anything in `Compression/*.h`, wipe `/tmp/out/` rather than trusting an incremental build.
 - The README's note about Git LFS is stale — no files are LFS-tracked any more, so `git lfs pull` is unnecessary.
 
@@ -63,7 +62,7 @@ An OS define and a byte-order define are both **mandatory** — `Utils.hs:31` ra
 
 `compat-ghc/` supplies GHC/`base` modules MicroHs lacks, injected via `-icompat-ghc`: `GHC.Conc` (`setNumCapabilities` etc., used at `Arc.hs:73–76`), `Data.Array.*` and `GHC.Base` (re-exports of `Mhs.Array`), `Data.Map.Strict`, `Foreign.Marshal.Pool` (used heavily by `ArhiveStructure`/`ArhiveDirectory`), `System.Process`, `System.Time`/`System.Locale` (the old-time API reimplemented over C `time.h`), and `System.Posix.*`. Note `System/Posix/Signals.hs` **fakes async signals** with a C volatile flag plus a polling thread, since MicroHs has no real signal delivery.
 
-It is on the include path for the MicroHs build **only** — `compile-ghc` explicitly excludes it so real GHC uses its own `base`. If an import resolves under GHC but not MicroHs, the fix usually belongs in `compat-ghc/`, not in the calling module.
+If an import resolves under GHC but not MicroHs, the fix usually belongs in `compat-ghc/`, not in the calling module.
 
 `compat-oldtime/` holds `System/Time.hs` and `System/Locale.hs` — the removed `old-time`/`old-locale` API, reimplemented over C `time.h`. These are split out from `compat-ghc/` because **two different builds need them for different reasons**, and `-i` works at directory granularity:
 
@@ -71,10 +70,8 @@ It is on the include path for the MicroHs build **only** — `compile-ghc` expli
 |---|---|---|
 | `compile` (MicroHs, Linux) | `-icompat-ghc -icompat-oldtime` | MicroHs lacks both sets |
 | `compile-mhs-win64` | `-icompat-ghc -icompat-oldtime` | same |
-| `compile-ghc-win64` (Wine) | `-icompat-oldtime` only | stock GHC bindist has real `base` but no `old-time` |
-| `compile-ghc` (Linux GHC) | neither | expects `old-time`/`old-locale` in the host package db |
 
-The Wine build must *not* see `compat-ghc/`, whose `System.Process`/`GHC.Conc`/`Data.Array` would shadow GHC's real modules. That constraint is the whole reason the directory split exists — don't fold `compat-oldtime` back into `compat-ghc`.
+The split existed because the Wine GHC build had to see `compat-oldtime/` but *not* `compat-ghc/`, whose `System.Process`/`GHC.Conc`/`Data.Array` would have shadowed GHC's real modules. With the GHC builds gone, both remaining builds take both directories, so the split is now vestigial and the two could be folded together. Left alone deliberately: the Haskell layer is being ported to Rust, and both directories disappear with it.
 
 ## Testing
 
@@ -216,11 +213,11 @@ These build separately from the main binary and are not covered by `./compile-O2
 
 - **`Unarc/`** — standalone extractor and the SFX modules embedded into self-extracting archives (`arc.sfx`, `freearc.sfx`, …). Pure C++, built with `cd Unarc && make linux` (or `make windows`). Also produces `FreeArc.fmt`, a FAR Manager plugin.
 - **`srep/`** — SREP 3.93a, a huge-dictionary LZ77 preprocessor, invoked as an external compressor. Vendored repackage of Bulat Ziganshin's original; sources also mirrored under `Compression/SREP/`. Its `srep/Compression/*.h` are an older, diverged vintage of the root `Compression/` headers (19–62% similar) — they are not interchangeable, so fix them independently.
-- **`HsLua/`** — vendored Lua 5.1 plus Haskell bindings, used by `Options.hs` for `arc.*.lua` config scripts. Linked on the GHC path only; the MicroHs Windows build sets `FREEARC_NO_LUA`.
+- **`HsLua/`** — vendored Lua 5.1 plus Haskell bindings, used by `Options.hs` for `arc.*.lua` config scripts. `./compile` builds the vendored Lua from `HsLua/src`; the Windows cross-build sets `FREEARC_NO_LUA` and links none of it.
 - **`Installer/`** — NSIS installer scripts and packaging assets (Windows).
 
 ## Conventions
 
 - Commit messages are plain English, imperative, occasionally prefixed with a gitmoji on merges. Recent history uses a `Component: what changed` shape (`Win64 build: add LZMA/7z/zstd SDK sources, fix link`).
 - Codecs vendored from upstream projects (LZMA/7-Zip SDK, zstd, libbsc, Lua) are kept close to pristine so they can be re-synced. Prefer adapting DArc's wrapper (`Compression/C_*.cpp`) over patching vendored sources.
-- Haskell here predates AMP and modern `base`. The GHC build passes a long list of `-X` flags (`NoMonomorphismRestriction`, `OverlappingInstances`, `NondecreasingIndentation`, …) and `-w` to accept it. Match the surrounding style rather than modernizing — a "cleanup" that assumes `Applicative f => Monad f` will break the MicroHs build.
+- Haskell here predates AMP and modern `base`, and is compiled with a long list of `-X` flags (`NoMonomorphismRestriction`, `OverlappingInstances`, `NondecreasingIndentation`, …) plus `-w` to accept it. Match the surrounding style rather than modernizing — a "cleanup" that assumes `Applicative f => Monad f` will break the build.
