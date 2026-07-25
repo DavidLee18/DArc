@@ -42,7 +42,7 @@ remains, because `DARC_NO_RUST=1` still builds them.
 | LZP | `lzp` | yes (both directions) | **YES — 259 lines deleted** |
 | MM | `mm` | yes | no |
 | REP | `rep` | yes (both directions, byte-exact) | **YES** |
-| SREP | `srep` | external binary, no `DARC_RUST` wiring | no |
+| SREP | `srep` (decode only) | external binary, no `DARC_RUST` wiring | no — see §14 before porting the encoder |
 | Tornado | `tornado` | yes | no |
 | TTA | `tta` | yes | no |
 | zstd | `zstd` (`zstd-safe` binding) | yes | **YES — 2.2 MB deleted** |
@@ -404,7 +404,35 @@ bottleneck. Scalar is a *shipped configuration* of libbsc (i386,
 
 ### 13. C-side bugs
 
-**Fixed: SREP heap overflow that produced corrupt archives (PR #74).** Recorded
+**Fixed: TWO distinct SREP bugs with ONE symptom (PRs #74 and #78).** Both
+produced corrupt `-msrep` archives that fail their own checksum on extraction.
+Do not treat the first as the whole story -- #74 was real, ASan-confirmed, and
+did **not** stop the failures; #78 is the one that closed it. Same signature is
+not the same bug, and declaring victory on the first fix cost several rounds.
+
+#78 (the one that actually ended it): `srep.cpp` handed `header[]` and
+`statbuf[]` back to the background thread via `bg_thread.write()` and *then*
+`memcpy`'d out of them. They are rotating buffers only `BUFFERS(=2)` deep, so
+the producer refilled the slot mid-copy -- a **use-after-release**. Moving the
+copy above the write closes it; widening the ring would only have narrowed it.
+
+**No sanitiser can find this class.** Every byte written is in-bounds,
+initialised and mutex-free; only the buffer's *lifetime* is wrong. ASan (144
+compress+decompress pairs), TSan (verified linked, 36 runs), hand-poisoned
+`BigAlloc` (3 fill values x 150) and `MallocPreScribble`/`MallocScribble` (200
+each) were all clean. What identified it was the **corrupt artefact**: a bad
+archive differed from a good one in exactly 16 bytes -- an MD5 digest -- and
+that digest belonged to the block two positions later, exactly the ring size.
+
+**Reproduction is load-dependent.** An idle machine gives 0/250 even when
+broken, so any before/after comparison must run under scheduling pressure or
+its control never fires. Better still, amplify: a 3 ms delay in the gap makes
+the broken order fail 40/40 and the fixed order 0/40, which is proof rather
+than statistics.
+
+#74 (real, but not the end): a truncating `filesize/L` sized `SliceHash`'s array
+one entry short, so a file whose size is not a multiple of `L` wrote one past
+the end. Recorded
 because the diagnosis is reusable and two obvious hypotheses were both wrong.
 `SliceHash` stores one entry per `L` input bytes indexed by `offset/L`, but
 sized the array with a truncating `filesize/L * sizeof(entry)` — so a file whose
@@ -437,7 +465,33 @@ at the same rate).
   which ship with correct vectors and would have caught the above on the first
   ARM64 build. Re-enable at least in CI (it will fail until the bug is fixed).
 
-### 14. Build/quality odds and ends
+### 14. If SREP's ENCODER is ever ported: model the ring, do not transliterate it
+
+The bug fixed in #78 is the strongest argument in this repo for the port, and
+also a warning about *how* to port. It is a producer/consumer **lifetime** error:
+a buffer is released back to the producer and then read. Rust makes that class
+unrepresentable -- if `write()` consumed the buffer handle, or the slot were held
+by a guard whose `Drop` performs the release, using `header` afterwards would
+fail to compile. Borrowck enforces exactly the property the C left to author
+discipline and got backwards.
+
+But that safety is **not automatic**, and two caveats matter:
+
+- **Decode-first would not have caught it.** The Rust SREP work is decode-only;
+  this bug is in the compressor. The natural next step would have left it
+  untouched.
+- **A faithful transliteration would inherit it.** Keeping the same
+  `write()`-then-`memcpy` order with raw pointers or indices into a shared `Vec`
+  reproduces the bug exactly. Since the porting rule here is byte-exact
+  transliteration, that is a live risk, not a theoretical one. The safety only
+  appears if the *ownership* is modelled -- a consumed handle or an RAII guard --
+  rather than the index arithmetic copied across.
+
+So: port the buffer ring by making the release a move or a `Drop`, and let the
+byte-exactness requirement apply to the output stream, not to the internal
+plumbing.
+
+### 15. Build/quality odds and ends
 
 - **`-mtor` is 35% larger on llvm-mingw builds** (34,771 → 47,043 for the
   identical spec `tor:434kb`; 11 other methods differ by <0.5%). Output is
@@ -499,6 +553,14 @@ so you will otherwise link a stale object against the wrong libraries.
 For any codec with a flush/window/block/detection granularity, the corpus
 **must straddle it** — otherwise the interesting path never runs. Prove it with
 a sabotage that breaks *only* the inputs past the boundary.
+
+**Look at the corrupt artefact before theorising about the cause.** Four rounds
+went into memory-error hypotheses for the #78 bug -- overflow, uninitialised
+heap, use-after-free, data race -- because the *previous* SREP bug was a heap
+overflow that ASan found on run one. That precedent was anchoring: each round
+reached for a sharper version of the same tool. Diffing a captured bad archive
+against a good one took ten minutes and identified the mechanism outright. The
+artefact constrains the explanation far more tightly than another sanitiser can.
 
 **To localise an intermittent failure, isolate each half before theorising.**
 The "flaky SREP test" was a real heap overflow. What found it: the compressor
