@@ -38,7 +38,7 @@ remains, because `DARC_NO_RUST=1` still builds them.
 | DisPack | `dispack` | yes | no |
 | GRZip | `grzip` | yes | no |
 | LZ4 | `lz4` (`lz4_flex`) + `lz4hc` (own HC port) | yes (decode + both encoders) | **YES — 6,319 lines deleted** |
-| LZP | `lzp` | yes (both directions) | no |
+| LZP | `lzp` | yes (both directions) | **YES — 259 lines deleted** |
 | MM | `mm` | yes | no |
 | REP | `rep` | yes (both directions, byte-exact) | **YES** |
 | SREP | `srep` | external binary, no `DARC_RUST` wiring | no |
@@ -66,15 +66,36 @@ decoder, and DArc's own HC port, byte-identical to the C for levels 1-9.
 
 ### Branch state
 
-`main` = `59bb492` (PR #71 merged: `Delta.cpp`, `dict.cpp`, `rep.cpp` deleted —
-2,912 lines). PR #71's own CI was green 12/12 before merge; **post-merge CI on
-`59bb492` was not yet watched at reboot time** — check it first on resume
-(`gh run list --branch main --limit 1`).
+`main` = `e753591` (PR #74 merged). Recent landings, each post-merge CI green
+12/12: #71 Delta/Dict/REP deleted, #72 LZ4-HC ported and `Compression/LZ4`'s C
+deleted, #73 the `lz4opt` optimal parser (LZ4 now byte-identical to the C at all
+twelve levels), #74 the SREP heap overflow fixed.
 
 Prior landmarks: `588522d` (PR #66: LZ4 + zstd wired, Rust codecs
 cross-compiling for both Windows targets, every action SHA-pinned, Rust
 toolchain pinned, CI caching); `5c2c6ce` is the pinned C-reference SHA
 (`DARC_C_REF_SHA`), the last revision holding the full C codec set.
+
+### Scale, so effort goes where the code is
+
+Line counts over tracked source, which reframe "68% of this repo is C":
+
+| bucket | lines | share |
+|---|---|---|
+| C/C++ **vendored** (libbsc, LZMA SDK, LibTomCrypt, Lua, 7-Zip SDK, SREP) | 106,330 | 60.4% |
+| C/C++ **DArc's own** | 29,442 | 16.7% |
+| Haskell (to port) | 20,262 | 11.5% |
+| Rust (the port) | 20,100 | 11.4% |
+
+The vendored 60% is mostly out of scope by decision (LZMA stays on the 7-Zip
+SDK; libbsc and LibTomCrypt are kept pristine). **The real target is ~29k, not
+135k.** DArc's own C/C++ concentrates in `Compression/GRZip` (4,148),
+`Tornado` (4,051), `MM` (3,524), `BSC` wrapper (1,316), `DisPack` (1,168) and
+`PPMD` (1,065) — and the first five of those are already decode-ported, with
+only their **encoders** keeping the files alive.
+
+The Rust port has also nearly drawn level with the Haskell layer (20,100 vs
+20,262 lines), which makes the Haskell the largest single coherent chunk left.
 
 ---
 
@@ -178,8 +199,26 @@ binaries differ, and all 24 fingerprints are identical across them.
   `sqrtb` and `CalcHashSize` for its memory estimate (moved into the wrapper
   verbatim), and `C_Dict.cpp` still had a guarded C `dict_decompress` calling
   `DictDecode`. Both surfaced only as build errors.
+- ~~**LZP**~~ — **DONE.** The one codec ported in both directions whose C had
+  survived: `LZPEncode`, `LZPDecode`, their rotate/hash helpers and both
+  callback wrappers are gone (259 lines; `C_LZP.cpp` 392 → 145). Only
+  `LZP_METHOD::*` and `parse_LZP` remain, because `lzp_compress`/
+  `lzp_decompress` are bound by the Haskell FFI (`CompressionLib.hs:299-304`)
+  and `facompress.def` — the Rust crate now supplies those symbols.
+
+  **It nearly went out unverified.** `C_LZP.cpp` claimed "verified
+  byte-identical over 8 inputs in both directions; see rust/difftest", and the
+  table above said both directions were ported — but **no `lzp-check.sh` ever
+  existed**. `lzp_ref.cpp` sat orphaned, `run.sh` covers Delta only, and CI ran
+  nothing for LZP. The harness was written *before* the deletion: 84/84
+  comparisons byte-identical across four block sizes (8 MB → 16 KB), four
+  sabotages caught (36/13/8/12 failures). A codec's claim to be "verified" is
+  worth checking against the CI job list, not the comment above it.
 - Everything else is decode-only, so its encoder keeps the file alive; pruning
-  there is surgical, not file deletion.
+  there is surgical — the `#ifndef DARC_RUST` blocks total only **361 lines**
+  of entry points, because the decode logic is interleaved with encode logic in
+  shared files. **The encoders, not the decoders, are what unlock file
+  deletion** from here.
 - **Leave vendored trees pristine** (libbsc, LZMA SDK) per `CLAUDE.md`, or make
   that an explicit, recorded exception.
 
@@ -254,7 +293,36 @@ not a thin corpus — at a given position every candidate path shares the same
 inputs were built specifically to break that (`priced`, `competing`) and did
 not. Those three lines are verified by transcription against the C only.
 
-### 8. Hand-port PPMD (1,065 lines)
+### 8. Port the DisPack ENCODER — reconnaissance done, port not started
+
+The first encoder to take, and the only one whose completion deletes a whole
+directory. Cheaper than `DisPack.cpp`'s 31 KB suggests: most of that file is
+opcode tables that are **already ported** for the decode side
+(`rust/darc-codecs/src/dispack/tables.rs`), so the encoder can reuse them.
+
+The encoder is one contiguous `#ifndef FREEARC_DECOMPRESS_ONLY` block,
+`DisPack.cpp:328-656` — **329 lines** — which also makes the eventual deletion
+clean rather than surgical:
+
+| piece | lines | what it is |
+|---|---|---|
+| `DataBuffer` | 332-370 | the multi-stream output buffer (`ST_MAX` streams) |
+| `DisFilterCtx` | 371-599 | `DetectJumpTable`, `ProcessInstr` (418-564, the bulk), `Flush` (565-598) |
+| `DisFilter` | 600-654 | driver: main loop, then a checkpoint/undo tail so the last `MAXINSTR` bytes never read past the end, then escape-encodes any remainder |
+| `detect()` | `C_DisPack.cpp:142` | ~35 lines, EXE-type detection that decides whether to filter at all |
+
+Two things to get right, both already known from the decode port:
+
+- **`detect()` gates everything.** DisPack only filters what it sees as x86
+  code; everything else is stored and the filter never runs. A corpus of
+  ordinary data tests the store path and nothing else — this already produced a
+  green-but-empty first pass once. The `dispack-check.sh` corpus cross-compiles
+  real i386 `.text` and rewrites E8 placeholders into backward calls, which is
+  what `detect()` keys on; reuse it.
+- **Byte-exactness is required**, not format-validity: DisPack is DArc's own
+  format. `-mdispack` has a fingerprint case (`6a46351e39373082`).
+
+### 9. Hand-port PPMD (1,065 lines)
 
 The last real hand-portable codec besides 4x4. **No crate path:** `ppmd-rust`
 was measured and rejected — DArc's PPMD is Shkarin var.H with **Subbotin's**
@@ -263,7 +331,7 @@ carryless range coder (32-bit `low`, `TOP=1<<24`, `MAX_O` 128); `ppmd-rust` is
 different stream. Do not revisit the crate. `-mppmd` already has a fingerprint
 case.
 
-### 9. Decide explicitly whether to port 4x4 — recommendation: no
+### 10. Decide explicitly whether to port 4x4 — recommendation: no
 
 Threading meta-codec; its decode delegates to the library dispatcher
 `Decompress()` per block, so the only portable logic is block framing
@@ -273,7 +341,7 @@ exe preset, not this codec). A Rust decode would be an FFI shim calling C
 `Decompress`, which under `DARC_RUST` dispatches back to Rust drop-ins
 (Rust→C→Rust). Record the decision so it is not re-litigated.
 
-### 10. Port the Haskell application layer (17,843 lines, 41 files)
+### 11. Port the Haskell application layer (17,843 lines, 41 files)
 
 The largest remaining piece. Suggested order (from `CLAUDE.md`):
 `Arc.hs:71` (`doMain`) → `Cmdline.hs:35` (`parseCmdline`) → `Arc.hs:110` (`run`)
@@ -305,7 +373,7 @@ Facts that shape the port:
 When this lands, MicroHs and the `compat-ghc`/`compat-oldtime` shims become
 removable too, and the build collapses to cargo.
 
-### 11. Performance: measure before optimising
+### 12. Performance: measure before optimising
 
 Several Rust ports are deliberately scalar where the C is vectorised: BSC's LZP
 and adler32, the QLFC SIMD variants, and the BSC fast coder's SIMD MTF shuffles.
@@ -313,7 +381,27 @@ and adler32, the QLFC SIMD variants, and the BSC fast coder's SIMD MTF shuffles.
 bottleneck. Scalar is a *shipped configuration* of libbsc (i386,
 `-DLIBBSC_NO_UNALIGNED_ACCESS`), not a subset, so correctness is not at issue.
 
-### 12. Deferred C-side bugs (both verified still present)
+### 13. C-side bugs
+
+**Fixed: SREP heap overflow that produced corrupt archives (PR #74).** Recorded
+because the diagnosis is reusable and two obvious hypotheses were both wrong.
+`SliceHash` stores one entry per `L` input bytes indexed by `offset/L`, but
+sized the array with a truncating `filesize/L * sizeof(entry)` — so a file whose
+size is not a multiple of `L` had no slot for its final partial chunk and
+`prepare_buffer` wrote one entry past the end of `h[]`. It corrupts the heap
+rather than crashing, so the symptom was an archive failing **its own checksum**
+on decompression, intermittently (~1-6%). DArc runs `srep` as an external
+compressor, so `-msrep` archives could be unextractable — caught by the
+checksum, so not silent data loss, but produced by a compress that reported
+success.
+
+Ruled out on the way, so they are not re-tried: **not** the fixed-name temp
+files (`srep-data.tmp`, `srep-virtual-memory.tmp`, both relative to CWD — the
+obvious suspect from reading), and **not** a threading race (`-t1` reproduces it
+at the same rate).
+
+**Still present, both verified:**
+
 
 - **ARM64 `ulong32` miscompilation.** `tomcrypt_macros.h:13` types `ulong32` as
   `unsigned` only for `__x86_64__`/sparc64 and `unsigned long` otherwise — 64-bit
@@ -328,7 +416,7 @@ bottleneck. Scalar is a *shipped configuration* of libbsc (i386,
   which ship with correct vectors and would have caught the above on the first
   ARM64 build. Re-enable at least in CI (it will fail until the bug is fixed).
 
-### 13. Build/quality odds and ends
+### 14. Build/quality odds and ends
 
 - **`-mtor` is 35% larger on llvm-mingw builds** (34,771 → 47,043 for the
   identical spec `tor:434kb`; 11 other methods differ by <0.5%). Output is
@@ -390,6 +478,18 @@ so you will otherwise link a stale object against the wrong libraries.
 For any codec with a flush/window/block/detection granularity, the corpus
 **must straddle it** — otherwise the interesting path never runs. Prove it with
 a sabotage that breaks *only* the inputs past the boundary.
+
+**To localise an intermittent failure, isolate each half before theorising.**
+The "flaky SREP test" was a real heap overflow. What found it: the compressor
+alone was byte-identical over 120 runs; a *fixed* archive decompressed 400 times
+without one failure; yet the interleaved loop failed ~1-6%. The failing archive
+had the **same size but different bytes** and failed *deterministically* on
+retry — which rules out the decompressor and points at heap corruption during
+compression. Then let a sanitizer name the line instead of guessing: the compile
+scripts honour `OPT`, so `OPT="-O1 -g -fsanitize=address -fno-omit-frame-pointer"
+./srep/compile` found it on the first run. (A sanitizer build drops a `.dSYM`
+bundle beside the binary; `Tests/srep` in `.gitignore` does not match it, and
+`git add -A` will happily commit 964 KB of DWARF.)
 
 **An uncaught sabotage is a claim about the test, not the port.** Tornado's
 data-table sabotage first reported 0 differences because the corpus topped out

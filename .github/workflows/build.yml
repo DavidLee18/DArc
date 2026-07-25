@@ -12,6 +12,30 @@ on:
 permissions:
   contents: read
 
+# Cancel a PR's earlier runs when a new commit supersedes them: pushing a
+# follow-up leaves the previous run testing a SHA that is no longer HEAD, and
+# this repo does not otherwise stop it -- a 12-job matrix kept running for an
+# obsolete commit.
+#
+# `main` is deliberately EXCLUDED from cancellation. Each post-merge run is the
+# verification signal for one specific merge, and merges land back to back here
+# (#71 through #74 in a single session); cancelling an in-flight main run when
+# the next merge arrives would silently destroy the evidence that the previous
+# merge was good.
+#
+# Non-PR runs therefore get a group unique to the run itself, so they can
+# neither cancel each other nor queue behind each other. Only pull_request runs
+# share a group (keyed by PR number, which is stable across commits) and so only
+# they cancel.
+#
+# The group expression is deliberately ONE line. Folding it with `>-` looks
+# tidier but does not fold: YAML preserves newlines on continuation lines that
+# are indented deeper than the first content line, so the group string ends up
+# containing literal newlines. Verified by parsing the file, not by eye.
+concurrency:
+  group: build-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || format('run-{0}', github.run_id) }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   build:
     runs-on: ${{ matrix.os }}
@@ -797,7 +821,7 @@ jobs:
     # the same original bytes over a corpus built for that codec's heuristics.
     # They were runnable but unrun until now: a differential test nothing
     # invokes is documentation, not a check.
-    - name: Per-codec differential tests (REP, TTA, MM, Tornado, GRZip, DisPack, BSC, LZ4-HC)
+    - name: Per-codec differential tests (REP, TTA, MM, Tornado, GRZip, DisPack, LZP, BSC, LZ4-HC)
       run: |
         chmod +x rust/difftest/*.sh
         rust/difftest/rep-check.sh
@@ -806,6 +830,10 @@ jobs:
         rust/difftest/tornado-check.sh
         rust/difftest/grzip-check.sh
         rust/difftest/dispack-check.sh
+        # LZP is ported in BOTH directions and its C is deleted, so this is the
+        # only remaining oracle for it -- and it had no check script at all
+        # until the C was pruned (lzp_ref.cpp sat orphaned; run.sh covers Delta).
+        rust/difftest/lzp-check.sh
         # BSC, stage by stage (QLFC entropy, inverse BWT, inverse ST) then the
         # whole block codec end to end.
         rust/difftest/bsc-check.sh
