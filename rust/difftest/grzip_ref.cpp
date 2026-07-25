@@ -25,10 +25,28 @@ int darc_grz_stream_compress  (int method, int blocksize, int enable_lzp, int mi
                                int hashlog, int altsort, int adaptive, int deltaflt,
                                int (*cb)(const char*, void*, int, void*), void *aux);
 int darc_grz_stream_decompress(int (*cb)(const char*, void*, int, void*), void *aux);
+int darc_grz_lzp_encode(unsigned char *in, unsigned size, unsigned char *out,
+                        unsigned min_match_len, unsigned ht_size);
+int darc_grz_st4_encode(unsigned char *in, int size, unsigned char *out);
+int darc_grz_rec_encode(unsigned char *in, int size, unsigned char *out);
+int darc_grz_mtf_ari_encode(unsigned char *in, int size, unsigned char *out);
+int darc_grz_wfc_ari_encode(unsigned char *in, int size, unsigned char *out);
+int darc_grz_strong_bwt_encode(unsigned char *in, int size, unsigned char *out);
+int darc_grz_bwt_encode(unsigned char *in, int size, unsigned char *out, int fast);
 #ifdef USE_RUST
+int darc_rs_grzip_compress_block (const unsigned char *in, int size, unsigned char *out, int cap, int mode);
+int darc_rs_grzip_compress (int,int,int,int,int,int,int,int, int (*cb)(const char*, void*, int, void*), void*);
 int darc_rs_grzip_decompress_block (const unsigned char *in, int in_size,
                                     unsigned char *out, int out_cap);
 int darc_rs_grzip_decompress (int (*cb)(const char*, void*, int, void*), void *aux);
+int darc_rs_grzip_lzp_encode (const unsigned char *in, int size, unsigned char *out,
+                              int out_size, int min_match_len, int ht_size);
+int darc_rs_grzip_st4_encode (const unsigned char *in, int size, unsigned char *out);
+int darc_rs_grzip_rec_encode (const unsigned char *in, int size, unsigned char *out);
+int darc_rs_grzip_mtf_ari_encode (const unsigned char *in, int size, unsigned char *out, int out_size);
+int darc_rs_grzip_wfc_ari_encode (const unsigned char *in, int size, unsigned char *out, int out_size);
+int darc_rs_grzip_strong_bwt_encode (const unsigned char *in, int size, unsigned char *out);
+int darc_rs_grzip_bwt_encode (const unsigned char *in, int size, unsigned char *out, int fast);
 #endif
 }
 
@@ -61,6 +79,166 @@ static int io_callback (const char *what, void *data, int size, void *aux) {
 }
 
 int main (int argc, char **argv) {
+  // LZP stage on its own: "l MML HTBITS". GRZip's encoder is being ported stage
+  // by stage, and the block driver cannot produce a comparable stream until
+  // every stage exists -- so each stage gets its own comparison.
+  if (argc>1 && argv[1][0]=='l') {
+    int mml = argc>2? atoi(argv[2]) : 32;
+    int htb = argc>3? atoi(argv[3]) : 15;
+    int ht  = (1<<htb)-1;
+    size_t cap=1<<20, len=0; unsigned char *in=(unsigned char*)malloc(cap); if(!in) return 3;
+    for(;;){ if(len==cap){cap*=2; unsigned char*g=(unsigned char*)realloc(in,cap); if(!g){free(in);return 3;} in=g;}
+      size_t n=fread(in+len,1,cap-len,stdin); if(n==0)break; len+=n; }
+    // 64 zero bytes past the input. The C reads up to MinMatchLen-1 bytes past
+    // the end (LZP.c:89 -- confirmed under ASan as a heap-buffer-overflow READ
+    // of size 4), so without padding it would be comparing against whatever
+    // malloc happened to leave there. Padding makes the reference DEFINED. The
+    // Rust port reads a zero-padded view by construction and never goes out of
+    // bounds, which is why the two agree.
+    unsigned char *padded=(unsigned char*)calloc(len+64,1);
+    memcpy(padded,in,len);
+    unsigned char *out=(unsigned char*)calloc(len+1024,1);
+    int r;
+#ifdef USE_RUST
+    r = darc_rs_grzip_lzp_encode(padded,(int)len,out,(int)len+1024,mml,ht);
+#else
+    r = darc_grz_lzp_encode(padded,(unsigned)len,out,mml,ht);
+#endif
+    fprintf(stderr,"rc=%d\n",r);
+    if (r>0) fwrite(out,1,r,stdout);
+    free(in); free(padded); free(out);
+    return r>0? 0 : 1;
+  }
+  // ST4 stage on its own: "t". Prints the returned FBP on stderr and the
+  // transformed block on stdout -- both are part of what the block header
+  // carries, so both have to agree.
+  if (argc>1 && argv[1][0]=='t') {
+    size_t cap=1<<20, len=0; unsigned char *in=(unsigned char*)malloc(cap); if(!in) return 3;
+    for(;;){ if(len==cap){cap*=2; unsigned char*g=(unsigned char*)realloc(in,cap); if(!g){free(in);return 3;} in=g;}
+      size_t n=fread(in+len,1,cap-len,stdin); if(n==0)break; len+=n; }
+    // The block driver rounds the length up to a multiple of 8 and zero-fills,
+    // so mirror that here rather than feeding ST4 a length it never sees.
+    size_t padded_len=(len+7)&~(size_t)7;
+    unsigned char *pin=(unsigned char*)calloc(padded_len+8,1); memcpy(pin,in,len);
+    unsigned char *out=(unsigned char*)calloc(padded_len+8,1);
+    int r;
+#ifdef USE_RUST
+    r = darc_rs_grzip_st4_encode(pin,(int)padded_len,out);
+#else
+    r = darc_grz_st4_encode(pin,(int)padded_len,out);
+#endif
+    fprintf(stderr,"fbp=%d\n",r);
+    if (r>=0) fwrite(out,1,padded_len,stdout);
+    free(in); free(pin); free(out);
+    return r>=0? 0 : 1;
+  }
+  // Record filter on its own: "r". The MODE decision matters as much as the
+  // bytes -- it is what makes GRZip_CompressBlock recurse, and it is chosen by
+  // a float entropy comparison plus an integer sum that overflows on purpose.
+  if (argc>1 && argv[1][0]=='r') {
+    size_t cap=1<<20, len=0; unsigned char *in=(unsigned char*)malloc(cap); if(!in) return 3;
+    for(;;){ if(len==cap){cap*=2; unsigned char*g=(unsigned char*)realloc(in,cap); if(!g){free(in);return 3;} in=g;}
+      size_t n=fread(in+len,1,cap-len,stdin); if(n==0)break; len+=n; }
+    unsigned char *out=(unsigned char*)calloc(len+8,1);
+    int r;
+#ifdef USE_RUST
+    r = darc_rs_grzip_rec_encode(in,(int)len,out);
+#else
+    r = darc_grz_rec_encode(in,(int)len,out);
+#endif
+    fprintf(stderr,"mode=%d\n",r);
+    if (r>0) fwrite(out,1,len,stdout);
+    free(in); free(out);
+    return 0;
+  }
+  // BWT with the fast/strong selection: "F". The returned FBP carries
+  // StrongBWT_Flag when the fast sort gave up, so comparing it also compares
+  // WHICH sort ran -- the adaptive match limit's verdict is part of the output.
+  if (argc>1 && argv[1][0]=='F') {
+    size_t cap=1<<20, len=0; unsigned char *in=(unsigned char*)malloc(cap); if(!in) return 3;
+    for(;;){ if(len==cap){cap*=2; unsigned char*g=(unsigned char*)realloc(in,cap); if(!g){free(in);return 3;} in=g;}
+      size_t n=fread(in+len,1,cap-len,stdin); if(n==0)break; len+=n; }
+    if (len<32) { fprintf(stderr,"fbp=skip\n"); free(in); return 0; }
+    size_t plen=(len+7)&~(size_t)7;
+    // +1024 of slack: the fast path rewrites this buffer in place.
+    unsigned char *pin=(unsigned char*)calloc(plen+1024,1); memcpy(pin,in,len);
+    unsigned char *out=(unsigned char*)calloc(plen+1024,1);
+    int r;
+#ifdef USE_RUST
+    r = darc_rs_grzip_bwt_encode(pin,(int)plen,out,1);
+#else
+    r = darc_grz_bwt_encode(pin,(int)plen,out,1);
+#endif
+    fprintf(stderr,"fbp=%d\n",r);
+    if (r>=0) fwrite(out,1,plen,stdout);
+    free(in); free(pin); free(out);
+    return 0;
+  }
+
+  // Strong BWT on its own: "B". Prints the first-byte position on stderr and
+  // the transformed block on stdout; both go into the block header, so both
+  // have to agree. The block driver rounds the length up to a multiple of 8
+  // and zero-fills, so mirror that.
+  if (argc>1 && argv[1][0]=='B') {
+    size_t cap=1<<20, len=0; unsigned char *in=(unsigned char*)malloc(cap); if(!in) return 3;
+    for(;;){ if(len==cap){cap*=2; unsigned char*g=(unsigned char*)realloc(in,cap); if(!g){free(in);return 3;} in=g;}
+      size_t n=fread(in+len,1,cap-len,stdin); if(n==0)break; len+=n; }
+    if (len<32) { fprintf(stderr,"fbp=skip\n"); free(in); return 0; }
+    size_t plen=(len+7)&~(size_t)7;
+    unsigned char *pin=(unsigned char*)calloc(plen+1024,1); memcpy(pin,in,len);
+    unsigned char *out=(unsigned char*)calloc(plen+1024,1);
+    int r;
+#ifdef USE_RUST
+    r = darc_rs_grzip_strong_bwt_encode(pin,(int)plen,out);
+#else
+    r = darc_grz_strong_bwt_encode(pin,(int)plen,out);
+#endif
+    fprintf(stderr,"fbp=%d\n",r);
+    if (r>=0) fwrite(out,1,plen,stdout);
+    free(in); free(pin); free(out);
+    return 0;
+  }
+
+  // WFC + arithmetic coder on its own: "w". Same shape as "m"; the two share
+  // the range coder and models and differ only in the symbol list.
+  if (argc>1 && argv[1][0]=='w') {
+    size_t cap=1<<20, len=0; unsigned char *in=(unsigned char*)malloc(cap); if(!in) return 3;
+    for(;;){ if(len==cap){cap*=2; unsigned char*g=(unsigned char*)realloc(in,cap); if(!g){free(in);return 3;} in=g;}
+      size_t n=fread(in+len,1,cap-len,stdin); if(n==0)break; len+=n; }
+    if (len<32) { fprintf(stderr,"rc=skip\n"); free(in); return 0; }
+    unsigned char *out=(unsigned char*)calloc(len+1024,1);
+    int r;
+#ifdef USE_RUST
+    r = darc_rs_grzip_wfc_ari_encode(in,(int)len,out,(int)len+1024);
+#else
+    r = darc_grz_wfc_ari_encode(in,(int)len,out);
+#endif
+    fprintf(stderr,"rc=%d\n",r);
+    if (r>0) fwrite(out,1,r,stdout);
+    free(in); free(out);
+    return 0;
+  }
+
+  // MTF + arithmetic coder on its own: "m". The C writes into a buffer the
+  // caller sized at Size and bails once it reaches Size-24, so the buffer here
+  // is Size with slack past it -- the bail is part of what is compared.
+  if (argc>1 && argv[1][0]=='m') {
+    size_t cap=1<<20, len=0; unsigned char *in=(unsigned char*)malloc(cap); if(!in) return 3;
+    for(;;){ if(len==cap){cap*=2; unsigned char*g=(unsigned char*)realloc(in,cap); if(!g){free(in);return 3;} in=g;}
+      size_t n=fread(in+len,1,cap-len,stdin); if(n==0)break; len+=n; }
+    if (len<32) { fprintf(stderr,"rc=skip\n"); free(in); return 0; }
+    unsigned char *out=(unsigned char*)calloc(len+1024,1);
+    int r;
+#ifdef USE_RUST
+    r = darc_rs_grzip_mtf_ari_encode(in,(int)len,out,(int)len+1024);
+#else
+    r = darc_grz_mtf_ari_encode(in,(int)len,out);
+#endif
+    fprintf(stderr,"rc=%d\n",r);
+    if (r>0) fwrite(out,1,r,stdout);
+    free(in); free(out);
+    return 0;
+  }
   int stream = (argc>1 && argv[1][0]=='s');
   const char *op = stream? argv[1]+1 : (argc>1? argv[1] : "");
   if (argc<2 || (op[0]!='c'&&op[0]!='d')) {
@@ -78,7 +256,14 @@ int main (int argc, char **argv) {
 
   if (stream) {
     Buffers b={in,len,0,NULL,0,0};
-    if (op[0]=='c') rc = darc_grz_stream_compress (1, 8*1024*1024, 1, 32, 15, 0, 0, 0, io_callback,&b);  // GRZIP_METHOD defaults
+    // GRZIP_METHOD defaults. Under USE_RUST this drives the ported stream
+    // compressor, so `sc` compares whole streams, not just blocks.
+    if (op[0]=='c')
+#ifdef USE_RUST
+      rc = darc_rs_grzip_compress (1, 8*1024*1024, 1, 32, 15, 0, 0, 0, io_callback,&b);
+#else
+      rc = darc_grz_stream_compress (1, 8*1024*1024, 1, 32, 15, 0, 0, 0, io_callback,&b);
+#endif
 #ifdef USE_RUST
     else            rc = darc_rs_grzip_decompress (io_callback,&b);
 #else
@@ -91,7 +276,11 @@ int main (int argc, char **argv) {
 
   if (op[0]=='c') {
     int mode = argc>2? (int)strtol(argv[2],NULL,0) : 0;
+#ifdef USE_RUST
+    rc = darc_rs_grzip_compress_block (in, (int)len, out, (int)(len+8192), mode);
+#else
     rc = darc_grz_compress_block (in, (int)len, out, mode);
+#endif
   } else {
     int size = argc>2? atoi(argv[2]) : (int)out_cap;
     if ((size_t)size > out_cap) size = (int)out_cap;

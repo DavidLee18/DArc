@@ -129,3 +129,112 @@ pub fn decode(input: &[u8], out: &mut [u8], out_size: usize) -> Result<usize, Gr
     let mut list = Wfc::new(out_size.min(out.len()).max(1));
     ari::decode(input, out, out_size, &mut list)
 }
+
+impl ari::SymbolRank for Wfc {
+    /// The exact mirror of `pick`: the rank is `Char2Index[Char]` read BEFORE
+    /// the weight update, then the identical promote-and-twelve-demotes.
+    ///
+    /// Unlike MTF's `find`, no search is needed -- `index` is maintained as the
+    /// inverse of `list`, so the rank is a direct lookup. That inverse is the
+    /// whole reason WFC keeps two arrays.
+    fn find(&mut self, ch: u8) -> usize {
+        let c = ch as usize;
+        // History is one byte per SYMBOL, not per output byte; runs collapse
+        // before they reach here, exactly as on the decode side.
+        if self.pos < self.history.len() {
+            self.history[self.pos] = ch;
+        }
+        let rank = self.index[c] as usize;
+        self.promote(c);
+        for (amount, back) in VALS.iter().zip(POSITIONS.iter()) {
+            if self.pos >= *back {
+                let p = self.history[self.pos - *back] as usize;
+                self.demote(p, *amount, c);
+            }
+        }
+        self.pos += 1;
+        rank
+    }
+}
+
+/// `GRZip_WFC_Ari_Encode`.
+///
+/// The history buffer is sized from the INPUT length here. On the decode side
+/// the C sizes it from the decoded length, which is the same quantity seen from
+/// the other direction -- and in both cases it is an upper bound, since one
+/// entry is appended per symbol and a symbol may cover a whole run.
+pub fn encode(input: &[u8]) -> Result<Vec<u8>, GrzError> {
+    let mut list = Wfc::new(input.len().max(1));
+    let limit = input.len().saturating_sub(24);
+    ari::encode(input, &mut list, limit)
+}
+
+#[cfg(test)]
+mod wfc_tests {
+    use super::*;
+
+    /// Encode then decode must be the identity. This is what caught the MTF
+    /// coder's shift-low truncation bug: the C differential says "these bytes
+    /// differ", which is true but not diagnostic, while a failing round-trip
+    /// says the fault is on my side of the boundary and localises it to one
+    /// half. The C's encoder and decoder are separate copies of the same
+    /// macros, so nothing in the differential setup compares the two Rust
+    /// halves against each other.
+    /// `demote` skips the list walk for the character just promoted, and
+    /// defeating that guard changes NO output. That is not a gap in the corpus,
+    /// it is structural, and this pins the premise the argument rests on.
+    ///
+    /// The twelve decrements sum to exactly `VAL0`, so a character can never
+    /// lose more than the promotion just gave it. And look-back distance 1 can
+    /// never match the current symbol, because runs are collapsed before they
+    /// reach the coder -- consecutive SYMBOLS always differ. That takes `VAL1`
+    /// (114688 of the 131072) permanently off the table, leaving the promoted
+    /// character at least +16384 ahead of where it started: still the heaviest,
+    /// still at index 0, so the walk has nowhere to move it.
+    ///
+    /// If run collapsing ever stopped guaranteeing that, the early return would
+    /// become observable and the C would have to be re-read.
+    #[test]
+    fn consecutive_symbols_always_differ() {
+        // Run-heavy input: without collapsing, history would be full of
+        // adjacent duplicates.
+        let input: Vec<u8> = (0..300u32)
+            .flat_map(|i| core::iter::repeat((i % 5) as u8).take(1 + (i as usize % 7)))
+            .collect();
+        let mut list = Wfc::new(input.len().max(1));
+        let _ = ari::encode(&input, &mut list, input.len().saturating_sub(24));
+        assert!(list.pos > 1, "no symbols were coded");
+        for i in 1..list.pos {
+            assert_ne!(
+                list.history[i - 1],
+                list.history[i],
+                "symbol {i} repeats its predecessor -- run collapsing broke, and \
+                 demote's early return is no longer unobservable"
+            );
+        }
+    }
+
+    #[test]
+    fn round_trips() {
+        let cases: Vec<Vec<u8>> = vec![
+            vec![b'A'; 64],
+            (0..64u32).map(|i| (i / 8) as u8).collect(),
+            (0..600u32).map(|i| (i % 7) as u8).collect(),
+            b"the quick brown fox jumps over the lazy dog. ".repeat(20),
+            (0..1000u32).map(|i| ((i * 37) % 251) as u8).collect(),
+            // Enough symbols to reach past the furthest look-back (2048), which
+            // is the only way the last four weight decrements ever fire.
+            (0..5000u32).map(|i| ((i * 131) % 199) as u8).collect(),
+        ];
+        for (n, input) in cases.iter().enumerate() {
+            let coded = encode(input).expect("encode");
+            let mut out = vec![0u8; input.len() + 64];
+            let got = match decode(&coded, &mut out, input.len()) {
+                Ok(v) => v,
+                Err(e) => panic!("case {n}: decode failed with {e}"),
+            };
+            assert_eq!(got, input.len(), "case {n}: length");
+            assert_eq!(&out[..got], &input[..], "case {n}: bytes");
+        }
+    }
+}

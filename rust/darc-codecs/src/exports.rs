@@ -916,3 +916,262 @@ pub unsafe extern "C" fn zstd_stream_compress(
 ) -> c_int {
     darc_rs_zstd_stream_compress(level, window_log, workers, callback, auxdata)
 }
+
+/// GRZip's LZP stage, forward direction. Exposed for the differential harness
+/// only -- not a drop-in, because the C `GRZip_LZP_Encode` is still what the
+/// block driver calls until that is ported too.
+///
+/// # Safety
+/// `input`/`output` must be valid for `size`/`out_size` bytes.
+#[no_mangle]
+pub unsafe extern "C" fn darc_rs_grzip_lzp_encode(
+    input: *const u8,
+    size: c_int,
+    output: *mut u8,
+    out_size: c_int,
+    min_match_len: c_int,
+    ht_size: c_int,
+) -> c_int {
+    if input.is_null() || output.is_null() || size < 0 || out_size < 0 {
+        return FREEARC_ERRCODE_GENERAL;
+    }
+    let inp = core::slice::from_raw_parts(input, size as usize);
+    let out = core::slice::from_raw_parts_mut(output, out_size as usize);
+    match grzip::lzp::encode(inp, out, min_match_len as u32, ht_size as u32) {
+        Ok(n) => n as c_int,
+        Err(e) => e,
+    }
+}
+
+/// GRZip's ST4 stage, forward direction. Harness-only, like the LZP one.
+///
+/// # Safety
+/// `input`/`output` must be valid for `size` bytes.
+#[no_mangle]
+pub unsafe extern "C" fn darc_rs_grzip_st4_encode(
+    input: *const u8,
+    size: c_int,
+    output: *mut u8,
+) -> c_int {
+    if input.is_null() || output.is_null() || size <= 0 {
+        return FREEARC_ERRCODE_GENERAL;
+    }
+    let n = size as usize;
+    let inp = core::slice::from_raw_parts(input, n);
+    let out = core::slice::from_raw_parts_mut(output, n);
+    match grzip::st4::encode(inp, n, out) {
+        Ok(fbp) => fbp,
+        Err(e) => e,
+    }
+}
+
+/// GRZip's record filter: the mode decision and the forward transform.
+/// Harness-only, like the other stages. Returns the mode; `output` is filled
+/// only when the mode is nonzero.
+///
+/// # Safety
+/// `input`/`output` must be valid for `size` bytes.
+#[no_mangle]
+pub unsafe extern "C" fn darc_rs_grzip_rec_encode(
+    input: *const u8,
+    size: c_int,
+    output: *mut u8,
+) -> c_int {
+    if input.is_null() || output.is_null() || size <= 0 {
+        return FREEARC_ERRCODE_GENERAL;
+    }
+    let n = size as usize;
+    let inp = core::slice::from_raw_parts(input, n);
+    let out = core::slice::from_raw_parts_mut(output, n);
+    let mode = grzip::rec::test(inp, n);
+    if mode != 0 {
+        grzip::rec::encode(inp, n, out, mode);
+    }
+    mode
+}
+
+/// GRZip's MTF + arithmetic coder, forward direction. Harness-only.
+///
+/// Returns the coded length, or the GRZip error code. `out_size` must be at
+/// least the input length.
+///
+/// # Safety
+/// `input`/`output` must be valid for `size`/`out_size` bytes.
+#[no_mangle]
+pub unsafe extern "C" fn darc_rs_grzip_mtf_ari_encode(
+    input: *const u8,
+    size: c_int,
+    output: *mut u8,
+    out_size: c_int,
+) -> c_int {
+    if input.is_null() || output.is_null() || size <= 0 || out_size <= 0 {
+        return FREEARC_ERRCODE_GENERAL;
+    }
+    let inp = core::slice::from_raw_parts(input, size as usize);
+    match grzip::mtf_ari::encode(inp) {
+        Ok(v) => {
+            if v.len() > out_size as usize {
+                return FREEARC_ERRCODE_GENERAL;
+            }
+            let out = core::slice::from_raw_parts_mut(output, v.len());
+            out.copy_from_slice(&v);
+            v.len() as c_int
+        }
+        Err(e) => e,
+    }
+}
+
+/// GRZip's WFC + arithmetic coder, forward direction. Harness-only.
+///
+/// # Safety
+/// `input`/`output` must be valid for `size`/`out_size` bytes.
+#[no_mangle]
+pub unsafe extern "C" fn darc_rs_grzip_wfc_ari_encode(
+    input: *const u8,
+    size: c_int,
+    output: *mut u8,
+    out_size: c_int,
+) -> c_int {
+    if input.is_null() || output.is_null() || size <= 0 || out_size <= 0 {
+        return FREEARC_ERRCODE_GENERAL;
+    }
+    let inp = core::slice::from_raw_parts(input, size as usize);
+    match grzip::wfc_ari::encode(inp) {
+        Ok(v) => {
+            if v.len() > out_size as usize {
+                return FREEARC_ERRCODE_GENERAL;
+            }
+            let out = core::slice::from_raw_parts_mut(output, v.len());
+            out.copy_from_slice(&v);
+            v.len() as c_int
+        }
+        Err(e) => e,
+    }
+}
+
+/// GRZip's strong BWT, forward direction. Harness-only. Returns the first-byte
+/// position WITHOUT the strong flag -- the dispatcher ORs that in.
+///
+/// # Safety
+/// `input`/`output` must be valid for `size` bytes.
+#[no_mangle]
+pub unsafe extern "C" fn darc_rs_grzip_strong_bwt_encode(
+    input: *const u8,
+    size: c_int,
+    output: *mut u8,
+) -> c_int {
+    if input.is_null() || output.is_null() || size <= 0 {
+        return FREEARC_ERRCODE_GENERAL;
+    }
+    let n = size as usize;
+    let inp = core::slice::from_raw_parts(input, n);
+    let out = core::slice::from_raw_parts_mut(output, n);
+    match grzip::bwt::strong_encode(inp, n, out) {
+        Ok(fbp) => fbp,
+        Err(e) => e,
+    }
+}
+
+/// GRZip's BWT, forward direction, with the fast/strong selection. Harness-only.
+/// Returns the first-byte position, with `StrongBWT_Flag` set when the fast sort
+/// gave up and the strong one ran.
+///
+/// # Safety
+/// `input`/`output` must be valid for `size` bytes.
+#[no_mangle]
+pub unsafe extern "C" fn darc_rs_grzip_bwt_encode(
+    input: *const u8,
+    size: c_int,
+    output: *mut u8,
+    fast: c_int,
+) -> c_int {
+    if input.is_null() || output.is_null() || size <= 0 {
+        return FREEARC_ERRCODE_GENERAL;
+    }
+    let n = size as usize;
+    let inp = core::slice::from_raw_parts(input, n);
+    let out = core::slice::from_raw_parts_mut(output, n);
+    match grzip::bwt::encode(inp, n, out, fast != 0) {
+        Ok(fbp) => fbp,
+        Err(e) => e,
+    }
+}
+
+/// GRZip's block driver, forward direction. Returns bytes written to `output`.
+///
+/// # Safety
+/// `input` valid for `size`; `output` must have room for `size + 28 + slack`.
+#[no_mangle]
+pub unsafe extern "C" fn darc_rs_grzip_compress_block(
+    input: *const u8,
+    size: c_int,
+    output: *mut u8,
+    out_cap: c_int,
+    mode: c_int,
+) -> c_int {
+    if input.is_null() || output.is_null() || size <= 0 || out_cap <= 0 {
+        return FREEARC_ERRCODE_GENERAL;
+    }
+    let inp = core::slice::from_raw_parts(input, size as usize);
+    let out = core::slice::from_raw_parts_mut(output, out_cap as usize);
+    match grzip::block::compress_block(inp, size as usize, out, mode) {
+        Ok(n) => n as c_int,
+        Err(e) => e,
+    }
+}
+
+/// GRZip's stream compressor -- the archiver's entry point.
+///
+/// # Safety
+/// `callback` and `auxdata` must be what the C caller supplied.
+#[no_mangle]
+#[allow(clippy::too_many_arguments)]
+pub unsafe extern "C" fn darc_rs_grzip_compress(
+    method: c_int,
+    block_size: c_int,
+    enable_lzp: c_int,
+    min_match_len: c_int,
+    hash_size_log: c_int,
+    alternative_bwt_sort: c_int,
+    adaptive_block_size: c_int,
+    delta_filter: c_int,
+    callback: CALLBACK_FUNC,
+    auxdata: *mut c_void,
+) -> c_int {
+    match Io::new(callback, auxdata) {
+        Some(io) => grzip::stream::compress(
+            &io, method, block_size, enable_lzp, min_match_len, hash_size_log,
+            alternative_bwt_sort, adaptive_block_size, delta_filter,
+        ),
+        None => FREEARC_ERRCODE_GENERAL,
+    }
+}
+
+/// Drop-in under the archiver's own symbol name.
+///
+/// Exported UNCONDITIONALLY, unlike the decoder below: the C encoder this used
+/// to shadow has been deleted, so there is nothing left to collide with and the
+/// DARC_NO_RUST build needs this symbol to link. (`grzip_decompress` stays
+/// feature-gated, because its C still exists for Unarc.)
+///
+/// # Safety
+/// `callback` and `auxdata` must be what the C caller supplied.
+#[no_mangle]
+#[allow(clippy::too_many_arguments)]
+pub unsafe extern "C" fn grzip_compress(
+    method: c_int,
+    block_size: c_int,
+    enable_lzp: c_int,
+    min_match_len: c_int,
+    hash_size_log: c_int,
+    alternative_bwt_sort: c_int,
+    adaptive_block_size: c_int,
+    delta_filter: c_int,
+    callback: CALLBACK_FUNC,
+    auxdata: *mut c_void,
+) -> c_int {
+    darc_rs_grzip_compress(
+        method, block_size, enable_lzp, min_match_len, hash_size_log,
+        alternative_bwt_sort, adaptive_block_size, delta_filter, callback, auxdata,
+    )
+}

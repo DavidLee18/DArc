@@ -13,7 +13,14 @@
 // asks the library how many threads to use. Neither matters at the block level,
 // and pulling in CompressionLibrary.cpp would drag in every other codec, so the
 // two symbols are stubbed. GetCompressionThreads only sizes a memory estimate.
+// The Rust crate now exports `grzip_compress` UNCONDITIONALLY -- the archiver's
+// C encoder is deleted, so the symbol has to be there for DARC_NO_RUST to link.
+// The pinned reference still defines its own, and GNU ld rejects the duplicate
+// (macOS ld silently keeps one, which is why this passed locally and failed in
+// CI). Rename the reference's copy: this harness is the only place both exist.
+#define grzip_compress   grzip_compress_PINNED_REFERENCE
 #include "../../Compression/GRZip/C_GRZip.cpp"
+#undef grzip_compress
 // The real synchronization primitives, textually included rather than compiled
 // standalone: on their own they fail on TRUE/FALSE, which C_GRZip.cpp's include
 // chain has already defined by this point. Cheaper and less fragile than
@@ -45,9 +52,39 @@ int darc_grz_decompress_block (unsigned char *in, int size, unsigned char *out)
 int darc_grz_stream_compress (int method, int blocksize, int enable_lzp, int minlen,
                               int hashlog, int altsort, int adaptive, int deltaflt,
                               CALLBACK_FUNC *cb, void *aux)
-{ return grzip_compress (method, blocksize, enable_lzp, minlen, hashlog,
+{ return grzip_compress_PINNED_REFERENCE (method, blocksize, enable_lzp, minlen, hashlog,
                          altsort, adaptive, deltaflt, cb, aux); }
 
 int darc_grz_stream_decompress (CALLBACK_FUNC *cb, void *aux)
 { return grzip_decompress (cb, aux); }
+
+// Individual stages, for the stage-by-stage encoder port. The block driver
+// cannot produce a comparable stream until every stage exists, so each stage is
+// compared on its own first.
+int darc_grz_lzp_encode (unsigned char *in, unsigned size, unsigned char *out,
+                         unsigned min_match_len, unsigned ht_size)
+{ return GRZip_LZP_Encode (in, size, out, min_match_len, ht_size); }
+
+int darc_grz_st4_encode (unsigned char *in, int size, unsigned char *out)
+{ return GRZip_ST4_Encode (in, size, out); }
+
+int darc_grz_mtf_ari_encode (unsigned char *in, int size, unsigned char *out)
+{ return GRZip_MTF_Ari_Encode (in, size, out); }
+
+int darc_grz_wfc_ari_encode (unsigned char *in, int size, unsigned char *out)
+{ return GRZip_WFC_Ari_Encode (in, size, out); }
+
+int darc_grz_strong_bwt_encode (unsigned char *in, int size, unsigned char *out)
+{ return GRZip_StrongBWT_Encode (in, size, out); }
+
+// NB: the fast path REWRITES `in` in place (FastBWT_Init builds an 80-byte
+// overshoot prefix and reverses the buffer, FastBWT_Done undoes it), so the
+// caller must hand it a buffer with slack -- the block driver uses Size+1024.
+int darc_grz_bwt_encode (unsigned char *in, int size, unsigned char *out, int fast)
+{ return GRZip_BWT_Encode (in, size, out, fast); }
+
+int darc_grz_rec_encode (unsigned char *in, int size, unsigned char *out)
+{ int mode = GRZip_Rec_Test (in, size);
+  if (mode) GRZip_Rec_Encode (in, size, out, mode);
+  return mode; }
 }
