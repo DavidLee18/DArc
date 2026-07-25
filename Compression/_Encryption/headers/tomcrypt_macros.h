@@ -7,14 +7,26 @@
    typedef unsigned long long ulong64;
 #endif
 
-/* this is the "32-bit at least" data type
- * Re-define it to suit your platform but it must be at least 32-bits
+/* This must be EXACTLY 32 bits, despite the "at least" wording upstream.
+ *
+ * The original picked `unsigned` only for x86-64/sparc64 and `unsigned long`
+ * everywhere else -- which is 64 bits on every other LP64 target, ARM64
+ * included. LibTomCrypt's own comment says "at least 32-bits", and most
+ * primitives mask their shifts so a wider type is harmless. serpent.c does not:
+ * its key expansion rotates with a raw (lk<<11)|(lk>>21), which is a rotate at
+ * 32 bits and garbage at 64. The shipped v2.0.0/v2.1.0 linux-arm64 and
+ * macos-arm64 binaries therefore produce `-ae serpent` archives that no other
+ * architecture can read.
+ *
+ * Verified with LibTomCrypt's own vectors (the self-tests LTC_NO_TEST compiles
+ * out): at 64 bits serpent_test FAILS while blowfish, twofish and sha1 pass --
+ * so Serpent was the only casualty. At 32 bits all four pass.
+ *
+ * uint32_t is exact on every target, so this also removes the platform
+ * conditional rather than adding another arch to it.
  */
-#if defined(__x86_64__) || (defined(__sparc__) && defined(__arch64__))
-   typedef unsigned ulong32;
-#else
-   typedef unsigned long ulong32;
-#endif
+#include <stdint.h>
+typedef uint32_t ulong32;
 
 /* ---- HELPER MACROS ---- */
 #ifdef ENDIAN_NEUTRAL

@@ -449,21 +449,49 @@ files (`srep-data.tmp`, `srep-virtual-memory.tmp`, both relative to CWD — the
 obvious suspect from reading), and **not** a threading race (`-t1` reproduces it
 at the same rate).
 
-**Still present, both verified:**
+**Fixed: the ARM64 `ulong32` miscompilation, and the self-tests that hid it.**
 
+`tomcrypt_macros.h` typed `ulong32` as `unsigned` only for `__x86_64__`/sparc64
+and `unsigned long` otherwise — 64 bits on every other LP64 target, ARM64
+included. LibTomCrypt's own comment says "at least 32-bits" and most primitives
+mask their shifts, but `serpent.c`'s key expansion rotates with a raw
+`(lk<<11)|(lk>>21)`: a rotate at 32 bits, garbage at 64. Now `typedef uint32_t
+ulong32`, which is exact on every target — the platform conditional is gone
+rather than having ARM64 bolted onto it.
 
-- **ARM64 `ulong32` miscompilation.** `tomcrypt_macros.h:13` types `ulong32` as
-  `unsigned` only for `__x86_64__`/sparc64 and `unsigned long` otherwise — 64-bit
-  on ARM64 LP64. `serpent.c`'s key expansion rotates with a raw
-  `(lk<<11)|(lk>>21)`, a rotate at 32 bits and garbage at 64. **`-ae serpent` is
-  broken on the shipped v2.0.0/v2.1.0 linux-arm64 and macos-arm64 binaries**
-  (no data loss — the same binary round-trips — but those archives do not move
-  between architectures). Still unchecked: whether AES/Twofish/Blowfish/HMAC/
-  PBKDF2 are hit too. The Rust crypto port is correct and therefore *disagrees*
-  with a C ARM64 build until this is fixed; `Tests/enc-roundtrip.sh` shows it.
-- **`LTC_NO_TEST`** (`C_Encryption.cpp:77`) compiles out the cipher self-tests,
-  which ship with correct vectors and would have caught the above on the first
-  ARM64 build. Re-enable at least in CI (it will fail until the bug is fixed).
+**Blast radius, previously unknown, now measured.** The question "are
+AES/Twofish/Blowfish/HMAC/PBKDF2 hit too?" was answered by running LibTomCrypt's
+shipped self-tests, whose vectors are authoritative:
+
+| primitive | ulong32 = 64 bits | ulong32 = 32 bits |
+|---|---|---|
+| blowfish | PASS | PASS |
+| **serpent** | **FAIL** | **PASS** |
+| twofish | PASS | PASS |
+| sha1 | PASS | PASS |
+
+**Serpent was the only casualty** — the others mask correctly. AES could not be
+self-tested here (`ENCRYPT_ONLY` omits the decrypt half, so `rijndael_test` is
+commented out upstream), and `hmac_test`/`ctr_test`/`cfb_test` are likewise
+commented out in `C_Encryption.cpp`; those remain unverified by vectors, though
+the cross-implementation check below covers them end to end.
+
+**Compatibility consequence, accepted deliberately.** The ciphertext changes on
+ARM64 (`e1acc75e…` fixed vs `3ad490df…` before), so `-ae serpent` archives
+written by the shipped v2.0.0/v2.1.0 arm64 binaries cannot be opened by a fixed
+build. They could never be opened by an x86 build either — only by the same
+broken platform — so the fix is right, but say so when releasing.
+
+**`LTC_NO_TEST` is no longer defined.** The self-tests run once from
+`register_all()`'s static initialiser and cost microseconds; `serpent_test`
+fails outright with the old typedef, so this is the guard that would have caught
+it on the first ARM64 build. Note the whole block is `#ifndef DARC_RUST`, so
+only the C-crypto comparison build pays even that.
+
+**srep's second copy of the header was checked and deliberately NOT changed.**
+`srep/Compression/_Encryption/headers/tomcrypt_macros.h` still has the old
+typedef, but srep compiles no serpent, and its md5/sha1 pass at 64-bit width.
+`CLAUDE.md` records that tree as a diverged vintage to be fixed independently.
 
 ### 14. If SREP's ENCODER is ever ported: model the ring, do not transliterate it
 

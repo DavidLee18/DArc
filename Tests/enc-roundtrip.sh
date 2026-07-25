@@ -12,11 +12,15 @@
 # Covers every cipher x mode plus the -128 key-size variant, and asserts a
 # wrong password is rejected.
 #
-# KNOWN caveat on ARM64: a stock C build miscompiles Serpent -- ulong32 is
-# 64-bit there (tomcrypt_macros.h:13) and serpent.c's key expansion assumes 32.
-# So C<->Rust serpent cross-checks FAIL on ARM64, correctly: the Rust build is
-# right and the C build is wrong, so they disagree. aes/blowfish/twofish
-# interoperate in both directions. See rust/cryptref/serpent32.c.
+# There is no longer an ARM64 caveat. A stock C build used to miscompile Serpent
+# -- ulong32 was 64-bit there and serpent.c's key expansion assumes 32 -- so
+# C<->Rust serpent cross-checks failed on ARM64. That is fixed (ulong32 is now
+# uint32_t), and ALL ciphers must interoperate in both directions on every
+# target. A serpent cross-check failure is now a REGRESSION, not an expectation.
+#
+# Note this script needs stdin: on a failed decrypt the archiver prompts for a
+# password, so run it with </dev/null in automation or it blocks forever rather
+# than reporting a failure.
 set -u
 WRITER="$1"; READER="${2:-$1}"
 W="${TMPDIR:-/tmp}/enc-rt.$$"; rm -rf "$W"; mkdir -p "$W/in"

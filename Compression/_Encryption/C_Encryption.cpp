@@ -74,7 +74,12 @@ int docrypt (enum TEncrypt DoEncryption, int cipher, int mode, BYTE *key, int ke
 #define   LTC_SHA1
 #define   LTC_SHA512
 #define LTC_NO_MATH
-#define LTC_NO_TEST
+// LTC_NO_TEST is deliberately NOT defined. LibTomCrypt ships self-tests with
+// authoritative vectors, and they would have caught the 64-bit ulong32 on the
+// first ARM64 build -- serpent_test fails outright with it. They run once from
+// register_all()'s static initialiser and cost microseconds. Note this whole
+// block is #ifndef DARC_RUST, so only the C-crypto comparison build pays even
+// that.
 #include "ciphers/aes/aes.c"
 #include "ciphers/blowfish.c"
 #include "ciphers/twofish/twofish.c"
