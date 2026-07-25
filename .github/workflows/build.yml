@@ -161,6 +161,19 @@ jobs:
         chmod +x Tests/*.sh
         Tests/run-tests.sh Tests/arc
 
+    # MM's ':r1' byte reordering, which run-tests.sh does not reach: its edges
+    # are at BLOCK boundaries, not file boundaries, so a normal corpus walks
+    # past them. The transpose is parameterised by the block length, and only a
+    # final short block can carry a partial sample -- which needs an input just
+    # over the 1 MB first-block cut to reach at all. Sweeps every tail remainder
+    # across nine channel/word geometries, plus inputs autodetection refuses (no
+    # flags byte, so no length prefix may be written).
+    - name: Test MM ':r1' reordering (Linux)
+      if: runner.os == 'Linux'
+      run: |
+        chmod +x Tests/mm-reorder-check.sh
+        Tests/mm-reorder-check.sh
+
     # ── macOS steps ────────────────────────────────────────────────────────────
     # macOS is in the matrix so the portability work stays honest. The README
     # has claimed macOS support for a long time while the build did not
