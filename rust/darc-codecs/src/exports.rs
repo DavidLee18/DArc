@@ -458,12 +458,14 @@ pub unsafe extern "C" fn darc_rs_dispack_decompress(
     }
 }
 
-/// Drop-in under the archiver's own symbol name; the switch is an exclusion in
-/// C_DisPack.cpp rather than a redeclaration, as with the other codecs.
+/// Drop-in under the archiver's own symbol name.
+///
+/// Exported unconditionally: the C implementation this used to shadow has been
+/// deleted (DisPack is ported in BOTH directions), so there is nothing left to
+/// collide with and the DARC_NO_RUST build needs this symbol to link.
 ///
 /// # Safety
 /// `callback` and `auxdata` must be what the C caller supplied.
-#[cfg(feature = "dropin")]
 #[no_mangle]
 pub unsafe extern "C" fn dispack_decompress(
     block_size: u32,
@@ -651,6 +653,45 @@ pub unsafe extern "C" fn darc_rs_dispack_filter(
     }
     core::ptr::copy_nonoverlapping(out.as_ptr(), dst, out.len());
     out.len() as c_int
+}
+
+/// DisPack compress driver, mirroring `DISPACK_METHOD::compress`
+/// (`C_DisPack.cpp:170`) -- the chunked stream, not the raw block transform.
+///
+/// This subsumes `detect` and `DisFilter`: the wrapper hands over the whole
+/// callback loop, so the C keeps only the method plumbing and the parser.
+///
+/// # Safety
+/// `callback` and `auxdata` must be what the C caller supplied.
+#[no_mangle]
+pub unsafe extern "C" fn darc_rs_dispack_compress(
+    block_size: u32,
+    callback: CALLBACK_FUNC,
+    auxdata: *mut c_void,
+) -> c_int {
+    match Io::new(callback, auxdata) {
+        Some(io) => dispack::encode::compress(&io, block_size),
+        None => FREEARC_ERRCODE_GENERAL,
+    }
+}
+
+/// DisPack executable detection, mirroring `detect` (`C_DisPack.cpp:151`).
+///
+/// Returns 2 for `EXETYPE_EXE`, 1 for `EXETYPE_DATA`, matching the C enum so
+/// the differential harness can compare the classification directly.
+///
+/// # Safety
+/// `buf` must be valid for `len` bytes.
+#[no_mangle]
+pub unsafe extern "C" fn darc_rs_dispack_detect(buf: *const u8, len: c_int) -> c_int {
+    if buf.is_null() || len < 0 {
+        return FREEARC_ERRCODE_GENERAL;
+    }
+    let b = core::slice::from_raw_parts(buf, len as usize);
+    match dispack::encode::detect(b) {
+        dispack::encode::ExeType::Exe => 2,
+        dispack::encode::ExeType::Data => 1,
+    }
 }
 
 /// LZ4 high-compression encode, mirroring `LZ4_compress_HC`: returns the

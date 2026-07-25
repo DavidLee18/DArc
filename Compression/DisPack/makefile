@@ -10,5 +10,5 @@ OPT_FLAGS   = -O3 \
 DEBUG_FLAGS = -g0
 CFLAGS = $(CODE_FLAGS) $(OPT_FLAGS) $(DEBUG_FLAGS) $(DEFINES)
 
-$(TEMPDIR)/C_DisPack.o: C_DisPack.cpp C_DisPack.h DisPack.cpp makefile
+$(TEMPDIR)/C_DisPack.o: C_DisPack.cpp C_DisPack.h makefile
 	$(GCC) -c $(CFLAGS) -o $*.o $<

@@ -2,6 +2,8 @@
  *
  *     dispack_filter_ref c  <origin> <in >out    C DisFilter
  *     dispack_filter_ref rs <origin> <in >out    the Rust port
+ *     dispack_filter_ref dc  <origin> <in           C detect()   -> prints EXETYPE
+ *     dispack_filter_ref drs <origin> <in           Rust detect() -> prints EXETYPE
  *
  * The existing dispack_ref.cpp drives the archiver's chunked compress/decompress
  * wrapper. This one exposes the raw block transform instead, because that is
@@ -27,6 +29,12 @@ sU8 *DisFilter (sU8 *src, sInt size, sU32 origin, sU32 &outputSize);
 
 extern "C" int darc_rs_dispack_filter (const unsigned char *src, int srcSize,
                                        unsigned origin, unsigned char *dst, int dstCap);
+extern "C" int darc_rs_dispack_detect (const unsigned char *buf, int len);
+
+// detect() gates the whole filter, so its classification is compared directly:
+// EXETYPE_EXE=2, EXETYPE_DATA=1.
+enum EXETYPE {EXETYPE_UNKNOWN, EXETYPE_DATA, EXETYPE_EXE};
+EXETYPE detect (unsigned char *buf, int len);
 
 static int read_all (unsigned char **buf)
 {
@@ -65,6 +73,12 @@ int main (int argc, char **argv)
     int n = darc_rs_dispack_filter (in, inSize, origin, out, cap);
     if (n < 0) { fprintf (stderr, "Rust dis_filter returned %d\n", n); return 1; }
     fwrite (out, 1, n, stdout);
+    return 0;
+  }
+  if (!strcmp (argv[1], "dc") || !strcmp (argv[1], "drs")) {
+    int v = !strcmp (argv[1], "dc") ? (int) detect (in, inSize)
+                                    : darc_rs_dispack_detect (in, inSize);
+    printf ("%d\n", v);
     return 0;
   }
   fprintf (stderr, "bad mode %s\n", argv[1]);

@@ -44,7 +44,9 @@ cc() { local out="$1" lib="$2"; shift 2
     "$CREF/rust/difftest/dispack_ccodec.cpp" \
     "$CREF/Compression/Common.cpp" \
     ${lib:+"$lib"} -o "$out"; }
-cc "$W/t" "$LIB" || { echo "harness build failed" >&2; exit 1; }
+# -DDARC_RUST: see dispack-check.sh. It drops the pinned dispack_decompress,
+# which this driver never calls, while keeping DisFilter -- the C oracle here.
+cc "$W/t" "$LIB" -DDARC_RUST || { echo "harness build failed" >&2; exit 1; }
 
 python3 - "$W" <<'PY'
 import os,sys,struct,subprocess
@@ -123,6 +125,68 @@ for i in range(300):
     many += struct.pack("<I", base+(i*4))
 many += struct.pack("<I", base+(45*4))    # sits at index 254 by the above
 wf("mtf_boundary", bytes(many))
+# --- inputs built for detect(), whose thresholds are otherwise unfalsifiable ---
+#
+# The code/non-code inputs above are POLARISED: far above every threshold or far
+# below, so moving one moderately reclassifies nothing. These sit deliberately
+# near each boundary, and one exercises the object-file arm, which the backward-
+# call rewrite above never produces (it only makes p[4]==0xFF).
+#
+# detect() scans p[0]==0xE8 with p[4]/p[5] deciding the form:
+#   exe form: p[4]==0xFF && p[5]!=0xFF     obj form: p[4]==0x00 && p[5]!=0x00
+# and requires  e8/len >= 0.002,  (exe+obj)/e8 >= 0.20,  exe/e8 >= 0.01.
+def calls(n_e8, total, exe_frac, obj_frac, seed=1, zero_frac=0.0, tail_e8=False, ffff_frac=0.0):
+    """Filler with n_e8 E8 sites in a chosen mix of forms.
+
+    exe form  p[4]=0xFF p[5]!=0xFF     obj form  p[4]=0x00 p[5]!=0x00
+    zero form p[4]=0x00 p[5]==0x00 -- counts as NEITHER, and exists only so the
+              `p[5] != 0` half of the obj test is falsifiable; without it,
+              dropping that check changes nothing.
+    ffff form p[4]=0xFF p[5]==0xFF -- also NEITHER, and likewise the only way to
+              falsify the `p[5] != 0xFF` half of the exe test.
+    tail_e8   plants an E8 at len-5 AND makes the final byte 0xFF. Both are
+              needed: a scan that runs one position too far only reads p[5]
+              (out of range) if p[4]==0xFF or 0x00 -- otherwise `&&`
+              short-circuits and the bug is invisible. That is exactly why the
+              first attempt at this input failed to catch anything.
+    """
+    b = bytearray(prng(seed, total))
+    for i in range(len(b)):          # scrub stray E8 so the count is exact
+        if b[i] == 0xE8: b[i] = 0xE7
+    n_exe = int(n_e8 * exe_frac); n_obj = int(n_e8 * obj_frac)
+    n_zero = int(n_e8 * zero_frac); n_ffff = int(n_e8 * ffff_frac)
+    step = max(6, total // max(1, n_e8))
+    for k in range(n_e8):
+        i = k * step
+        if i + 6 > total: break
+        b[i] = 0xE8
+        if k < n_exe:                      b[i+4], b[i+5] = 0xFF, 0x11
+        elif k < n_exe + n_obj:            b[i+4], b[i+5] = 0x00, 0x22
+        elif k < n_exe + n_obj + n_zero:   b[i+4], b[i+5] = 0x00, 0x00
+        elif k < n_exe + n_obj + n_zero + n_ffff: b[i+4], b[i+5] = 0xFF, 0xFF
+        else:                              b[i+4], b[i+5] = 0x7F, 0x33
+    if tail_e8 and total >= 6:
+        b[total-5] = 0xE8            # its p[5] would be buf[total]: out of range
+        b[total-1] = 0xFF            # ...and 0xFF here forces p[5] to be read
+    return bytes(b)
+
+TOT = 100000
+# e8 density either side of 0.002 (200 sites in 100000 bytes).
+wf("det_dense_just_over",  calls(260, TOT, 0.50, 0.30, 11))
+wf("det_dense_just_under", calls(150, TOT, 0.50, 0.30, 12))
+# (exe+obj)/e8 straddling 0.20 CLOSELY -- 0.25 vs 0.15 leaves room to move the
+# threshold to 0.22 without reclassifying anything, which it did.
+wf("det_callish_over",     calls(400, TOT, 0.080, 0.125, 13))  # 0.205
+wf("det_callish_under",    calls(400, TOT, 0.080, 0.115, 14))  # 0.195
+# exe/e8 straddling 0.01 closely, the rest carried by the OBJ arm.
+wf("det_exe_share_over",   calls(400, TOT, 0.0125, 0.60, 15))  # 0.0125
+# exe_frac 0 but plenty of 0xFF/0xFF sites: correct code counts NO exe (so
+# DATA), while dropping the `p[5] != 0xFF` test counts them all (so EXE).
+wf("det_exe_share_under",  calls(400, TOT, 0.0000, 0.60, 16, ffff_frac=0.30))
+# An E8 whose p[4]==p[5]==0, so the obj test's second half matters.
+wf("det_obj_zero_tail",    calls(400, TOT, 0.05, 0.10, 17, zero_frac=0.40))
+# An E8 at len-5, which a correct scan must not look past.
+wf("det_e8_at_end",        calls(300, TOT, 0.50, 0.30, 18, tail_e8=True))
 wf("noise",   prng(2,200000))
 wf("zeros",   b"\x00"*100000)
 wf("text",    b"the quick brown fox jumps over the lazy dog. "*3000)
@@ -145,6 +209,25 @@ for origin in 0x401000 0x00400000 0x10000000 0x0; do
   done
   echo "  [origin=$origin] $c inputs, $d differing"
 done
+
+# detect() gates the filter: a chunk it calls DATA is stored verbatim and never
+# filtered at all. Its classification is therefore part of the archive, so it is
+# compared directly rather than only implicitly through the filtered bytes.
+dfail=0; dn=0; dexe=0
+for f in "$W"/in/*; do
+  [ -f "$f" ] || continue
+  bn=$(basename "$f"); dn=$((dn+1))
+  a=$("$W/t" dc  0 < "$f" 2>/dev/null)
+  b=$("$W/t" drs 0 < "$f" 2>/dev/null)
+  [ "$a" = "2" ] && dexe=$((dexe+1))
+  [ "$a" = "$b" ] || { echo "  detect: $bn: C=$a Rust=$b"; dfail=$((dfail+1)); }
+done
+echo "  [detect] $dn inputs, $dfail differing ($dexe classified EXE)"
+# Both answers must actually occur, or the comparison proves nothing: a detect()
+# that always said DATA would agree with a correct one on a DATA-only corpus.
+[ "$dexe" -gt 0 ] || { echo "  detect: NO input classified EXE -- the gate is untested"; dfail=$((dfail+1)); }
+[ "$dexe" -lt "$dn" ] || { echo "  detect: EVERY input classified EXE -- the gate is untested"; dfail=$((dfail+1)); }
+fail=$((fail+dfail))
 
 [ "$n" -gt 0 ] || { echo "no inputs were filtered -- harness reached nothing"; exit 1; }
 echo "dispack forward filter: $fail differing over $n comparisons"
