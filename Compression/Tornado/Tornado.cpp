@@ -56,7 +56,6 @@ struct PackMethod
 
 extern "C" {
 // Main compression and decompression routines
-int tor_compress   (PackMethod m, CALLBACK_FUNC *callback, void *auxdata);
 int tor_decompress (CALLBACK_FUNC *callback, void *auxdata);
 }
 

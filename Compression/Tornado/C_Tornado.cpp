@@ -23,9 +23,18 @@ int TORNADO_METHOD::decompress (CALLBACK_FUNC *callback, void *auxdata)
 #ifndef FREEARC_DECOMPRESS_ONLY
 
 // Compression function
+// The Rust encoder needs `compress_all_at_once` (Common.cpp:6), which a
+// drop-in under the `tor_compress` name could not see -- it is a file-scope
+// int, not a parameter. Importing it into the Rust crate instead made the
+// crate's own binaries (dict_phase1, srep) unlinkable, since they link the
+// library but not Common.cpp. So the call goes direct and the C side passes
+// the value, which is also what rust/difftest does.
+extern "C" int darc_rs_tor_compress (PackMethod m, int all_at_once,
+                                     CALLBACK_FUNC *callback, void *auxdata);
+
 int TORNADO_METHOD::compress (CALLBACK_FUNC *callback, void *auxdata)
 {
-  return tor_compress (m, callback, auxdata);
+  return darc_rs_tor_compress (m, compress_all_at_once, callback, auxdata);
 }
 
 // Set the dictionary size and adjust the hash size accordingly

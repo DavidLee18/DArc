@@ -511,37 +511,6 @@ pub unsafe extern "C" fn darc_rs_tor_compress(
     }
 }
 
-/// `compress_all_at_once` (Common.cpp:6). Only the 4x4 codec ever sets it, and
-/// then only around a nested compressor call, but it changes Tornado's
-/// chunking, output buffer size and whether the input is refilled at all.
-///
-/// A drop-in for `tor_compress` cannot be handed it as a parameter, so the
-/// symbol is imported directly. This is behind the `dropin` feature because
-/// that is exactly the configuration where the C side -- and therefore
-/// Common.cpp -- is linked in; the differential harness builds without the
-/// feature and passes the value explicitly instead.
-#[cfg(feature = "dropin")]
-extern "C" {
-    static compress_all_at_once: c_int;
-}
-
-/// Tornado encoder, under the archiver's own symbol name.
-///
-/// All nine live instantiations are ported and verified byte-identical to the
-/// C by rust/difftest/tornado-encode-check.sh, over every preset 0-11.
-///
-/// # Safety
-/// `callback` and `auxdata` must be what the C caller supplied.
-#[cfg(feature = "dropin")]
-#[no_mangle]
-pub unsafe extern "C" fn tor_compress(
-    m: tornado::encode::PackMethod,
-    callback: CALLBACK_FUNC,
-    auxdata: *mut c_void,
-) -> c_int {
-    darc_rs_tor_compress(m, compress_all_at_once, callback, auxdata)
-}
-
 /// GRZip block decoder, for the differential harness only.
 ///
 /// GRZip is still being ported -- there is no `grzip_decompress` drop-in yet,
