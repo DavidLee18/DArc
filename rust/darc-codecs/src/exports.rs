@@ -291,6 +291,54 @@ pub unsafe extern "C" fn tta_decompress(
     darc_rs_tta_decompress(callback, auxdata)
 }
 
+/// TTA encoder. `level` 0 stores; 1-3 select the adaptive filter set. The
+/// channel count and word size are autodetected when left at 0, exactly as for
+/// MM -- TTA calls the same detector, with a looser entropy threshold.
+///
+/// # Safety
+/// `callback` and `auxdata` must be what the C caller supplied.
+#[no_mangle]
+#[allow(clippy::too_many_arguments)]
+pub unsafe extern "C" fn darc_rs_tta_compress(
+    level: c_int,
+    skip_header: c_int,
+    is_float: c_int,
+    num_chan: c_int,
+    word_size: c_int,
+    offset: c_int,
+    raw_data: c_int,
+    callback: CALLBACK_FUNC,
+    auxdata: *mut c_void,
+) -> c_int {
+    match Io::new(callback, auxdata) {
+        Some(io) => tta::compress(
+            &io, level, skip_header, is_float, num_chan, word_size, offset, raw_data,
+        ),
+        None => FREEARC_ERRCODE_GENERAL,
+    }
+}
+
+/// # Safety
+/// `callback` and `auxdata` must be what the C caller supplied.
+#[cfg(feature = "dropin")]
+#[no_mangle]
+#[allow(clippy::too_many_arguments)]
+pub unsafe extern "C" fn tta_compress(
+    level: c_int,
+    skip_header: c_int,
+    is_float: c_int,
+    num_chan: c_int,
+    word_size: c_int,
+    offset: c_int,
+    raw_data: c_int,
+    callback: CALLBACK_FUNC,
+    auxdata: *mut c_void,
+) -> c_int {
+    darc_rs_tta_compress(
+        level, skip_header, is_float, num_chan, word_size, offset, raw_data, callback, auxdata,
+    )
+}
+
 /// MM decoder. Like TTA it takes no tuning parameters -- the channel count and
 /// word size the encoder settled on travel in the stream header.
 ///

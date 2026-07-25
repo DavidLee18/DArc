@@ -42,6 +42,7 @@
 use crate::ffi::{Io, FREEARC_ERRCODE_BAD_COMPRESSED_DATA, FREEARC_ERRCODE_IO,
                  FREEARC_ERRCODE_NOT_ENOUGH_MEMORY, OK};
 use core::ffi::c_int;
+use crate::mmdet;
 
 const BAD: c_int = FREEARC_ERRCODE_BAD_COMPRESSED_DATA as c_int;
 const IO: c_int = FREEARC_ERRCODE_IO as c_int;
@@ -654,4 +655,691 @@ fn alloc2d(num: usize, len: usize) -> Result<Vec<Vec<i64>>, c_int> {
         return Err(NOMEM);
     }
     Ok(vec![vec![0i64; len]; num])
+}
+
+// ---------------------------------------------------------------------------
+// Encoder -- the port of `tta_compress` (tta.cpp:294) and the encode halves of
+// entropy.cpp and filters.cpp.
+//
+// Every stage is the exact mirror of the decoder above, and the two differ in
+// ways that are easy to get backwards, so they are spelled out where they occur:
+// `filter_compress` subtracts where `filter_decompress` adds, stores the INPUT
+// into the history where decode stores the OUTPUT, and tests the sign of the
+// OUTPUT where decode tests the input.
+// ---------------------------------------------------------------------------
+
+/// `BASE_SIZE`/`STEP_SIZE` (entropy.h:34-35) are byte counts for C's realloc
+/// policy. The growth schedule is not observable -- only the bits written are --
+/// so this grows a word vector instead, which cannot leave an uninitialised
+/// word behind. (In C that is safe only by an argument about `fbit`: a freshly
+/// grown word is always first touched with fbit == 0, where `*s &= bit_mask32[0]`
+/// clears it.)
+struct BitWriter {
+    words: Vec<u32>,
+    bits: u64,
+}
+
+impl BitWriter {
+    fn new() -> Self {
+        BitWriter {
+            words: vec![0u32; (1 << 20) / 4],
+            bits: 0,
+        }
+    }
+
+    /// `get_len`: the byte length, rounding a partial byte up.
+    fn len(&self) -> usize {
+        ((self.bits >> 3) + if self.bits & 7 != 0 { 1 } else { 0 }) as usize
+    }
+
+    #[inline]
+    fn reserve(&mut self, word: usize) {
+        if word + 2 > self.words.len() {
+            self.words.resize(word + 2 + (1 << 18), 0);
+        }
+    }
+
+    /// `put_binary` (entropy.cpp:115).
+    #[inline]
+    fn put_binary(&mut self, value: u64, bits: u64) {
+        let fbit = self.bits & 0x1F;
+        let rbit = 32 - fbit;
+        let pos = (self.bits >> 5) as usize;
+        self.reserve(pos);
+
+        // Clear everything at or above the current bit, then lay the field in.
+        self.words[pos] &= BIT_MASK32[fbit as usize] as u32;
+        self.words[pos] |= ((value & BIT_MASK32[bits as usize]) << fbit) as u32;
+        if bits > rbit {
+            self.words[pos + 1] = (value >> rbit) as u32;
+        }
+        self.bits += bits;
+    }
+
+    /// `put_unary` (entropy.cpp:134): `value` one-bits then a zero.
+    #[inline]
+    fn put_unary(&mut self, value: u64) {
+        let fbit = self.bits & 0x1F;
+        let rbit = 32 - fbit;
+        let mut pos = (self.bits >> 5) as usize;
+        self.reserve(pos + (value >> 5) as usize + 1);
+
+        self.words[pos] &= BIT_MASK32[fbit as usize] as u32;
+        if value < rbit {
+            self.words[pos] |= (BIT_MASK32[value as usize] << fbit) as u32;
+        } else {
+            let mut unary = value;
+            self.words[pos] |= (BIT_MASK32[rbit as usize] << fbit) as u32;
+            pos += 1;
+            unary -= rbit;
+            // `> 32`, not `>= 32`: the loop leaves a remainder of exactly 32 to
+            // the tail assignment below, which writes a full word of ones.
+            while unary > 32 {
+                self.words[pos] = BIT_MASK32[32] as u32;
+                pos += 1;
+                unary -= 32;
+            }
+            if unary != 0 {
+                self.words[pos] = BIT_MASK32[unary as usize] as u32;
+            }
+        }
+        self.bits += value + 1;
+    }
+
+    /// The bytes to emit: the word vector reinterpreted little-endian, which is
+    /// what C's `(tta_word*)bit_array_write` aliasing produces on every target
+    /// this builds for.
+    fn bytes(&self) -> Vec<u8> {
+        let n = self.len();
+        let mut out = Vec::with_capacity(n);
+        for w in self.words.iter() {
+            if out.len() >= n {
+                break;
+            }
+            out.extend_from_slice(&w.to_le_bytes());
+        }
+        out.truncate(n);
+        out
+    }
+}
+
+/// `ENC` (entropy.h:37): fold a signed residual onto the unsigned line.
+#[inline]
+fn enc(x: i64) -> i64 {
+    if x > 0 {
+        (x << 1) - 1
+    } else {
+        (-x) << 1
+    }
+}
+
+/// `encode_frame` (entropy.cpp:216): adaptive Rice coding with two parameter
+/// tracks, exactly mirroring `decode_frame`'s adaptation -- including the clamp
+/// at 32, which both sides must apply or they fall out of lock-step.
+fn encode_frame(bw: &mut BitWriter, data: &[i64]) {
+    let mut k0: u64 = 10;
+    let mut k1: u64 = 10;
+    let mut sum0: u64 = shift_16(k0 as usize);
+    let mut sum1: u64 = shift_16(k1 as usize);
+
+    for &sample in data {
+        let mut value = enc(sample) as u64;
+        let mut k = k0;
+
+        sum0 = sum0.wrapping_add(value.wrapping_sub(sum0 >> 4));
+        if k0 > 0 && sum0 < shift_16(k0 as usize) {
+            k0 -= 1;
+        } else if k0 < 32 && sum0 > shift_16(k0 as usize + 1) {
+            k0 += 1;
+        }
+
+        let unary;
+        if value >= BIT_SHIFT[k as usize] {
+            value -= BIT_SHIFT[k as usize];
+            k = k1;
+
+            sum1 = sum1.wrapping_add(value.wrapping_sub(sum1 >> 4));
+            if k1 > 0 && sum1 < shift_16(k1 as usize) {
+                k1 -= 1;
+            } else if k1 < 32 && sum1 > shift_16(k1 as usize + 1) {
+                k1 += 1;
+            }
+
+            unary = 1 + (value >> k);
+        } else {
+            unary = 0;
+        }
+
+        // An escape at 50: longer runs go out as a 50-run plus a 32-bit literal.
+        if unary >= 50 {
+            bw.put_unary(50);
+            bw.put_binary(unary, 32);
+        } else {
+            bw.put_unary(unary);
+        }
+        if k != 0 {
+            bw.put_binary(value & BIT_MASK32[k as usize], k);
+        }
+    }
+}
+
+impl Filter {
+    /// `filter_compress` (filters.cpp:64). Three differences from `decompress`,
+    /// all of them silent if transposed:
+    ///   * `out = in - (sum >> shift)`, where decode adds;
+    ///   * the history takes the INPUT, where decode stores the output;
+    ///   * the adaptation tests the sign of the OUTPUT, where decode tests the
+    ///     input.
+    /// In both directions the history holds the original-domain sample and the
+    /// sign test looks at the residual-domain one -- they are the same rule
+    /// seen from opposite sides.
+    fn compress(&mut self, sample: &mut i64) {
+        let order = self.order;
+
+        let mut sum: i32 = self.round;
+        for j in 0..order {
+            sum = sum.wrapping_add(self.dl[self.pl + j].wrapping_mul(self.qm[j]));
+        }
+
+        let inv = *sample;
+        let out: i32 = (inv as i32).wrapping_sub(sum >> self.shift);
+
+        self.dl[self.pl + order] = inv as i32;
+
+        if self.mode == 0 {
+            let base = self.pl + order - 1;
+            for n in 0..3 {
+                self.dl[base - n] = self.dl[base + 1 - n].wrapping_sub(self.dl[base - n]);
+            }
+        }
+
+        if out < 0 {
+            for j in 0..order {
+                self.qm[j] = self.qm[j].wrapping_add(self.dx[self.px + j]);
+            }
+        } else if out > 0 {
+            for j in 0..order {
+                self.qm[j] = self.qm[j].wrapping_sub(self.dx[self.px + j]);
+            }
+        }
+
+        let pxo = self.px + order;
+        let plo = self.pl + order;
+        self.dx[pxo] = ((self.dl[plo] >> 28) & 8) - 4;
+        self.dx[pxo - 1] = ((self.dl[plo - 1] >> 29) & 4) - 2;
+        self.dx[pxo - 2] = ((self.dl[plo - 2] >> 29) & 4) - 2;
+        self.dx[pxo - 3] = ((self.dl[plo - 3] >> 30) & 2) - 1;
+
+        if self.px + order == BUF_SIZE - 1 {
+            self.dx.copy_within(self.px + 1..self.px + 1 + order, 0);
+            self.px = 0;
+        } else {
+            self.px += 1;
+        }
+        if self.pl + order == BUF_SIZE - 1 {
+            self.dl.copy_within(self.pl + 1..self.pl + 1 + order, 0);
+            self.pl = 0;
+        } else {
+            self.pl += 1;
+        }
+
+        *sample = out as i64;
+    }
+}
+
+/// `filters_compress` (filters.cpp:243): the fixed order-1 predictor first, then
+/// the three adaptive stages in ASCENDING order -- decode runs them descending.
+fn filters_compress(data: &mut [i64], level: usize, byte_size: usize) {
+    let f1 = FLT_SET[0][level - 1][byte_size - 1];
+    let f2 = FLT_SET[1][level - 1][byte_size - 1];
+    let f3 = FLT_SET[2][level - 1][byte_size - 1];
+    let mut fst1 = Filter::new(f1[0], f1[1], f1[2]);
+    let mut fst2 = Filter::new(f2[0], f2[1], f2[2]);
+    let mut fst3 = Filter::new(f3[0], f3[1], f3[2]);
+
+    let mut last: i64 = 0;
+    for v in data.iter_mut() {
+        let tmp = *v;
+        match byte_size {
+            1 => *v = v.wrapping_sub(predictor1(last, 4)),
+            2 | 3 => *v = v.wrapping_sub(predictor1(last, 5)),
+            4 => *v = v.wrapping_sub(last),
+            _ => {}
+        }
+        last = tmp;
+
+        if fst1.order != 0 {
+            fst1.compress(v);
+        }
+        if fst2.order != 0 {
+            fst2.compress(v);
+        }
+        if fst3.order != 0 {
+            fst3.compress(v);
+        }
+    }
+}
+
+/// `split_int` (tta.cpp:227): de-interleave, then inter-channel decorrelation.
+fn split_int(data: &[i64], frame_len: usize, num_chan: usize, buffer: &mut [Vec<i64>]) {
+    for i in 0..frame_len {
+        for j in 0..num_chan {
+            buffer[j][i] = data[i * num_chan + j];
+        }
+    }
+    if num_chan > 1 {
+        let n = num_chan - 1;
+        for i in 0..frame_len {
+            for j in 0..n {
+                buffer[j][i] = buffer[j + 1][i].wrapping_sub(buffer[j][i]);
+            }
+            buffer[n][i] = buffer[n][i].wrapping_sub(buffer[n - 1][i] / 2);
+        }
+    }
+}
+
+/// `split_float` (tta.cpp:258): split each IEEE-754 single into an exponent-ish
+/// high half and a byte-swapped mantissa, doubling the channel count.
+fn split_float(data: &[i64], frame_len: usize, num_chan: usize, buffer: &mut [Vec<i64>]) {
+    for i in 0..frame_len {
+        for j in 0..num_chan {
+            let t = data[i * num_chan + j] as u64;
+            // C computes this as `unsigned long negative = (t & 0x80000000)? -1:1`
+            // -- i.e. all-ones on LP64 -- and multiplies, so the effect is a
+            // two's-complement negation of the 64-bit product.
+            let negative: i64 = if t & 0x8000_0000 != 0 { -1 } else { 1 };
+            let data_hi = (t & 0x7FFF_0000) >> 16;
+            let data_lo = t & 0x0000_FFFF;
+
+            buffer[j][i] = (data_hi as i64).wrapping_sub(0x3F80);
+            buffer[j + num_chan][i] =
+                ((swap16(data_lo as u32) as i64).wrapping_add(1)).wrapping_mul(negative);
+        }
+    }
+}
+
+/// `read_wave` (tta.cpp:118): fill `data` with sign-extended samples, keep the
+/// trailing partial sample in `rest`, and hand back the raw bytes so the
+/// incompressible path can store them verbatim.
+///
+/// Returns the byte count read, or the callback's error.
+#[allow(clippy::too_many_arguments)]
+fn read_wave(
+    io: &Io,
+    data: &mut [i64],
+    rest: &mut Vec<u8>,
+    prev: &[u8],
+    byte_size: usize,
+    num_chan: usize,
+    len: usize,
+) -> Result<(usize, Vec<u8>), c_int> {
+    let sample = num_chan * byte_size;
+    let wanted = len * sample;
+    let mut buffer = vec![0u8; (len + 2) * sample];
+
+    let use_prev = prev.len().min(wanted);
+    buffer[..use_prev].copy_from_slice(&prev[..use_prev]);
+
+    // Note the asymmetry in C: it copies min(prevsize,wanted) bytes but reads at
+    // offset `prevsize`. They differ only when prevsize > wanted, and in that
+    // case no read happens at all, so the offset is unused.
+    let mut bytes_read = if wanted <= prev.len() {
+        0
+    } else {
+        let n = io.read(&mut buffer[prev.len()..wanted]);
+        if n < 0 {
+            return Err(n);
+        }
+        n as usize
+    };
+    bytes_read += use_prev;
+
+    let rest_bytes = bytes_read % sample;
+    rest.clear();
+    rest.extend_from_slice(&buffer[bytes_read - rest_bytes..bytes_read]);
+
+    let elements = (bytes_read / sample) * num_chan;
+    match byte_size {
+        1 => {
+            for i in 0..elements {
+                data[i] = buffer[i] as i64 - 0x80;
+            }
+        }
+        2 => {
+            for i in 0..elements {
+                data[i] = i16::from_le_bytes([buffer[2 * i], buffer[2 * i + 1]]) as i64;
+            }
+        }
+        3 => {
+            // Three bytes sign-extended through 32 bits. C dereferenced a `long`
+            // here once, which on LP64 read five bytes past each sample.
+            for i in 0..elements {
+                let q = &buffer[i * 3..i * 3 + 3];
+                let t = (q[0] as u32) | ((q[1] as u32) << 8) | ((q[2] as u32) << 16);
+                data[i] = (((t << 8) as i32) >> 8) as i64;
+            }
+        }
+        4 => {
+            for i in 0..elements {
+                data[i] = i32::from_le_bytes([
+                    buffer[4 * i],
+                    buffer[4 * i + 1],
+                    buffer[4 * i + 2],
+                    buffer[4 * i + 3],
+                ]) as i64;
+            }
+        }
+        _ => {}
+    }
+    Ok((bytes_read, buffer))
+}
+
+/// TTA's OWN candidate sets (tta.cpp:49,52) -- NOT mmdet's.
+///
+/// `mmdet.cpp` has file-static `channels[] = {1,2,3,4}` / `bitvalues[] =
+/// {8,16,24,32}`, and `tta.cpp` has its own file-static arrays of the same
+/// names holding {1,2} and {8,16}. Both call `autodetect_by_entropy`, so which
+/// set it sees depends purely on which translation unit the caller is in. The
+/// difference is not cosmetic: on 32-bit table data the wider set wins with
+/// `1 channel x 32 bits`, which TTA then REFUSES (`byte_size >= 4` and not
+/// float) and stores, while the narrow set picks `2 x 16` and compresses it
+/// 6.7x. Passing mmdet's arrays here stored a 32 KB file that the C compressed
+/// to 4,763 bytes.
+const TTA_CHANNELS: [c_int; 2] = [1, 2];
+const TTA_BITVALUES: [c_int; 2] = [8, 16];
+
+/// `tta_compress` (tta.cpp:294).
+#[allow(clippy::too_many_arguments)]
+fn encode(
+    io: &Io,
+    level: c_int,
+    skip_header: bool,
+    is_float_in: c_int,
+    num_chan_in: c_int,
+    word_size_in: c_int,
+    offset_in: c_int,
+    raw_data: c_int,
+) -> Result<(), c_int> {
+    // Samples per chunk. Not part of the format -- each block records its own
+    // byte count -- but the decoder sizes its buffers from the recorded count,
+    // so keeping it identical keeps the stream identical.
+    const FRAME_SIZE: usize = 1 << 18;
+
+    let level = level.min(3);
+    let mut is_float = is_float_in != 0;
+    let mut num_chan = num_chan_in;
+    let mut word_size = word_size_in;
+    let mut offset = offset_in;
+
+    // `prev` holds the megabyte read for autodetection; it is consumed by the
+    // first frames before any further reads happen.
+    let mut prev: Vec<u8> = Vec::new();
+    let mut detected = true;
+
+    if level == 0 {
+        detected = false;
+    } else if is_float || num_chan != 0 || word_size != 0 {
+        if num_chan == 0 {
+            num_chan = 1;
+        }
+        if word_size == 0 {
+            // NOTE: 4 and 1, not 32 and 8 -- unlike mm_compress, whose identical
+            // looking line means BITS. Here the value is fed to (word_size+7)/8
+            // all the same, so `4` yields byte_size 1 for floats. Transliterated,
+            // not corrected: it is what the C writes into the header.
+            word_size = if is_float { 4 } else { 1 };
+        }
+    } else {
+        prev = vec![0u8; MB];
+        let n = io.read(&mut prev);
+        if n <= 0 {
+            return if n < 0 { Err(n) } else { Ok(()) };
+        }
+        prev.truncate(n as usize);
+
+        let wav = if skip_header {
+            None
+        } else {
+            mmdet::autodetect_wav_header(&prev)
+        };
+        // TTA uses a LOOSER entropy threshold than MM: 0.50 against MM's 0.80.
+        let d = wav.or_else(|| {
+            mmdet::autodetect_by_entropy(&prev, &TTA_CHANNELS, &TTA_BITVALUES, 0.50)
+        });
+        match d {
+            Some(d) => {
+                is_float = d.is_float;
+                num_chan = d.num_chan;
+                word_size = d.word_size;
+                offset = d.offset;
+            }
+            None => detected = false,
+        }
+    }
+
+    let byte_size = ((word_size + 7) / 8) as usize;
+
+    // TTA handles neither 32-bit integers nor non-32-bit floats.
+    if detected && ((is_float && byte_size != 4) || (!is_float && byte_size >= 4)) {
+        detected = false;
+    }
+
+    if !detected {
+        // Header of 0, then the input verbatim.
+        io.write_all(&0u32.to_le_bytes())?;
+        loop {
+            if !prev.is_empty() {
+                io.write_all(&prev)?;
+            }
+            prev.resize(MB, 0);
+            let n = io.read(&mut prev);
+            if n < 0 {
+                return Err(n);
+            }
+            if n == 0 {
+                return Ok(());
+            }
+            prev.truncate(n as usize);
+        }
+    }
+
+    let num_chan = num_chan as usize;
+    io.write_all(&[
+        level as u8,
+        (raw_data * 2) as u8 + is_float as u8,
+        num_chan as u8,
+        word_size as u8,
+    ])?;
+
+    // The original file header, passed through uncompressed. If autodetection
+    // never ran there is nothing buffered, so it has to be read now.
+    let offset = offset.max(0) as usize;
+    if offset > 0 && prev.is_empty() {
+        prev = vec![0u8; offset];
+        read_exact(io, &mut prev)?;
+    }
+    io.write_all(&(offset as u32).to_le_bytes())?;
+    let head = offset.min(prev.len());
+    io.write_all(&prev[..head])?;
+    let mut prev_pos = head; // the rest of `prev` still feeds the frames
+
+    let rows = num_chan << is_float as usize;
+    let mut data = vec![0i64; num_chan * FRAME_SIZE];
+    let mut buffer = alloc2d(rows, FRAME_SIZE)?;
+    let mut rest: Vec<u8> = Vec::new();
+
+    loop {
+        let (bytes_read, origdata) = read_wave(
+            io,
+            &mut data,
+            &mut rest,
+            &prev[prev_pos.min(prev.len())..],
+            byte_size,
+            num_chan,
+            FRAME_SIZE,
+        )?;
+        let sample = num_chan * byte_size;
+        let frame_len = bytes_read / sample;
+
+        if bytes_read >= prev.len() - prev_pos.min(prev.len()) {
+            prev.clear();
+            prev_pos = 0;
+        } else {
+            prev_pos += bytes_read;
+        }
+        if bytes_read == 0 {
+            return Ok(());
+        }
+
+        io.write_all(&(bytes_read as u32).to_le_bytes())?;
+
+        if is_float {
+            split_float(&data, frame_len, num_chan, &mut buffer);
+        } else {
+            split_int(&data, frame_len, num_chan, &mut buffer);
+        }
+
+        let mut bw = BitWriter::new();
+        for row in buffer.iter_mut().take(rows) {
+            filters_compress(&mut row[..frame_len], level as usize, byte_size);
+
+            if raw_data == 0 {
+                encode_frame(&mut bw, &row[..frame_len]);
+            } else {
+                if raw_data == 2 {
+                    for v in row[..frame_len].iter_mut() {
+                        *v = if *v >= 0 { v.wrapping_mul(2) } else { v.wrapping_neg().wrapping_mul(2).wrapping_sub(1) };
+                    }
+                }
+                // C writes frame_len*sizeof(long) bytes straight out of the
+                // buffer -- EIGHT bytes per sample on LP64, four on Win32. This
+                // path is a debugging aid (`:r1`/`:r2`), never produced by the
+                // archiver's defaults, and its stream was never portable across
+                // word sizes. Matched to the LP64 build this replaces.
+                let mut out = Vec::with_capacity(frame_len * 8);
+                for &v in row[..frame_len].iter() {
+                    out.extend_from_slice(&v.to_le_bytes());
+                }
+                io.write_all(&out)?;
+            }
+        }
+
+        if raw_data == 0 {
+            let size = bw.len();
+            if size >= bytes_read {
+                // The coded frame came out no smaller than the input: store it.
+                io.write_all(&0u32.to_le_bytes())?;
+                io.write_all(&origdata[..bytes_read])?;
+                continue; // NB: skips the `rest` write -- origdata already has it
+            }
+            io.write_all(&(size as u32).to_le_bytes())?;
+            io.write_all(&bw.bytes())?;
+        }
+        io.write_all(&rest)?;
+    }
+}
+
+/// `tta_compress`.
+#[allow(clippy::too_many_arguments)]
+pub fn compress(
+    io: &Io,
+    level: c_int,
+    skip_header: c_int,
+    is_float: c_int,
+    num_chan: c_int,
+    word_size: c_int,
+    offset: c_int,
+    raw_data: c_int,
+) -> c_int {
+    match encode(
+        io,
+        level,
+        skip_header != 0,
+        is_float,
+        num_chan,
+        word_size,
+        offset,
+        raw_data,
+    ) {
+        Ok(()) => OK,
+        Err(e) => e,
+    }
+}
+
+#[cfg(test)]
+mod rice_tests {
+    use super::*;
+
+    /// Drive the Rice parameter to its ceiling and back.
+    ///
+    /// The clamp at 32 cannot be reached from the differential corpus: it needs
+    /// `sum0 > 2^31`, i.e. residuals near 2^30, and audio-shaped input never
+    /// produces those. It is still load-bearing, and in a way the C's own
+    /// symptom hid -- `shift_16` SATURATES (`BIT_SHIFT[36] == BIT_SHIFT[37] ==
+    /// 0x80000000`), so the threshold for 32 -> 33 is identical to the one for
+    /// 31 -> 32. Once the parameter reaches the top it would climb forever,
+    /// indexing `BIT_MASK32[33]` and beyond off the end of a 33-entry table.
+    ///
+    /// Removing the clamp leaves the whole differential test green, so this is
+    /// the only thing standing between that edit and an out-of-bounds index.
+    #[test]
+    fn rice_parameter_saturates_instead_of_running_off_the_table() {
+        // Residuals large enough to push both adaptive tracks to the ceiling,
+        // then small ones so they wind back down.
+        let mut data: Vec<i64> = Vec::new();
+        for _ in 0..600 {
+            data.push(1 << 30);
+        }
+        for i in 0..600 {
+            data.push(if i % 2 == 0 { 3 } else { -4 });
+        }
+
+        let mut bw = BitWriter::new();
+        encode_frame(&mut bw, &data);
+        let bytes = bw.bytes();
+        assert!(!bytes.is_empty());
+
+        // And the decoder must recover exactly what went in -- the two sides
+        // adapt in lock-step only if both clamp.
+        let mut br = BitReader::new(&bytes);
+        let mut out = vec![0i64; data.len()];
+        decode_frame(&mut br, &mut out);
+        assert_eq!(out, data, "encode/decode disagree at the Rice ceiling");
+    }
+
+    /// The 50-run escape: anything longer goes out as a 50 unary run plus a
+    /// 32-bit literal, and the reader has to take the same branch.
+    #[test]
+    fn long_unary_runs_take_the_escape_and_round_trip() {
+        let data: Vec<i64> = (0..400).map(|i| (i as i64 % 7) * (1 << 20)).collect();
+        let mut bw = BitWriter::new();
+        encode_frame(&mut bw, &data);
+        let bytes = bw.bytes();
+        let mut br = BitReader::new(&bytes);
+        let mut out = vec![0i64; data.len()];
+        decode_frame(&mut br, &mut out);
+        assert_eq!(out, data);
+    }
+
+    /// `put_unary` writes `value` ones then a zero, across word boundaries at
+    /// every starting bit offset. The word-spanning branch is the one with the
+    /// `> 32` loop bound.
+    #[test]
+    fn unary_round_trips_at_every_bit_offset() {
+        for pad in 0..33u64 {
+            for value in [0u64, 1, 31, 32, 33, 63, 64, 65, 100] {
+                let mut bw = BitWriter::new();
+                if pad > 0 {
+                    bw.put_binary(0, pad);
+                }
+                bw.put_unary(value);
+                let bytes = bw.bytes();
+                let mut br = BitReader::new(&bytes);
+                if pad > 0 {
+                    br.get_binary(pad);
+                }
+                assert_eq!(br.get_unary(), value, "pad={pad} value={value}");
+            }
+        }
+    }
 }

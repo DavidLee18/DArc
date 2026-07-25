@@ -291,6 +291,25 @@ void combine_float (long frame_len, long num_chan, long **buffer)
 
 
 #ifndef FREEARC_DECOMPRESS_ONLY
+// DARC_RUST=1 selects the Rust port of the encoder (rust/darc-codecs, tta.rs +
+// mmdet.rs), excluded rather than redeclared for the same reason as the decoder
+// below: both have C linkage, so GNU ld would report a multiple definition.
+//
+// Unlike C_MM.h, ttaenc.h declares this with the SAME signature as the
+// definition, so the definition really does inherit the C linkage that
+// C_TTA.cpp's `extern "C"` block intends -- which is what lets the drop-in take
+// the symbol. C_TTA::compress reaches it through LoadFromDLL's fallback, so the
+// replacement applies there too.
+//
+// read_wave/split_int/split_float above and the encode halves of entropy.cpp
+// and filters.cpp are now unreferenced, but stay: they are compiled into this
+// same translation unit and cost only a few unused bytes, while removing them
+// would widen the exclusion for no gain.
+//
+// Verified byte-identical to the C encoder across levels 1-3, 8/16/24-bit,
+// mono/stereo, float, raw mode, the storing path and autodetection; see
+// rust/difftest/tta-check.sh, which now compares the produced STREAM.
+#ifndef DARC_RUST
 int tta_compress (int level, int skip_header, int is_float, int num_chan, int word_size, int offset, int raw_data, CALLBACK_FUNC *callback, void *auxdata)
 {
     long            *data=NULL, **buffer=NULL;
@@ -436,6 +455,7 @@ finished:
 
     return errcode;
 }
+#endif  // !defined (DARC_RUST)
 #endif
 
 // DARC_RUST=1 selects the Rust port of the decoder (rust/darc-codecs).

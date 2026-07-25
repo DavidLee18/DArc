@@ -25,6 +25,7 @@ int tta_compress   (int, int, int, int, int, int, int, CALLBACK_FUNC*, void*);
 int tta_decompress (CALLBACK_FUNC*, void*);
 #ifdef USE_RUST
 extern "C" int darc_rs_tta_decompress (CALLBACK_FUNC*, void*);
+extern "C" int darc_rs_tta_compress   (int, int, int, int, int, int, int, CALLBACK_FUNC*, void*);
 #endif
 
 struct Buffers {
@@ -65,7 +66,11 @@ int main (int argc, char **argv) {
     int word_size= argc>4? atoi(argv[4]) : 16;
     int is_float = argc>5? atoi(argv[5]) : 0;
     int raw_data = argc>6? atoi(argv[6]) : 0;
+#ifdef USE_RUST
+    rc = darc_rs_tta_compress (level, 0, is_float, num_chan, word_size, 0, raw_data, io_callback, &b);
+#else
     rc = tta_compress (level, 0, is_float, num_chan, word_size, 0, raw_data, io_callback, &b);
+#endif
   } else {
 #ifdef USE_RUST
     rc = darc_rs_tta_decompress (io_callback, &b);
