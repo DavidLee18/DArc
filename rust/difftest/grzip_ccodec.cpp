@@ -13,7 +13,14 @@
 // asks the library how many threads to use. Neither matters at the block level,
 // and pulling in CompressionLibrary.cpp would drag in every other codec, so the
 // two symbols are stubbed. GetCompressionThreads only sizes a memory estimate.
+// The Rust crate now exports `grzip_compress` UNCONDITIONALLY -- the archiver's
+// C encoder is deleted, so the symbol has to be there for DARC_NO_RUST to link.
+// The pinned reference still defines its own, and GNU ld rejects the duplicate
+// (macOS ld silently keeps one, which is why this passed locally and failed in
+// CI). Rename the reference's copy: this harness is the only place both exist.
+#define grzip_compress   grzip_compress_PINNED_REFERENCE
 #include "../../Compression/GRZip/C_GRZip.cpp"
+#undef grzip_compress
 // The real synchronization primitives, textually included rather than compiled
 // standalone: on their own they fail on TRUE/FALSE, which C_GRZip.cpp's include
 // chain has already defined by this point. Cheaper and less fragile than
@@ -45,7 +52,7 @@ int darc_grz_decompress_block (unsigned char *in, int size, unsigned char *out)
 int darc_grz_stream_compress (int method, int blocksize, int enable_lzp, int minlen,
                               int hashlog, int altsort, int adaptive, int deltaflt,
                               CALLBACK_FUNC *cb, void *aux)
-{ return grzip_compress (method, blocksize, enable_lzp, minlen, hashlog,
+{ return grzip_compress_PINNED_REFERENCE (method, blocksize, enable_lzp, minlen, hashlog,
                          altsort, adaptive, deltaflt, cb, aux); }
 
 int darc_grz_stream_decompress (CALLBACK_FUNC *cb, void *aux)
