@@ -830,6 +830,11 @@ jobs:
         rust/difftest/tornado-check.sh
         rust/difftest/grzip-check.sh
         rust/difftest/dispack-check.sh
+        # The other direction: DisPack's ENCODER must be byte-exact too, since
+        # DisPack is one of DArc's own formats. Filtered output that merely
+        # round-trips through our own decoder would still make archives that
+        # older builds read differently.
+        rust/difftest/dispack-filter-check.sh
         # LZP is ported in BOTH directions and its C is deleted, so this is the
         # only remaining oracle for it -- and it had no check script at all
         # until the C was pruned (lzp_ref.cpp sat orphaned; run.sh covers Delta).

@@ -622,6 +622,37 @@ pub unsafe extern "C" fn darc_rs_lz4_compress_block(
     lz4::compress_block(s, d).map_or(0, |n| n as c_int)
 }
 
+/// DisPack forward filter, mirroring `DisFilter` (`DisPack.cpp:600`).
+///
+/// Returns the filtered length, or a negative code. Unlike the archiver's
+/// chunked driver this is the raw block transform, which is what the
+/// differential harness compares byte for byte against the C.
+///
+/// `dst` must have room for the worst case: every input byte escaping to two
+/// bytes, plus the `ST_MAX` header words.
+///
+/// # Safety
+/// `src` must be valid for `src_size` bytes, `dst` for `dst_cap` bytes.
+#[no_mangle]
+pub unsafe extern "C" fn darc_rs_dispack_filter(
+    src: *const u8,
+    src_size: c_int,
+    origin: u32,
+    dst: *mut u8,
+    dst_cap: c_int,
+) -> c_int {
+    if src.is_null() || dst.is_null() || src_size < 0 || dst_cap < 0 {
+        return FREEARC_ERRCODE_GENERAL;
+    }
+    let s = core::slice::from_raw_parts(src, src_size as usize);
+    let out = dispack::encode::dis_filter(s, origin);
+    if out.len() > dst_cap as usize {
+        return FREEARC_ERRCODE_GENERAL;
+    }
+    core::ptr::copy_nonoverlapping(out.as_ptr(), dst, out.len());
+    out.len() as c_int
+}
+
 /// LZ4 high-compression encode, mirroring `LZ4_compress_HC`: returns the
 /// compressed length, or 0 when the block does not fit -- which `C_LZ4.cpp`
 /// treats as "store this block raw", not as an error.

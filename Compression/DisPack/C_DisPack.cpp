@@ -7,6 +7,15 @@ extern "C" {
 #include "C_DisPack.h"
 }
 
+#ifdef DARC_RUST
+// The Rust forward filter (rust/darc-codecs/src/dispack/encode.rs), verified
+// byte-identical to DisFilter over 76 comparisons across four load origins --
+// see rust/difftest/dispack-filter-check.sh. The decoder already comes from
+// Rust; this is the other half.
+extern "C" int darc_rs_dispack_filter (const unsigned char *src, int srcSize,
+                                       unsigned origin, unsigned char *dst, int dstCap);
+#endif
+
 // Compatibility shims for macros that exist in FreeArc 0.67 but not in DArc.
 #ifndef BIGALLOC
 #define BIGALLOC(type, ptr, size)                                          \
@@ -186,8 +195,22 @@ int DISPACK_METHOD::compress (CALLBACK_FUNC *callback, void *auxdata)
         if (InSize)
         {
             // Encode the executable code
+#ifdef DARC_RUST
+            // Worst case is every input byte escaping to two, plus the ST_MAX
+            // header words. DisFilter allocates its own buffer, so this branch
+            // allocates one to match and the shared free() below still applies.
+            {
+                int cap = InSize*2 + 4096;
+                Out = (BYTE*) malloc (cap);
+                if (Out==NULL)  ReturnErrorCode(FREEARC_ERRCODE_NOT_ENOUGH_MEMORY);
+                int n = darc_rs_dispack_filter (In, InSize, BaseAddress, Out, cap);
+                if (n < 0)  {free(Out); Out=NULL; ReturnErrorCode(FREEARC_ERRCODE_GENERAL);}
+                OutSize = n;
+            }
+#else
             Out = DisFilter(In, InSize, BaseAddress, OutSize);
             if (Out==NULL)  ReturnErrorCode(FREEARC_ERRCODE_NOT_ENOUGH_MEMORY);
+#endif
             WRITE4 (TAG_EXE);
             WRITE4 (InSize);
             WRITE4 (OutSize);

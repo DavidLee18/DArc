@@ -1,9 +1,10 @@
 //! DisPack x86 branch/call/jump filter, ported from `Compression/DisPack/`.
 //!
-//! **Work in progress.** The opcode tables and MTF helpers are ported; the
-//! inverse filter (`DisUnFilter`) and the tagged-chunk stream driver
-//! (`C_DisPack.cpp`) are not, so nothing is wired to `DISPACK_METHOD::decompress`
-//! yet and the C decoder still runs.
+//! **Both directions are ported and wired.** `filter` inverts the transform
+//! (`DisUnFilter`) and `encode` applies it (`DisFilter`); `decode` drives the
+//! tagged-chunk stream. Each is byte-identical to the C, checked by
+//! `rust/difftest/dispack-check.sh` (decode) and `dispack-filter-check.sh`
+//! (encode).
 //!
 //! DisPack rewrites x86 code for better compression: it splits an instruction
 //! stream into parallel byte streams and turns relative call/jump targets into
@@ -16,8 +17,9 @@
 //! DisPack arrived here already CP1251-corrupted (see the project notes), so
 //! the reference for this port is the clean upstream source.
 
-#![allow(dead_code)] // WIP: tables land before the filter that uses them
+#![allow(dead_code)] // a few table entries are format documentation, unused by either direction
 
 pub mod decode;
+pub mod encode;
 pub mod filter;
 pub mod tables;
