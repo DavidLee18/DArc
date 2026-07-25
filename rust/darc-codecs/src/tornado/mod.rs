@@ -48,9 +48,11 @@
 #![allow(dead_code)] // WIP: layers land before the entry point that uses them
 
 pub mod decode;
+pub mod encode;
 pub mod huffman;
 pub mod lz77;
 pub mod lz77_enc;
+pub mod matchfinder;
 pub mod out_stream;
 pub mod range;
 pub mod stream;

@@ -829,6 +829,15 @@ jobs:
     - name: Prove the differential test can fail
       run: rust/difftest/run.sh sabotage
 
+    # The same question for the Tornado encoder's unit tests, which cover what
+    # the differential harness cannot reach yet: it breaks each encoder path in
+    # turn and requires the suite to notice. It restores every file it touches
+    # on exit, including on failure.
+    - name: Prove the Tornado encoder tests can fail
+      run: |
+        chmod +x rust/difftest/tornado-encoder-sabotage.sh
+        rust/difftest/tornado-encoder-sabotage.sh
+
     # run.sh covers Delta only. Every codec ported since has its own harness,
     # each compressing with C and requiring the C and Rust decoders to return
     # the same original bytes over a corpus built for that codec's heuristics.
@@ -841,6 +850,7 @@ jobs:
         rust/difftest/tta-check.sh
         rust/difftest/mm-check.sh
         rust/difftest/tornado-check.sh
+        rust/difftest/tornado-encode-check.sh
         rust/difftest/grzip-check.sh
         rust/difftest/dispack-check.sh
         # The other direction: DisPack's ENCODER must be byte-exact too, since
