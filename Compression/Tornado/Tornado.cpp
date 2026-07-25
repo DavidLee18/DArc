@@ -245,34 +245,6 @@ finished:
 // point leaves it uninstantiated and emits nothing; the encoder and everything
 // it shares stay compiled. Verified byte-identical to the C decoder across all
 // four entropy back-ends; see rust/difftest/tornado-check.sh.
-#ifndef DARC_RUST
-int tor_decompress (CALLBACK_FUNC *callback, void *auxdata)
-{
-    int errcode;
-    // First 6 bytes of compressed data are encoding method, minimum match length and buffer size
-    BYTE buf[2];          READ (buf, 2);
-    uint encoding_method; encoding_method = buf[0];
-    uint minlen;          minlen          = buf[1];
-    uint bufsize;         READ4 (bufsize);
-
-    switch (encoding_method) {
-    case BYTECODER:
-            return tor_decompress0 <LZ77_ByteDecoder> (callback, auxdata, bufsize, minlen);
-
-    case BITCODER:
-            return tor_decompress0 <LZ77_BitDecoder>  (callback, auxdata, bufsize, minlen);
-
-    case HUFCODER:
-            return tor_decompress0 <LZ77_Decoder <HuffmanDecoder<EOB_CODE> > > (callback, auxdata, bufsize, minlen);
-
-    case ARICODER:
-            return tor_decompress0 <LZ77_Decoder <ArithDecoder<EOB_CODE> >   > (callback, auxdata, bufsize, minlen);
-    default:
-            errcode = FREEARC_ERRCODE_BAD_COMPRESSED_DATA;
-    }
-finished: return errcode;
-}
-#endif  // !DARC_RUST (tor_decompress)
 
 
 /*

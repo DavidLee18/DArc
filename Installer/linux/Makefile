@@ -33,7 +33,6 @@ uninstall:
 	sudo rm -f /etc/freearc.history
 	sudo rm -f /etc/freearc.ini
 	sudo rm -f $(PREFIX)/bin/arc
-	sudo rm -f $(PREFIX)/bin/unarc
 	sudo rm -f $(PREFIX)/bin/winarc
 	sudo rm -f $(PREFIX)/bin/freearc
 	sudo rm -f $(PREFIX)/lib/*arc*.sfx

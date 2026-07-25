@@ -48,7 +48,7 @@ CPP defines are the main axis of variation, threaded through both the Haskell an
 | `FREEARC_UNIX` / `FREEARC_WIN` | Target OS |
 | `FREEARC_64BIT` | Set from `getconf LONG_BIT` |
 | `__MHS__` | Building under MicroHs rather than GHC |
-| `DARC_RUST` | Codec entry points come from the Rust crates. Always set for `arc`; **not** set by `Unarc/`, which still compiles the C decoders |
+| `DARC_RUST` | Codec entry points come from the Rust crates. Always set; the opt-out and the last non-`DARC_RUST` consumer (`Unarc/`) are both gone, so the `#ifndef DARC_RUST` fallbacks were deleted with them |
 | `FREEARC_GUI` | Build the GUI binary instead of console |
 | `FREEARC_NOURL` | No libcurl/WinInet — URL support compiled out |
 | `FREEARC_NO_LUA` | No Lua — `Options.hs` stubs the interpreter out |
@@ -212,7 +212,8 @@ Separately, an earlier tool **truncated comments at a `--` appearing inside the 
 
 These build separately from the main binary and are not covered by `./compile-O2`:
 
-- **`Unarc/`** — standalone extractor and the SFX modules embedded into self-extracting archives (`arc.sfx`, `freearc.sfx`, …). Pure C++, built with `cd Unarc && make linux` (or `make windows`). Also produces `FreeArc.fmt`, a FAR Manager plugin.
+(`Unarc/` — the standalone extractor, the SFX modules and the FAR plugin — was deleted. It had been failing to compile for some time: `Environment.cpp` calls `Compress`, which is not declared under `FREEARC_DECOMPRESS_ONLY`, and no CI job built it. The `-sfx` option still parses, but `writeSFX` looks its module up by filename at run time and nothing produces those files any more.)
+
 - **`srep/`** — SREP 3.93a, a huge-dictionary LZ77 preprocessor, invoked as an external compressor. Vendored repackage of Bulat Ziganshin's original; sources also mirrored under `Compression/SREP/`. Its `srep/Compression/*.h` are an older, diverged vintage of the root `Compression/` headers (19–62% similar) — they are not interchangeable, so fix them independently.
 - **`HsLua/`** — vendored Lua 5.1 plus Haskell bindings, used by `Options.hs` for `arc.*.lua` config scripts. `./compile` builds the vendored Lua from `HsLua/src`; the Windows cross-build sets `FREEARC_NO_LUA` and links none of it.
 - **`Installer/`** — NSIS installer scripts and packaging assets (Windows).

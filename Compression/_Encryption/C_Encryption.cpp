@@ -63,60 +63,6 @@ int docrypt (enum TEncrypt DoEncryption, int cipher, int mode, BYTE *key, int ke
 { return darc_rs_docrypt ((int)DoEncryption, cipher, mode, key, keysize, rounds, iv, callback, auxdata); }
 #endif  // DARC_RUST
 
-#ifndef DARC_RUST
-#define LTC_NO_CIPHERS
-#define   LTC_BLOWFISH
-#define   LTC_RIJNDAEL
-#define     ENCRYPT_ONLY
-#define   LTC_TWOFISH
-#define   LTC_SERPENT
-#define LTC_NO_HASHES
-#define   LTC_SHA1
-#define   LTC_SHA512
-#define LTC_NO_MATH
-// LTC_NO_TEST is deliberately NOT defined. LibTomCrypt ships self-tests with
-// authoritative vectors, and they would have caught the 64-bit ulong32 on the
-// first ARM64 build -- serpent_test fails outright with it. They run once from
-// register_all()'s static initialiser and cost microseconds. Note this whole
-// block is #ifndef DARC_RUST, so only the C-crypto comparison build pays even
-// that.
-#include "ciphers/aes/aes.c"
-#include "ciphers/blowfish.c"
-#include "ciphers/twofish/twofish.c"
-#include "ciphers/serpent.c"
-#include "crypt/crypt_argchk.c"
-#include "crypt/crypt_cipher_descriptor.c"
-#include "crypt/crypt_cipher_is_valid.c"
-#include "crypt/crypt_find_cipher.c"
-#include "crypt/crypt_find_hash.c"
-#include "crypt/crypt_find_prng.c"
-#include "crypt/crypt_hash_descriptor.c"
-#include "crypt/crypt_hash_is_valid.c"
-#include "crypt/crypt_prng_descriptor.c"
-#include "crypt/crypt_prng_is_valid.c"
-#include "crypt/crypt_register_cipher.c"
-#include "crypt/crypt_register_hash.c"
-#include "crypt/crypt_register_prng.c"
-#include "hashes/helper/hash_memory.c"
-#include "hashes/sha1.c"
-#include "hashes/sha2/sha512.c"
-#include "mac/hmac/hmac_done.c"
-#include "mac/hmac/hmac_init.c"
-#include "mac/hmac/hmac_memory.c"
-#include "mac/hmac/hmac_process.c"
-#include "misc/error_to_string.c"
-#include "misc/pkcs5/pkcs_5_2.c"
-#include "misc/zeromem.c"
-#include "modes/ctr/ctr_decrypt.c"
-#include "modes/ctr/ctr_done.c"
-#include "modes/ctr/ctr_encrypt.c"
-#include "modes/ctr/ctr_start.c"
-#include "modes/cfb/cfb_decrypt.c"
-#include "modes/cfb/cfb_done.c"
-#include "modes/cfb/cfb_encrypt.c"
-#include "modes/cfb/cfb_start.c"
-#include "prngs/fortuna.c"
-#endif  // !DARC_RUST (vendored LibTomCrypt includes)
 }
 
 
@@ -124,97 +70,6 @@ int docrypt (enum TEncrypt DoEncryption, int cipher, int mode, BYTE *key, int ke
 /* LibTomCrypt encryption library initialization   */
 /*-------------------------------------------------*/
 
-#ifndef DARC_RUST
-// Register all algorithms included in the program
-int register_all()
-{
-    register_cipher (&aes_enc_desc);
-    register_cipher (&blowfish_desc);
-    register_cipher (&serpent_desc);
-    register_cipher (&twofish_desc);
-    register_hash (&sha1_desc);
-    register_hash (&sha512_desc);
-#ifndef LTC_NO_TEST
-    CHECK (blowfish_test()==CRYPT_OK, (s,"blowfish_test failed!"));
-//    CHECK (rijndael_test()==CRYPT_OK, (s,"rijndael_test failed!"));
-    CHECK (serpent_test ()==CRYPT_OK, (s,"serpent_test failed!"));
-    CHECK (twofish_test ()==CRYPT_OK, (s,"twofish_test failed!"));
-    CHECK (sha1_test    ()==CRYPT_OK, (s,"sha1_test failed!"));
-    CHECK (sha512_test  ()==CRYPT_OK, (s,"sha512_test failed!"));
-//    CHECK (hmac_test    ()==CRYPT_OK, (s,"hmac_test failed!"));
-//    CHECK (ctr_test     ()==CRYPT_OK, (s,"ctr_test failed!"));
-//    CHECK (cfb_test     ()==CRYPT_OK, (s,"cfb_test failed!"));
-#endif
-    return 0;
-}
-int call_register_all = register_all();
-
-// Size of the Fortuna PRNG buffer
-int fortuna_size (void)
-{
-    return sizeof(prng_state);
-}
-
-
-/*------------------------------------------------------*/
-/* Generic interface to encryption modes (CFB, CTR)     */
-/*------------------------------------------------------*/
-
-struct EncryptionMode
-{
-    int mode;
-    symmetric_CTR ctr;
-    symmetric_CFB cfb;
-
-    EncryptionMode (int _mode) {mode = _mode;}
-
-    char *name()
-    {
-        switch (mode) {
-        case 0: return "ctr";
-        case 1: return "cfb";
-        default: return "";
-        }
-    }
-
-    int start (int cipher, BYTE *iv, BYTE *key, int keysize, int rounds)
-    {
-        switch (mode) {
-        case 0: return ctr_start (cipher, iv, key, keysize, rounds, CTR_COUNTER_LITTLE_ENDIAN, &ctr);
-        case 1: return cfb_start (cipher, iv, key, keysize, rounds, &cfb);
-        default: return CRYPT_ERROR;
-        }
-    }
-
-    int encrypt (BYTE *pt, BYTE *ct, int len)
-    {
-        switch (mode) {
-        case 0: return ctr_encrypt(pt, ct, len, &ctr);
-        case 1: return cfb_encrypt(pt, ct, len, &cfb);
-        default: return CRYPT_ERROR;
-        }
-    }
-
-    int decrypt (BYTE *pt, BYTE *ct, int len)
-    {
-        switch (mode) {
-        case 0: return ctr_decrypt(pt, ct, len, &ctr);
-        case 1: return cfb_decrypt(pt, ct, len, &cfb);
-        default: return CRYPT_ERROR;
-        }
-    }
-
-    int done()
-    {
-        switch (mode) {
-        case 0: return ctr_done (&ctr);
-        case 1: return cfb_done (&cfb);
-        default: return CRYPT_ERROR;
-        }
-    }
-};
-
-#endif  // !DARC_RUST (register_all, fortuna_size, EncryptionMode)
 
 // Find the encryption mode number by its name
 int find_mode (char *name)
@@ -229,50 +84,6 @@ int find_mode (char *name)
 /* User-facing functions                           */
 /*-------------------------------------------------*/
 
-#ifndef DARC_RUST
-// Generate a key from the password and salt using numIterations hashing iterations (PKCS5#2)
-void Pbkdf2Hmac (const BYTE *pwd, int pwdSize, const BYTE *salt, int saltSize,
-                 int numIterations, BYTE *key, int keySize)
-{
-    int hash = find_hash("sha512");
-    unsigned long ulKeySize = keySize;
-    pkcs_5_alg2 (pwd, pwdSize, salt, saltSize, numIterations, hash, key, &ulKeySize);
-}
-
-// Encrypts or decrypts the data stream, depending on the value of DoEncryption
-int docrypt (enum TEncrypt DoEncryption, int cipher, int mode, BYTE *key, int keysize, int rounds, BYTE *iv,
-             CALLBACK_FUNC *callback, void *auxdata)
-{
-    EncryptionMode encryptor(mode);
-    encryptor.start (cipher, iv, key, keysize, rounds);
-
-    int InSize = FREEARC_ERRCODE_NOT_ENOUGH_MEMORY;  // number of bytes read or an error code
-    int RemainderSize = 0;                           // unprocessed remainder of the previous block (always 0 in the current implementation)
-    BYTE* Buf = (BYTE*)malloc(LARGE_BUFFER_SIZE);    // storage for the data
-    if (!Buf)   goto Exit;                           // exit when out of memory
-
-    while ( (InSize = callback ("read", Buf+RemainderSize, LARGE_BUFFER_SIZE-RemainderSize, auxdata)) >= 0 )  // exit on a read error
-    {
-        if ((InSize+=RemainderSize)==0)     break;  // exit if there is no more data
-
-        DoEncryption==ENCRYPT
-          ? encryptor.encrypt(Buf, Buf, InSize)
-          : encryptor.decrypt(Buf, Buf, InSize);
-
-        int OutSize = InSize, x;
-        if( (x=callback("write",Buf,OutSize,auxdata))<0 )   {InSize=x; break;}  // exit on a write error
-        RemainderSize = InSize-OutSize;
-        // Move the unprocessed remainder of the data to the beginning of the buffer
-        if (RemainderSize>0)                memmove (Buf, Buf+OutSize, RemainderSize);
-    }
-Exit:
-    encryptor.done();
-    free (Buf);
-    return InSize;  // return the error code, or 0 if everything is fine
-}
-
-
-#endif  // !DARC_RUST (Pbkdf2Hmac, docrypt)
 
 /*-------------------------------------------------*/
 /* ENCRYPTION_METHOD class implementation          */
