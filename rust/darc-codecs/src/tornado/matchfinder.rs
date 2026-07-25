@@ -90,6 +90,14 @@ pub trait MatchFinder {
     /// Record the positions covered by a match just emitted.
     fn update_hash(&mut self, buf: &[u8], p: usize, len: u32, step: u32);
 
+    /// Insert the single position `p`. Only the finders that `CombineMF` wraps
+    /// define this in the C; the default panics in debug rather than silently
+    /// skipping an insertion, which would change the parse without failing.
+    fn update_hash1(&mut self, buf: &[u8], p: usize) {
+        let _ = (buf, p);
+        debug_assert!(false, "update_hash1 called on a finder that does not define it");
+    }
+
     /// Reset every slot; called when a non-sliding buffer is refilled.
     ///
     /// Takes the buffer because the caching finders store a key derived from
@@ -105,6 +113,40 @@ pub trait MatchFinder {
     fn invalidate_match(&mut self) {}
 
     fn error(&self) -> Option<c_int>;
+}
+
+/// Forwarding impl so a finder can be chosen at run time and still be composed
+/// into `CombineMF`, which is generic. The C picks between the three
+/// `caching_finder` arms at compile time; here the arms differ only in what the
+/// auxiliary side wraps, so one boxed child keeps them a single code path.
+impl MatchFinder for Box<dyn MatchFinder + '_> {
+    fn min_length(&self) -> u32 {
+        (**self).min_length()
+    }
+    fn find_matchlen(&mut self, buf: &[u8], p: usize, bufend: usize, prevlen: u32) -> u32 {
+        (**self).find_matchlen(buf, p, bufend, prevlen)
+    }
+    fn get_matchptr(&self) -> usize {
+        (**self).get_matchptr()
+    }
+    fn update_hash(&mut self, buf: &[u8], p: usize, len: u32, step: u32) {
+        (**self).update_hash(buf, p, len, step)
+    }
+    fn update_hash1(&mut self, buf: &[u8], p: usize) {
+        (**self).update_hash1(buf, p)
+    }
+    fn clear_hash(&mut self, buf: &[u8]) {
+        (**self).clear_hash(buf)
+    }
+    fn shift(&mut self, shift: usize) {
+        (**self).shift(shift)
+    }
+    fn invalidate_match(&mut self) {
+        (**self).invalidate_match()
+    }
+    fn error(&self) -> Option<c_int> {
+        (**self).error()
+    }
 }
 
 /// `BaseMatchFinder` (:80): the hash table and the geometry shared by all of
@@ -1015,5 +1057,448 @@ impl<M: MatchFinder> MatchFinder for Hash3<M> {
 
     fn error(&self) -> Option<c_int> {
         self.mf.error()
+    }
+}
+
+// ---------------------------------------------------------------------------
+// ExactMatchFinder -- reports N-byte matches only
+// ---------------------------------------------------------------------------
+
+/// `ExactMatchFinder<N>` (:307). Returns exactly `N` on a hit and nothing
+/// longer; it exists to feed short matches into `CombineMF`.
+///
+/// Two things separate it from `MatchFinderN`: `update_hash1` replaces only the
+/// head of the row rather than shifting it (:303), and the scan **abandons the
+/// row mid-shift** when a candidate is further than 48 KB away, leaving the
+/// remaining entries unshifted (:323).
+pub struct ExactMatchFinder {
+    b: Base,
+    n: usize,
+}
+
+impl ExactMatchFinder {
+    pub fn new(n: usize, hashsize: u32, hash_row_width: i32) -> Self {
+        ExactMatchFinder { b: Base::new(hashsize, hash_row_width), n }
+    }
+}
+
+impl MatchFinder for ExactMatchFinder {
+    fn min_length(&self) -> u32 {
+        4
+    }
+
+    fn find_matchlen(&mut self, buf: &[u8], p: usize, bufend: usize, _prevlen: u32) -> u32 {
+        let h = self.b.hashx(self.n, buf, p);
+        let mut x0 = p as u32;
+        for j in 0..self.b.hash_row_width {
+            let x1 = self.b.table[h + j];
+            self.b.table[h + j] = x0;
+            x0 = x1;
+            let q1 = x1 as usize;
+            if p > q1 && p - q1 > 48 * KB {
+                return self.min_length() - 1;
+            }
+            if val32equ(buf, p, q1) && p + self.n <= bufend {
+                self.b.q = q1;
+                return self.n as u32;
+            }
+        }
+        self.min_length() - 1
+    }
+
+    fn get_matchptr(&self) -> usize {
+        self.b.q
+    }
+
+    fn update_hash1(&mut self, buf: &[u8], p: usize) {
+        let h = self.b.hashx(self.n, buf, p);
+        self.b.table[h] = p as u32;
+    }
+
+    fn update_hash(&mut self, buf: &[u8], p: usize, len: u32, step: u32) {
+        if len > 1 {
+            self.update_hash1(buf, p + 1);
+        }
+        let mut i = 2i64;
+        while i < len as i64 - 1 {
+            self.update_hash1(buf, p + i as usize);
+            i += step.max(1) as i64;
+        }
+        if len > 3 {
+            self.update_hash1(buf, p + len as usize - 1);
+        }
+    }
+
+    fn clear_hash(&mut self, _buf: &[u8]) {
+        self.b.clear_hash()
+    }
+    fn shift(&mut self, shift: usize) {
+        self.b.shift(shift)
+    }
+    fn error(&self) -> Option<c_int> {
+        None
+    }
+}
+
+// ---------------------------------------------------------------------------
+// CycledCachingMatchFinder -- caching rows with a moving head instead of a shift
+// ---------------------------------------------------------------------------
+
+/// `CycledCachingMatchFinder<N>` (:507). Same cached-key idea as
+/// `CachingMatchFinder`, but a row is a ring: `head[h]` names the newest slot
+/// and inserting decrements it, so nothing is ever memmoved.
+///
+/// Consequences that matter for byte-identity:
+///
+/// * The empty marker is **0**, not 1, and `next_pair` stops the scan dead on
+///   it -- so a partly-filled row is not scanned past its end.
+/// * `min_length()` is `N`, which for the presets that use this is 5, 6 or 7,
+///   not 4.
+/// * `hashx` is called without a mask (`HashMask = ~0`); the shift alone bounds
+///   the result to `head`'s size.
+/// * Several states apply a `ChangePair` test that `CachingMatchFinder` does
+///   not, refusing a longer candidate that sits far enough away to cost more
+///   than it saves.
+pub struct CycledCachingMatchFinder {
+    b: Base,
+    n: usize,
+    head: Vec<u8>,
+    head_size: usize,
+}
+
+impl CycledCachingMatchFinder {
+    pub fn new(n: usize, hashsize: u32, hash_row_width: i32) -> Self {
+        let mut row = hash_row_width.max(1) as usize;
+        // "Simulate 2gb:256 hash with 2040mb:255 one" (:639-641).
+        if hashsize == 0x8000_0000 && row.is_power_of_two() {
+            row -= 1;
+        }
+        let head_size = 1usize << lb((hashsize as usize / (4 * row * 2)).max(1) as u32);
+        let hash_size = head_size * row * 2;
+        let mut b = Base::new(4, 1); // geometry replaced below
+        b.hash_size = hash_size;
+        b.hash_row_width = row;
+        b.hash_shift = 32 - lb(head_size as u32);
+        b.hash_mask = u32::MAX;
+        b.table = vec![0u32; hash_size];
+        b.q = 0;
+        CycledCachingMatchFinder { b, n, head: vec![0u8; head_size], head_size }
+    }
+
+    #[inline]
+    fn key(&self, buf: &[u8], p: usize) -> u32 {
+        value32(buf, p + self.n - 1)
+    }
+}
+
+impl MatchFinder for CycledCachingMatchFinder {
+    fn min_length(&self) -> u32 {
+        self.n as u32
+    }
+
+    fn find_matchlen(&mut self, buf: &[u8], p: usize, bufend: usize, _prevlen: u32) -> u32 {
+        let minlen = self.min_length();
+        let n = self.n as u32;
+        let row = self.b.hash_row_width;
+        let h = self.b.hashx(self.n, buf, p);
+        let i = {
+            let cur = self.head[h];
+            let next = if cur == 0 { (row - 1) as u8 } else { cur - 1 };
+            self.head[h] = next;
+            next as usize
+        };
+        let rowstart = h * row * 2;
+        let rowend = rowstart + row * 2;
+        let mut table = rowstart + i * 2;
+        let tabend = table;
+        let key_p = self.key(buf, p);
+
+        self.b.table[table] = p as u32;
+        table += 1;
+        self.b.table[table] = key_p;
+        table += 1;
+        if table == rowend {
+            table = rowstart;
+        }
+
+        let mut x1: u32 = 0;
+        let mut t: u32 = 0;
+        // `next_pair` (:542): read-only here -- the ring never shifts. `x1 == 0`
+        // is the empty marker and ends the scan.
+        macro_rules! next_pair {
+            () => {{
+                x1 = self.b.table[table];
+                table += 1;
+                if x1 == 0 {
+                    break;
+                }
+                let v1 = self.b.table[table];
+                table += 1;
+                if table == rowend {
+                    table = rowstart;
+                }
+                t = v1 ^ key_p;
+            }};
+        }
+
+        let mut state = 0u32;
+        loop {
+            match state {
+                0 => {
+                    while table != tabend {
+                        next_pair!();
+                        if t & 0xff == 0 {
+                            state = if t == 0 {
+                                7
+                            } else if t & 0xff00 != 0 {
+                                4
+                            } else if t & 0xff0000 != 0 {
+                                5
+                            } else {
+                                6
+                            };
+                            break;
+                        }
+                    }
+                    if state == 0 {
+                        return minlen - 1;
+                    }
+                    if state != 7 {
+                        self.b.q = x1 as usize;
+                    }
+                }
+                4 => {
+                    self.b.q = x1 as usize;
+                    while table != tabend {
+                        next_pair!();
+                        if t & 0xffff == 0 {
+                            if t == 0 {
+                                state = 7;
+                                break;
+                            } else if t & 0xff0000 != 0 {
+                                // Only take the longer candidate if it is not
+                                // disproportionately further away.
+                                if !change_pair(p - self.b.q, p - x1 as usize) {
+                                    state = 5;
+                                    break;
+                                }
+                            } else {
+                                state = 6;
+                                break;
+                            }
+                        }
+                    }
+                    if state == 4 {
+                        return accept_match(n, buf, p, self.b.q, bufend);
+                    }
+                }
+                5 => {
+                    self.b.q = x1 as usize;
+                    while table != tabend {
+                        next_pair!();
+                        if t & 0xffffff == 0 {
+                            if t == 0 {
+                                state = 7;
+                                break;
+                            } else if !change_pair(p - self.b.q, p - x1 as usize) {
+                                state = 6;
+                                break;
+                            }
+                        }
+                    }
+                    if state == 5 {
+                        return accept_match(n + 1, buf, p, self.b.q, bufend);
+                    }
+                }
+                6 => {
+                    self.b.q = x1 as usize;
+                    while table != tabend {
+                        next_pair!();
+                        if t == 0 {
+                            let q1 = x1 as usize;
+                            if val32equ(buf, p + self.n, q1 + self.n)
+                                || !change_pair(p - self.b.q, p - q1)
+                            {
+                                state = 7;
+                                break;
+                            }
+                        }
+                    }
+                    if state == 6 {
+                        return accept_match(n + 2, buf, p, self.b.q, bufend);
+                    }
+                }
+                _ => {
+                    let mut len = minlen - 1;
+                    self.b.q = x1 as usize;
+                    let q = self.b.q;
+                    if val32equ(buf, p, q) {
+                        let mut l = (minlen - 1).min(4) as usize;
+                        while p + l < bufend && val32equ(buf, p + l, q + l) {
+                            l += 4;
+                        }
+                        while p + l < bufend && buf[p + l] == buf[q + l] {
+                            l += 1;
+                        }
+                        len = l as u32;
+                    }
+                    while table != tabend {
+                        next_pair!();
+                        let q1 = x1 as usize;
+                        if t == 0
+                            && buf[p + len as usize] == buf[q1 + len as usize]
+                            && val32equ(buf, p, q1)
+                        {
+                            let mut l1 = (minlen - 1).min(4) as usize;
+                            while p + l1 < bufend && val32equ(buf, p + l1, q1 + l1) {
+                                l1 += 4;
+                            }
+                            while p + l1 < bufend && buf[p + l1] == buf[q1 + l1] {
+                                l1 += 1;
+                            }
+                            let l1 = l1 as u32;
+                            if l1 > len && !(l1 == len + 1 && change_pair(p - self.b.q, p - q1)) {
+                                len = l1;
+                                self.b.q = q1;
+                            }
+                        }
+                    }
+                    return len;
+                }
+            }
+        }
+    }
+
+    fn get_matchptr(&self) -> usize {
+        self.b.q
+    }
+
+    /// `update_hash1` (:616): move the head back one slot and write there.
+    fn update_hash1(&mut self, buf: &[u8], p: usize) {
+        let row = self.b.hash_row_width;
+        let h = self.b.hashx(self.n, buf, p);
+        let cur = self.head[h];
+        let i = if cur == 0 { (row - 1) as u8 } else { cur - 1 };
+        self.head[h] = i;
+        let at = (h * row + i as usize) * 2;
+        self.b.table[at] = p as u32;
+        let k = self.key(buf, p);
+        self.b.table[at + 1] = k;
+    }
+
+    /// `update_hash` (:625): every position inside the match, no step.
+    fn update_hash(&mut self, buf: &[u8], p: usize, len: u32, _step: u32) {
+        for i in 1..len as usize {
+            self.update_hash1(buf, p + i);
+        }
+    }
+
+    /// Both tables go to zero here, not to the offset-1 marker (:655).
+    fn clear_hash(&mut self, _buf: &[u8]) {
+        self.b.table.fill(0);
+        self.head.fill(0);
+        let _ = self.head_size;
+    }
+
+    fn shift(&mut self, shift: usize) {
+        let s = shift as u32;
+        for i in (0..self.b.table.len()).step_by(2) {
+            self.b.table[i] = if self.b.table[i] > s { self.b.table[i] - s } else { 0 };
+        }
+    }
+
+    fn error(&self) -> Option<c_int> {
+        None
+    }
+}
+
+// ---------------------------------------------------------------------------
+// CombineMF
+// ---------------------------------------------------------------------------
+
+/// `CombineMF<MF1, MF2>` (:886). Tries the long finder first and falls back to
+/// the short one, keeping whichever match is better.
+///
+/// `min_length()` is the *smaller* of the two, which is what reaches the stream
+/// header -- so combining a `CycledCachingMatchFinder<5>` with a `Hash3`-wrapped
+/// finder gives 2, not 5.
+pub struct CombineMF<A: MatchFinder, B: MatchFinder> {
+    mf1: A,
+    mf2: B,
+    q: usize,
+}
+
+impl<A: MatchFinder, B: MatchFinder> CombineMF<A, B> {
+    pub fn new(mf1: A, mf2: B) -> Self {
+        CombineMF { mf1, mf2, q: 0 }
+    }
+}
+
+impl<A: MatchFinder, B: MatchFinder> MatchFinder for CombineMF<A, B> {
+    fn min_length(&self) -> u32 {
+        self.mf1.min_length().min(self.mf2.min_length())
+    }
+
+    fn find_matchlen(&mut self, buf: &[u8], p: usize, bufend: usize, prevlen: u32) -> u32 {
+        let len1 = self.mf1.find_matchlen(buf, p, bufend, prevlen);
+        let q1 = self.mf1.get_matchptr();
+
+        // Strictly greater: a match of exactly MINLEN still gets the second
+        // finder's opinion.
+        if len1 > self.mf1.min_length() {
+            self.mf2.update_hash1(buf, p);
+            self.q = q1;
+            return len1;
+        }
+
+        let len2 = self.mf2.find_matchlen(buf, p, bufend, prevlen);
+        let q2 = self.mf2.get_matchptr();
+
+        if len1 >= self.mf1.min_length()
+            && len1 > len2
+            && !(len2 >= self.mf2.min_length()
+                && len1 == len2 + 1
+                && change_pair(p.saturating_sub(q2), p.saturating_sub(q1)))
+        {
+            self.q = q1;
+            len1
+        } else {
+            self.q = q2;
+            len2
+        }
+    }
+
+    fn get_matchptr(&self) -> usize {
+        self.q
+    }
+
+    fn update_hash1(&mut self, buf: &[u8], p: usize) {
+        self.mf1.update_hash1(buf, p);
+        self.mf2.update_hash1(buf, p);
+    }
+
+    fn update_hash(&mut self, buf: &[u8], p: usize, len: u32, step: u32) {
+        self.mf1.update_hash(buf, p, len, step);
+        self.mf2.update_hash(buf, p, len, step);
+    }
+
+    fn clear_hash(&mut self, buf: &[u8]) {
+        self.mf1.clear_hash(buf);
+        self.mf2.clear_hash(buf);
+    }
+
+    fn shift(&mut self, shift: usize) {
+        self.mf1.shift(shift);
+        self.mf2.shift(shift);
+        self.q = self.q.saturating_sub(shift);
+    }
+
+    fn invalidate_match(&mut self) {
+        self.mf1.invalidate_match();
+        self.mf2.invalidate_match();
+    }
+
+    fn error(&self) -> Option<c_int> {
+        self.mf1.error().or_else(|| self.mf2.error())
     }
 }

@@ -34,8 +34,8 @@
 use super::lz77_enc::{DynamicCoder, Lz77Encoder, IMPOSSIBLE_LEN};
 use super::tables::{check_for_data_table, looks_like_table, LastChecked};
 use super::matchfinder::{
-    CachingMatchFinder, Hash3, LazyMatching, MatchFinder, MatchFinder1, MatchFinder2,
-    MAX_HASHED_BYTES,
+    CachingMatchFinder, CombineMF, CycledCachingMatchFinder, ExactMatchFinder, Hash3,
+    LazyMatching, MatchFinder, MatchFinder1, MatchFinder2, MAX_HASHED_BYTES,
 };
 use super::{ARICODER, BITCODER, BYTECODER, HUFCODER, STORING};
 use crate::ffi::{Io, FREEARC_ERRCODE_GENERAL};
@@ -391,6 +391,39 @@ pub fn compress(mut m: PackMethod, io: &Io, all_at_once: bool) -> c_int {
             12,
             10,
             false,
+        ));
+        run(io, &m, mf, e, all_at_once)
+    } else if row >= 2 && m.hash3 == 2 && m.match_parser == LAZY_ON && (5..=7).contains(&m.caching_finder)
+    {
+        // (:347), (:351) and (:354): three arms differing only in the cycled
+        // finder's N and in what the auxiliary hash wraps. The coder is
+        // LZ77_DynamicCoder, which picks a back-end from encoding_method at run
+        // time -- which is exactly what DynamicCoder::new does.
+        //
+        // CombineMF gives its children the main and the *auxiliary* hash
+        // geometry respectively, and its min_length() is the smaller of the
+        // two -- so with Hash3 on the auxiliary side that is 2, not 5.
+        let n = m.caching_finder as usize;
+        let aux: Box<dyn MatchFinder> = if m.caching_finder == 5 {
+            // -7..-9 pair the cycled finder with an exact one.
+            Box::new(Hash3::new(
+                ExactMatchFinder::new(4, m.auxhash_size, m.auxhash_row_width),
+                16,
+                12,
+                true,
+            ))
+        } else {
+            // -10 and -11 use a cycled finder on both sides.
+            Box::new(Hash3::new(
+                CycledCachingMatchFinder::new(4, m.auxhash_size, m.auxhash_row_width),
+                16,
+                12,
+                true,
+            ))
+        };
+        let mf = LazyMatching::new(CombineMF::new(
+            CycledCachingMatchFinder::new(n, m.hashsize, row),
+            aux,
         ));
         run(io, &m, mf, e, all_at_once)
     } else {

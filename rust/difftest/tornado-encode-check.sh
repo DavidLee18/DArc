@@ -75,8 +75,11 @@ total=0; ran=0; skipped=0
 # find_tables cleared while the data-table detector is unported -- and it is the
 # only case that exercises MatchFinder2, so dropping it would leave that finder
 # with no coverage at all. Presets 4+ need the caching finders, the 3-byte hash
-# or lazy matching.
-for case in "0 0" "1 0" "2 0" "3 0" "3 1" "4 0" "4 1" "5 0" "5 1" "6 0" "6 1" "7 0" "9 0" "11 0"; do
+# or lazy matching. Presets 7, 8 and 9 all share caching_finder==5 and so are
+# one instantiation; 10 (caching 6) and 11 (caching 7) are two more. All three
+# are listed because the cycled finder's N differs between them, and covering
+# 7/9/11 alone would leave N==6 untested while looking complete.
+for case in "0 0" "1 0" "2 0" "3 0" "3 1" "4 0" "4 1" "5 0" "5 1" "6 0" "6 1" "7 0" "8 0" "9 0" "10 0" "11 0"; do
   set -- $case; preset=$1; notables=$2
   label="preset $preset"; [ "$notables" = 1 ] && label="$label -t0"
   fail=0; n=0; skip=""
