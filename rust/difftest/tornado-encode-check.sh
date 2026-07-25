@@ -105,6 +105,27 @@ for case in "0 0" "1 0" "2 0" "3 0" "3 1" "4 0" "4 1" "5 0" "5 1" "6 0" "6 1" "7
   fi
 done
 
+# Coverage assertion: comparing a preset with and without find_tables proves
+# nothing about the data-table detector unless the detector actually fires. If
+# the two C outputs were the same size, the table path was never taken and every
+# "0 differing" above would be silent about it.
+echo
+fired=0
+for preset in 3 4 5 6; do
+  a=$("$W/c" c "$preset" 0 < "$W/in/table4" 2>/dev/null | wc -c)
+  b=$("$W/c" c "$preset" 1 < "$W/in/table4" 2>/dev/null | wc -c)
+  if [ "$a" = "$b" ]; then
+    echo "  FAIL: preset $preset table detection never fired (both $a bytes)" >&2
+  else
+    fired=$((fired+1))
+  fi
+done
+if [ "$fired" -ne 4 ]; then
+  echo "FAIL: the data-table path was not exercised on all four presets" >&2
+  exit 1
+fi
+echo "  data-table detector fires on presets 3-6 (compared with it both on and off)"
+
 echo
 echo "tornado encode: $ran presets compared, $skipped skipped, $total differing"
 # A run that compared nothing is a failure, not a pass.

@@ -43,7 +43,7 @@ remains, because `DARC_NO_RUST=1` still builds them.
 | MM | `mm`, `mmdet` (both directions) | yes (encode + decode) | partly — `mm_compress` excluded; `mmdet.cpp` stays for TTA |
 | REP | `rep` | yes (both directions, byte-exact) | **YES** |
 | SREP | `srep` (decode only) | external binary, no `DARC_RUST` wiring | no — see §14 before porting the encoder |
-| Tornado | `tornado` (decode + partial encode) | yes (decode; encode 3 of 9 instantiations) | no |
+| Tornado | `tornado` (decode + partial encode) | yes (decode; encode 6 of 9 instantiations, incl. data tables) | no |
 | TTA | `tta` | yes | no |
 | zstd | `zstd` (`zstd-safe` binding) | yes | **YES — 2.2 MB deleted** |
 | Encryption | `darc-crypto` | yes | no |

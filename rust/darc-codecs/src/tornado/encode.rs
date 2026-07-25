@@ -32,6 +32,7 @@
 //! C global's value in explicitly, since the drop-in cannot see it.
 
 use super::lz77_enc::{DynamicCoder, Lz77Encoder, IMPOSSIBLE_LEN};
+use super::tables::{check_for_data_table, looks_like_table, LastChecked};
 use super::matchfinder::{
     CachingMatchFinder, Hash3, LazyMatching, MatchFinder, MatchFinder1, MatchFinder2,
     MAX_HASHED_BYTES,
@@ -47,6 +48,10 @@ pub const LOOKAHEAD: usize = 256;
 
 const KB: usize = 1024;
 const LARGE_BUFFER_SIZE: usize = 256 * KB;
+/// If no table turned up in this many bytes, skip the next `TABLE_SHIFT`
+/// (Tornado.cpp:58).
+const TABLE_DIST: usize = 256 * 1024;
+const TABLE_SHIFT: usize = 128;
 const HUGE_BUFFER_SIZE: usize = 8 * 1024 * KB;
 
 /// `PackMethod` (Tornado.cpp:11), laid out to match the C so it can cross the
@@ -89,6 +94,9 @@ struct Window {
     bytes: usize,
     /// How far `buf[0]` is into the original stream.
     offset: u64,
+    /// Set by `read_next_chunk` when the window slid, so the caller can rebase
+    /// the table bookkeeping it owns.
+    last_shift: Option<usize>,
 }
 
 /// `tor_compress_chunk` (:133), specialised to one match finder and the runtime
@@ -120,6 +128,7 @@ fn compress_chunk(
         read_point: 0,
         bytes: 0,
         offset: 0,
+        last_shift: None,
     };
 
     let n = io.read(&mut w.buf[..chunk]);
@@ -150,18 +159,17 @@ fn compress_chunk(
     let mut coder = DynamicCoder::new(coder_kind, io, outbuf_size(bufsize, all_at_once), chunk * 2)
         .ok_or(FREEARC_ERRCODE_GENERAL)?;
 
-    // The data-table detector is not ported yet. Rather than silently emitting
-    // a stream that differs from the C's wherever a table would have been
-    // found, refuse the configuration outright -- see the module note in
-    // tables.rs about which presets this covers.
-    if coder.support_tables() && m.find_tables {
-        return Err(FREEARC_ERRCODE_GENERAL);
-    }
-
     // Six-byte header (:154).
     coder.put8(m.encoding_method as u32);
     coder.put8(minlen as u32);
     coder.put32(m.buffer);
+
+    // Table-detection state (:149-152). When tables are off, `table_end` is
+    // parked past the end of the buffer so the `p > table_end` test never fires.
+    let find_tables = coder.support_tables() && m.find_tables;
+    let mut table_end: usize = if find_tables { 0 } else { bufsize + LOOKAHEAD };
+    let mut last_found: usize = 0;
+    let mut last_checked = LastChecked::new();
 
     // The first four bytes go out as literals, so the match finder's
     // `update()` can look back two bytes without a special case (:157).
@@ -179,12 +187,52 @@ fn compress_chunk(
         let mut p = 4usize;
         loop {
             if p >= w.read_point {
+                let before = w.bufend;
                 match read_next_chunk(io, m, mf, &mut coder, &mut w, &mut p, chunk, all_at_once) {
                     Err(e) => return Err(e),
                     Ok(false) => break, // all input compressed
                     Ok(true) => {}
                 }
+                // A slide moves every recorded position (:113-116).
+                if let Some(sh) = w.last_shift.take() {
+                    let _ = before;
+                    if find_tables {
+                        table_end = if table_end > sh { table_end - sh } else { 0 };
+                        last_found = if last_found > sh { last_found - sh } else { 0 };
+                    }
+                    last_checked.reset();
+                }
                 matchend = w.bufend - MAX_HASHED_BYTES.min(w.bufend);
+            }
+
+            // Check for a data table worth diffing (:177-185). `diff_table`
+            // rewrites the buffer in place, so a match cached by the lazy
+            // finder has to be dropped.
+            if find_tables && p > table_end {
+                let mut found = None;
+                // The 2-byte check is skipped in the faster modes, where it
+                // would not pay; min_length() is 2 exactly when Hash3 is on.
+                if mf.min_length() < 4 && looks_like_table(&w.buf, p, 2) {
+                    found = check_for_data_table(&mut w.buf, 2, p, w.bufend, &mut last_checked);
+                }
+                if found.is_none() && looks_like_table(&w.buf, p, 4) {
+                    found = check_for_data_table(&mut w.buf, 4, p, w.bufend, &mut last_checked);
+                }
+                match found {
+                    Some(t) => {
+                        table_end = p + t.row * t.items;
+                        coder.encode_table(t.row as i32, t.items as i32);
+                        mf.invalidate_match();
+                        last_found = table_end;
+                    }
+                    None => {
+                        // Nothing found for a long while: skip ahead rather
+                        // than keep paying for the check (:181).
+                        if p - last_found > TABLE_DIST {
+                            table_end = p + TABLE_SHIFT;
+                        }
+                    }
+                }
             }
 
             let len = mf.find_matchlen(&w.buf, p, matchend, 0);
@@ -254,6 +302,7 @@ fn read_next_chunk(
         w.offset += sh as u64;
         mf.invalidate_match();
         coder.shift_occurs();
+        w.last_shift = Some(sh);
     }
 
     let want = chunk.min(bufsize - w.bufend);
