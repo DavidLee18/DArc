@@ -37,7 +37,7 @@ remains, because `DARC_NO_RUST=1` still builds them.
 | Delta | `delta` | yes (both directions) | **YES** |
 | Dict | `dict`, `dict_encode` | yes (both directions) | **YES** |
 | DisPack | `dispack` (both directions) | yes (encode + decode) | **YES — 1,018 lines deleted** |
-| GRZip | `grzip` | yes | no |
+| GRZip | `grzip/` (both directions) | yes (encode + decode) | partly — 1,994 encoder lines deleted; decoders stay for Unarc |
 | LZ4 | `lz4` (`lz4_flex`) + `lz4hc` (own HC port) | yes (decode + both encoders) | **YES — 6,319 lines deleted** |
 | LZP | `lzp` | yes (both directions) | **YES — 259 lines deleted** |
 | MM | `mm`, `mmdet` (both directions) | yes (encode + decode) | partly — `mm_compress` excluded; `mmdet.cpp` stays for TTA |
