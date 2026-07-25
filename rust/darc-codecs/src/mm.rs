@@ -124,6 +124,81 @@ fn round_up(a: usize, b: usize) -> usize {
 // pointer conditions in C do (`p+N <= buf+bufsize`).
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Forward filters -- diff1..diff4 (`mm.cpp:19-77`), the exact mirrors of the
+// undiff family below.
+//
+// Each replaces every element with its difference from the previous element in
+// the SAME channel, so `base` carries one running value per channel and
+// persists across calls for the whole stream. The order matters and is easy to
+// get subtly wrong: the C does `x = p[i]; p[i] -= base[i]; base[i] = x;` -- the
+// ORIGINAL value becomes the new base, not the difference just written.
+//
+// Every arithmetic op wraps. In C these are unsigned types where overflow is
+// defined; a Rust `-` would panic in debug, so `wrapping_sub` is required for
+// equivalence rather than as a style choice.
+//
+// The loop bound mirrors the C pointer condition `p + N <= buf + bufsize`, so a
+// trailing partial element is left untouched -- not rounded up, not padded.
+// ---------------------------------------------------------------------------
+
+fn diff1(buf: &mut [u8], n: usize, base: &mut [u8]) {
+    let mut p = 0;
+    while p + n <= buf.len() {
+        for i in 0..n {
+            let x = buf[p + i];
+            buf[p + i] = x.wrapping_sub(base[i]);
+            base[i] = x;
+        }
+        p += n;
+    }
+}
+
+fn diff2(buf: &mut [u8], n: usize, base: &mut [u8]) {
+    let mut p = 0; // in 16-bit words
+    while (p + n) * 2 <= buf.len() {
+        for i in 0..n {
+            let at = (p + i) * 2;
+            let x = u16::from_le_bytes([buf[at], buf[at + 1]]);
+            let prev = u16::from_le_bytes([base[i * 2], base[i * 2 + 1]]);
+            buf[at..at + 2].copy_from_slice(&x.wrapping_sub(prev).to_le_bytes());
+            base[i * 2..i * 2 + 2].copy_from_slice(&x.to_le_bytes());
+        }
+        p += n;
+    }
+}
+
+fn diff3(buf: &mut [u8], n: usize, base: &mut [u8]) {
+    let mut p = 0; // in bytes
+    while p + n * 3 <= buf.len() {
+        for i in 0..n {
+            let at = p + i * 3;
+            let b = i * 4;
+            let x = u32::from_le_bytes([buf[at], buf[at + 1], buf[at + 2], 0]);
+            let prev = u32::from_le_bytes([base[b], base[b + 1], base[b + 2], base[b + 3]]);
+            // setvalue24 writes three bytes; the fourth is not ours to touch.
+            buf[at..at + 3].copy_from_slice(&x.wrapping_sub(prev).to_le_bytes()[..3]);
+            base[b..b + 4].copy_from_slice(&x.to_le_bytes());
+        }
+        p += n * 3;
+    }
+}
+
+fn diff4(buf: &mut [u8], n: usize, base: &mut [u8]) {
+    let mut p = 0; // in 32-bit words
+    while (p + n) * 4 <= buf.len() {
+        for i in 0..n {
+            let at = (p + i) * 4;
+            let b = i * 4;
+            let x = u32::from_le_bytes([buf[at], buf[at + 1], buf[at + 2], buf[at + 3]]);
+            let prev = u32::from_le_bytes([base[b], base[b + 1], base[b + 2], base[b + 3]]);
+            buf[at..at + 4].copy_from_slice(&x.wrapping_sub(prev).to_le_bytes());
+            base[b..b + 4].copy_from_slice(&x.to_le_bytes());
+        }
+        p += n;
+    }
+}
+
 fn undiff1(buf: &mut [u8], n: usize, base: &mut [u8]) {
     let mut p = 0;
     while p + n <= buf.len() {
@@ -282,5 +357,63 @@ fn copy_to_eof(io: &Io, buf: &mut [u8]) -> Result<(), c_int> {
             return Ok(());
         }
         write_out(io, &buf[..got as usize])?;
+    }
+}
+
+#[cfg(test)]
+mod diff_tests {
+    use super::*;
+
+    /// diff then undiff must be the identity for every width and channel count,
+    /// INCLUDING inputs with a trailing partial element -- the loop bound leaves
+    /// those untouched, and an off-by-one there would corrupt the tail.
+    #[test]
+    fn diff_and_undiff_are_inverse() {
+        for width in 1..=4usize {
+            for n in 1..=4usize {
+                for extra in 0..width * n {
+                    let len = width * n * 7 + extra;
+                    let orig: Vec<u8> = (0..len).map(|i| (i * 31 + 7) as u8).collect();
+                    let mut buf = orig.clone();
+                    let mut enc_base = [0u8; 64];
+                    match width {
+                        1 => diff1(&mut buf, n, &mut enc_base),
+                        2 => diff2(&mut buf, n, &mut enc_base),
+                        3 => diff3(&mut buf, n, &mut enc_base),
+                        _ => diff4(&mut buf, n, &mut enc_base),
+                    }
+                    let mut dec_base = [0u8; 64];
+                    match width {
+                        1 => undiff1(&mut buf, n, &mut dec_base),
+                        2 => undiff2(&mut buf, n, &mut dec_base),
+                        3 => undiff3(&mut buf, n, &mut dec_base),
+                        _ => undiff4(&mut buf, n, &mut dec_base),
+                    }
+                    assert_eq!(buf, orig, "width={width} n={n} extra={extra}");
+                }
+            }
+        }
+    }
+
+    /// The base must become the ORIGINAL value, not the difference just stored.
+    /// Getting that backwards still round-trips, so a round-trip test alone
+    /// cannot catch it -- pin the encoded bytes.
+    #[test]
+    fn base_tracks_the_original_not_the_difference() {
+        let mut buf = vec![10u8, 30, 60, 100];
+        let mut base = [0u8; 64];
+        diff1(&mut buf, 1, &mut base);
+        assert_eq!(buf, vec![10, 20, 30, 40]);
+        assert_eq!(base[0], 100, "base must hold the last ORIGINAL value");
+    }
+
+    /// Wrapping is required, not stylistic: a Rust `-` would panic in debug on
+    /// any decreasing sequence, which is most real signal data.
+    #[test]
+    fn decreasing_input_wraps_rather_than_panics() {
+        let mut buf = vec![5u8, 1, 250, 3];
+        let mut base = [0u8; 64];
+        diff1(&mut buf, 1, &mut base);
+        assert_eq!(buf[1], 252);
     }
 }
