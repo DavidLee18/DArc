@@ -30,6 +30,8 @@
 //! payload with `from_be_bytes`.
 
 use super::tables::*;
+use crate::ffi::{Io, FREEARC_ERRCODE_IO, OK};
+use core::ffi::c_int;
 
 /// `MAXINSTR` (`DisPack.cpp:121`) -- the longest instruction this encoder will
 /// consume. The tail loop pads to this, so `process_instr` may always read it.
@@ -506,5 +508,125 @@ mod tests {
         assert_eq!(t[0], 0xbeef);
         assert_eq!(find_mtf(&mut t, 0xdead), Some(1)); // pushed back by one
         assert_eq!(t[0], 0xdead); // and moved to the front again
+    }
+}
+
+// ---------------------------------------------------------------------------
+// The chunked compress driver -- DISPACK_METHOD::compress (`C_DisPack.cpp:170`)
+// ---------------------------------------------------------------------------
+
+/// `TAG_DATA` / `TAG_EXE` (`C_DisPack.cpp:77`). The stream is a sequence of
+/// tagged chunks; TAG_EXE carries a filtered block, TAG_DATA a verbatim one.
+const TAG_DATA: u32 = 0xC71B_3AE1;
+const TAG_EXE: u32 = TAG_DATA + 1;
+
+/// `is_tag` (`C_DisPack.cpp:78`) -- the tag values occupy one aligned run of
+/// 16, so a single masked compare covers both.
+#[inline]
+fn is_tag(x: u32) -> bool {
+    (x ^ TAG_DATA) < 0x10
+}
+
+/// `CHUNK_SIZE` (`C_DisPack.cpp:176`) -- the granularity `detect` runs at, and
+/// the value written into the stream header for the decoder.
+const CHUNK_SIZE: usize = 16 * 1024;
+
+/// Compress driver, mirroring `DISPACK_METHOD::compress`.
+///
+/// Reads `CHUNK_SIZE` at a time and accumulates consecutive chunks that
+/// [`detect`] calls executable into one block, which is then filtered as a
+/// unit; the first chunk that is not executable ends the block and is emitted
+/// verbatim. That is why `detect` runs per 16 KB chunk rather than per block:
+/// it is looking for the boundary between code and data in a mixed file.
+///
+/// `BaseAddress` is the synthetic load address handed to the filter. It starts
+/// at 1 GB and advances by the bytes consumed, wrapping down by 2 GB once it
+/// reaches 3 GB so it never approaches the point where a 32-bit target
+/// computation would behave differently. It is part of the format: the decoder
+/// walks the identical sequence.
+pub fn compress(io: &Io, block_size: u32) -> c_int {
+    let block_size = block_size.max(CHUNK_SIZE as u32) as usize;
+    let mut inbuf = vec![0u8; block_size + 2];
+    let mut base_address: u32 = 1 << 30;
+    let mut first_time = true;
+
+    loop {
+        // Accumulate executable chunks into one block.
+        let mut filled = 0usize; // bytes of confirmed code, at inbuf[..filled]
+        let mut tail = 0usize; // a trailing non-code chunk at inbuf[filled..]
+        loop {
+            let want = CHUNK_SIZE.min(inbuf.len() - filled);
+            if want == 0 {
+                break;
+            }
+            let got = io.read(&mut inbuf[filled..filled + want]);
+            if got < 0 {
+                return got;
+            }
+            if got == 0 {
+                break;
+            }
+            let n = got as usize;
+            if detect(&inbuf[filled..filled + n]) != ExeType::Exe {
+                tail = n; // not code: ends the block, emitted verbatim below
+                break;
+            }
+            filled += n;
+            // `while (p-In <= BlockSize-CHUNK_SIZE)` -- stop before a further
+            // full chunk could overrun the buffer.
+            if filled > block_size.saturating_sub(CHUNK_SIZE) {
+                break;
+            }
+        }
+
+        if filled + tail == 0 {
+            return OK; // input exhausted
+        }
+
+        if first_time {
+            if io.write(&(CHUNK_SIZE as u32).to_le_bytes()) < 0 {
+                return FREEARC_ERRCODE_IO;
+            }
+            first_time = false;
+        }
+
+        if filled != 0 {
+            let out = dis_filter(&inbuf[..filled], base_address);
+            if io.write(&TAG_EXE.to_le_bytes()) < 0
+                || io.write(&(filled as u32).to_le_bytes()) < 0
+                || io.write(&(out.len() as u32).to_le_bytes()) < 0
+                || io.write(&out) < 0
+            {
+                return FREEARC_ERRCODE_IO;
+            }
+        }
+
+        if tail != 0 {
+            let data = &inbuf[filled..filled + tail];
+            // A full chunk whose first word cannot be mistaken for a tag needs
+            // no header at all -- the decoder infers it. Anything else must be
+            // tagged explicitly, or the decoder would misread the data as a
+            // chunk header.
+            let first_word = if data.len() >= 4 {
+                u32::from_le_bytes([data[0], data[1], data[2], data[3]])
+            } else {
+                0
+            };
+            if tail != CHUNK_SIZE || is_tag(first_word) {
+                if io.write(&TAG_DATA.to_le_bytes()) < 0
+                    || io.write(&(tail as u32).to_le_bytes()) < 0
+                {
+                    return FREEARC_ERRCODE_IO;
+                }
+            }
+            if io.write(data) < 0 {
+                return FREEARC_ERRCODE_IO;
+            }
+        }
+
+        base_address = base_address.wrapping_add((filled + tail) as u32);
+        if base_address >= 3u32 << 30 {
+            base_address -= 2u32 << 30;
+        }
     }
 }

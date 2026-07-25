@@ -14,6 +14,8 @@ extern "C" {
 // Rust; this is the other half.
 extern "C" int darc_rs_dispack_filter (const unsigned char *src, int srcSize,
                                        unsigned origin, unsigned char *dst, int dstCap);
+// The whole chunked compress loop, including detect() and the filter call.
+extern "C" int darc_rs_dispack_compress (MemSize BlockSize, CALLBACK_FUNC *callback, void *auxdata);
 #endif
 
 // Compatibility shims for macros that exist in FreeArc 0.67 but not in DArc.
@@ -169,6 +171,14 @@ EXETYPE detect (BYTE *buf, int len)
 // Compression function
 int DISPACK_METHOD::compress (CALLBACK_FUNC *callback, void *auxdata)
 {
+#ifdef DARC_RUST
+    // The Rust driver owns the entire loop: chunked reads, detect(), the
+    // filter, and the tagged-chunk framing. Verified byte-identical to the C
+    // over 108 filter comparisons and 27 detect classifications
+    // (rust/difftest/dispack-filter-check.sh), and the `dispack` fingerprint
+    // is unchanged.
+    return darc_rs_dispack_compress (BlockSize, callback, auxdata);
+#else
     int   errcode = FREEARC_OK;     // Error code returned by last operation or FREEARC_OK
     BYTE *In = NULL,  *Out = NULL;  // Pointers to the input and output data, respectively
     int   InSize;  uint32 OutSize;  // Number of bytes in the input and output buffers, respectively
@@ -231,6 +241,7 @@ int DISPACK_METHOD::compress (CALLBACK_FUNC *callback, void *auxdata)
 finished:
     BigFreeAndNil(In); //BigFreeAndNil(Out);
     return errcode;
+#endif  // DARC_RUST
 }
 
 #endif  // !defined (FREEARC_DECOMPRESS_ONLY)

@@ -653,6 +653,26 @@ pub unsafe extern "C" fn darc_rs_dispack_filter(
     out.len() as c_int
 }
 
+/// DisPack compress driver, mirroring `DISPACK_METHOD::compress`
+/// (`C_DisPack.cpp:170`) -- the chunked stream, not the raw block transform.
+///
+/// This subsumes `detect` and `DisFilter`: the wrapper hands over the whole
+/// callback loop, so the C keeps only the method plumbing and the parser.
+///
+/// # Safety
+/// `callback` and `auxdata` must be what the C caller supplied.
+#[no_mangle]
+pub unsafe extern "C" fn darc_rs_dispack_compress(
+    block_size: u32,
+    callback: CALLBACK_FUNC,
+    auxdata: *mut c_void,
+) -> c_int {
+    match Io::new(callback, auxdata) {
+        Some(io) => dispack::encode::compress(&io, block_size),
+        None => FREEARC_ERRCODE_GENERAL,
+    }
+}
+
 /// DisPack executable detection, mirroring `detect` (`C_DisPack.cpp:151`).
 ///
 /// Returns 2 for `EXETYPE_EXE`, 1 for `EXETYPE_DATA`, matching the C enum so
