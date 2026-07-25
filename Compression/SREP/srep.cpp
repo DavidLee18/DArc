@@ -627,11 +627,21 @@ int main (int argc, char **argv)
         header[1] = len;
         header[2] = (INDEX_LZ? 0 : stat_size);
 
-        // Write compressed block to output file(s)
-        bg_thread.write (header[2], stat, literal_bytes);
-        if (bg_thread.errcode)  {errcode = bg_thread.errcode; goto cleanup;}
-
-        // Store matches in memory
+        // Store matches in memory.
+        //
+        // This MUST happen before bg_thread.write() below. write() signals
+        // WriteReady, which hands header[] and statbuf[] back to the background
+        // thread -- and they are rotating buffers, only BUFFERS(=2) deep.
+        // Copying out of them afterwards is a use-after-release: the producer
+        // refills the slot while this thread is still reading it.
+        //
+        // The symptom was a block header carrying the hash digest of the block
+        // TWO positions later (exactly the ring size), so decompression failed
+        // its own checksum -- intermittently, and only under scheduling
+        // pressure. No memory-error tool finds this: every byte written is
+        // in-bounds, initialised and mutex-free. It is a LIFETIME bug, not a
+        // memory bug. ASan, TSan, malloc poisoning and MallocScribble were all
+        // clean; the corrupt archive itself gave it away.
         if (FUTURE_LZ || INDEX_LZ)
         {
           total_blocks++;
@@ -660,6 +670,11 @@ int main (int argc, char **argv)
           if (INDEX_LZ)
             compsize += sizeof(STAT);   // accounting for the future write of statsize_buf[]
         }
+
+        // Write compressed block to output file(s). Everything above has
+        // finished reading header[]/statbuf[]; this hands the slot back.
+        bg_thread.write (header[2], stat, literal_bytes);
+        if (bg_thread.errcode)  {errcode = bg_thread.errcode; goto cleanup;}
 
         // Update statistics
         total_stat_size += stat_size;
