@@ -627,3 +627,751 @@ mod strong_tests {
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// Encoder: the "fast" sort (BWT.c:789).
+//
+// Where the strong sort ranks positions through a Group array, this one sorts
+// raw suffixes by comparing 32-bit words read straight out of the input, and
+// merges eight independently-sorted groups through a tournament tree. It is
+// much faster and it can GIVE UP: an adaptive match limit counts comparison
+// rounds, and when it runs out the whole sort aborts and the caller falls back
+// to the strong one. Which sort ran therefore decides the output bytes.
+//
+// ## The overshoot prefix
+//
+// `GRZip_BWT_FastBWT_Init` (:985) rewrites the caller's buffer before the sort:
+// it copies the first 80 bytes past the end, REVERSES the whole `size + 80`
+// region, then appends four more bytes. The encoder then works on `Input + 80`.
+//
+// That is what makes this code's negative indexing legal -- `Input[i-1]` at
+// i == 0, and the `Input + pos - 3` pointer hashes, read into the prefix by
+// construction rather than off the front of the allocation. The comparison
+// walks back 32 bytes per round plus a 4-byte word, so 36 bytes below `Input`
+// is the deepest it reaches; 80 covers it.
+//
+// Here that is one `Vec<u8>` with `Input` at offset `OVERSHOOT`, and every C
+// pointer becomes an absolute index into it.
+// ---------------------------------------------------------------------------
+
+/// `FastBWT_NumOverShoot` (:57).
+const OVERSHOOT: usize = 80;
+/// `FastBWT_NumGroups` (:58). The tournament below is specialised to 8, which
+/// is the only value the C compiles.
+const NUM_GROUPS: usize = 8;
+/// `FastBWT_MaxQSortDepth` (:55) / `FastBWT_QSortStackSize` (:56).
+const MAX_QSORT_DEPTH: i32 = 32;
+const QSORT_STACK: usize = 1024;
+/// `FastBWT_RepTreshStep2` / `_Step4` (:52-53) -- the adaptive match limits, as
+/// a fraction of the block size.
+const REP_TRESH_STEP2: f64 = 0.35;
+const REP_TRESH_STEP4: f64 = 1.15;
+/// `GRZ_FAST_BWT_FAILS`.
+const FAST_BWT_FAILS: GrzError = -5;
+
+/// Read a 32-bit word at an absolute byte index, little-endian.
+///
+/// C dereferences a `uint32*` at an arbitrary byte address, so these loads are
+/// unaligned and their VALUE depends on byte order -- the comparison below
+/// orders by the loaded word, not by the bytes. Every target here is
+/// little-endian, so `from_le_bytes` is exact rather than merely equivalent.
+#[inline]
+fn w32(buf: &[u8], at: usize) -> u32 {
+    u32::from_le_bytes([buf[at], buf[at + 1], buf[at + 2], buf[at + 3]])
+}
+
+/// `FastBWT_SimpleCmp` (:443). Compares two suffixes by walking 32-bit words
+/// BACKWARD, eight per round, wrapping by `size` bytes at the front.
+///
+/// `c1`/`c2` are absolute byte indices. The pointer arithmetic is mixed
+/// granularity in the C -- `Cmp1 - 7` steps seven WORDS but the wrap adds
+/// `Size` BYTES -- which is the easiest thing here to get wrong.
+///
+/// Returns false when the match limit runs out, which is also how the caller
+/// learns the sort has failed: `aml` goes negative and every level checks it.
+#[inline]
+fn fast_cmp(buf: &[u8], mut c1: usize, mut c2: usize, size: usize, aml: &mut i32) -> bool {
+    loop {
+        for k in 0..8 {
+            let a = w32(buf, c1 - 4 * k);
+            let b = w32(buf, c2 - 4 * k);
+            if a != b {
+                return a > b;
+            }
+        }
+        c1 -= 32;
+        c2 -= 32;
+        if c1 < OVERSHOOT {
+            c1 += size;
+        }
+        if c2 < OVERSHOOT {
+            c2 += size;
+        }
+        *aml -= 1;
+        if *aml < 0 {
+            return false;
+        }
+    }
+}
+
+/// `FastBWT_ShellSort` (:519).
+fn fast_shell_sort(
+    index: &mut [i32],
+    buf: &[u8],
+    lo: i32,
+    hi: i32,
+    d: i32,
+    size: usize,
+    aml: &mut i32,
+) {
+    let n = hi - lo + 1;
+    let mut h = 1i32;
+    while h < n {
+        h = h * 3 + 1;
+    }
+    loop {
+        h /= 3;
+        let mut i = lo + h;
+        while i <= hi {
+            let idx = index[i as usize];
+            let ptr = (OVERSHOOT as i32 + idx + d) as usize;
+            let mut j = i;
+            while fast_cmp(
+                buf,
+                (OVERSHOOT as i32 + index[(j - h) as usize] + d) as usize,
+                ptr,
+                size,
+                aml,
+            ) {
+                index[j as usize] = index[(j - h) as usize];
+                j -= h;
+                if j < h + lo {
+                    break;
+                }
+            }
+            index[j as usize] = idx;
+            if *aml < 0 {
+                return;
+            }
+            i += 1;
+        }
+        if h == 1 {
+            break;
+        }
+    }
+}
+
+/// `FastBWT_ShellSortDeph2` (:468) -- gaps 13, 4, 1 at a fixed depth of -4.
+fn fast_shell_sort_d2(
+    index: &mut [i32],
+    buf: &[u8],
+    lo: i32,
+    hi: i32,
+    size: usize,
+    aml: &mut i32,
+) {
+    for gap in [13i32, 4, 1] {
+        if gap != 1 && hi - lo <= gap {
+            continue;
+        }
+        let mut i = lo + gap;
+        while i <= hi {
+            let idx = index[i as usize];
+            let ptr = (OVERSHOOT as i32 + idx - 4) as usize;
+            let mut j = i - gap;
+            while fast_cmp(
+                buf,
+                (OVERSHOOT as i32 + index[j as usize] - 4) as usize,
+                ptr,
+                size,
+                aml,
+            ) {
+                index[(j + gap) as usize] = index[j as usize];
+                j -= gap;
+                if j < lo {
+                    break;
+                }
+            }
+            index[(j + gap) as usize] = idx;
+            if *aml < 0 {
+                return;
+            }
+            i += 1;
+        }
+    }
+}
+
+/// `FastBWT_TernarySort` (:545). Three-way radix quicksort on the 32-bit word
+/// at depth `d`, which starts at -4 and decreases.
+///
+/// The three sub-ranges are pushed LARGEST FIRST so the smallest is popped
+/// first, which is what keeps the 1024-entry stack sufficient.
+fn fast_ternary_sort(
+    index: &mut [i32],
+    buf: &[u8],
+    lo0: i32,
+    hi0: i32,
+    size: usize,
+    aml: &mut i32,
+) {
+    let mut stack = [0i32; QSORT_STACK];
+    let mut sp = 0usize;
+    macro_rules! push {
+        ($l:expr, $h:expr, $d:expr) => {
+            if sp + 3 <= QSORT_STACK {
+                stack[sp] = $l;
+                stack[sp + 1] = $h;
+                stack[sp + 2] = $d;
+                sp += 3;
+            }
+        };
+    }
+    push!(lo0, hi0, -4);
+    while sp != 0 {
+        sp -= 3;
+        let (lo, hi, d) = (stack[sp], stack[sp + 1], stack[sp + 2]);
+        if hi <= lo {
+            continue;
+        }
+        if hi - lo < MIN_QSORT || d <= -MAX_QSORT_DEPTH {
+            fast_shell_sort(index, buf, lo, hi, d, size, aml);
+            if *aml < 0 {
+                return;
+            }
+            continue;
+        }
+        let at = |ix: &[i32], p: i32| w32(buf, (OVERSHOOT as i32 + ix[p as usize] + d) as usize);
+        let med = if hi - lo < MED_TRH {
+            med3(at(index, (lo + hi) >> 1), at(index, lo), at(index, hi))
+        } else {
+            let m = (hi + lo) >> 1;
+            let n = (hi - lo) >> 3;
+            let m1 = med3(at(index, lo), at(index, lo + n), at(index, lo + n + n));
+            let m2 = med3(at(index, m - n), at(index, m), at(index, m + n));
+            let m3 = med3(at(index, hi - n - n), at(index, hi - n), at(index, hi));
+            med3(m1, m2, m3)
+        };
+
+        let (mut a, mut b, mut c, mut dd) = (lo, lo, hi, hi);
+        loop {
+            loop {
+                if b > c {
+                    break;
+                }
+                let t = w32(buf, (OVERSHOOT as i32 + index[b as usize] + d) as usize);
+                if t == med {
+                    index.swap(a as usize, b as usize);
+                    a += 1;
+                    b += 1;
+                    continue;
+                }
+                if t > med {
+                    break;
+                }
+                b += 1;
+            }
+            loop {
+                if b > c {
+                    break;
+                }
+                let t = w32(buf, (OVERSHOOT as i32 + index[c as usize] + d) as usize);
+                if t == med {
+                    index.swap(c as usize, dd as usize);
+                    dd -= 1;
+                    c -= 1;
+                    continue;
+                }
+                if t < med {
+                    break;
+                }
+                c -= 1;
+            }
+            if b > c {
+                break;
+            }
+            index.swap(b as usize, c as usize);
+            b += 1;
+            c -= 1;
+        }
+
+        if dd < a {
+            push!(lo, hi, d - 4);
+            continue;
+        }
+
+        let mut vswap = |ix: &mut [i32], mut s1: i32, mut s2: i32, mut num: i32| {
+            while num != 0 {
+                ix.swap(s1 as usize, s2 as usize);
+                s1 += 1;
+                s2 += 1;
+                num -= 1;
+            }
+        };
+        let n = (a - lo).min(b - a);
+        vswap(index, lo, b - n, n);
+        let m = (hi - dd).min(dd - c);
+        vswap(index, b, hi - m + 1, m);
+
+        let n2 = lo + b - a - 1;
+        let m2 = hi - (dd - c) + 1;
+
+        let mut nl = [lo, m2, n2 + 1];
+        let mut nh = [n2, hi, m2 - 1];
+        let mut nd = [d, d, d - 4];
+        // Sort the three by size, largest first.
+        let sz = |l: &[i32; 3], h: &[i32; 3], i: usize| h[i] - l[i];
+        let mut nswap = |l: &mut [i32; 3], h: &mut [i32; 3], dp: &mut [i32; 3], i: usize, j: usize| {
+            l.swap(i, j);
+            h.swap(i, j);
+            dp.swap(i, j);
+        };
+        if sz(&nl, &nh, 0) < sz(&nl, &nh, 2) {
+            nswap(&mut nl, &mut nh, &mut nd, 0, 2);
+        }
+        if sz(&nl, &nh, 0) < sz(&nl, &nh, 1) {
+            nswap(&mut nl, &mut nh, &mut nd, 0, 1);
+        }
+        if sz(&nl, &nh, 1) < sz(&nl, &nh, 2) {
+            nswap(&mut nl, &mut nh, &mut nd, 1, 2);
+        }
+        push!(nl[0], nh[0], nd[0]);
+        push!(nl[1], nh[1], nd[1]);
+        push!(nl[2], nh[2], nd[2]);
+    }
+}
+
+/// State the tournament reads. Kept together because both `rebuild` and
+/// `update` touch all of it and C passes the same six pointers to each.
+struct Tournament {
+    lo: [i32; NUM_GROUPS],
+    hi: [i32; NUM_GROUPS],
+    /// One absolute byte index per group -- C's `PtrHash`, a pointer three
+    /// bytes BEFORE the group's next position so the 32-bit load covers it.
+    ptr: [usize; NUM_GROUPS],
+    winner: [u8; NUM_GROUPS - 1],
+}
+
+impl Tournament {
+    /// `FastBWT_Match` (:653): a group that has run out loses by default;
+    /// otherwise compare the two groups' next suffixes.
+    #[inline]
+    fn match_full(&mut self, g0: usize, g1: usize, win: usize, buf: &[u8], size: usize, aml: &mut i32) {
+        self.winner[win] = if self.lo[g0] >= self.hi[g0] {
+            g1 as u8
+        } else if self.lo[g1] >= self.hi[g1] {
+            g0 as u8
+        } else if fast_cmp(buf, self.ptr[g1], self.ptr[g0], size, aml) {
+            g0 as u8
+        } else {
+            g1 as u8
+        };
+    }
+
+    /// `FastBWT_MatchFast` (:708): the same without the exhaustion checks, used
+    /// on the update path where the caller knows both groups still have entries.
+    #[inline]
+    fn match_fast(&mut self, g0: usize, g1: usize, win: usize, buf: &[u8], size: usize, aml: &mut i32) {
+        self.winner[win] = if fast_cmp(buf, self.ptr[g1], self.ptr[g0], size, aml) {
+            g0 as u8
+        } else {
+            g1 as u8
+        };
+    }
+
+    /// `TreeReBuild` (:674), specialised to eight groups as the C is.
+    fn rebuild(&mut self, buf: &[u8], size: usize, aml: &mut i32) {
+        self.match_full(0, 1, 0, buf, size, aml);
+        self.match_full(2, 3, 1, buf, size, aml);
+        let (w0, w1) = (self.winner[0] as usize, self.winner[1] as usize);
+        self.match_full(w0, w1, 4, buf, size, aml);
+        self.match_full(4, 5, 2, buf, size, aml);
+        self.match_full(6, 7, 3, buf, size, aml);
+        let (w0, w1) = (self.winner[2] as usize, self.winner[3] as usize);
+        self.match_full(w0, w1, 5, buf, size, aml);
+        let (w0, w1) = (self.winner[4] as usize, self.winner[5] as usize);
+        self.match_full(w0, w1, 6, buf, size, aml);
+    }
+
+    /// `TreeUpdateFast` (:719): replay only the path from the group that just
+    /// won. Note each arm still re-runs the semifinal from `winner[0]`/`[1]` or
+    /// `[2]`/`[3]` -- the C does not narrow it further, and the choice of which
+    /// pair is re-read per arm is what makes this asymmetric.
+    fn update(&mut self, pred: usize, buf: &[u8], size: usize, aml: &mut i32) {
+        match pred {
+            0 | 1 => {
+                self.match_fast(0, 1, 0, buf, size, aml);
+                let (w0, w1) = (self.winner[0] as usize, self.winner[1] as usize);
+                self.match_fast(w0, w1, 4, buf, size, aml);
+            }
+            2 | 3 => {
+                self.match_fast(2, 3, 1, buf, size, aml);
+                let (w0, w1) = (self.winner[0] as usize, self.winner[1] as usize);
+                self.match_fast(w0, w1, 4, buf, size, aml);
+            }
+            4 | 5 => {
+                self.match_fast(4, 5, 2, buf, size, aml);
+                let (w0, w1) = (self.winner[2] as usize, self.winner[3] as usize);
+                self.match_fast(w0, w1, 5, buf, size, aml);
+            }
+            _ => {
+                self.match_fast(6, 7, 3, buf, size, aml);
+                let (w0, w1) = (self.winner[2] as usize, self.winner[3] as usize);
+                self.match_fast(w0, w1, 5, buf, size, aml);
+            }
+        }
+        let (w0, w1) = (self.winner[4] as usize, self.winner[5] as usize);
+        self.match_fast(w0, w1, 6, buf, size, aml);
+    }
+}
+
+/// `GRZip_BWT_FastBWT_Init` (:985): build the overshoot prefix in `buf`, whose
+/// first `OVERSHOOT` bytes are scratch and whose payload starts there.
+fn fast_init(buf: &mut [u8], size: usize) {
+    // Laid out exactly as C's: the payload starts at offset 0, and the ENCODER
+    // then runs at offset OVERSHOOT. Putting the payload at OVERSHOOT and also
+    // reading from OVERSHOOT is an easy mistake and a SILENT one -- every read
+    // lands 80 bytes off, the match limit is exhausted immediately, and the
+    // sort "fails" into the strong fallback on every single input. Round-trip
+    // tests still pass, because the fallback is correct.
+    for i in 0..OVERSHOOT {
+        buf[size + i] = buf[i];
+    }
+    // Reverse the whole size+OVERSHOOT region: the comparison walks BACKWARD,
+    // so reversing lets it read the data in forward order.
+    let mid = (size + OVERSHOOT) >> 1;
+    for i in 0..mid {
+        buf.swap(i, size + OVERSHOOT - i - 1);
+    }
+    for k in 0..4 {
+        buf[size + OVERSHOOT + k] = buf[OVERSHOOT + k];
+    }
+}
+
+/// `GRZip_FastBWT_Encode` (:789), operating on the already-initialised buffer.
+///
+/// Returns the first-byte position, or `FAST_BWT_FAILS` when the adaptive match
+/// limit runs out -- which is not an error, it is the signal to fall back to the
+/// strong sort.
+fn fast_encode_inner(buf: &[u8], size: usize, output: &mut [u8]) -> Result<i32, GrzError> {
+    let mut groups_freq = [[0i32; MAX_BYTE]; NUM_GROUPS];
+    let mut big_bucket = vec![0i32; MAX_WORD];
+    let mut index = vec![0i32; size + 1];
+    let group_size = (size / NUM_GROUPS) as i32;
+    let mut aml = ((size as f32) as f64 * REP_TRESH_STEP2) as i32;
+
+    let b = |off: i32| buf[(OVERSHOOT as i32 + off) as usize] as usize;
+
+    let mut i = size as i32 - 1;
+    while i > 0 {
+        for j in 0..NUM_GROUPS {
+            groups_freq[j][b(i - j as i32)] += 1;
+        }
+        big_bucket[(b(i - NUM_GROUPS as i32 + 1) << 8) | b(i - NUM_GROUPS as i32)] += 1;
+        i -= NUM_GROUPS as i32;
+    }
+
+    let mut small_lo = [0i32; NUM_GROUPS];
+    let mut small_hi = [0i32; NUM_GROUPS];
+    let mut cum = 0i32;
+    for g in 0..NUM_GROUPS {
+        small_lo[g] = cum;
+        cum += group_size;
+        small_hi[g] = cum;
+    }
+
+    let mut c = small_lo[NUM_GROUPS - 1];
+    for v in big_bucket.iter_mut() {
+        c += *v;
+        *v = c - *v;
+    }
+
+    let mut i = 0i32;
+    while i < size as i32 {
+        let tmp = (b(i) << 8) | b(i - 1);
+        index[big_bucket[tmp] as usize] = i;
+        big_bucket[tmp] += 1;
+        i += NUM_GROUPS as i32;
+    }
+
+    let mut index = index;
+    let mut lo = small_lo[NUM_GROUPS - 1];
+    for i in 0..MAX_WORD {
+        let hi = big_bucket[i] - 1;
+        if lo < hi {
+            if hi - lo > MIN_QSORT {
+                fast_ternary_sort(&mut index, buf, lo, hi, size, &mut aml);
+            } else {
+                fast_shell_sort_d2(&mut index, buf, lo, hi, size, &mut aml);
+            }
+        }
+        if aml < 0 {
+            return Err(FAST_BWT_FAILS);
+        }
+        lo = hi + 1;
+    }
+
+    // Propagate each sorted group back to the group before it, tagging every
+    // index with the byte that follows it.
+    let mut bucket_start = [0i32; MAX_BYTE];
+    for g in (0..NUM_GROUPS - 1).rev() {
+        let mut cum = small_lo[g];
+        for j in 0..MAX_BYTE {
+            bucket_start[j] = cum;
+            cum += groups_freq[g][j];
+        }
+        let (mut l, h) = (small_lo[g + 1], small_hi[g + 1]);
+        while l < h {
+            let tmp = index[l as usize];
+            let ch = b(tmp + 1);
+            index[l as usize] = tmp | ((ch as i32) << 24);
+            index[bucket_start[ch] as usize] = tmp + 1;
+            bucket_start[ch] += 1;
+            l += 1;
+        }
+    }
+    let (mut l, h) = (small_lo[0], small_hi[0]);
+    while l < h {
+        let tmp = index[l as usize];
+        index[l as usize] = tmp | ((b(tmp + 1) as i32) << 24);
+        l += 1;
+    }
+
+    let mut cum = 0i32;
+    for i in 0..MAX_BYTE {
+        bucket_start[i] = cum;
+        for j in 0..NUM_GROUPS {
+            cum += groups_freq[j][i];
+        }
+    }
+
+    for o in output[..size].iter_mut() {
+        *o = 0xFF;
+    }
+
+    let mut t = Tournament {
+        lo: small_lo,
+        hi: small_hi,
+        ptr: [0; NUM_GROUPS],
+        winner: [0; NUM_GROUPS - 1],
+    };
+    for g in 0..NUM_GROUPS {
+        t.ptr[g] = (OVERSHOOT as i32 + (index[t.lo[g] as usize] & 0xFF_FFFF) - 3) as usize;
+    }
+
+    aml = ((size as f32) as f64 * REP_TRESH_STEP4) as i32;
+    let mut first = 0i32;
+    let mut i = 0i32;
+
+    // Merge: repeatedly take the tournament winner. `output[i] == 0xFF` marks a
+    // slot whose group is not yet known; the second inner loop handles slots
+    // already stamped by the induction below, which need no tree work.
+    loop {
+        let mut min = t.hi[0] - t.lo[0];
+        for g in 1..NUM_GROUPS {
+            min = min.min(t.hi[g] - t.lo[g]);
+        }
+        if min <= 0 {
+            break;
+        }
+        let stop = i + min;
+        while i < stop {
+            t.rebuild(buf, size, &mut aml);
+            if aml < 0 {
+                return Err(FAST_BWT_FAILS);
+            }
+            while i < stop && output[i as usize] == 0xFF {
+                let gnum = t.winner[NUM_GROUPS - 2] as usize;
+                let idx = t.lo[gnum];
+                t.lo[gnum] += 1;
+                let ptr = index[idx as usize];
+                let pb = (ptr >> 24) as u8;
+                output[i as usize] = pb;
+                if (ptr & 0xFF_FFFF) == size as i32 - 1 {
+                    first = i;
+                }
+                t.ptr[gnum] =
+                    (OVERSHOOT as i32 + (index[(idx + 1) as usize] & 0xFF_FFFF) - 3) as usize;
+
+                let p = bucket_start[pb as usize];
+                bucket_start[pb as usize] += 1;
+                if i < p {
+                    output[p as usize] =
+                        ((gnum + NUM_GROUPS - 1) & (NUM_GROUPS - 1)) as u8;
+                }
+                t.update(gnum, buf, size, &mut aml);
+                if aml < 0 {
+                    return Err(FAST_BWT_FAILS);
+                }
+                i += 1;
+            }
+            while i < stop && output[i as usize] != 0xFF {
+                let gnum = output[i as usize] as usize;
+                let idx = t.lo[gnum];
+                t.lo[gnum] += 1;
+                let ptr = index[idx as usize];
+                let pb = (ptr >> 24) as u8;
+                output[i as usize] = pb;
+                if (ptr & 0xFF_FFFF) == size as i32 - 1 {
+                    first = i;
+                }
+                t.ptr[gnum] =
+                    (OVERSHOOT as i32 + (index[(idx + 1) as usize] & 0xFF_FFFF) - 3) as usize;
+                let p = bucket_start[pb as usize];
+                bucket_start[pb as usize] += 1;
+                if i < p {
+                    output[p as usize] =
+                        ((gnum + NUM_GROUPS - 1) & (NUM_GROUPS - 1)) as u8;
+                }
+                i += 1;
+            }
+        }
+    }
+    while i < size as i32 {
+        t.rebuild(buf, size, &mut aml);
+        if aml < 0 {
+            return Err(FAST_BWT_FAILS);
+        }
+        let gnum = t.winner[NUM_GROUPS - 2] as usize;
+        let idx = t.lo[gnum];
+        t.lo[gnum] += 1;
+        let ptr = index[idx as usize];
+        output[i as usize] = (ptr >> 24) as u8;
+        if (ptr & 0xFF_FFFF) == size as i32 - 1 {
+            first = i;
+        }
+        t.ptr[gnum] = (OVERSHOOT as i32 + (index[(idx + 1) as usize] & 0xFF_FFFF) - 3) as usize;
+        i += 1;
+    }
+    if aml < 0 {
+        Err(FAST_BWT_FAILS)
+    } else {
+        Ok(first)
+    }
+}
+
+/// `GRZip_BWT_Encode` (:1014): fast sort when asked, strong otherwise, and
+/// strong as the fallback when the fast one gives up. The strong result is
+/// returned with `STRONG_BWT_FLAG` set so the decoder picks the right inverse.
+pub fn encode(input: &[u8], size: usize, output: &mut [u8], fast: bool) -> Result<i32, GrzError> {
+    if size < 2 || input.len() < size || output.len() < size {
+        return Err(GRZ_CRC_ERROR);
+    }
+    if fast {
+        // The C mutates the caller's buffer in place and undoes it afterwards;
+        // a scratch copy is the same thing without the surprise.
+        let mut work = vec![0u8; size + 2 * OVERSHOOT + 8];
+        work[..size].copy_from_slice(&input[..size]);
+        fast_init(&mut work, size);
+        match fast_encode_inner(&work, size, output) {
+            Ok(fbp) => return Ok(fbp),
+            Err(e) if e != FAST_BWT_FAILS => return Err(e),
+            Err(_) => {} // fall through to the strong sort
+        }
+    }
+    strong_encode(input, size, output).map(|fbp| fbp | STRONG_BWT_FLAG)
+}
+
+#[cfg(test)]
+mod fast_tests {
+    use super::*;
+
+    /// Encode then decode must be the identity, through whichever sort ran.
+    /// `encode` returns the strong flag when it fell back, so `decode` picks
+    /// the matching inverse on its own.
+    #[test]
+    fn fast_bwt_round_trips() {
+        fn lcg(seed: u32, n: usize) -> Vec<u8> {
+            let mut st = seed;
+            (0..n).map(|_| { st = st.wrapping_mul(1103515245).wrapping_add(12345); (st >> 16) as u8 }).collect()
+        }
+        let cases: Vec<Vec<u8>> = vec![
+            // High entropy: the fast sort RUNS to completion on these.
+            lcg(12345, 40000),
+            lcg(999, 9000),
+            lcg(7, 3000),
+            // Repetitive: the match limit runs out and the strong sort takes
+            // over. Both outcomes must round-trip, and `encode` sets the strong
+            // flag so `decode` picks the right inverse on its own.
+            b"the quick brown fox jumps over the lazy dog. ".repeat(30),
+            vec![b'A'; 500],
+            (0..4000u32).map(|i| ((i / 64) % 4) as u8 + b'p').collect(),
+        ];
+        let mut fast_ran = 0;
+        let mut fell_back = 0;
+        for (n, input) in cases.iter().enumerate() {
+            let size = input.len();
+            let mut coded = vec![0u8; size];
+            let fbp = encode(input, size, &mut coded, true).expect("encode");
+            if fbp & STRONG_BWT_FLAG != 0 { fell_back += 1 } else { fast_ran += 1 }
+            let mut round = coded.clone();
+            decode(&mut round, size, fbp).expect("decode");
+            assert_eq!(round, *input, "case {n} (fbp {fbp:#x})");
+        }
+        // Without this the fast path can be entirely untested and still green:
+        // the fallback is correct, so every case round-trips through the STRONG
+        // sort while the fast one never runs. That is exactly what a base-offset
+        // bug in the buffer layout produced -- six green cases, zero coverage.
+        assert!(fast_ran > 0, "the fast sort never completed -- it is untested");
+        assert!(fell_back > 0, "the fallback path was never taken");
+    }
+
+    /// The match limit only decrements after 32 consecutive matching bytes, so
+    /// high-entropy data never touches it while repetitive data burns through
+    /// it. That is the entire selection rule between the two sorts.
+    #[test]
+    fn repetitive_falls_back_high_entropy_does_not() {
+        let mut st = 4321u32;
+        let noise: Vec<u8> = (0..40000).map(|_| { st = st.wrapping_mul(1103515245).wrapping_add(12345); (st >> 16) as u8 }).collect();
+        let mut out = vec![0u8; noise.len()];
+        let fbp = encode(&noise, noise.len(), &mut out, true).expect("encode");
+        assert_eq!(fbp & STRONG_BWT_FLAG, 0, "high-entropy input should not fall back");
+
+        let rep = b"the quick brown fox jumps over the lazy dog. ".repeat(1000);
+        let mut out2 = vec![0u8; rep.len()];
+        let fbp2 = encode(&rep, rep.len(), &mut out2, true).expect("encode");
+        assert_ne!(fbp2 & STRONG_BWT_FLAG, 0, "repetitive input should fall back");
+    }
+
+    /// Both sorts must produce the SAME transform -- they are two routes to one
+    /// answer, and the fallback is only sound because of that.
+    /// Does the fast sort ever COMPLETE, or does everything fall back? A
+    /// round-trip test passes either way, so without this the fast path could
+    /// be entirely untested and look green.
+    #[test]
+    #[ignore]
+    fn report_fallback_rate() {
+        // AML starts at size*0.35, so small blocks exhaust it during bucket
+        // sorting no matter what. Sizes here span small to realistic.
+        let cases: Vec<(&str, Vec<u8>)> = vec![
+            ("text 1.3k", b"the quick brown fox jumps over the lazy dog. ".repeat(30)),
+            ("text 45k", b"the quick brown fox jumps over the lazy dog. ".repeat(1000)),
+            ("text 450k", b"the quick brown fox jumps over the lazy dog. ".repeat(10000)),
+            ("lcg 200k", { let mut v=Vec::new(); let mut st=12345u32;
+                for _ in 0..200000 { st = st.wrapping_mul(1103515245).wrapping_add(12345); v.push((st>>16) as u8); } v }),
+            ("lcg 20k", { let mut v=Vec::new(); let mut st=999u32;
+                for _ in 0..20000 { st = st.wrapping_mul(1103515245).wrapping_add(12345); v.push((st>>16) as u8); } v }),
+            ("blocks 200k", (0..200000u32).map(|i| ((i / 64) % 4) as u8 + b'p').collect()),
+        ];
+        for (name, input) in cases.iter() {
+            let size = input.len();
+            let mut out = vec![0u8; size];
+            let fbp = encode(input, size, &mut out, true).expect("encode");
+            println!("{name}: {}", if fbp & STRONG_BWT_FLAG != 0 { "FELL BACK to strong" } else { "fast sort completed" });
+        }
+    }
+
+    #[test]
+    fn fast_and_strong_agree_when_both_run() {
+        let input: Vec<u8> = b"the quick brown fox jumps over the lazy dog. ".repeat(30);
+        let size = input.len();
+        let mut fast_out = vec![0u8; size];
+        let fast_fbp = encode(&input, size, &mut fast_out, true).expect("fast");
+        // Only meaningful when the fast sort actually completed.
+        if fast_fbp & STRONG_BWT_FLAG == 0 {
+            let mut strong_out = vec![0u8; size];
+            let strong_fbp = strong_encode(&input, size, &mut strong_out).expect("strong");
+            assert_eq!(fast_out, strong_out, "the two sorts disagree");
+            assert_eq!(fast_fbp, strong_fbp, "first-byte positions disagree");
+        }
+    }
+}

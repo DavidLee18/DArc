@@ -70,6 +70,12 @@ int darc_grz_wfc_ari_encode (unsigned char *in, int size, unsigned char *out)
 int darc_grz_strong_bwt_encode (unsigned char *in, int size, unsigned char *out)
 { return GRZip_StrongBWT_Encode (in, size, out); }
 
+// NB: the fast path REWRITES `in` in place (FastBWT_Init builds an 80-byte
+// overshoot prefix and reverses the buffer, FastBWT_Done undoes it), so the
+// caller must hand it a buffer with slack -- the block driver uses Size+1024.
+int darc_grz_bwt_encode (unsigned char *in, int size, unsigned char *out, int fast)
+{ return GRZip_BWT_Encode (in, size, out, fast); }
+
 int darc_grz_rec_encode (unsigned char *in, int size, unsigned char *out)
 { int mode = GRZip_Rec_Test (in, size);
   if (mode) GRZip_Rec_Encode (in, size, out, mode);

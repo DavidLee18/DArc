@@ -162,6 +162,31 @@ echo "grzip MTF-Ari encode: $((mtf_total-mtf_fail))/$mtf_total agree"
 # All-incompressible would mean the coder never actually ran.
 [ "$mtf_compressed" -gt 0 ] || { echo "  no input was ever compressed -- the coder never ran"; mtf_fail=$((mtf_fail+1)); }
 
+# --- BWT with fast/strong selection ----------------------------------------
+# The returned FBP carries StrongBWT_Flag, so comparing it compares WHICH sort
+# ran as well as what it produced. That matters: the fast sort aborts when its
+# adaptive match limit runs out, and the limit only decrements after 32
+# consecutive matching bytes -- so high-entropy inputs take the fast path and
+# repetitive ones fall back. Both must be represented here or half the code is
+# untested while everything stays green.
+fail=0; total=0; fast_ran=0; fell_back=0
+for f in "$W"/in/*; do
+  total=$((total+1))
+  "$W/c"  F < "$f" >| "$W/o.c"  2>"$W/e.c"
+  "$W/rs" F < "$f" >| "$W/o.rs" 2>"$W/e.rs"
+  c_f=$(cat "$W/e.c"); r_f=$(cat "$W/e.rs")
+  if [ "$c_f" != "$r_f" ]; then
+    echo "  [bwt] $(basename "$f"): FBP differs ($c_f vs $r_f)"; fail=$((fail+1)); continue
+  fi
+  n=${c_f#fbp=}
+  case "$n" in skip) ;; -*) ;; *) if [ "$n" -ge 1073741824 ] 2>/dev/null; then fell_back=$((fell_back+1)); else fast_ran=$((fast_ran+1)); fi;; esac
+  cmp -s "$W/o.c" "$W/o.rs" || { echo "  [bwt] $(basename "$f"): OUTPUT differs"; fail=$((fail+1)); }
+done
+bwt_total=$total; bwt_fail=$fail
+echo "grzip BWT(fast) encode: $((bwt_total-bwt_fail))/$bwt_total agree  [fast=$fast_ran fallback=$fell_back]"
+[ "$fast_ran"  -gt 0 ] || { echo "  the fast sort never ran -- that half is untested"; bwt_fail=$((bwt_fail+1)); }
+[ "$fell_back" -gt 0 ] || { echo "  the fallback never ran -- that path is untested"; bwt_fail=$((bwt_fail+1)); }
+
 # --- strong BWT ------------------------------------------------------------
 # The sort decides the entire transformed block, and the first-byte position
 # decides where the inverse starts, so both are compared. This is the fallback
@@ -246,4 +271,4 @@ for mml in 8 16 32 64; do
   done
 done
 echo "grzip LZP encode: $((total-fail))/$total agree"
-[ $((fail+st4_fail+rec_fail+mtf_fail+wfc_fail+sbwt_fail)) -eq 0 ] || exit 1
+[ $((fail+st4_fail+rec_fail+mtf_fail+wfc_fail+sbwt_fail+bwt_fail)) -eq 0 ] || exit 1

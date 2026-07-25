@@ -32,6 +32,7 @@ int darc_grz_rec_encode(unsigned char *in, int size, unsigned char *out);
 int darc_grz_mtf_ari_encode(unsigned char *in, int size, unsigned char *out);
 int darc_grz_wfc_ari_encode(unsigned char *in, int size, unsigned char *out);
 int darc_grz_strong_bwt_encode(unsigned char *in, int size, unsigned char *out);
+int darc_grz_bwt_encode(unsigned char *in, int size, unsigned char *out, int fast);
 #ifdef USE_RUST
 int darc_rs_grzip_decompress_block (const unsigned char *in, int in_size,
                                     unsigned char *out, int out_cap);
@@ -43,6 +44,7 @@ int darc_rs_grzip_rec_encode (const unsigned char *in, int size, unsigned char *
 int darc_rs_grzip_mtf_ari_encode (const unsigned char *in, int size, unsigned char *out, int out_size);
 int darc_rs_grzip_wfc_ari_encode (const unsigned char *in, int size, unsigned char *out, int out_size);
 int darc_rs_grzip_strong_bwt_encode (const unsigned char *in, int size, unsigned char *out);
+int darc_rs_grzip_bwt_encode (const unsigned char *in, int size, unsigned char *out, int fast);
 #endif
 }
 
@@ -147,6 +149,30 @@ int main (int argc, char **argv) {
     free(in); free(out);
     return 0;
   }
+  // BWT with the fast/strong selection: "F". The returned FBP carries
+  // StrongBWT_Flag when the fast sort gave up, so comparing it also compares
+  // WHICH sort ran -- the adaptive match limit's verdict is part of the output.
+  if (argc>1 && argv[1][0]=='F') {
+    size_t cap=1<<20, len=0; unsigned char *in=(unsigned char*)malloc(cap); if(!in) return 3;
+    for(;;){ if(len==cap){cap*=2; unsigned char*g=(unsigned char*)realloc(in,cap); if(!g){free(in);return 3;} in=g;}
+      size_t n=fread(in+len,1,cap-len,stdin); if(n==0)break; len+=n; }
+    if (len<32) { fprintf(stderr,"fbp=skip\n"); free(in); return 0; }
+    size_t plen=(len+7)&~(size_t)7;
+    // +1024 of slack: the fast path rewrites this buffer in place.
+    unsigned char *pin=(unsigned char*)calloc(plen+1024,1); memcpy(pin,in,len);
+    unsigned char *out=(unsigned char*)calloc(plen+1024,1);
+    int r;
+#ifdef USE_RUST
+    r = darc_rs_grzip_bwt_encode(pin,(int)plen,out,1);
+#else
+    r = darc_grz_bwt_encode(pin,(int)plen,out,1);
+#endif
+    fprintf(stderr,"fbp=%d\n",r);
+    if (r>=0) fwrite(out,1,plen,stdout);
+    free(in); free(pin); free(out);
+    return 0;
+  }
+
   // Strong BWT on its own: "B". Prints the first-byte position on stderr and
   // the transformed block on stdout; both go into the block header, so both
   // have to agree. The block driver rounds the length up to a multiple of 8
