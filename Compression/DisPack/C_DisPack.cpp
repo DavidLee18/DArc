@@ -7,16 +7,11 @@ extern "C" {
 #include "C_DisPack.h"
 }
 
-#ifdef DARC_RUST
-// The Rust forward filter (rust/darc-codecs/src/dispack/encode.rs), verified
-// byte-identical to DisFilter over 76 comparisons across four load origins --
-// see rust/difftest/dispack-filter-check.sh. The decoder already comes from
-// Rust; this is the other half.
-extern "C" int darc_rs_dispack_filter (const unsigned char *src, int srcSize,
-                                       unsigned origin, unsigned char *dst, int dstCap);
-// The whole chunked compress loop, including detect() and the filter call.
+// DisPack is Rust-only: the whole compress loop -- chunked reads, detect(),
+// the filter and the tagged-chunk framing -- lives in
+// rust/darc-codecs/src/dispack/encode.rs, and the decoder in dispack/filter.rs.
+// Unlike most codecs here there is no DARC_NO_RUST fallback left to guard.
 extern "C" int darc_rs_dispack_compress (MemSize BlockSize, CALLBACK_FUNC *callback, void *auxdata);
-#endif
 
 // Compatibility shims for macros that exist in FreeArc 0.67 but not in DArc.
 #ifndef BIGALLOC
@@ -45,11 +40,6 @@ extern "C" int darc_rs_dispack_compress (MemSize BlockSize, CALLBACK_FUNC *callb
 #define BigFreeAndNil(p)         ((p) && (BigFree(p), (p)=NULL))
 #endif
 
-// Big-endian load/store helpers used by DisPack.cpp. Present in FreeArc 0.67
-// Common.h but absent in DArc.
-static inline uint16 value16b (void *p) {
-  uint8 *m = (uint8 *)p; return (m[0] << 8) + m[1];
-}
 static inline uint32 value32b (void *p) {
   uint8 *m = (uint8 *)p;
   return (m[0] << 24) + (m[1] << 16) + (m[2] << 8) + m[3];
@@ -62,8 +52,10 @@ static inline void setvalue32b (void *p, uint32 x) {
   m[0] = x >> 24; m[1] = x >> 16; m[2] = x >> 8; m[3] = x;
 }
 
-#define DISPACK_LIBRARY
-#include "DisPack.cpp"
+// DisPack.cpp is gone: both directions are Rust now (dispack/filter.rs and
+// dispack/encode.rs), verified byte-identical to the C over 108 filter
+// comparisons, 27 detect classifications and three whole-archive method
+// variants. Only the COMPRESSION_METHOD plumbing and the parser stay here.
 
 /*-------------------------------------------------*/
 /* Implementation of the DISPACK_METHOD class      */
@@ -76,8 +68,6 @@ DISPACK_METHOD::DISPACK_METHOD()
     ExtendedTables = 0;
 }
 
-enum {TAG_DATA = 0xC71B3AE1, TAG_EXE};
-bool is_tag (unsigned x)  {return (x^TAG_DATA) < 0x10;}
 
 // DARC_RUST=1 selects the Rust port of the decoder (rust/darc-codecs).
 //
@@ -91,54 +81,6 @@ bool is_tag (unsigned x)  {return (x^TAG_DATA) < 0x10;}
 //
 // Verified byte-identical over real i386 code across three block sizes; see
 // rust/difftest/dispack-check.sh.
-#ifndef DARC_RUST
-int dispack_decompress (MemSize BlockSize, CALLBACK_FUNC *callback, void *auxdata)
-{
-    int   errcode = FREEARC_OK;     // Error code returned by last operation or FREEARC_OK
-    BYTE *In = NULL,  *Out = NULL;  // Pointers to the input and output data, respectively
-    uint  BaseAddress = 1u<<30;
-    int   CHUNK_SIZE, InBufferSize = BlockSize+BlockSize/4+1024;
-    READ4_OR_EOF (CHUNK_SIZE);
-    if (CHUNK_SIZE > BlockSize)  ReturnErrorCode(FREEARC_ERRCODE_BAD_COMPRESSED_DATA);
-    BIGALLOC (BYTE, In,  InBufferSize+2);
-    BIGALLOC (BYTE, Out, BlockSize+2);
-    for(;;) {
-        int tag;
-        READ4_OR_EOF (tag);
-        if (!is_tag(tag) || tag==TAG_DATA) {
-            // copy the uncompressed data; we may already have read 4 bytes of it ;)
-            int done = 0, len;
-            if (tag==TAG_DATA) {
-              READ4 (len);
-            } else {
-              done = 4;
-              len = CHUNK_SIZE;
-              setvalue32 (In, tag);
-            }
-            READ  (In+done, len-done);
-            WRITE (In, len);
-            BaseAddress += len;
-        } else if (tag==TAG_EXE) {
-            int InSize, OutSize;     // number of bytes in the input and output buffers, respectively
-            // Perform the decoding and obtain the size of the output data
-            READ4 (OutSize);
-            READ4 (InSize);
-            if (OutSize > BlockSize  ||  InSize > InBufferSize)  ReturnErrorCode(FREEARC_ERRCODE_BAD_COMPRESSED_DATA);
-            READ (In, InSize);
-            bool success = DisUnFilter (In, InSize, Out, OutSize, BaseAddress);
-            if (!success)  ReturnErrorCode(FREEARC_ERRCODE_BAD_COMPRESSED_DATA);
-            WRITE (Out, OutSize);
-            BaseAddress += OutSize;
-        } else {
-            ReturnErrorCode(FREEARC_ERRCODE_BAD_COMPRESSED_DATA);
-        }
-        if (BaseAddress >= 3u<<30)  BaseAddress -= 2u<<30;
-    }
-finished:
-    BigFreeAndNil(In); BigFreeAndNil(Out);
-    return errcode;
-}
-#endif  // !DARC_RUST
 
 // Decompression function
 int DISPACK_METHOD::decompress (CALLBACK_FUNC *callback, void *auxdata)
@@ -171,77 +113,12 @@ EXETYPE detect (BYTE *buf, int len)
 // Compression function
 int DISPACK_METHOD::compress (CALLBACK_FUNC *callback, void *auxdata)
 {
-#ifdef DARC_RUST
     // The Rust driver owns the entire loop: chunked reads, detect(), the
     // filter, and the tagged-chunk framing. Verified byte-identical to the C
     // over 108 filter comparisons and 27 detect classifications
     // (rust/difftest/dispack-filter-check.sh), and the `dispack` fingerprint
     // is unchanged.
     return darc_rs_dispack_compress (BlockSize, callback, auxdata);
-#else
-    int   errcode = FREEARC_OK;     // Error code returned by last operation or FREEARC_OK
-    BYTE *In = NULL,  *Out = NULL;  // Pointers to the input and output data, respectively
-    int   InSize;  uint32 OutSize;  // Number of bytes in the input and output buffers, respectively
-    uint  BaseAddress = 1u<<30;
-    const int CHUNK_SIZE = 16*kb;
-    bool  first_time = TRUE;
-    BIGALLOC (BYTE, In, BlockSize+2);
-    for(;;)
-    {
-        // Read the file in 16 kb blocks until the executable code runs out
-        BYTE *p = In;  int len;
-        do {
-            READ_LEN (len, p, CHUNK_SIZE);
-            if (len==0) break;
-            EXETYPE exe_type = detect (p, len);
-            if (exe_type!=EXETYPE_EXE) break;
-            p += len, len = 0;
-        } while (p-In <= BlockSize-CHUNK_SIZE);
-
-        InSize = p-In;
-        if (InSize+len == 0)  break;
-        if (first_time)   WRITE4 (CHUNK_SIZE);  first_time = FALSE;
-
-        if (InSize)
-        {
-            // Encode the executable code
-#ifdef DARC_RUST
-            // Worst case is every input byte escaping to two, plus the ST_MAX
-            // header words. DisFilter allocates its own buffer, so this branch
-            // allocates one to match and the shared free() below still applies.
-            {
-                int cap = InSize*2 + 4096;
-                Out = (BYTE*) malloc (cap);
-                if (Out==NULL)  ReturnErrorCode(FREEARC_ERRCODE_NOT_ENOUGH_MEMORY);
-                int n = darc_rs_dispack_filter (In, InSize, BaseAddress, Out, cap);
-                if (n < 0)  {free(Out); Out=NULL; ReturnErrorCode(FREEARC_ERRCODE_GENERAL);}
-                OutSize = n;
-            }
-#else
-            Out = DisFilter(In, InSize, BaseAddress, OutSize);
-            if (Out==NULL)  ReturnErrorCode(FREEARC_ERRCODE_NOT_ENOUGH_MEMORY);
-#endif
-            WRITE4 (TAG_EXE);
-            WRITE4 (InSize);
-            WRITE4 (OutSize);
-            WRITE  (Out, OutSize);
-            free (Out);
-        }
-        if (len)
-        {
-            // Encode the remaining data
-            if (len!=CHUNK_SIZE  ||  is_tag(value32(p))) {
-                WRITE4 (TAG_DATA);
-                WRITE4 (len);
-            }
-            WRITE (p, len);
-        }
-        if ((BaseAddress += InSize+len)  >=  3u<<30)   BaseAddress -= 2u<<30;
-    }
-finished:
-    BigFreeAndNil(In); //BigFreeAndNil(Out);
-    return errcode;
-#endif  // DARC_RUST
 }
 
 #endif  // !defined (FREEARC_DECOMPRESS_ONLY)

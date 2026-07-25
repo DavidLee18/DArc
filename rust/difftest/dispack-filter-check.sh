@@ -44,7 +44,9 @@ cc() { local out="$1" lib="$2"; shift 2
     "$CREF/rust/difftest/dispack_ccodec.cpp" \
     "$CREF/Compression/Common.cpp" \
     ${lib:+"$lib"} -o "$out"; }
-cc "$W/t" "$LIB" || { echo "harness build failed" >&2; exit 1; }
+# -DDARC_RUST: see dispack-check.sh. It drops the pinned dispack_decompress,
+# which this driver never calls, while keeping DisFilter -- the C oracle here.
+cc "$W/t" "$LIB" -DDARC_RUST || { echo "harness build failed" >&2; exit 1; }
 
 python3 - "$W" <<'PY'
 import os,sys,struct,subprocess

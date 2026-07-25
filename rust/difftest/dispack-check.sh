@@ -29,7 +29,12 @@ cc() { local out="$1"; shift
     "$CREF/rust/difftest/dispack_ref.cpp" "$CREF/rust/difftest/dispack_ccodec.cpp" \
     "$CREF/Compression/Common.cpp" "$@" -o "$out"; }
 cc "$W/c"                    || exit 1
-cc "$W/rs" -DUSE_RUST "$LIB" || exit 1
+# -DDARC_RUST as well: the Rust drop-in now exports dispack_decompress
+# unconditionally (the C is deleted), so the pinned C_DisPack.cpp must drop
+# its own definition or the two collide. The "rs" binary is meant to run the
+# Rust decoder anyway; the "c" binary above links no staticlib and keeps the
+# C one, so the oracle is unaffected.
+cc "$W/rs" -DUSE_RUST -DDARC_RUST "$LIB" || exit 1
 
 # The corpus: real i386 code (built here so the test is self-contained), plus
 # non-code inputs that exercise the raw/TAG_DATA path, plus edge sizes.

@@ -24,8 +24,9 @@ and delete the C and Haskell that the Rust replaces.
 ### Wired ≠ pruned
 
 Keep these separate when reporting progress. Four deletions have landed --
-zstd's `libzstd` (52,856 lines), Delta/Dict/REP (2,912) and LZ4's `lz4.c`/
-`lz4hc.c` (6,319) -- for a running total of **62,087 lines of C removed**.
+zstd's `libzstd` (52,856 lines), Delta/Dict/REP (2,912), LZ4's `lz4.c`/
+`lz4hc.c` (6,319), LZP (259) and DisPack (1,018) -- for a running total of
+**63,364 lines of C removed**.
 Those four codecs are Rust-only, with no `DARC_NO_RUST` fallback. Everything
 else is still present: every other `#ifndef DARC_RUST` block and vendored tree
 remains, because `DARC_NO_RUST=1` still builds them.
@@ -35,7 +36,7 @@ remains, because `DARC_NO_RUST=1` still builds them.
 | BSC | `bsc/` | yes | no |
 | Delta | `delta` | yes (both directions) | **YES** |
 | Dict | `dict`, `dict_encode` | yes (both directions) | **YES** |
-| DisPack | `dispack` | yes | no |
+| DisPack | `dispack` (both directions) | yes (encode + decode) | **YES — 1,018 lines deleted** |
 | GRZip | `grzip` | yes | no |
 | LZ4 | `lz4` (`lz4_flex`) + `lz4hc` (own HC port) | yes (decode + both encoders) | **YES — 6,319 lines deleted** |
 | LZP | `lzp` | yes (both directions) | **YES — 259 lines deleted** |
@@ -293,7 +294,7 @@ not a thin corpus — at a given position every candidate path shares the same
 inputs were built specifically to break that (`priced`, `competing`) and did
 not. Those three lines are verified by transcription against the C only.
 
-### 8. Port the DisPack ENCODER — DONE
+### 8. DisPack — DONE, both directions, C deleted
 
 The first encoder to take, and the only one whose completion deletes a whole
 directory. Cheaper than `DisPack.cpp`'s 31 KB suggests: most of that file is
