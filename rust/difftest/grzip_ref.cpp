@@ -28,6 +28,7 @@ int darc_grz_stream_decompress(int (*cb)(const char*, void*, int, void*), void *
 int darc_grz_lzp_encode(unsigned char *in, unsigned size, unsigned char *out,
                         unsigned min_match_len, unsigned ht_size);
 int darc_grz_st4_encode(unsigned char *in, int size, unsigned char *out);
+int darc_grz_rec_encode(unsigned char *in, int size, unsigned char *out);
 #ifdef USE_RUST
 int darc_rs_grzip_decompress_block (const unsigned char *in, int in_size,
                                     unsigned char *out, int out_cap);
@@ -35,6 +36,7 @@ int darc_rs_grzip_decompress (int (*cb)(const char*, void*, int, void*), void *a
 int darc_rs_grzip_lzp_encode (const unsigned char *in, int size, unsigned char *out,
                               int out_size, int min_match_len, int ht_size);
 int darc_rs_grzip_st4_encode (const unsigned char *in, int size, unsigned char *out);
+int darc_rs_grzip_rec_encode (const unsigned char *in, int size, unsigned char *out);
 #endif
 }
 
@@ -119,6 +121,25 @@ int main (int argc, char **argv) {
     if (r>=0) fwrite(out,1,padded_len,stdout);
     free(in); free(pin); free(out);
     return r>=0? 0 : 1;
+  }
+  // Record filter on its own: "r". The MODE decision matters as much as the
+  // bytes -- it is what makes GRZip_CompressBlock recurse, and it is chosen by
+  // a float entropy comparison plus an integer sum that overflows on purpose.
+  if (argc>1 && argv[1][0]=='r') {
+    size_t cap=1<<20, len=0; unsigned char *in=(unsigned char*)malloc(cap); if(!in) return 3;
+    for(;;){ if(len==cap){cap*=2; unsigned char*g=(unsigned char*)realloc(in,cap); if(!g){free(in);return 3;} in=g;}
+      size_t n=fread(in+len,1,cap-len,stdin); if(n==0)break; len+=n; }
+    unsigned char *out=(unsigned char*)calloc(len+8,1);
+    int r;
+#ifdef USE_RUST
+    r = darc_rs_grzip_rec_encode(in,(int)len,out);
+#else
+    r = darc_grz_rec_encode(in,(int)len,out);
+#endif
+    fprintf(stderr,"mode=%d\n",r);
+    if (r>0) fwrite(out,1,len,stdout);
+    free(in); free(out);
+    return 0;
   }
   int stream = (argc>1 && argv[1][0]=='s');
   const char *op = stream? argv[1]+1 : (argc>1? argv[1] : "");

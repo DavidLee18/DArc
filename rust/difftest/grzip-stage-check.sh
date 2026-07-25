@@ -57,6 +57,52 @@ for n in (4096,4097,5000):
 # gives none, so flipping that `<` to `<=` changed no output at all. Each block
 # repeats a 4-byte context and then agrees for exactly L more bytes before
 # diverging, for L spanning the MinMatchLen values under test.
+# Record-shaped inputs. Without these GRZip_Rec_Test returns 0 for everything
+# and the record stage is untested -- exactly how TTA's autodetection sat behind
+# 210 green comparisons. Modes 1 and 2 are plain 2- and 4-byte de-interleaves,
+# 3 and 4 the delta-coded versions; the run below ASSERTS all four appear.
+w("rec16_counter", b"".join(struct.pack("<H", (i*3)&0xffff) for i in range(60000)))
+w("rec16_noisy",   b"".join(struct.pack("<H", ((i*3)&0xffff) ^ (prng(i,1)[0]&0x7)) for i in range(60000)))
+w("rec32_counter", b"".join(struct.pack("<I", i*7) for i in range(30000)))
+w("rec32_table",   b"".join(struct.pack("<I", 0x40000000 + (i%997)*13) for i in range(30000)))
+w("rec16_flat",    b"".join(struct.pack("<H", (i%251)*17) for i in range(60000)))
+w("rec32_struct",  b"".join(struct.pack("<HBB", i&0xffff, (i*5)&0xff, 0x20) for i in range(30000)))
+w("rec16_desc",    b"".join(struct.pack("<H", (65535-(i*3))&0xffff) for i in range(60000)))
+# Modes 1 and 2 need de-interleaving to pay off while DELTA coding does not --
+# every input above is monotonic, so the delta test always fires and turns them
+# into 3 and 4. These are records with one noisy field and the rest near
+# constant: the positional split wins big, but successive values are unrelated,
+# so the sum-vs-sum-of-deltas comparison stays on the near side.
+n16 = prng(41, 60000)
+w("rec16_noise_lo", b"".join(struct.pack("<H", 0x2500 | n16[i]) for i in range(60000)))
+n32 = prng(43, 30000)
+w("rec32_noise_lo", b"".join(struct.pack("<I", 0x40302000 | n32[i]) for i in range(30000)))
+# Mode 2 additionally needs the record VALUES to stay small. The delta test
+# compares Sum against MinCode*(Size>>2), and that product is `uint32 * int` --
+# unsigned, 32-bit, and it WRAPS. For values around 0x40302000 with 30k records
+# the product wraps to near nothing, `Sum - product` comes out enormous, and the
+# test fires unconditionally: everything becomes mode 4. Keeping the values near
+# 8k keeps the product under 2^32, which is the only way mode 2 is reachable at
+# all. The overflow is the C's and is reproduced deliberately; this input is what
+# proves the non-overflowing side of it is right too.
+n32b = prng(61, 30000)
+w("rec32_small",   b"".join(struct.pack("<I", 0x2000 | n32b[i]) for i in range(30000)))
+# The 16-bit twin of that overflow, which is SIGNED rather than unsigned:
+# MinCode*(Size>>1) is `int * int`, so with MinCode near 0xF000 and 60k records
+# the product is 3.7e9 and wraps NEGATIVE. Without an input in this range,
+# widening the product to 64 bits changes nothing and the sabotage passes.
+n16b = prng(71, 60000)
+w("rec16_high",    b"".join(struct.pack("<H", 0xF000 | n16b[i]) for i in range(60000)))
+# Either side of the delta test's SLACK. It reads
+#     sum - MinCode*n > sum_delta + (sum_delta >> 4)
+# so there is a 6.25% band where the plain sum exceeds the delta sum and the
+# filter still declines. Nothing lands in it by chance -- dropping the `>> 4`
+# left the whole run green -- so these two are placed deliberately: step 33 sits
+# just above the band (mode 4 either way) and step 34 inside it (mode 2 only
+# because of the slack, mode 4 without it). Derived by modelling the comparison
+# and confirmed against the C.
+w("rec32_band_out", b"".join(struct.pack("<I", 0x2000 | ((i*33)&0xFF)) for i in range(4096)))
+w("rec32_band_in",  b"".join(struct.pack("<I", 0x2000 | ((i*34)&0xFF)) for i in range(4096)))
 for L in (7,8,9,15,16,17,31,32,33,63,64,65):
     blk = bytearray()
     for r in range(400):
@@ -86,6 +132,32 @@ st4_total=$total
 echo "grzip ST4 encode: $((st4_total-fail))/$st4_total agree"
 st4_fail=$fail
 
+# --- record filter ---------------------------------------------------------
+# The MODE matters as much as the bytes: it is what makes GRZip_CompressBlock
+# recurse, and it is chosen by a float entropy comparison plus an integer sum
+# that overflows on purpose (see rec::test).
+fail=0; total=0; modes_seen=""
+for f in "$W"/in/*; do
+  total=$((total+1))
+  "$W/c"  r < "$f" >| "$W/o.c"  2>"$W/e.c"
+  "$W/rs" r < "$f" >| "$W/o.rs" 2>"$W/e.rs"
+  c_m=$(cat "$W/e.c"); r_m=$(cat "$W/e.rs")
+  if [ "$c_m" != "$r_m" ]; then
+    echo "  [rec] $(basename "$f"): MODE differs ($c_m vs $r_m)"; fail=$((fail+1)); continue
+  fi
+  modes_seen="$modes_seen ${c_m#mode=}"
+  cmp -s "$W/o.c" "$W/o.rs" || { echo "  [rec] $(basename "$f"): OUTPUT differs"; fail=$((fail+1)); }
+done
+rec_total=$total; rec_fail=$fail
+echo "grzip Rec encode: $((rec_total-rec_fail))/$rec_total agree"
+# A green run over inputs that all return mode 0 would test nothing at all.
+for want in 1 2 3 4; do
+  case " $modes_seen " in
+    *" $want "*) ;;
+    *) echo "  corpus never produced Rec mode $want -- that path is untested"; rec_fail=$((rec_fail+1));;
+  esac
+done
+
 # --- LZP -------------------------------------------------------------------
 fail=0; total=0
 for mml in 8 16 32 64; do
@@ -104,4 +176,4 @@ for mml in 8 16 32 64; do
   done
 done
 echo "grzip LZP encode: $((total-fail))/$total agree"
-[ $((fail+st4_fail)) -eq 0 ] || exit 1
+[ $((fail+st4_fail+rec_fail)) -eq 0 ] || exit 1

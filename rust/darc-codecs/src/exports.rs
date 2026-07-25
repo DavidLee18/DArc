@@ -964,3 +964,28 @@ pub unsafe extern "C" fn darc_rs_grzip_st4_encode(
         Err(e) => e,
     }
 }
+
+/// GRZip's record filter: the mode decision and the forward transform.
+/// Harness-only, like the other stages. Returns the mode; `output` is filled
+/// only when the mode is nonzero.
+///
+/// # Safety
+/// `input`/`output` must be valid for `size` bytes.
+#[no_mangle]
+pub unsafe extern "C" fn darc_rs_grzip_rec_encode(
+    input: *const u8,
+    size: c_int,
+    output: *mut u8,
+) -> c_int {
+    if input.is_null() || output.is_null() || size <= 0 {
+        return FREEARC_ERRCODE_GENERAL;
+    }
+    let n = size as usize;
+    let inp = core::slice::from_raw_parts(input, n);
+    let out = core::slice::from_raw_parts_mut(output, n);
+    let mode = grzip::rec::test(inp, n);
+    if mode != 0 {
+        grzip::rec::encode(inp, n, out, mode);
+    }
+    mode
+}

@@ -60,4 +60,9 @@ int darc_grz_lzp_encode (unsigned char *in, unsigned size, unsigned char *out,
 
 int darc_grz_st4_encode (unsigned char *in, int size, unsigned char *out)
 { return GRZip_ST4_Encode (in, size, out); }
+
+int darc_grz_rec_encode (unsigned char *in, int size, unsigned char *out)
+{ int mode = GRZip_Rec_Test (in, size);
+  if (mode) GRZip_Rec_Encode (in, size, out, mode);
+  return mode; }
 }
