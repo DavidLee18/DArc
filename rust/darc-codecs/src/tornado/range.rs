@@ -1,6 +1,6 @@
-//! Shindler range decoder and its semi-adaptive counter, ported from
-//! `Compression/Tornado/EntropyCoder.cpp` (`TRangeDecoder` :555, `TCounter`
-//! :602, `ArithDecoder` :703).
+//! Shindler range codec and its semi-adaptive counter, ported from
+//! `Compression/Tornado/EntropyCoder.cpp` (`TRangeCoder` :509, `TRangeDecoder`
+//! :555, `TCounter` :602, `ArithCoder` :691, `ArithDecoder` :703).
 //!
 //! Like the Huffman back-end this is semi-adaptive: nothing about the model
 //! travels in the stream. Both sides start from an even split of `RANGE` points
@@ -18,6 +18,7 @@
 //! explicit `wrapping_*` for the same reason it is in `tta.rs` -- Rust would
 //! panic in debug on values the format produces routinely.
 
+use super::out_stream::{mask32, OutputByteStream};
 use super::stream::{InputByteStream, BAD};
 use core::ffi::c_int;
 
@@ -76,6 +77,108 @@ impl<'a> RangeDecoder<'a> {
 
     pub fn error(&self) -> Option<c_int> {
         self.err.or_else(|| self.bytes.error())
+    }
+}
+
+/// `TRangeCoder` (:509), the encoding half of Shindler's range coder.
+///
+/// `ShiftLow` carries the same trap as GRZip's `ARI_ShiftLow`: the C writes
+/// `low = static_cast<unsigned int>(low) << 8`, and because the cast is applied
+/// *before* the shift the top byte is dropped at 32 bits even though `low` is a
+/// 64-bit field. Widening that to 64 bits here would leave a stale byte in
+/// `low`, and the very next carry test would fire on bits that should no longer
+/// exist -- which is exactly the bug that took a round-trip rather than a diff
+/// to find in GRZip. `low` is kept as a `u64` and masked explicitly.
+pub struct RangeEncoder<'a> {
+    pub bytes: OutputByteStream<'a>,
+    low: u64,
+    range: u32,
+    buffer: u32,
+    /// Count of pending 0xff bytes held back until the carry is known.
+    help: u32,
+}
+
+impl<'a> RangeEncoder<'a> {
+    pub fn new(bytes: OutputByteStream<'a>) -> Self {
+        RangeEncoder { bytes, low: 0, range: 0xffff_ffff, buffer: 0, help: 0 }
+    }
+
+    /// `ShiftLow` (:517).
+    fn shift_low(&mut self) {
+        if (self.low ^ 0xff00_0000) >= (1 << 24) {
+            let c = (self.low >> 32) as u32;
+            self.bytes.put8(self.buffer.wrapping_add(c) & 0xff);
+            let c = c.wrapping_add(255);
+            while self.help > 0 {
+                self.bytes.put8(c & 0xff);
+                self.help -= 1;
+            }
+            self.buffer = (self.low as u32) >> 24;
+        } else {
+            self.help += 1;
+        }
+        // `(uint32)low << 8` -- the shift happens at 32 bits, so the top byte is
+        // dropped rather than carried into bit 32.
+        self.low = ((self.low as u32) << 8) as u64;
+    }
+
+    /// `Encode` (:536).
+    pub fn encode(&mut self, cum: u32, cnt: u32, bits: u32) {
+        self.range >>= bits;
+        self.low += (cum.wrapping_mul(self.range)) as u64;
+        self.range = self.range.wrapping_mul(cnt);
+        while self.range < (1 << 24) {
+            self.range <<= 8;
+            self.shift_low();
+        }
+    }
+
+    /// `finish` (:546): five shifts push out `low` plus the pending byte.
+    pub fn finish(&mut self) {
+        for _ in 0..5 {
+            self.shift_low();
+        }
+        self.bytes.finish();
+    }
+
+    pub fn flush(&mut self) {
+        self.bytes.flush();
+    }
+
+    pub fn error(&self) -> Option<c_int> {
+        self.bytes.error()
+    }
+}
+
+/// `ArithCoder<EOB>` (:691). The counter model is shared with the decoder: the
+/// C splits it on a template parameter only so the decoder's `index[]` table is
+/// not built on the encode path, which costs a little time and changes nothing.
+pub struct ArithEncoder<'a> {
+    pub rc: RangeEncoder<'a>,
+    c: Counter,
+}
+
+impl<'a> ArithEncoder<'a> {
+    pub fn new(bytes: OutputByteStream<'a>, elements: usize) -> Self {
+        ArithEncoder { rc: RangeEncoder::new(bytes), c: Counter::new(elements) }
+    }
+
+    pub fn encode(&mut self, x: usize) {
+        self.rc.encode(self.c.cum(x), self.c.cnt(x), RANGE_BITS);
+        self.c.inc(x);
+    }
+
+    /// `putlowerbits` (:708): raw bits ride the coder with a flat count of 1,
+    /// split at 15 past 24 bits so the range never underflows.
+    pub fn putlowerbits(&mut self, n: u32, x: u32) {
+        if n <= 24 {
+            self.rc.encode(mask32(x, n as i32), 1, n);
+            return;
+        }
+        self.rc.encode(mask32(x, 15), 1, 15);
+        let x = x >> 15;
+        let n = n - 15;
+        self.rc.encode(mask32(x, n as i32), 1, n);
     }
 }
 
