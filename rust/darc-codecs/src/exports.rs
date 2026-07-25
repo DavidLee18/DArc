@@ -1020,3 +1020,31 @@ pub unsafe extern "C" fn darc_rs_grzip_mtf_ari_encode(
         Err(e) => e,
     }
 }
+
+/// GRZip's WFC + arithmetic coder, forward direction. Harness-only.
+///
+/// # Safety
+/// `input`/`output` must be valid for `size`/`out_size` bytes.
+#[no_mangle]
+pub unsafe extern "C" fn darc_rs_grzip_wfc_ari_encode(
+    input: *const u8,
+    size: c_int,
+    output: *mut u8,
+    out_size: c_int,
+) -> c_int {
+    if input.is_null() || output.is_null() || size <= 0 || out_size <= 0 {
+        return FREEARC_ERRCODE_GENERAL;
+    }
+    let inp = core::slice::from_raw_parts(input, size as usize);
+    match grzip::wfc_ari::encode(inp) {
+        Ok(v) => {
+            if v.len() > out_size as usize {
+                return FREEARC_ERRCODE_GENERAL;
+            }
+            let out = core::slice::from_raw_parts_mut(output, v.len());
+            out.copy_from_slice(&v);
+            v.len() as c_int
+        }
+        Err(e) => e,
+    }
+}

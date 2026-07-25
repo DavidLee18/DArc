@@ -30,6 +30,7 @@ int darc_grz_lzp_encode(unsigned char *in, unsigned size, unsigned char *out,
 int darc_grz_st4_encode(unsigned char *in, int size, unsigned char *out);
 int darc_grz_rec_encode(unsigned char *in, int size, unsigned char *out);
 int darc_grz_mtf_ari_encode(unsigned char *in, int size, unsigned char *out);
+int darc_grz_wfc_ari_encode(unsigned char *in, int size, unsigned char *out);
 #ifdef USE_RUST
 int darc_rs_grzip_decompress_block (const unsigned char *in, int in_size,
                                     unsigned char *out, int out_cap);
@@ -39,6 +40,7 @@ int darc_rs_grzip_lzp_encode (const unsigned char *in, int size, unsigned char *
 int darc_rs_grzip_st4_encode (const unsigned char *in, int size, unsigned char *out);
 int darc_rs_grzip_rec_encode (const unsigned char *in, int size, unsigned char *out);
 int darc_rs_grzip_mtf_ari_encode (const unsigned char *in, int size, unsigned char *out, int out_size);
+int darc_rs_grzip_wfc_ari_encode (const unsigned char *in, int size, unsigned char *out, int out_size);
 #endif
 }
 
@@ -143,6 +145,26 @@ int main (int argc, char **argv) {
     free(in); free(out);
     return 0;
   }
+  // WFC + arithmetic coder on its own: "w". Same shape as "m"; the two share
+  // the range coder and models and differ only in the symbol list.
+  if (argc>1 && argv[1][0]=='w') {
+    size_t cap=1<<20, len=0; unsigned char *in=(unsigned char*)malloc(cap); if(!in) return 3;
+    for(;;){ if(len==cap){cap*=2; unsigned char*g=(unsigned char*)realloc(in,cap); if(!g){free(in);return 3;} in=g;}
+      size_t n=fread(in+len,1,cap-len,stdin); if(n==0)break; len+=n; }
+    if (len<32) { fprintf(stderr,"rc=skip\n"); free(in); return 0; }
+    unsigned char *out=(unsigned char*)calloc(len+1024,1);
+    int r;
+#ifdef USE_RUST
+    r = darc_rs_grzip_wfc_ari_encode(in,(int)len,out,(int)len+1024);
+#else
+    r = darc_grz_wfc_ari_encode(in,(int)len,out);
+#endif
+    fprintf(stderr,"rc=%d\n",r);
+    if (r>0) fwrite(out,1,r,stdout);
+    free(in); free(out);
+    return 0;
+  }
+
   // MTF + arithmetic coder on its own: "m". The C writes into a buffer the
   // caller sized at Size and bails once it reaches Size-24, so the buffer here
   // is Size with slack past it -- the bail is part of what is compared.

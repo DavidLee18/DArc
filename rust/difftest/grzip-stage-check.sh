@@ -153,6 +153,27 @@ echo "grzip MTF-Ari encode: $((mtf_total-mtf_fail))/$mtf_total agree"
 # All-incompressible would mean the coder never actually ran.
 [ "$mtf_compressed" -gt 0 ] || { echo "  no input was ever compressed -- the coder never ran"; mtf_fail=$((mtf_fail+1)); }
 
+# --- WFC + arithmetic coder ------------------------------------------------
+# Shares the range coder and every model with MTF; only the symbol list differs,
+# so this is really a test of the list discipline -- the weights, the twelve
+# look-back decrements, and the insertion walk that keeps `index` the inverse of
+# `list`.
+fail=0; total=0; wfc_compressed=0
+for f in "$W"/in/*; do
+  total=$((total+1))
+  "$W/c"  w < "$f" >| "$W/o.c"  2>"$W/e.c"
+  "$W/rs" w < "$f" >| "$W/o.rs" 2>"$W/e.rs"
+  c_rc=$(cat "$W/e.c"); r_rc=$(cat "$W/e.rs")
+  if [ "$c_rc" != "$r_rc" ]; then
+    echo "  [wfc] $(basename "$f"): return differs ($c_rc vs $r_rc)"; fail=$((fail+1)); continue
+  fi
+  case "$c_rc" in rc=[1-9]*) wfc_compressed=$((wfc_compressed+1));; esac
+  cmp -s "$W/o.c" "$W/o.rs" || { echo "  [wfc] $(basename "$f"): OUTPUT differs"; fail=$((fail+1)); }
+done
+wfc_total=$total; wfc_fail=$fail
+echo "grzip WFC-Ari encode: $((wfc_total-wfc_fail))/$wfc_total agree"
+[ "$wfc_compressed" -gt 0 ] || { echo "  no input was ever compressed -- the coder never ran"; wfc_fail=$((wfc_fail+1)); }
+
 # --- record filter ---------------------------------------------------------
 # The MODE matters as much as the bytes: it is what makes GRZip_CompressBlock
 # recurse, and it is chosen by a float entropy comparison plus an integer sum
@@ -197,4 +218,4 @@ for mml in 8 16 32 64; do
   done
 done
 echo "grzip LZP encode: $((total-fail))/$total agree"
-[ $((fail+st4_fail+rec_fail+mtf_fail)) -eq 0 ] || exit 1
+[ $((fail+st4_fail+rec_fail+mtf_fail+wfc_fail)) -eq 0 ] || exit 1
