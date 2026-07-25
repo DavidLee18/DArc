@@ -43,7 +43,7 @@ remains, because `Unarc/` still builds them.
 | MM | `mm`, `mmdet` (both directions) | yes (encode + decode) | partly — `mm_compress` excluded; `mmdet.cpp` stays for TTA |
 | REP | `rep` | yes (both directions, byte-exact) | **YES** |
 | SREP | `srep` (decode only) | external binary, no `DARC_RUST` wiring | no — see §14 before porting the encoder |
-| Tornado | `tornado` (both directions) | yes (encode + decode, all 9 instantiations) | **YES — 1,315 encoder lines deleted**; decoder C stays for Unarc |
+| Tornado | `tornado` (both directions) | yes (encode + decode, all 9 instantiations) | **YES — the whole C codec is gone, 3,183 lines** |
 | TTA | `tta` | yes | no |
 | zstd | `zstd` (`zstd-safe` binding) | yes | **YES — 2.2 MB deleted** |
 | Encryption | `darc-crypto` | yes | no |

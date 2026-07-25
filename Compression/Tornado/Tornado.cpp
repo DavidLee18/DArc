@@ -35,9 +35,6 @@ void print_match (int pos, int len, int dist)
 #define print_match(pos,len,dist)
 #endif
 
-#include "EntropyCoder.cpp"
-#include "LZ77_Coder.cpp"
-#include "DataTables.cpp"
 
 // Compression method parameters
 struct PackMethod
@@ -110,142 +107,18 @@ uint tornado_compressor_outbuf_size (uint buffer, int bytes_to_compress = -1)
 // -DFREEARC_DECOMPRESS_ONLY -- so nothing there changes.
 
 
-// LZ77 decompressor ******************************************************************************
-
-// If condition is true, write data to outstream
-#define WRITE_DATA_IF(condition)                                                                  \
-{                                                                                                 \
-    if (condition) {                                                                              \
-        if (decoder.error() != FREEARC_OK)  goto finished;                                        \
-        tables.undiff_tables (write_start, output);                                               \
-        debug (printf ("==== write %08x:%x ====\n", write_start-outbuf+offset, output-write_start)); \
-        WRITE (write_start, output-write_start);                                                  \
-        tables.diff_tables (write_start, output);                                                 \
-        write_start = output;  /* next time we should start writing from this pos */              \
-                                                                                                  \
-        /* Check that we should shift the output pointer to start of buffer */                    \
-        if (output >= outbuf + bufsize) {                                                         \
-            offset_overflow |= (offset > (uint64(1) << 63));                                      \
-            offset      += output-outbuf;                                                         \
-            write_start -= output-outbuf;                                                         \
-            write_end   -= output-outbuf;                                                         \
-            tables.shift (output,outbuf);                                                         \
-            output      -= output-outbuf;  /* output = outbuf; */                                 \
-        }                                                                                         \
-                                                                                                  \
-        /* If we wrote data because write_end was reached (not because */                         \
-        /* table list was filled), then set write_end into its next position */                   \
-        if (write_start >= write_end) {                                                           \
-            /* Set up next write chunk to HUGE_BUFFER_SIZE or until buffer end - whatever is smaller */ \
-            write_end = write_start + mymin (outbuf+bufsize-write_start, HUGE_BUFFER_SIZE);       \
-        }                                                                                         \
-    }                                                                                             \
-}
-
-
-template <class Decoder>
-int tor_decompress0 (CALLBACK_FUNC *callback, void *auxdata, int _bufsize, int minlen)
-{
-    //SET_JMP_POINT (FREEARC_ERRCODE_GENERAL);
-    int errcode = FREEARC_OK;                             // Error code of last "write" call
-    Decoder decoder (callback, auxdata, _bufsize);        // LZ77 decoder parses raw input bitstream and returns literals&matches
-    if (decoder.error() != FREEARC_OK)  return decoder.error();
-    uint bufsize = compress_all_at_once? _bufsize : mymax (_bufsize, HUGE_BUFFER_SIZE);   // Make sure that outbuf is at least 8mb in order to avoid excessive disk seeks (not required in programs compiled for one-shot compression)
-    BYTE *outbuf = (byte*) malloc (bufsize+PAD_FOR_TABLES*2);  // Circular buffer for decompressed data
-    if (!outbuf)  return FREEARC_ERRCODE_NOT_ENOUGH_MEMORY;
-    outbuf += PAD_FOR_TABLES;       // We need at least PAD_FOR_TABLES bytes available before and after outbuf in order to simplify datatables undiffing
-    BYTE *output      = outbuf;     // Current position in decompressed data buffer
-    BYTE *write_start = outbuf;     // Data up to this point was already writen to outsream
-    BYTE *write_end   = outbuf + mymin (bufsize, HUGE_BUFFER_SIZE); // Flush buffer when output pointer reaches this point
-    if (compress_all_at_once)  write_end = outbuf + bufsize + 1;    // All data should be written after decompression finished
-    uint64 offset = 0;                    // Current outfile position corresponding to beginning of outbuf
-    int offset_overflow = 0;              // Flags that offset was overflowed so we can't use it for match checking
-    DataTables tables;                    // Info about data tables that should be undiffed
-    for (;;) {
-        // Check whether next input element is a literal or a match
-        if (decoder.is_literal()) {
-            // Decode it as a literal
-            BYTE c = decoder.getchar();
-            print_literal (output-outbuf+offset, c);
-            *output++ = c;
-            WRITE_DATA_IF (output >= write_end);  // Write next data chunk to outstream if required
-
-        } else {
-            // Decode it as a match
-            UINT len  = decoder.getlen(minlen);
-            UINT dist = decoder.getdist();
-            print_match (output-outbuf+offset, len, dist);
-
-            // Both match-copy loops below are "do {...} while (--len)", so len==0
-            // wraps the UINT counter to 4G and runs off the end of the buffer.
-            // A real match is always >=1 (getlen returns minlen+extra, minlen>=1)
-            // and EOF is signalled by len==IMPOSSIBLE_LEN, which is nonzero, so
-            // rejecting len==0 here is transparent to valid streams. len comes
-            // straight from the decoder, and minlen from a header byte (buf[1]),
-            // so a corrupt stream can make it 0.
-            if (len==0)  {errcode=FREEARC_ERRCODE_BAD_COMPRESSED_DATA; goto finished;}
-
-            // Check for simple match (i.e. match not requiring any special handling, >99% of matches fail to this category)
-            if (output-outbuf>=dist && write_end-output>len) {
-                BYTE *p = output-dist;
-                do   *output++ = *p++;
-                while (--len);
-
-            // Check that it's a proper match
-            } else if (len<IMPOSSIBLE_LEN) {
-                // Check that compressed data are not broken
-                if (dist>bufsize || len>2*_bufsize || (output-outbuf+offset<dist && !offset_overflow))  {errcode=FREEARC_ERRCODE_BAD_COMPRESSED_DATA; goto finished;}
-                // Slow match copying route for cases when output-dist points before buffer beginning,
-                // or p may wrap at buffer end, or output pointer may run over write point
-                BYTE *p  =  output-outbuf>=dist? output-dist : output-dist+bufsize;
-                do {
-                    *output++ = *p++;
-                    if (p==outbuf+bufsize)  p=outbuf;
-                    WRITE_DATA_IF (output >= write_end);
-                } while (--len);
-
-            // Check for special len/dist code used to encode EOF
-            } else if (len==IMPOSSIBLE_LEN && dist==IMPOSSIBLE_DIST) {
-                WRITE_DATA_IF (TRUE);  // Flush outbuf
-                goto finished;
-
-            // Otherwise it's a special code used to represent info about diffed data tables
-            } else {
-                len -= IMPOSSIBLE_LEN;
-                if (len==0 || dist*len > 2*_bufsize)  {errcode=FREEARC_ERRCODE_BAD_COMPRESSED_DATA; goto finished;}
-                stat (printf ("\n%d: Start %x, end %x, length %d      ", len, int(output-outbuf+offset), int(output-outbuf+offset+len*dist), len*dist));
-                // Add new table to list: len is row length of table and dist is number of rows
-                tables.add (len, output, dist);
-                // If list of data tables is full then flush it by preprocessing
-                // and writing to outstream already filled part of outbuf
-                WRITE_DATA_IF (tables.filled());
-            }
-        }
-    }
-finished:
-    free(outbuf-PAD_FOR_TABLES);
-    // Return decoder error code, errcode or FREEARC_OK
-    return decoder.error() < 0 ?  decoder.error() :
-           errcode         < 0 ?  errcode
-                               :  FREEARC_OK;
-}
-
-
-// DARC_RUST=1 selects the Rust port of the decoder (rust/darc-codecs).
+// The LZ77 decompressor lived here. It is gone too: with the C encoder
+// deleted and Unarc dropped, tor_decompress0 had no caller left, so nothing
+// instantiated it and nothing reached EntropyCoder.cpp, LZ77_Coder.cpp or
+// DataTables.cpp -- those three files are deleted with it.
 //
-// tor_decompress is declared inside the `extern "C"` block at the top of this
-// file, so this definition inherits C linkage and shares a symbol with the Rust
-// export. Excluded rather than redeclared: with both present the linker
-// resolves from this object and never pulls the Rust one -- and, both being
-// C-linkage, GNU ld reports a multiple definition. So the switch has to remove
-// this definition, not merely add a declaration elsewhere. The same is true of
-// the other codecs (C_Dict.cpp, C_LZP.cpp, rep.cpp, tta.cpp, mm.cpp).
-//
-// tor_decompress0 is a template with no other caller, so excluding this entry
-// point leaves it uninstantiated and emits nothing; the encoder and everything
-// it shares stay compiled. Verified byte-identical to the C decoder across all
-// four entropy back-ends; see rust/difftest/tornado-check.sh.
+// Both directions now come from rust/darc-codecs/src/tornado/, each pinned
+// byte-for-byte against a fixed revision of this file by tornado-check.sh
+// (decode) and tornado-encode-check.sh (encode).
 
+// What survives here is only what C_Tornado.cpp needs: PtrVal for
+// SetDictionary, PackMethod, the preset table, and the two extern "C"
+// declarations the Rust exports bind to.
 
 /*
 LZ77 model:
