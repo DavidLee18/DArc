@@ -1048,3 +1048,26 @@ pub unsafe extern "C" fn darc_rs_grzip_wfc_ari_encode(
         Err(e) => e,
     }
 }
+
+/// GRZip's strong BWT, forward direction. Harness-only. Returns the first-byte
+/// position WITHOUT the strong flag -- the dispatcher ORs that in.
+///
+/// # Safety
+/// `input`/`output` must be valid for `size` bytes.
+#[no_mangle]
+pub unsafe extern "C" fn darc_rs_grzip_strong_bwt_encode(
+    input: *const u8,
+    size: c_int,
+    output: *mut u8,
+) -> c_int {
+    if input.is_null() || output.is_null() || size <= 0 {
+        return FREEARC_ERRCODE_GENERAL;
+    }
+    let n = size as usize;
+    let inp = core::slice::from_raw_parts(input, n);
+    let out = core::slice::from_raw_parts_mut(output, n);
+    match grzip::bwt::strong_encode(inp, n, out) {
+        Ok(fbp) => fbp,
+        Err(e) => e,
+    }
+}

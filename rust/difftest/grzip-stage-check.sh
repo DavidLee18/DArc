@@ -46,6 +46,15 @@ w("mixed",    b"".join((b"abcdefgh"*50 if i%3 else prng(i,400)) for i in range(3
 w("f2heavy",  bytes([0xF2 if i%5==0 else (i*7)&0xff for i in range(200000)]))
 w("runs",     b"".join(bytes([i&0xff])*1000 for i in range(300)))
 w("zeros",    b"\x00"*400000)
+# Inputs that make the BWT comparison's TIE loop run. `simple_cmp` only walks
+# when two positions have identical ranks, and measurement showed that loop
+# executing 0% of the time on ordinary text, sines and noise -- so changing its
+# stride from 2 to 1, a real semantic change, left the whole run green. These
+# force it: long runs broken by rare distinct bytes (88% of comparisons enter
+# the loop) and 64-byte blocks of a small repeating alphabet (~51 iterations
+# PER comparison).
+w("bwt_ties_runs",   bytes((0x78 if i % 100 < 90 else (i % 251)) for i in range(200000)))
+w("bwt_ties_blocks", bytes((((i // 64) % 4) + 0x70) for i in range(200000)))
 # Sizes around the awkward edges, including lengths where the last position sits
 # inside the region the C overreads.
 for n in (32,33,40,63,64,65,1000,4096,4097):
@@ -153,6 +162,25 @@ echo "grzip MTF-Ari encode: $((mtf_total-mtf_fail))/$mtf_total agree"
 # All-incompressible would mean the coder never actually ran.
 [ "$mtf_compressed" -gt 0 ] || { echo "  no input was ever compressed -- the coder never ran"; mtf_fail=$((mtf_fail+1)); }
 
+# --- strong BWT ------------------------------------------------------------
+# The sort decides the entire transformed block, and the first-byte position
+# decides where the inverse starts, so both are compared. This is the fallback
+# path: the driver reaches it when the fast sort gives up, and whenever the mode
+# word does not ask for fast sorting.
+fail=0; total=0
+for f in "$W"/in/*; do
+  total=$((total+1))
+  "$W/c"  B < "$f" >| "$W/o.c"  2>"$W/e.c"
+  "$W/rs" B < "$f" >| "$W/o.rs" 2>"$W/e.rs"
+  c_f=$(cat "$W/e.c"); r_f=$(cat "$W/e.rs")
+  if [ "$c_f" != "$r_f" ]; then
+    echo "  [sbwt] $(basename "$f"): FBP differs ($c_f vs $r_f)"; fail=$((fail+1)); continue
+  fi
+  cmp -s "$W/o.c" "$W/o.rs" || { echo "  [sbwt] $(basename "$f"): OUTPUT differs"; fail=$((fail+1)); }
+done
+sbwt_total=$total; sbwt_fail=$fail
+echo "grzip strong-BWT encode: $((sbwt_total-sbwt_fail))/$sbwt_total agree"
+
 # --- WFC + arithmetic coder ------------------------------------------------
 # Shares the range coder and every model with MTF; only the symbol list differs,
 # so this is really a test of the list discipline -- the weights, the twelve
@@ -218,4 +246,4 @@ for mml in 8 16 32 64; do
   done
 done
 echo "grzip LZP encode: $((total-fail))/$total agree"
-[ $((fail+st4_fail+rec_fail+mtf_fail+wfc_fail)) -eq 0 ] || exit 1
+[ $((fail+st4_fail+rec_fail+mtf_fail+wfc_fail+sbwt_fail)) -eq 0 ] || exit 1
