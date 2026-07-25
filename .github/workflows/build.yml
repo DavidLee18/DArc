@@ -889,6 +889,38 @@ jobs:
         fi
         echo "archives identical across $(wc -l < /tmp/fp-c.txt) configurations"
 
+    # Encryption had NO CI coverage at all until now: enc-roundtrip.sh existed
+    # but was referenced by no workflow, and run-tests.sh has no -p/-ae case.
+    # That is why a known ARM64 Serpent miscompile survived two releases -- the
+    # bug was even documented, by exact file and line, in enc-roundtrip.sh's own
+    # header, where it read as an expected caveat rather than a defect.
+    #
+    # This runs the two binaries the step above already built, each reading what
+    # the other wrote. A SAME-binary round-trip cannot catch this class: a broken
+    # build round-trips its own archives perfectly, which is precisely how the
+    # Serpent bug hid. Only cross-implementation agreement distinguishes
+    # "self-consistent" from "correct".
+    #
+    # It covers what the LibTomCrypt self-tests cannot: AES has no runnable
+    # self-test here (ENCRYPT_ONLY omits the decrypt half, so rijndael_test is
+    # commented out upstream), and hmac/ctr/cfb are likewise commented out. Those
+    # primitives are reachable ONLY through this check. Proven to bite: reversing
+    # the Rust CTR carry direction -- the documented hazard, since every -p
+    # archive ever written uses a little-endian counter -- fails 5 configurations
+    # here, and exactly the CTR-mode ones, leaving CFB green.
+    #
+    # </dev/null is required, not cosmetic: on a failed decrypt the archiver
+    # prompts for a password and would otherwise block until the job times out
+    # instead of reporting a failure.
+    - name: Encrypted archives interoperate between the C and Rust crypto
+      run: |
+        chmod +x Tests/enc-roundtrip.sh
+        test -x /tmp/arc-c || { echo "::error::the C-crypto binary from the previous step is missing"; exit 1; }
+        echo "--- C-crypto writes, Rust-crypto reads ---"
+        Tests/enc-roundtrip.sh /tmp/arc-c Tests/arc < /dev/null
+        echo "--- Rust-crypto writes, C-crypto reads ---"
+        Tests/enc-roundtrip.sh Tests/arc /tmp/arc-c < /dev/null
+
   # ── AddressSanitizer on x86-64 ──────────────────────────────────────────────
   # Added to diagnose a double free that only appeared on this runner. It found
   # that one and an out-of-bounds read in Dict/phase1 on its first two runs, and
