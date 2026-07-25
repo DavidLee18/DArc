@@ -60,73 +60,16 @@
 
 #define LZP_FreeHashTable() BigFree(Contexts);
 
-#ifndef FREEARC_DECOMPRESS_ONLY
+// The encoder (the LZP pre-filter) lived here and is now Rust: see
+// rust/darc-codecs/src/grzip/. Verified byte-identical to this C across the
+// stage matrix and the multi-block stream -- rust/difftest/grzip-check.sh and
+// grzip-stage-check.sh compare the produced streams, and the archiver's grzip
+// fingerprint is unchanged.
+//
+// The DECODER below stays. Unarc builds these files with
+// -DFREEARC_DECOMPRESS_ONLY and does NOT link the Rust crate, so the standalone
+// extractor and the SFX modules still need it. It goes when Unarc does.
 
-sint32 GRZip_LZP_Encode(uint8 * Input,uint32 Size,uint8 * Output,uint32 LZP_MinMatchLen,uint32 LZP_HT_Size)
-{
-  LZP_AllocHashTable();
-
-  uint8  * InputEnd=Input+Size;
-  uint8  * OutputEnd=Output+Size-1;
-
-  *((uint32 *)Output)=*((uint32 *)Input);
-
-  uint32 Ctx=(Input[3]+(Input[2]<<8)+(Input[1]<<16)+(Input[0]<<24));
-
-  Input+=4;
-  Output+=4;
-
-  while ((Input<InputEnd)&&(Output<OutputEnd))
-  {
-    uint32  HashIndex=((Ctx>>15)^Ctx^(Ctx>>3))&LZP_HT_Size;
-    uint8 * Pointer=Contexts[HashIndex];
-    Contexts[HashIndex]=Input;
-
-    if (Pointer)
-     {
-       uint32  CommonLength=0;
-       uint8 * Ptr=Input;
-       if (*(uint32 *)(Ptr+LZP_MinMatchLen-4) == *(uint32 *)(Pointer+LZP_MinMatchLen-4))  // early check
-         while (Ptr<InputEnd)
-         {
-           if (*Ptr++!=*Pointer++) break;
-           CommonLength++;
-         }
-       if (CommonLength<LZP_MinMatchLen) CommonLength=0;
-       if (CommonLength)
-        {
-          Input+=CommonLength;
-          Ctx=(Input[-1]+(Input[-2]<<8)+(Input[-3]<<16)+(Input[-4]<<24));
-          CommonLength=CommonLength-LZP_MinMatchLen+1;
-          (*Output++)=LZP_MatchFlag;
-          while (CommonLength>254)
-          {
-            (*Output++)=LZP_RunFlag;
-            if (Output>=OutputEnd)
-             {
-               LZP_FreeHashTable();
-               return (GRZ_NOT_COMPRESSIBLE);
-             }
-            CommonLength-=255;
-          }
-          (*Output++)=((uint8)(CommonLength^LZP_XorFlag));
-        }
-       else
-        {
-          uint8 Ch=((*Output++)=(*Input++));
-          Ctx=(Ctx<<8)|Ch;
-          if (Ch==LZP_MatchFlag) *Output++=LZP_XorFlag;
-        }
-     }
-    else
-      Ctx=(Ctx<<8)|((*Output++)=(*Input++));
-  }
-  LZP_FreeHashTable();
-  if (Output>=OutputEnd) return (GRZ_NOT_COMPRESSIBLE);
-  return (Output+Size-OutputEnd-1);
-}
-
-#endif  // !defined (FREEARC_DECOMPRESS_ONLY)
 
 sint32 GRZip_LZP_Decode(uint8 * Input,uint32 Size,uint8 * Output,uint32 LZP_MinMatchLen,uint32 LZP_HT_Size,uint32 OutSize)
 {

@@ -42,9 +42,9 @@
 #define ST_MaxWord           65536
 #define ST_INDIRECT          0x800000
 
-#ifndef FREEARC_DECOMPRESS_ONLY
-
-/* Securely zero memory to prevent the compiler from optimizing the clear away. */
+/* Securely zero memory to prevent the compiler from optimizing the clear away.
+   Defined outside the encoder guard: GRZip_ST4_Decode uses it too, and it was
+   only ever inside that block by accident of placement. */
 static void secure_memzero(void *v, size_t n)
 {
   volatile unsigned char *p = (volatile unsigned char *)v;
@@ -52,46 +52,16 @@ static void secure_memzero(void *v, size_t n)
     *p++ = 0;
 }
 
-sint32 GRZip_ST4_Encode(uint8 * Input, sint32 Size, uint8 * Output)
-{
-  sint32    FBP,i;
-  uint32    W;
+// The encoder (the order-4 sort transform) lived here and is now Rust: see
+// rust/darc-codecs/src/grzip/. Verified byte-identical to this C across the
+// stage matrix and the multi-block stream -- rust/difftest/grzip-check.sh and
+// grzip-stage-check.sh compare the produced streams, and the archiver's grzip
+// fingerprint is unchanged.
+//
+// The DECODER below stays. Unarc builds these files with
+// -DFREEARC_DECOMPRESS_ONLY and does NOT link the Rust crate, so the standalone
+// extractor and the SFX modules still need it. It goes when Unarc does.
 
-  sint32 *  Counter=(sint32 *)BigAlloc(ST_MaxWord*sizeof(sint32));
-  if (Counter==NULL) return (GRZ_NOT_ENOUGH_MEMORY);
-
-  uint32 *  Context=(uint32 *)BigAlloc(Size*sizeof(uint32));
-  if (Context==NULL) {BigFree(Counter);return (GRZ_NOT_ENOUGH_MEMORY);}
-
-  memset    (Counter,0,ST_MaxWord*sizeof(sint32));
-
-  W=Input[Size-1]<<8; for (i=0;i<Size;i++) Counter[(W=(W>>8)|(Input[i]<<8))]++;
-
-  for (W=0,i=0;i<ST_MaxWord;i++) W+=Counter[i],Counter[i]=W-Counter[i];
-
-  W=(Input[Size-4]<<8)|Input[Size-5];
-  if (W==0xFFFF) FBP=Size-1; else FBP=Counter[W+1]-1;
-
-  W=(Input[Size-1]<<24)|(Input[Size-2]<<16)|(Input[Size-3]<<8)|(Input[Size-4]);
-
-  for (i=0;i<Size;i++)
-  {
-    uint8 c=Input[i];
-    Context[Counter[W&0x0000FFFF]++]=(W&0xFFFF0000)|c;
-    W=(W>>8)|(c<<24);
-  }
-
-  for (i=Size-1;i>=FBP;i--) Output[--Counter[Context[i]>>16]]=Context[i]&0xFF;
-  FBP=Counter[Context[FBP]>>16];
-  for (;i>=0;i--) Output[--Counter[Context[i]>>16]]=Context[i]&0xFF;
-
-  BigFree(Context);
-  BigFree(Counter);
-
-  return FBP;
-}
-
-#endif  // !defined (FREEARC_DECOMPRESS_ONLY)
 
 #define ST_SetBit(Bit) (Flag[Bit>>3]|=(1<<(Bit & 7)))
 #define ST_GetBit(Bit) (Flag[Bit>>3]&(1<<(Bit & 7)))

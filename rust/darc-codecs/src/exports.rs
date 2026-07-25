@@ -1147,11 +1147,15 @@ pub unsafe extern "C" fn darc_rs_grzip_compress(
     }
 }
 
-/// Drop-in under the archiver's own symbol name, matching the decoder above.
+/// Drop-in under the archiver's own symbol name.
+///
+/// Exported UNCONDITIONALLY, unlike the decoder below: the C encoder this used
+/// to shadow has been deleted, so there is nothing left to collide with and the
+/// DARC_NO_RUST build needs this symbol to link. (`grzip_decompress` stays
+/// feature-gated, because its C still exists for Unarc.)
 ///
 /// # Safety
 /// `callback` and `auxdata` must be what the C caller supplied.
-#[cfg(feature = "dropin")]
 #[no_mangle]
 #[allow(clippy::too_many_arguments)]
 pub unsafe extern "C" fn grzip_compress(
