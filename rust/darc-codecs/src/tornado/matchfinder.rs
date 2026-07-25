@@ -91,7 +91,12 @@ pub trait MatchFinder {
     fn update_hash(&mut self, buf: &[u8], p: usize, len: u32, step: u32);
 
     /// Reset every slot; called when a non-sliding buffer is refilled.
-    fn clear_hash(&mut self);
+    ///
+    /// Takes the buffer because the caching finders store a key derived from
+    /// the bytes at the empty-slot position, and `clear_hash` is called again
+    /// mid-stream when `m.shift == -1` refills a non-sliding window -- at which
+    /// point those bytes are real data, not the zeroed buffer.
+    fn clear_hash(&mut self, buf: &[u8]);
 
     /// Fix up stored offsets after the window slid `shift` bytes back.
     fn shift(&mut self, shift: usize);
@@ -252,7 +257,7 @@ impl MatchFinder for MatchFinder1 {
     /// (:178-184), which is a deliberate speed trade, not dead code.
     fn update_hash(&mut self, _buf: &[u8], _p: usize, _len: u32, _step: u32) {}
 
-    fn clear_hash(&mut self) {
+    fn clear_hash(&mut self, _buf: &[u8]) {
         self.b.clear_hash()
     }
     fn shift(&mut self, shift: usize) {
@@ -333,7 +338,7 @@ impl MatchFinder for MatchFinder2 {
         push(&mut self.b, e - 1);
     }
 
-    fn clear_hash(&mut self) {
+    fn clear_hash(&mut self, _buf: &[u8]) {
         self.b.clear_hash()
     }
     fn shift(&mut self, shift: usize) {
@@ -441,12 +446,316 @@ impl MatchFinder for MatchFinderN {
         }
     }
 
-    fn clear_hash(&mut self) {
+    fn clear_hash(&mut self, _buf: &[u8]) {
         self.b.clear_hash()
     }
     fn shift(&mut self, shift: usize) {
         self.b.shift(shift)
     }
+    fn error(&self) -> Option<c_int> {
+        None
+    }
+}
+
+// ---------------------------------------------------------------------------
+// CachingMatchFinder -- 4 bytes of the string cached in the table itself
+// ---------------------------------------------------------------------------
+
+/// `accept_match` (:60). Returns the length, or **0** -- not `MINLEN-1` -- when
+/// the candidate is rejected, which the caller turns into a literal.
+///
+/// The distance limits say a short match too far away is not worth its encoded
+/// size. The `p <= bufend` test really is on `p` rather than `p+len`; it is
+/// transcribed as written.
+fn accept_match(len: u32, buf: &[u8], p: usize, q: usize, bufend: usize) -> u32 {
+    if p > bufend {
+        return 0;
+    }
+    let dist = p - q;
+    let eq = |a: usize, b: usize, n: usize| buf[p + a..p + a + n] == buf[q + b..q + b + n];
+    match len {
+        4 => {
+            if dist < 48 * KB && eq(0, 0, 4) {
+                4
+            } else {
+                0
+            }
+        }
+        5 => {
+            if dist < 192 * KB && eq(0, 0, 4) && buf[p + 4] == buf[q + 4] {
+                5
+            } else {
+                0
+            }
+        }
+        6 => {
+            if dist < MB && eq(0, 0, 4) && eq(4, 4, 2) {
+                6
+            } else {
+                0
+            }
+        }
+        7 => {
+            if dist < 12 * MB && eq(0, 0, 4) && eq(4, 4, 3) {
+                7
+            } else {
+                0
+            }
+        }
+        8 => {
+            if eq(0, 0, 4) && eq(4, 4, 4) {
+                8
+            } else {
+                0
+            }
+        }
+        9 => {
+            if eq(0, 0, 4) && eq(4, 4, 4) && buf[p + 8] == buf[q + 8] {
+                9
+            } else {
+                0
+            }
+        }
+        _ => 0,
+    }
+}
+
+/// `CachingMatchFinder<N>` (:359). Used by preset 4 (`caching_finder == 1`).
+///
+/// Each row slot is a *pair*: the position, and four cached bytes of the string
+/// it points at (`key(p) = value32(p+N-1)`). Comparing the cached key against
+/// the current one tells you how far the strings agree without touching the
+/// buffer at all -- the low zero bytes of `cachedKey ^ key(p)` count the
+/// matching bytes, which is what the five-state scan below dispatches on.
+///
+/// The states only ever advance (0 -> 4 -> 5 -> 6 -> 7), which is what makes the
+/// C's `goto` chain expressible as a loop over a state variable rather than
+/// needing real unstructured jumps.
+pub struct CachingMatchFinder {
+    b: Base,
+    n: usize,
+}
+
+impl CachingMatchFinder {
+    /// The C passes `_hash_row_width*2` to the base so the mask aligns rows to
+    /// whole pairs, then overwrites `hash_row_width` with the unmultiplied value
+    /// (:362-366).
+    pub fn new(n: usize, hashsize: u32, hash_row_width: i32) -> Self {
+        let mut b = Base::new(hashsize, hash_row_width.saturating_mul(2));
+        b.hash_row_width = hash_row_width.max(1) as usize;
+        CachingMatchFinder { b, n }
+    }
+
+    /// `key` (:374) -- the four bytes at `p+N-1`.
+    #[inline]
+    fn key(&self, buf: &[u8], p: usize) -> u32 {
+        value32(buf, p + self.n - 1)
+    }
+}
+
+impl MatchFinder for CachingMatchFinder {
+    fn min_length(&self) -> u32 {
+        4
+    }
+
+    fn find_matchlen(&mut self, buf: &[u8], p: usize, bufend: usize, _prevlen: u32) -> u32 {
+        let minlen = self.min_length();
+        let n = self.n as u32;
+        let h = self.b.hash(value32(buf, p));
+        let tabend = h + self.b.hash_row_width * 2;
+        let mut table = h;
+        let key_p = self.key(buf, p);
+
+        // x1/v1 start as the values that will be written into the first slot.
+        let mut x1 = p as u32;
+        let mut v1 = key_p;
+        let mut t: u32 = 0;
+
+        // `next_pair` (:394): read a pair, write the previous one back, and xor
+        // the cached key against the current one.
+        macro_rules! next_pair {
+            () => {{
+                let x0 = x1;
+                x1 = self.b.table[table];
+                self.b.table[table] = x0;
+                table += 1;
+                let v0 = v1;
+                v1 = self.b.table[table];
+                self.b.table[table] = v0;
+                table += 1;
+                t = v1 ^ key_p;
+            }};
+        }
+
+        let mut state = 0u32;
+        loop {
+            match state {
+                // No match yet: one matching cached byte is enough to advance.
+                0 => {
+                    while table != tabend {
+                        next_pair!();
+                        if t & 0xff == 0 {
+                            state = if t == 0 {
+                                7
+                            } else if t & 0xff00 != 0 {
+                                4
+                            } else if t & 0xff0000 != 0 {
+                                5
+                            } else {
+                                6
+                            };
+                            break;
+                        }
+                    }
+                    if state == 0 {
+                        return minlen - 1;
+                    }
+                    self.b.q = x1 as usize;
+                }
+                4 => {
+                    while table != tabend {
+                        next_pair!();
+                        if t & 0xffff == 0 {
+                            state = if t == 0 {
+                                7
+                            } else if t & 0xff0000 != 0 {
+                                5
+                            } else {
+                                6
+                            };
+                            break;
+                        }
+                    }
+                    if state == 4 {
+                        return accept_match(n, buf, p, self.b.q, bufend);
+                    }
+                    self.b.q = x1 as usize;
+                }
+                5 => {
+                    while table != tabend {
+                        next_pair!();
+                        if t & 0xffffff == 0 {
+                            state = if t == 0 { 7 } else { 6 };
+                            break;
+                        }
+                    }
+                    if state == 5 {
+                        return accept_match(n + 1, buf, p, self.b.q, bufend);
+                    }
+                    self.b.q = x1 as usize;
+                }
+                6 => {
+                    while table != tabend {
+                        next_pair!();
+                        if t == 0 {
+                            state = 7;
+                            break;
+                        }
+                    }
+                    if state == 6 {
+                        return accept_match(n + 2, buf, p, self.b.q, bufend);
+                    }
+                    self.b.q = x1 as usize;
+                }
+                _ => {
+                    // A full key match: measure the real length in the buffer.
+                    // Note both loops bound on `p+len < bufend`; the four-at-a-
+                    // time loop has no `+4` here, unlike MatchFinder1's.
+                    let mut len = minlen - 1;
+                    if val32equ(buf, p, self.b.q) {
+                        let q = self.b.q;
+                        let mut l = (minlen - 1).min(4) as usize;
+                        while p + l < bufend && val32equ(buf, p + l, q + l) {
+                            l += 4;
+                        }
+                        while p + l < bufend && buf[p + l] == buf[q + l] {
+                            l += 1;
+                        }
+                        len = l as u32;
+                    }
+                    while table != tabend {
+                        next_pair!();
+                        let q1 = x1 as usize;
+                        if t == 0
+                            && buf[p + len as usize] == buf[q1 + len as usize]
+                            && val32equ(buf, p, q1)
+                        {
+                            let mut l1 = (minlen - 1).min(4) as usize;
+                            while p + l1 < bufend && val32equ(buf, p + l1, q1 + l1) {
+                                l1 += 4;
+                            }
+                            while p + l1 < bufend && buf[p + l1] == buf[q1 + l1] {
+                                l1 += 1;
+                            }
+                            if l1 as u32 > len {
+                                len = l1 as u32;
+                                self.b.q = q1;
+                            }
+                        }
+                    }
+                    return len;
+                }
+            }
+        }
+    }
+
+    fn get_matchptr(&self) -> usize {
+        self.b.q
+    }
+
+    /// `update_hash1` (:462): shift the row down by one *pair* and put the new
+    /// position/key at the head.
+    fn update_hash(&mut self, buf: &[u8], p: usize, len: u32, step: u32) {
+        let mut push = |mf: &mut Self, at: usize| {
+            let h = mf.b.hash(value32(buf, at));
+            let mut j = mf.b.hash_row_width;
+            // `for (int j=hash_row_width; j-=2; )` -- pre-decrement by two, stop
+            // at zero. With an odd row width this walks past zero in the C; the
+            // widths in use are all even.
+            while j >= 2 {
+                j -= 2;
+                if j == 0 {
+                    break;
+                }
+                mf.b.table[h + j] = mf.b.table[h + j - 2];
+                mf.b.table[h + j + 1] = mf.b.table[h + j - 1];
+            }
+            mf.b.table[h] = at as u32;
+            let k = mf.key(buf, at);
+            mf.b.table[h + 1] = k;
+        };
+        if len > 1 {
+            push(self, p + 1);
+        }
+        let mut i = 2i64;
+        while i < len as i64 - 1 {
+            push(self, p + i as usize);
+            i += step.max(1) as i64;
+        }
+        if len > 3 {
+            push(self, p + len as usize - 1);
+        }
+    }
+
+    /// `clear_hash` (:482): positions get the empty marker, keys get the key of
+    /// the byte the marker points at.
+    fn clear_hash(&mut self, buf: &[u8]) {
+        let k = self.key(buf, 1);
+        for i in (0..self.b.table.len() - 1).step_by(2) {
+            self.b.table[i] = 1;
+            self.b.table[i + 1] = k;
+        }
+    }
+
+    /// `shift` (:495): only the *position* half of each pair is rebased; the
+    /// cached key belongs to the string, not to where it sits.
+    fn shift(&mut self, shift: usize) {
+        let s = shift as u32;
+        for i in (0..self.b.table.len()).step_by(2) {
+            self.b.table[i] = if self.b.table[i] > s { self.b.table[i] - s } else { 1 };
+        }
+    }
+
     fn error(&self) -> Option<c_int> {
         None
     }

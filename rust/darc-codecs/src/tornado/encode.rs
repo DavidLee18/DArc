@@ -32,7 +32,9 @@
 //! C global's value in explicitly, since the drop-in cannot see it.
 
 use super::lz77_enc::{DynamicCoder, Lz77Encoder, IMPOSSIBLE_LEN};
-use super::matchfinder::{MatchFinder, MatchFinder1, MatchFinder2, MAX_HASHED_BYTES};
+use super::matchfinder::{
+    CachingMatchFinder, MatchFinder, MatchFinder1, MatchFinder2, MAX_HASHED_BYTES,
+};
 use super::{BITCODER, BYTECODER, HUFCODER, STORING};
 use crate::ffi::{Io, FREEARC_ERRCODE_GENERAL};
 use core::ffi::c_int;
@@ -129,6 +131,15 @@ fn compress_chunk(
     if all_at_once {
         w.read_point = w.bufend;
     }
+
+    // The C constructs the match finder here -- *after* the first read
+    // (:138 then :144) -- and every constructor calls clear_hash(buf) on the way
+    // in. That ordering is load-bearing for the caching finders: their empty
+    // slots store `key(buf+1)`, four bytes lifted out of the buffer, so seeding
+    // them before the read would use zeros where the C uses real data. Every
+    // subsequent comparison against those slots then takes a different branch.
+    // For the non-caching finders this just rewrites the empty marker.
+    mf.clear_hash(&w.buf);
 
     // `coder_kind` comes from the instantiation, not from the header field:
     // the STORING arm of the C's dispatch chain builds an LZ77_ByteCoder while
@@ -233,7 +244,7 @@ fn read_next_chunk(
         };
         w.buf.copy_within(sh..w.bufend, 0);
         if m.shift == -1 {
-            mf.clear_hash();
+            mf.clear_hash(&w.buf);
         } else {
             mf.shift(sh);
         }
@@ -303,6 +314,15 @@ pub fn compress(mut m: PackMethod, io: &Io, all_at_once: bool) -> c_int {
     } else if e == HUFCODER && row == 2 && plain {
         // (:336)
         run(io, &m, MatchFinder2::new(m.hashsize, row), HUFCODER, all_at_once)
+    } else if e == HUFCODER
+        && row >= 2
+        && m.hash3 == 0
+        && m.caching_finder != 0
+        && m.match_parser == LAZY_OFF
+    {
+        // (:338) CachingMatchFinder<4>. The condition tests `m.caching_finder`
+        // for truth, not for 1.
+        run(io, &m, CachingMatchFinder::new(4, m.hashsize, row), HUFCODER, all_at_once)
     } else {
         // The remaining six instantiations need the caching finders, the 3-byte
         // hash, lazy matching or the data-table detector, none of which are
