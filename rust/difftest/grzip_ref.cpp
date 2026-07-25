@@ -27,12 +27,14 @@ int darc_grz_stream_compress  (int method, int blocksize, int enable_lzp, int mi
 int darc_grz_stream_decompress(int (*cb)(const char*, void*, int, void*), void *aux);
 int darc_grz_lzp_encode(unsigned char *in, unsigned size, unsigned char *out,
                         unsigned min_match_len, unsigned ht_size);
+int darc_grz_st4_encode(unsigned char *in, int size, unsigned char *out);
 #ifdef USE_RUST
 int darc_rs_grzip_decompress_block (const unsigned char *in, int in_size,
                                     unsigned char *out, int out_cap);
 int darc_rs_grzip_decompress (int (*cb)(const char*, void*, int, void*), void *aux);
 int darc_rs_grzip_lzp_encode (const unsigned char *in, int size, unsigned char *out,
                               int out_size, int min_match_len, int ht_size);
+int darc_rs_grzip_st4_encode (const unsigned char *in, int size, unsigned char *out);
 #endif
 }
 
@@ -94,6 +96,29 @@ int main (int argc, char **argv) {
     if (r>0) fwrite(out,1,r,stdout);
     free(in); free(padded); free(out);
     return r>0? 0 : 1;
+  }
+  // ST4 stage on its own: "t". Prints the returned FBP on stderr and the
+  // transformed block on stdout -- both are part of what the block header
+  // carries, so both have to agree.
+  if (argc>1 && argv[1][0]=='t') {
+    size_t cap=1<<20, len=0; unsigned char *in=(unsigned char*)malloc(cap); if(!in) return 3;
+    for(;;){ if(len==cap){cap*=2; unsigned char*g=(unsigned char*)realloc(in,cap); if(!g){free(in);return 3;} in=g;}
+      size_t n=fread(in+len,1,cap-len,stdin); if(n==0)break; len+=n; }
+    // The block driver rounds the length up to a multiple of 8 and zero-fills,
+    // so mirror that here rather than feeding ST4 a length it never sees.
+    size_t padded_len=(len+7)&~(size_t)7;
+    unsigned char *pin=(unsigned char*)calloc(padded_len+8,1); memcpy(pin,in,len);
+    unsigned char *out=(unsigned char*)calloc(padded_len+8,1);
+    int r;
+#ifdef USE_RUST
+    r = darc_rs_grzip_st4_encode(pin,(int)padded_len,out);
+#else
+    r = darc_grz_st4_encode(pin,(int)padded_len,out);
+#endif
+    fprintf(stderr,"fbp=%d\n",r);
+    if (r>=0) fwrite(out,1,padded_len,stdout);
+    free(in); free(pin); free(out);
+    return r>=0? 0 : 1;
   }
   int stream = (argc>1 && argv[1][0]=='s');
   const char *op = stream? argv[1]+1 : (argc>1? argv[1] : "");

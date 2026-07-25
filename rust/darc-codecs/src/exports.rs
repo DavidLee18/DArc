@@ -942,3 +942,25 @@ pub unsafe extern "C" fn darc_rs_grzip_lzp_encode(
         Err(e) => e,
     }
 }
+
+/// GRZip's ST4 stage, forward direction. Harness-only, like the LZP one.
+///
+/// # Safety
+/// `input`/`output` must be valid for `size` bytes.
+#[no_mangle]
+pub unsafe extern "C" fn darc_rs_grzip_st4_encode(
+    input: *const u8,
+    size: c_int,
+    output: *mut u8,
+) -> c_int {
+    if input.is_null() || output.is_null() || size <= 0 {
+        return FREEARC_ERRCODE_GENERAL;
+    }
+    let n = size as usize;
+    let inp = core::slice::from_raw_parts(input, n);
+    let out = core::slice::from_raw_parts_mut(output, n);
+    match grzip::st4::encode(inp, n, out) {
+        Ok(fbp) => fbp,
+        Err(e) => e,
+    }
+}

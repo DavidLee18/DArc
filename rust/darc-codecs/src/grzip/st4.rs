@@ -143,3 +143,92 @@ pub fn decode(buf: &mut [u8], size: usize, fbp: i32) -> Result<(), GrzError> {
     }
     Ok(())
 }
+
+/// `GRZip_ST4_Encode` (ST4.c:55). Returns the first-byte position, which the
+/// block driver stores in the header for `decode` to start from.
+///
+/// A counting sort by the two-byte context, then a stable placement pass that
+/// carries the four-byte rolling context. `Counter` becomes an EXCLUSIVE prefix
+/// sum (`W += c[i], c[i] = W - c[i]`), so each entry starts as the first slot
+/// for its context and is bumped as slots are consumed.
+///
+/// The C is called in place -- `GRZip_ST4_Encode(LZPBuffer, Size, LZPBuffer)` --
+/// which is safe there only because every read of `Input` happens before any
+/// write to `Output`: the placement loop fills `Context`, and only then do the
+/// two output loops run. Separate slices here are equivalent, and the block
+/// driver can copy when it wants the in-place form.
+pub fn encode(input: &[u8], size: usize, output: &mut [u8]) -> Result<i32, GrzError> {
+    // The FBP seed below reads Input[Size-5]; the block driver never passes
+    // fewer than 32 bytes.
+    if size < 5 || input.len() < size || output.len() < size {
+        return Err(GRZ_CRC_ERROR);
+    }
+
+    let mut counter = vec![0i32; MAX_WORD];
+    let mut context = vec![0u32; size];
+
+    // Histogram of two-byte contexts, wrapping from the last byte into the
+    // first -- the transform is over a cyclic string.
+    let mut w: u32 = (input[size - 1] as u32) << 8;
+    for &b in input[..size].iter() {
+        w = (w >> 8) | ((b as u32) << 8);
+        counter[w as usize] += 1;
+    }
+
+    // Exclusive prefix sum, in place.
+    let mut acc: u32 = 0;
+    for c in counter.iter_mut() {
+        acc = acc.wrapping_add(*c as u32);
+        *c = acc.wrapping_sub(*c as u32) as i32;
+    }
+
+    let w2 = ((input[size - 4] as u32) << 8) | (input[size - 5] as u32);
+    let mut fbp: i32 = if w2 == 0xFFFF {
+        size as i32 - 1
+    } else {
+        counter[w2 as usize + 1] - 1
+    };
+
+    // The four-byte rolling context, seeded from the block's tail so the first
+    // sample wraps correctly.
+    let mut w: u32 = ((input[size - 1] as u32) << 24)
+        | ((input[size - 2] as u32) << 16)
+        | ((input[size - 3] as u32) << 8)
+        | (input[size - 4] as u32);
+
+    for &c in input[..size].iter() {
+        let slot = counter[(w & 0x0000FFFF) as usize];
+        counter[(w & 0x0000FFFF) as usize] = slot + 1;
+        context[slot as usize] = (w & 0xFFFF0000) | c as u32;
+        w = (w >> 8) | ((c as u32) << 24);
+    }
+
+    // FBP indexes Context below, and C does not check it. It cannot go out of
+    // range for real input -- the context it looks up always occurs in the
+    // histogram, at i == Size-4, so Counter[W+1] >= 1 -- but this is an
+    // exported function and a panic here would unwind across the C ABI.
+    if fbp < 0 || fbp as usize >= size {
+        return Err(GRZ_CRC_ERROR);
+    }
+
+    // Emit backwards, in two runs split at FBP: the counters are consumed from
+    // the top, so walking down leaves each context's slots in encounter order.
+    let mut i = size as i32 - 1;
+    while i >= fbp {
+        let e = context[i as usize];
+        let k = (e >> 16) as usize;
+        counter[k] -= 1;
+        output[counter[k] as usize] = (e & 0xFF) as u8;
+        i -= 1;
+    }
+    fbp = counter[(context[fbp as usize] >> 16) as usize];
+    while i >= 0 {
+        let e = context[i as usize];
+        let k = (e >> 16) as usize;
+        counter[k] -= 1;
+        output[counter[k] as usize] = (e & 0xFF) as u8;
+        i -= 1;
+    }
+
+    Ok(fbp)
+}

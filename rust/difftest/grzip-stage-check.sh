@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# GRZip's LZP stage, forward direction: C vs Rust, byte for byte.
+# GRZip's encoder stages, forward direction: C vs Rust, byte for byte.
 #
 # GRZip's encoder is being ported STAGE BY STAGE, and GRZip_CompressBlock cannot
 # produce a comparable stream until every stage exists -- it is also recursive
@@ -67,6 +67,27 @@ for L in (7,8,9,15,16,17,31,32,33,63,64,65):
 PY
 
 fail=0; total=0
+
+# --- ST4 -------------------------------------------------------------------
+# Both the transformed block AND the returned FBP matter: the driver stores FBP
+# in the block header, so a port that produced the right bytes with the wrong
+# index would still write an archive that decodes to garbage.
+for f in "$W"/in/*; do
+  total=$((total+1))
+  "$W/c"  t < "$f" >| "$W/o.c"  2>"$W/e.c"
+  "$W/rs" t < "$f" >| "$W/o.rs" 2>"$W/e.rs"
+  c_fbp=$(cat "$W/e.c"); r_fbp=$(cat "$W/e.rs")
+  if [ "$c_fbp" != "$r_fbp" ]; then
+    echo "  [st4] $(basename "$f"): FBP differs ($c_fbp vs $r_fbp)"; fail=$((fail+1)); continue
+  fi
+  cmp -s "$W/o.c" "$W/o.rs" || { echo "  [st4] $(basename "$f"): OUTPUT differs"; fail=$((fail+1)); }
+done
+st4_total=$total
+echo "grzip ST4 encode: $((st4_total-fail))/$st4_total agree"
+st4_fail=$fail
+
+# --- LZP -------------------------------------------------------------------
+fail=0; total=0
 for mml in 8 16 32 64; do
   for htb in 8 12 15; do
     for f in "$W"/in/*; do
@@ -83,4 +104,4 @@ for mml in 8 16 32 64; do
   done
 done
 echo "grzip LZP encode: $((total-fail))/$total agree"
-[ $fail -eq 0 ] || exit 1
+[ $((fail+st4_fail)) -eq 0 ] || exit 1

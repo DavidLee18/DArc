@@ -57,4 +57,7 @@ int darc_grz_stream_decompress (CALLBACK_FUNC *cb, void *aux)
 int darc_grz_lzp_encode (unsigned char *in, unsigned size, unsigned char *out,
                          unsigned min_match_len, unsigned ht_size)
 { return GRZip_LZP_Encode (in, size, out, min_match_len, ht_size); }
+
+int darc_grz_st4_encode (unsigned char *in, int size, unsigned char *out)
+{ return GRZip_ST4_Encode (in, size, out); }
 }
