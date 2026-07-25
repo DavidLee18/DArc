@@ -132,6 +132,27 @@ st4_total=$total
 echo "grzip ST4 encode: $((st4_total-fail))/$st4_total agree"
 st4_fail=$fail
 
+# --- MTF + arithmetic coder ------------------------------------------------
+# The entropy stage. Its models adapt on every symbol, so a single divergent
+# probability desynchronises everything after it -- there is no such thing as a
+# small difference here, which makes byte equality the only useful bar.
+fail=0; total=0; mtf_compressed=0
+for f in "$W"/in/*; do
+  total=$((total+1))
+  "$W/c"  m < "$f" >| "$W/o.c"  2>"$W/e.c"
+  "$W/rs" m < "$f" >| "$W/o.rs" 2>"$W/e.rs"
+  c_rc=$(cat "$W/e.c"); r_rc=$(cat "$W/e.rs")
+  if [ "$c_rc" != "$r_rc" ]; then
+    echo "  [mtf] $(basename "$f"): return differs ($c_rc vs $r_rc)"; fail=$((fail+1)); continue
+  fi
+  case "$c_rc" in rc=[1-9]*) mtf_compressed=$((mtf_compressed+1));; esac
+  cmp -s "$W/o.c" "$W/o.rs" || { echo "  [mtf] $(basename "$f"): OUTPUT differs"; fail=$((fail+1)); }
+done
+mtf_total=$total; mtf_fail=$fail
+echo "grzip MTF-Ari encode: $((mtf_total-mtf_fail))/$mtf_total agree"
+# All-incompressible would mean the coder never actually ran.
+[ "$mtf_compressed" -gt 0 ] || { echo "  no input was ever compressed -- the coder never ran"; mtf_fail=$((mtf_fail+1)); }
+
 # --- record filter ---------------------------------------------------------
 # The MODE matters as much as the bytes: it is what makes GRZip_CompressBlock
 # recurse, and it is chosen by a float entropy comparison plus an integer sum
@@ -176,4 +197,4 @@ for mml in 8 16 32 64; do
   done
 done
 echo "grzip LZP encode: $((total-fail))/$total agree"
-[ $((fail+st4_fail+rec_fail)) -eq 0 ] || exit 1
+[ $((fail+st4_fail+rec_fail+mtf_fail)) -eq 0 ] || exit 1
