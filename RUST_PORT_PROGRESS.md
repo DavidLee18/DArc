@@ -40,7 +40,7 @@ remains, because `DARC_NO_RUST=1` still builds them.
 | GRZip | `grzip` | yes | no |
 | LZ4 | `lz4` (`lz4_flex`) + `lz4hc` (own HC port) | yes (decode + both encoders) | **YES — 6,319 lines deleted** |
 | LZP | `lzp` | yes (both directions) | **YES — 259 lines deleted** |
-| MM | `mm` | yes | no |
+| MM | `mm`, `mmdet` (both directions) | yes (encode + decode) | partly — `mm_compress` excluded; `mmdet.cpp` stays for TTA |
 | REP | `rep` | yes (both directions, byte-exact) | **YES** |
 | SREP | `srep` (decode only) | external binary, no `DARC_RUST` wiring | no — see §14 before porting the encoder |
 | Tornado | `tornado` | yes | no |

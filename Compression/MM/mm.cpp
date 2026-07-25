@@ -177,6 +177,20 @@ void undiff4 (void *buf, int bufsize, int N, void *_base)
 // COMPRESSION METHOD IMPLEMENTATION **************************************************************
 
 #ifndef FREEARC_DECOMPRESS_ONLY
+// DARC_RUST=1 selects the Rust port of the encoder (rust/darc-codecs, mm.rs +
+// mmdet.rs), excluded rather than redeclared for the same reason as the decoder
+// below: both are C-linkage and GNU ld reports a multiple definition.
+//
+// mmdet.cpp stays compiled. It is #included above and tta.cpp calls
+// autodetect_wav_header/autodetect_by_entropy directly (tta.cpp:322-324), so
+// the detector cannot go until TTA's encoder is ported too. Only this function
+// leaves. The diff routines above stay for the same reason they always did --
+// plain non-static globals costing a few unreferenced bytes.
+//
+// Verified byte-identical to the C encoder over the same matrix the decoder
+// uses, including all four autodetection modes; see rust/difftest/mm-check.sh,
+// which now compares the produced STREAM, not just the round-trip.
+#ifndef DARC_RUST
 // Multimedia detector and preprocessor
 int mm_compress (int mode, int skip_header, int is_float, int num_chan, int word_size, int offset, int reorder, CALLBACK_FUNC *callback, void *auxdata)
 {
@@ -296,6 +310,7 @@ finished:
     FreeAndNil(buf);
     return errcode;         // 0 if everything is fine, otherwise the error code
 }
+#endif  // !defined (DARC_RUST)
 #endif  // !defined (FREEARC_DECOMPRESS_ONLY)
 
 

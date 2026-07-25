@@ -8,12 +8,16 @@
 //! channel -- which is why this module is a fraction of the size of `tta.rs`
 //! despite the two codecs sharing a directory.
 //!
-//! Only the decoder is ported, the same decode-first order used for REP, Dict,
+//! Both directions are ported, decoder first -- the order used for REP, Dict,
 //! LZP and TTA: a Rust build must *read* every existing `-mmm` archive before it
-//! may write one. None of `mmdet.cpp` is needed here -- its 1,117 lines of
-//! WAV-header and entropy autodetection sit behind
-//! `#ifndef FREEARC_DECOMPRESS_ONLY` and only ever choose the *encoder's*
-//! parameters, which then travel in the stream header.
+//! may write one. The encoder lives at the bottom of this file and its
+//! autodetection in `mmdet.rs`, which is the bulk of it: the detector chooses
+//! `num_chan`/`word_size`/`offset`, and those travel in the stream header, so
+//! it decides archive bytes rather than merely compression ratio.
+//!
+//! The C `mm_compress` is excluded under `DARC_RUST`, but `mmdet.cpp` is NOT
+//! deleted: `tta.cpp` calls its two autodetect entry points directly, so it
+//! survives until TTA's encoder is ported too.
 //!
 //! ## The stream
 //!
@@ -25,9 +29,10 @@
 //! channel. Then zero padding up to a multiple of the sample size, then the
 //! deltas, to end of stream.
 //!
-//! Bit 0 of the flags byte is the only one implemented; bits 1-2 are reserved
-//! for the unfinished byte/word reordering (`reorder_words` in mm.cpp is a
-//! stub that returns its argument), and the C decoder rejects them.
+//! Bit 0 of the flags byte is the diff, bit 1 the byte reordering (`:r1`), which
+//! this port completed in both directions -- it could previously be written but
+//! never read. Bit 2 was `reorder_words`, whose C implementation is
+//! `return buf;`, and stays rejected rather than accepted as a no-op.
 //!
 //! ## Widths, and why little-endian is exact
 //!
@@ -44,11 +49,15 @@
 //! the non-Intel path, so `from_le_bytes` here is exact rather than merely
 //! equivalent.
 
-use crate::ffi::{Io, FREEARC_ERRCODE_BAD_COMPRESSED_DATA, FREEARC_ERRCODE_IO, OK};
+use crate::ffi::{
+    Io, FREEARC_ERRCODE_BAD_COMPRESSED_DATA, FREEARC_ERRCODE_GENERAL, FREEARC_ERRCODE_IO, OK,
+};
+use crate::mmdet;
 use core::ffi::c_int;
 
 const BAD: c_int = FREEARC_ERRCODE_BAD_COMPRESSED_DATA as c_int;
 const IO: c_int = FREEARC_ERRCODE_IO as c_int;
+const GENERAL: c_int = FREEARC_ERRCODE_GENERAL as c_int;
 
 /// `BUFFER_SIZE` (Compression.h:38). Part of the format, not a tuning knob:
 /// the encoder emits its second and later blocks at `roundDown(BUFFER_SIZE,N)`,
@@ -449,6 +458,246 @@ fn copy_to_eof(io: &Io, buf: &mut [u8]) -> Result<(), c_int> {
             return Ok(());
         }
         write_out(io, &buf[..got as usize])?;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Encoder -- the port of `mm_compress` (mm.cpp:181).
+//
+// The filter itself is four `diff` routines and a header. Almost all of the
+// work is in deciding WHAT to filter: `mmdet` picks num_chan/word_size/offset,
+// and those three go into the stream header, so a detector that disagrees with
+// the C detector writes a different archive rather than a slightly worse one.
+// ---------------------------------------------------------------------------
+
+/// `BUFSIZE` (mm.cpp:183): the size of the first read, and so the largest block
+/// the filter ever emits. Later blocks are `roundDown(BUFFER_SIZE, N)`.
+const BUFSIZE: usize = 1 << 20;
+
+/// Forward byte transpose (`reorder_bytes`, mm.cpp:94). See `unreorder_bytes`
+/// for why the block length has to travel in the stream.
+fn reorder_bytes(buf: &mut [u8], n: usize, width: usize) {
+    let x = n * width;
+    if x == 0 || buf.len() < x {
+        return;
+    }
+    let len = buf.len();
+    let r = len / x;
+    let mut out = vec![0u8; len];
+    for i in 0..x {
+        for j in 0..r {
+            out[i * r + j] = buf[i + j * x];
+        }
+    }
+    let tail = len - (len % x);
+    out[tail..].copy_from_slice(&buf[tail..]);
+    buf.copy_from_slice(&out);
+}
+
+fn write_u32(io: &Io, v: u32) -> Result<(), c_int> {
+    write_out(io, &v.to_le_bytes())
+}
+
+fn encode(
+    io: &Io,
+    mode: c_int,
+    skip_header: bool,
+    is_float_in: c_int,
+    num_chan_in: c_int,
+    word_size_in: c_int,
+    offset_in: c_int,
+    reorder: c_int,
+) -> Result<(), c_int> {
+    let mut buf = vec![0u8; BUFSIZE + 1]; // +1 for diff3's 24-bit reads in C
+    let got = io.read(&mut buf[..BUFSIZE]);
+    if got <= 0 {
+        // C falls straight to `finished` and returns the read's own result, so
+        // an empty input produces an EMPTY stream -- not even a flags byte.
+        return if got < 0 { Err(got) } else { Ok(()) };
+    }
+    let bytes = got as usize;
+
+    // How much to examine, and which model sets to try. Modes 1-2 are the
+    // "fast" settings and look at less data with fewer candidate models.
+    let check_bytes = core::cmp::min(
+        if mode <= 2 {
+            64 * 1024
+        } else {
+            core::cmp::max(64 * 1024, bytes / 2)
+        },
+        bytes,
+    );
+    let (use_channels, use_bitvalues): (&[c_int], &[c_int]) = if mode <= 2 {
+        (&mmdet::FAST_CHANNELS, &mmdet::FAST_BITVALUES)
+    } else {
+        (&mmdet::CHANNELS, &mmdet::BITVALUES)
+    };
+
+    let mut is_float = is_float_in != 0;
+    let mut num_chan = num_chan_in;
+    let mut word_size = word_size_in;
+    let mut offset = offset_in;
+
+    if is_float || num_chan != 0 || word_size != 0 {
+        // Caller pinned the model; fill in whichever half they left out.
+        if num_chan == 0 {
+            num_chan = 1;
+        }
+        if word_size == 0 {
+            word_size = if is_float { 32 } else { 8 };
+        }
+    } else {
+        let detected = (if skip_header {
+            None
+        } else {
+            mmdet::autodetect_wav_header(&buf[..bytes])
+        })
+        .or_else(|| {
+            // The entropy analyser looks at a window in the MIDDLE of the
+            // block, not the start: file headers and leading silence are the
+            // least representative part of a media file.
+            let start = (bytes - check_bytes) / 2;
+            mmdet::autodetect_by_entropy(
+                &buf[start..start + check_bytes],
+                use_channels,
+                use_bitvalues,
+                0.80,
+            )
+        });
+        match detected {
+            Some(d) => {
+                is_float = d.is_float;
+                num_chan = d.num_chan;
+                word_size = d.word_size;
+                offset = d.offset;
+            }
+            // Neither detector recognised it: store the data intact.
+            None => {
+                is_float = false;
+                num_chan = 0;
+                word_size = 0;
+                offset = 0;
+            }
+        }
+    }
+    // is_float only ever picks a default word size. It is NOT recorded in the
+    // stream -- float samples are filtered as 32-bit integers.
+    let _ = is_float;
+
+    if offset > bytes as c_int {
+        offset = bytes as c_int; // else we would write a negative length
+    }
+    let offset = offset as usize;
+    let byte_size = ((word_size + 7) / 8) as usize;
+    let chan = num_chan as usize;
+    let n = chan * byte_size; // bytes per sample
+
+    // Don't filter a trailing partial sample in the first block; it is carried
+    // into the second one instead.
+    let mut blk = round_down(bytes - offset, n);
+    let mut rest = bytes - offset - blk;
+
+    // Room for the previous value of every channel. 24-bit samples accumulate
+    // in 32 bits, hence the 4.
+    let mut base = vec![0u8; chan * if byte_size == 3 { 4 } else { byte_size }];
+
+    if n == 0 {
+        // A single '\0' flags byte, then the data verbatim.
+        write_out(io, &[0u8])?;
+    } else {
+        // bit0 = diff, bit1 = reorder_bytes. num_chan is written as ONE byte,
+        // so a WAV claiming 256 channels wraps to 0 here -- the C does the same
+        // and the format has no room for more.
+        write_out(io, &[(1 + reorder * 2) as u8, num_chan as u8, word_size as u8])?;
+        write_u32(io, offset as u32)?;
+        write_out(io, &buf[..offset])?;
+        // Pad to a multiple of the sample size so the filter starts aligned.
+        // `base` is still all zeros and is what C writes these from.
+        let sofar = 3 + 4 + offset;
+        let pad = round_up(sofar, n) - sofar;
+        write_out(io, &base[..pad])?;
+    }
+
+    let mut ptr = offset; // first block skips the copied-through header
+    loop {
+        {
+            let data = &mut buf[ptr..ptr + blk];
+            match byte_size {
+                1 => diff1(data, chan, &mut base),
+                2 => diff2(data, chan, &mut base),
+                3 => diff3(data, chan, &mut base),
+                4 => diff4(data, chan, &mut base),
+                _ => {}
+            }
+            // reorder_words (:r2) is not resurrected: the C is `return buf;`.
+            if n != 0 && reorder == 1 {
+                reorder_bytes(data, chan, byte_size);
+            }
+        }
+        // The length prefix goes with the flag, and the flag only exists on the
+        // filtered path -- the stored path's header is a bare '\0' with nowhere
+        // to record it, and its decoder copies straight to EOF. Emitting a
+        // prefix there would corrupt the stream.
+        if n != 0 && reorder != 0 {
+            write_u32(io, blk as u32)?;
+        }
+        write_out(io, &buf[ptr..ptr + blk])?;
+
+        // Carry whatever did not make a whole sample into the next block.
+        buf.copy_within(ptr + blk..ptr + blk + rest, 0);
+
+        let chunk = if n > 1 {
+            round_down(BUFFER_SIZE, n)
+        } else {
+            BUFFER_SIZE
+        };
+        // A sample larger than the chunk size leaves nothing to read into. C
+        // passes the resulting negative count to the callback and gets an error
+        // back; here it would be a panic across the FFI boundary, so it is
+        // caught. Only reachable from a WAV header claiming thousands of
+        // channels.
+        if chunk <= rest {
+            return Err(GENERAL);
+        }
+        buf.resize(chunk + 1, 0);
+        ptr = 0;
+
+        let got = io.read(&mut buf[rest..chunk]);
+        if got < 0 {
+            return Err(got);
+        }
+        blk = got as usize + rest;
+        rest = 0;
+        if blk == 0 {
+            break;
+        }
+    }
+    Ok(())
+}
+
+/// `mm_compress`.
+pub fn compress(
+    io: &Io,
+    mode: c_int,
+    skip_header: c_int,
+    is_float: c_int,
+    num_chan: c_int,
+    word_size: c_int,
+    offset: c_int,
+    reorder: c_int,
+) -> c_int {
+    match encode(
+        io,
+        mode,
+        skip_header != 0,
+        is_float,
+        num_chan,
+        word_size,
+        offset,
+        reorder,
+    ) {
+        Ok(()) => OK,
+        Err(e) => e,
     }
 }
 

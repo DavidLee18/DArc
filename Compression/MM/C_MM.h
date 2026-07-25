@@ -2,7 +2,17 @@
 #include "../Compression.h"
 #include "mmdet.h"
 
-int mm_compress   (int skip_header, int is_float, int num_chan, int byte_size, int offset, int reorder, CALLBACK_FUNC *callback, void *auxdata);
+// `mode` was missing here, and the parameter after num_chan is word_size, not
+// byte_size. The declaration therefore never matched the definition in mm.cpp:
+// C_MM.cpp pulls this header in inside `extern "C"`, so the intent is that the
+// definition inherit C linkage -- but with a different arity it simply declared
+// a second, never-defined overload, and the real mm_compress stayed C++-mangled
+// (__Z11mm_compressiiiiiiiPFiPKcPviS1_ES1_). Harmless while both sides were C,
+// since the call site resolved to the definition either way. It stops being
+// harmless the moment a Rust drop-in wants the symbol: an extern "C"
+// mm_compress would not have replaced anything, and the C would have kept
+// running with no sign that the port was inert.
+int mm_compress   (int mode, int skip_header, int is_float, int num_chan, int word_size, int offset, int reorder, CALLBACK_FUNC *callback, void *auxdata);
 int mm_decompress (CALLBACK_FUNC *callback, void *auxdata);
 
 

@@ -3,20 +3,27 @@
  *     mm_ref c MODE SKIPHDR ISFLOAT NUMCHAN WORDSIZE OFFSET  <in >stream
  *     mm_ref d                                               <stream >out
  *
- * Built a second time with -DUSE_RUST so `d` drives the Rust port instead. MM
- * is ported decode-first (like REP, Dict, LZP and TTA), so there is no Rust
- * encoder: the stream always comes from the C compressor, and the test is that
- * the Rust decoder reproduces the original bytes from it.
+ * Built a second time with -DUSE_RUST so BOTH directions drive the Rust port
+ * instead. Decode was ported first (like REP, Dict, LZP and TTA); the encoder
+ * followed, so `c` now has two implementations to compare and the bar for it is
+ * byte-exact stream equality, not merely round-trippability. MM defines an
+ * archive format: a stream that differs from the C's would still decode through
+ * our own decoder while making archives other builds read differently.
  *
  * Both explicit parameters and autodetection are worth exercising, so the
  * encoder arguments are passed straight through: leave NUMCHAN/WORDSIZE at 0
  * and mm_compress runs its WAV-header and entropy detectors, which is how real
  * archives get their header -- and, on input it cannot classify, is how the
- * "stored" branch of the decoder gets reached.
+ * "stored" branch of the decoder gets reached. Autodetection is the substance
+ * of the encoder port (~600 of its ~730 lines), and it is *only* reached with
+ * those two left at 0.
  *
- * `reorder` is deliberately not exposed: mm.cpp's decoder rejects those flag
- * bits (the unreorder side was never written), so an encoder run with -r1
- * produces a stream nothing can decode.
+ * `reorder` is deliberately not exposed here. It is the one part of MM that
+ * cannot be pinned against the reference: the C reorder path is being changed
+ * in the same work that ports it -- it wrote a flag no decoder accepted, and
+ * gains a block-length prefix to become decodable -- so the pinned C is not an
+ * oracle for it. Tests/mm-reorder-check.sh covers that path by round-trip
+ * instead, across every tail remainder.
  */
 #include <stdio.h>
 #include <stdlib.h>
@@ -30,6 +37,7 @@ int mm_compress   (int, int, int, int, int, int, int, CALLBACK_FUNC*, void*);
 int mm_decompress (CALLBACK_FUNC*, void*);
 #ifdef USE_RUST
 extern "C" int darc_rs_mm_decompress (CALLBACK_FUNC*, void*);
+extern "C" int darc_rs_mm_compress   (int, int, int, int, int, int, int, CALLBACK_FUNC*, void*);
 #endif
 
 struct Buffers {
@@ -71,7 +79,11 @@ int main (int argc, char **argv) {
     int num_chan    = argc>5? atoi(argv[5]) : 0;
     int word_size   = argc>6? atoi(argv[6]) : 0;
     int offset      = argc>7? atoi(argv[7]) : 0;
+#ifdef USE_RUST
+    rc = darc_rs_mm_compress (mode, skip_header, is_float, num_chan, word_size, offset, 0, io_callback, &b);
+#else
     rc = mm_compress (mode, skip_header, is_float, num_chan, word_size, offset, 0, io_callback, &b);
+#endif
   } else {
 #ifdef USE_RUST
     rc = darc_rs_mm_decompress (io_callback, &b);

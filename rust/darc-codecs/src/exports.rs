@@ -321,6 +321,62 @@ pub unsafe extern "C" fn mm_decompress(
     darc_rs_mm_decompress(callback, auxdata)
 }
 
+/// MM encoder. Unlike the decoder this takes the full parameter set, because
+/// the caller may pin the model (`-mmm:c2:w16`) instead of letting the
+/// autodetector choose it -- and what it chooses lands in the stream header.
+///
+/// # Safety
+/// `callback` and `auxdata` must be what the C caller supplied.
+#[no_mangle]
+#[allow(clippy::too_many_arguments)]
+pub unsafe extern "C" fn darc_rs_mm_compress(
+    mode: c_int,
+    skip_header: c_int,
+    is_float: c_int,
+    num_chan: c_int,
+    word_size: c_int,
+    offset: c_int,
+    reorder: c_int,
+    callback: CALLBACK_FUNC,
+    auxdata: *mut c_void,
+) -> c_int {
+    match Io::new(callback, auxdata) {
+        Some(io) => mm::compress(
+            &io, mode, skip_header, is_float, num_chan, word_size, offset, reorder,
+        ),
+        None => FREEARC_ERRCODE_GENERAL,
+    }
+}
+
+/// # Safety
+/// `callback` and `auxdata` must be what the C caller supplied.
+#[cfg(feature = "dropin")]
+#[no_mangle]
+#[allow(clippy::too_many_arguments)]
+pub unsafe extern "C" fn mm_compress(
+    mode: c_int,
+    skip_header: c_int,
+    is_float: c_int,
+    num_chan: c_int,
+    word_size: c_int,
+    offset: c_int,
+    reorder: c_int,
+    callback: CALLBACK_FUNC,
+    auxdata: *mut c_void,
+) -> c_int {
+    darc_rs_mm_compress(
+        mode,
+        skip_header,
+        is_float,
+        num_chan,
+        word_size,
+        offset,
+        reorder,
+        callback,
+        auxdata,
+    )
+}
+
 /// # Safety
 /// `callback` and `auxdata` must be what the C caller supplied.
 #[no_mangle]
