@@ -77,13 +77,30 @@ void diff4 (void *buf, int bufsize, int N, void *_base)
 }
 
 // Reorder buffer contents so that data for each byte of each channel are placed continuosly
+//
+// The destination index is R*i, NOT i*bufsize/X. Those differ: C evaluates the
+// latter as (i*bufsize)/X, which exceeds i*(bufsize/X) by floor(i*s/X) once the
+// trailing remainder s = bufsize%X is 2 or more. The rows then drift past the
+// end of the transposed region, so a byte is dropped into the tail area and
+// overwritten by the copy loop below, while an earlier slot is never written at
+// all and keeps whatever malloc returned. The result is lossy AND
+// nondeterministic -- an mm:r1 stream built over such a block fails its CRC.
+//
+// s=0 and s=1 come out identical either way (i*s/X < 1 for every i < X when
+// s <= 1), which is why this survived: the encoder rounds the FIRST block down
+// to a whole number of samples, so only a final short block can hit it, and
+// only when it is both at least one sample long and 2+ bytes past a sample
+// boundary. Reproduced with a 1048582-byte input at c2:w16.
 BYTE* reorder_bytes (BYTE *buf, int bufsize, int N, int width)
 {
-    BYTE *newbuf = (BYTE*) malloc(bufsize);
     int X = N*width;
+    if (X <= 0 || bufsize < X)  return buf;   // nothing to transpose (X==0 would divide by zero)
+    BYTE *newbuf = (BYTE*) malloc(bufsize);
+    if (!newbuf)  return buf;
+    int R = bufsize/X;
     for (int i=0; i<X; i++)
-        for (int j=0; j<bufsize/X; j++)
-            newbuf[i*bufsize/X+j] = buf[i+j*X];
+        for (int j=0; j<R; j++)
+            newbuf[i*R+j] = buf[i+j*X];
     for (int i=bufsize-(bufsize%X); i<bufsize; i++)
         newbuf[i] = buf[i];
     memcpy (buf, newbuf, bufsize);
@@ -100,6 +117,27 @@ BYTE* reorder_words (BYTE *buf, int bufsize, int N, int width)
 #endif  // !defined (FREEARC_DECOMPRESS_ONLY)
 
 // Run through buffer undiffing 8-bit elements
+// Inverse of reorder_bytes. The forward transform sends buf[i+j*X] to
+// out[i*R+j] with X = N*width and R = bufsize/X, gathering the k-th byte of
+// every sample into one run; the trailing bufsize%X bytes pass through
+// untransposed. This undoes exactly that.
+BYTE* unreorder_bytes (BYTE *buf, int bufsize, int N, int width)
+{
+    int X = N*width;
+    if (X <= 0 || bufsize < X)  return buf;      // nothing was transposed
+    BYTE *newbuf = (BYTE*) malloc(bufsize);
+    if (!newbuf)  return NULL;
+    int R = bufsize/X;
+    for (int i=0; i<X; i++)
+        for (int j=0; j<R; j++)
+            newbuf[i+j*X] = buf[i*R+j];
+    for (int i=bufsize-(bufsize%X); i<bufsize; i++)
+        newbuf[i] = buf[i];
+    memcpy (buf, newbuf, bufsize);
+    free (newbuf);
+    return buf;
+}
+
 void undiff1 (void *buf, int bufsize, int N, void *_base)
 {
     char *base=(char*)_base;
@@ -139,6 +177,20 @@ void undiff4 (void *buf, int bufsize, int N, void *_base)
 // COMPRESSION METHOD IMPLEMENTATION **************************************************************
 
 #ifndef FREEARC_DECOMPRESS_ONLY
+// DARC_RUST=1 selects the Rust port of the encoder (rust/darc-codecs, mm.rs +
+// mmdet.rs), excluded rather than redeclared for the same reason as the decoder
+// below: both are C-linkage and GNU ld reports a multiple definition.
+//
+// mmdet.cpp stays compiled. It is #included above and tta.cpp calls
+// autodetect_wav_header/autodetect_by_entropy directly (tta.cpp:322-324), so
+// the detector cannot go until TTA's encoder is ported too. Only this function
+// leaves. The diff routines above stay for the same reason they always did --
+// plain non-static globals costing a few unreferenced bytes.
+//
+// Verified byte-identical to the C encoder over the same matrix the decoder
+// uses, including all four autodetection modes; see rust/difftest/mm-check.sh,
+// which now compares the produced STREAM, not just the round-trip.
+#ifndef DARC_RUST
 // Multimedia detector and preprocessor
 int mm_compress (int mode, int skip_header, int is_float, int num_chan, int word_size, int offset, int reorder, CALLBACK_FUNC *callback, void *auxdata)
 {
@@ -210,10 +262,24 @@ int mm_compress (int mode, int skip_header, int is_float, int num_chan, int word
         case 3 : diff3 (ptr, bytes, num_chan, base);  break;
         case 4 : diff4 (ptr, bytes, num_chan, base);  break;
         }
-        switch (reorder) {
-        case 1 : reorder_bytes (ptr, bytes, num_chan, byte_size);  break;
-        case 2 : reorder_words (ptr, bytes, num_chan, byte_size);  break;
-        }
+        // reorder_words is gone: it was `return buf;`, so :r2 set a flag no
+        // decoder accepted while transforming nothing.
+        if (N && reorder == 1)  reorder_bytes (ptr, bytes, num_chan, byte_size);
+
+        // The transpose is parameterised by the block length, and the blocks
+        // are NOT a fixed size -- the first is up to BUFSIZE minus the header
+        // offset, later ones roundDown(BUFFER_SIZE,N), the last whatever is
+        // left. Nothing in the old stream recorded that, which is why the flag
+        // could be written but never inverted. Prefixing each block with its
+        // length is what makes the reorder path decodable at all.
+        //
+        // Both are conditional on N, not on `reorder` alone. When autodetection
+        // gives up, N is 0 and the header above is a bare '\0' with no flags
+        // byte to carry bit1 -- the decoder for that stream copies to EOF and
+        // would swallow the prefixes as data. `-mmm:r1` on anything the
+        // detectors refuse (text, already-compressed data) hit exactly that and
+        // produced an archive that failed its CRC.
+        if (N && reorder)  WRITE4 (bytes);
         WRITE (ptr, bytes);
 
         // Move unprocessed rest of data into buffer beginning
@@ -244,6 +310,7 @@ finished:
     FreeAndNil(buf);
     return errcode;         // 0 if everything is fine, otherwise the error code
 }
+#endif  // !defined (DARC_RUST)
 #endif  // !defined (FREEARC_DECOMPRESS_ONLY)
 
 
@@ -284,7 +351,11 @@ int mm_decompress (CALLBACK_FUNC *callback, void *auxdata)
     } else {
         // Check that bits other than bit0-bit2 are not set (these should be used for future extensions)
         // Well, just now we don't support even bits1&2 enabled (i.e. we don't support restoring proper byte order)
-        if (header[0] & ~1)  {errcode=FREEARC_ERRCODE_BAD_COMPRESSED_DATA; goto finished;}
+        // bit0 = diff, bit1 = byte reordering. bit2 was reorder_words, which
+        // never existed (`return buf;`), so it stays rejected rather than being
+        // accepted as a no-op. Anything above is reserved.
+        if (header[0] & ~3)  {errcode=FREEARC_ERRCODE_BAD_COMPRESSED_DATA; goto finished;}
+        int reorder = (header[0] & 2) != 0;
         // Read the remaining two header bytes
         READ (header+1, 2);
 
@@ -302,22 +373,49 @@ int mm_decompress (CALLBACK_FUNC *callback, void *auxdata)
         int byte_size = (word_size+7)/8;              // bytes per word
         int N         = num_chan*byte_size;           // bytes per sample
         int chunk     = roundDown (BUFFER_SIZE, N);   // size of data processing chunks
+        int bufsize   = BUFFER_SIZE;                 // current capacity of buf[], grown by the reorder path
         base = calloc (num_chan, byte_size==3? 4:byte_size);  // room for previous values for all channels what will be substracted from next ones
         READ (base, roundUp(3+4+offset,N) - (3+4+offset));  // skip alignment bytes
 
-        // Process data in chunks
-        while ( (errcode = bytes = callback ("read", buf, chunk, auxdata)) > 0 )
+        // Process data in chunks. With reordering the block length is explicit,
+        // because the transpose is parameterised by it and the encoder's blocks
+        // are not a fixed size.
+        for (;;)
         {
+            if (reorder) {
+                BYTE lenbuf[4];
+                errcode = callback ("read", lenbuf, 4, auxdata);
+                if (errcode == 0)  break;                 // clean end of stream
+                if (errcode < 0)   goto finished;
+                if (errcode != 4)  {errcode=FREEARC_ERRCODE_BAD_COMPRESSED_DATA; goto finished;}
+                bytes = value32(lenbuf);
+                // The encoder's FIRST reorder block is up to BUFSIZE (1 MB)
+                // minus the header offset; later ones are chunk-sized. So this
+                // buffer has to grow -- bounded, so a declared length cannot
+                // choose the allocation size.
+                if (bytes < 0 || bytes > 1*mb)  {errcode=FREEARC_ERRCODE_BAD_COMPRESSED_DATA; goto finished;}
+                if (bytes > bufsize) {
+                    BYTE *nb = (BYTE*) realloc (buf, bytes+1);
+                    if (!nb)  {errcode=FREEARC_ERRCODE_NOT_ENOUGH_MEMORY; goto finished;}
+                    buf = nb;  bufsize = bytes;
+                }
+                READ (buf, bytes);
+            } else {
+                errcode = bytes = callback ("read", buf, chunk, auxdata);
+                if (errcode <= 0)  break;
+            }
+
+            // Undo the transpose BEFORE the deltas: the encoder diffed first and
+            // reordered second, so decode runs the inverse order. The
+            // commented-out original had these the wrong way round.
+            if (reorder)  unreorder_bytes (buf, bytes, num_chan, byte_size);
+
             switch (byte_size) {
             case 1 : undiff1 (buf, bytes, num_chan, base);  break;
             case 2 : undiff2 (buf, bytes, num_chan, base);  break;
             case 3 : undiff3 (buf, bytes, num_chan, base);  break;
             case 4 : undiff4 (buf, bytes, num_chan, base);  break;
-            }                     /*
-            switch (reorder) {
-            case 1 : unreorder_bytes (buf, bytes, num_chan, byte_size);  break;  // temporary!
-            case 2 : unreorder_words (buf, bytes, num_chan, byte_size);  break;
-            }             */
+            }
             WRITE (buf, bytes);
         }
     }

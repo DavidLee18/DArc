@@ -74,7 +74,13 @@ COMPRESSION_METHOD* parse_MM (char** parameters)
         case 'c':  p->num_chan    = parseInt (param+1, &error); continue;
         case 'w':  p->word_size   = parseInt (param+1, &error); continue;
         case 'o':  p->offset      = parseInt (param+1, &error); continue;
-        case 'r':  p->reorder     = parseInt (param+1, &error); continue;
+        // ':r1' is byte reordering, now implemented in both directions. ':r2'
+        // was reorder_words, whose C implementation is `return buf;` -- it
+        // transformed nothing and only set a flag no decoder accepted, so it is
+        // rejected rather than resurrected as a no-op.
+        case 'r':  p->reorder = parseInt (param+1, &error);
+                   if (!error && p->reorder != 0 && p->reorder != 1)  error = 1;
+                   continue;
       }
       // We end up here when the parameter has no name given
       // If this parameter can be parsed as c*w,
