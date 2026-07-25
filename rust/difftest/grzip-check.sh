@@ -96,6 +96,10 @@ sfail=0; sn=0
 for f in "$W"/in/* "$W/big"; do
   sn=$((sn+1)); name=$(basename "$f")
   "$W/c"  sc < "$f"    >| "$W/ss" 2>/dev/null || { echo "  [stream] $name: C-compress FAILED"; sfail=$((sfail+1)); continue; }
+  # Same defect as the block section had: without this the Rust stream
+  # compressor is never invoked and the run is green whatever it would emit.
+  "$W/rs" sc < "$f"    >| "$W/ss_rs" 2>/dev/null || { echo "  [stream] $name: RUST-compress FAILED"; sfail=$((sfail+1)); continue; }
+  cmp -s "$W/ss" "$W/ss_rs" || { echo "  [stream] $name: RUST-encode != C-encode"; sfail=$((sfail+1)); continue; }
   "$W/c"  sd < "$W/ss" >| "$W/sc" 2>/dev/null || { echo "  [stream] $name: C-decode FAILED";   sfail=$((sfail+1)); continue; }
   "$W/rs" sd < "$W/ss" >| "$W/sr" 2>/dev/null || { echo "  [stream] $name: RUST-decode FAILED"; sfail=$((sfail+1)); continue; }
   cmp -s "$f" "$W/sc" || { echo "  [stream] $name: C-decode != original (harness bug)"; sfail=$((sfail+1)); continue; }

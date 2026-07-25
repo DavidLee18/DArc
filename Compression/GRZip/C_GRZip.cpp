@@ -519,6 +519,19 @@ int GRZipCompressionThread::done()                   // Free resources
 }
 
 
+// DARC_RUST=1 selects the Rust port of the encoder (rust/darc-codecs/grzip).
+// Excluded rather than redeclared, as with the decoder below: both are
+// C-linkage and GNU ld would report a multiple definition.
+//
+// The port is single-threaded where this is a worker pool, and that is not a
+// difference in output: blocks are independent and the writer emits them in
+// order, so the stream is a plain concatenation either way. Everything the
+// pool exists for is throughput.
+//
+// Verified byte-identical to the C across ten mode words at block level and
+// over the multi-block stream; see rust/difftest/grzip-check.sh, which now
+// compares the produced STREAM rather than only round-tripping.
+#ifndef DARC_RUST
 int __cdecl grzip_compress (int Method,
                     int BlockSize,
                     int EnableLZP,
@@ -542,6 +555,7 @@ int __cdecl grzip_compress (int Method,
                          auxdata);
   return grz.run();
 }
+#endif  // !DARC_RUST (grzip_compress)
 
 #endif  // !defined (FREEARC_DECOMPRESS_ONLY)
 

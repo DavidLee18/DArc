@@ -250,7 +250,12 @@ fn store_block(input: &[u8], size: usize, out: &mut [u8], mode: i32) -> usize {
 
 /// `GRZip_CompressBlock`. Returns the number of bytes written to `out`.
 pub fn compress_block(input: &[u8], size: usize, out: &mut [u8], mode: i32) -> Result<usize, GrzError> {
-    if out.len() < size + BLOCK_HEADER + 1024 {
+    // The worst case is the STORE path: a 28-byte header plus the block
+    // verbatim. C sizes the caller's buffer at BlockSize+1024 and relies on
+    // exactly that, so demanding another 1024 here rejects a full-sized block
+    // that the C accepts -- which showed up only at the stream level, where
+    // blocks actually reach BlockSize.
+    if out.len() < size + BLOCK_HEADER {
         return Err(GRZ_NOT_ENOUGH_MEMORY);
     }
     put_word(out, 0, size as i32);

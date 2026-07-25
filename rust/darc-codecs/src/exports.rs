@@ -1119,3 +1119,55 @@ pub unsafe extern "C" fn darc_rs_grzip_compress_block(
         Err(e) => e,
     }
 }
+
+/// GRZip's stream compressor -- the archiver's entry point.
+///
+/// # Safety
+/// `callback` and `auxdata` must be what the C caller supplied.
+#[no_mangle]
+#[allow(clippy::too_many_arguments)]
+pub unsafe extern "C" fn darc_rs_grzip_compress(
+    method: c_int,
+    block_size: c_int,
+    enable_lzp: c_int,
+    min_match_len: c_int,
+    hash_size_log: c_int,
+    alternative_bwt_sort: c_int,
+    adaptive_block_size: c_int,
+    delta_filter: c_int,
+    callback: CALLBACK_FUNC,
+    auxdata: *mut c_void,
+) -> c_int {
+    match Io::new(callback, auxdata) {
+        Some(io) => grzip::stream::compress(
+            &io, method, block_size, enable_lzp, min_match_len, hash_size_log,
+            alternative_bwt_sort, adaptive_block_size, delta_filter,
+        ),
+        None => FREEARC_ERRCODE_GENERAL,
+    }
+}
+
+/// Drop-in under the archiver's own symbol name, matching the decoder above.
+///
+/// # Safety
+/// `callback` and `auxdata` must be what the C caller supplied.
+#[cfg(feature = "dropin")]
+#[no_mangle]
+#[allow(clippy::too_many_arguments)]
+pub unsafe extern "C" fn grzip_compress(
+    method: c_int,
+    block_size: c_int,
+    enable_lzp: c_int,
+    min_match_len: c_int,
+    hash_size_log: c_int,
+    alternative_bwt_sort: c_int,
+    adaptive_block_size: c_int,
+    delta_filter: c_int,
+    callback: CALLBACK_FUNC,
+    auxdata: *mut c_void,
+) -> c_int {
+    darc_rs_grzip_compress(
+        method, block_size, enable_lzp, min_match_len, hash_size_log,
+        alternative_bwt_sort, adaptive_block_size, delta_filter, callback, auxdata,
+    )
+}
