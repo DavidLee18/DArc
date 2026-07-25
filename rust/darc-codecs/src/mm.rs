@@ -55,6 +55,11 @@ const IO: c_int = FREEARC_ERRCODE_IO as c_int;
 /// and the decoder must ask for exactly the same amount.
 const BUFFER_SIZE: usize = 64 << 10;
 
+/// The largest reorder block the encoder can emit: `BUFSIZE` in `mm.cpp`, the
+/// size of its first read. Bounds the buffer growth in the reorder path so a
+/// declared length cannot choose the allocation size.
+const MAX_REORDER_BLOCK: usize = 1 << 20;
+
 /// The header offset is a 32-bit field read into a C `int`, so the C decoder
 /// happily takes a value that makes `malloc` fail or go negative. No encoder
 /// can emit more than the 1 MB first-block size, so anything past this is
@@ -83,6 +88,27 @@ fn read_u32(io: &Io) -> Result<u32, c_int> {
     let mut b = [0u8; 4];
     read_exact(io, &mut b)?;
     Ok(u32::from_le_bytes(b))
+}
+
+/// A 32-bit length, or `None` at a clean end of stream.
+///
+/// Distinguishing "no more blocks" from "a truncated length" matters here: the
+/// reorder path reads an explicit block length, so a stream that simply ends is
+/// normal while one that ends mid-length is corrupt.
+fn read_u32_or_eof(io: &Io) -> Result<Option<u32>, c_int> {
+    let mut b = [0u8; 4];
+    let mut got = 0usize;
+    while got < 4 {
+        let n = io.read(&mut b[got..]);
+        if n < 0 {
+            return Err(n);
+        }
+        if n == 0 {
+            return if got == 0 { Ok(None) } else { Err(BAD) };
+        }
+        got += n as usize;
+    }
+    Ok(Some(u32::from_le_bytes(b)))
 }
 
 fn write_out(io: &Io, buf: &[u8]) -> Result<(), c_int> {
@@ -141,6 +167,41 @@ fn round_up(a: usize, b: usize) -> usize {
 // The loop bound mirrors the C pointer condition `p + N <= buf + bufsize`, so a
 // trailing partial element is left untouched -- not rounded up, not padded.
 // ---------------------------------------------------------------------------
+
+/// Inverse of `reorder_bytes` (`mm.cpp:80`).
+///
+/// The forward transform is a byte transpose: with `x = n * width` bytes per
+/// sample and `r = len / x` whole samples, it sends `buf[i + j*x]` to
+/// `out[i*r + j]`, gathering the k-th byte of every sample into one run. That
+/// is what makes it pay -- the high bytes of a slowly-varying signal become long
+/// similar runs for the entropy coder. The trailing `len % x` bytes are copied
+/// straight through, not transposed.
+///
+/// **This transform is why the reorder flag needs a length prefix in the
+/// stream.** Unlike diff/undiff, which are streaming and carry their state in
+/// `base`, the permutation is parameterised by the block length: invert it with
+/// a different `len` and every byte lands in the wrong place. The encoder's
+/// blocks are not a fixed size -- the first is up to 1 MB (`BUFSIZE`) minus the
+/// header offset, later ones are `roundDown(BUFFER_SIZE, N)` = 64 KB, and the
+/// last is whatever remains -- and none of that is recoverable from the old
+/// stream. That, not the missing inverse, is why the flag was never finished.
+fn unreorder_bytes(buf: &mut [u8], n: usize, width: usize) {
+    let x = n * width;
+    if x == 0 || buf.len() < x {
+        return; // nothing transposed; the whole block is "tail"
+    }
+    let len = buf.len();
+    let r = len / x;
+    let mut out = vec![0u8; len];
+    for i in 0..x {
+        for j in 0..r {
+            out[i + j * x] = buf[i * r + j];
+        }
+    }
+    let tail = len - (len % x);
+    out[tail..].copy_from_slice(&buf[tail..]);
+    buf.copy_from_slice(&out);
+}
 
 fn diff1(buf: &mut [u8], n: usize, base: &mut [u8]) {
     let mut p = 0;
@@ -279,11 +340,14 @@ fn run(io: &Io) -> Result<(), c_int> {
         return copy_to_eof(io, &mut buf);
     }
 
-    // Bits 1-2 are the reordering that was never finished; anything above is
-    // reserved. The C decoder rejects both rather than guess.
-    if (header[0] & !1) != 0 {
+    // Bit 1 is byte reordering. Bit 2 was `reorder_words`, which never existed
+    // -- the C function is `return buf;` -- so it is rejected rather than
+    // treated as a no-op: a flag that means nothing should not be accepted.
+    // Anything above is reserved.
+    if (header[0] & !0b11) != 0 {
         return Err(BAD);
     }
+    let reorder = header[0] & 0b10 != 0;
     read_exact(io, &mut header[1..3])?;
 
     // The original file header, copied through untouched. C reads it into one
@@ -326,7 +390,30 @@ fn run(io: &Io) -> Result<(), c_int> {
 
     let chunk = round_down(BUFFER_SIZE, sample);
     loop {
-        let got = io.read(&mut buf[..chunk]);
+        // With reordering the block length is explicit: the permutation is
+        // parameterised by it, and the encoder's blocks are not a fixed size.
+        // Without it the stream is self-describing by chunk size, as before.
+        let got = if reorder {
+            let n = match read_u32_or_eof(io)? {
+                Some(n) => n as usize,
+                None => return Ok(()),
+            };
+            // The encoder's FIRST reorder block is up to BUFSIZE (1 MB) minus
+            // the header offset, while later ones are roundDown(BUFFER_SIZE,N)
+            // = 64 KB. So the decoder's fixed 64 KB buffer is not enough and
+            // has to grow -- bounded, so a hostile length cannot pick the
+            // allocation size.
+            if n > MAX_REORDER_BLOCK {
+                return Err(BAD);
+            }
+            if n > buf.len() {
+                buf.resize(n, 0);
+            }
+            read_exact(io, &mut buf[..n])?;
+            n as c_int
+        } else {
+            io.read(&mut buf[..chunk])
+        };
         if got < 0 {
             return Err(got);
         }
@@ -334,6 +421,11 @@ fn run(io: &Io) -> Result<(), c_int> {
             return Ok(());
         }
         let data = &mut buf[..got as usize];
+        // Undo the transpose before the deltas: the encoder diffed first, then
+        // reordered, so decode runs the inverse order.
+        if reorder {
+            unreorder_bytes(data, num_chan, byte_size);
+        }
         match byte_size {
             1 => undiff1(data, num_chan, &mut base),
             2 => undiff2(data, num_chan, &mut base),

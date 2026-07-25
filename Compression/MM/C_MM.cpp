@@ -74,17 +74,13 @@ COMPRESSION_METHOD* parse_MM (char** parameters)
         case 'c':  p->num_chan    = parseInt (param+1, &error); continue;
         case 'w':  p->word_size   = parseInt (param+1, &error); continue;
         case 'o':  p->offset      = parseInt (param+1, &error); continue;
-        // ':r' is REJECTED rather than parsed. The encoder writes
-        // header[0] = 1 + reorder*2, and both decoders reject any flag bit
-        // above bit 0 (mm.cpp:287) -- so -mmm:r1 and -mmm:r2 produced archives
-        // that could be created successfully and then never extracted.
-        // Verified: both round-trip as "CREATED BUT CANNOT BE EXTRACTED".
-        //
-        // The feature was never finished: reorder_words() is a stub that
-        // returns its argument, so :r2 did not even transform the data, it just
-        // set an unreadable flag. Failing the method string is strictly better
-        // than accepting it and emitting an archive nobody can open.
-        case 'r':  error = 1;                                   continue;
+        // ':r1' is byte reordering, now implemented in both directions. ':r2'
+        // was reorder_words, whose C implementation is `return buf;` -- it
+        // transformed nothing and only set a flag no decoder accepted, so it is
+        // rejected rather than resurrected as a no-op.
+        case 'r':  p->reorder = parseInt (param+1, &error);
+                   if (!error && p->reorder != 0 && p->reorder != 1)  error = 1;
+                   continue;
       }
       // We end up here when the parameter has no name given
       // If this parameter can be parsed as c*w,
