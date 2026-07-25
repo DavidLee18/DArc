@@ -303,6 +303,27 @@ int tor_compress2d (PackMethod m, CALLBACK_FUNC *callback, void *auxdata)
     return tor_compress3 <MatchFinder, LZ77_DynamicCoder> (m, callback, auxdata);
 }
 
+// DARC_RUST=1 selects the Rust port of the encoder (rust/darc-codecs).
+//
+// Excluded rather than redeclared, for the same reason as tor_decompress
+// below: both definitions have C linkage and GNU ld reports a multiple
+// definition when the staticlib and this object are linked together, while
+// macOS ld silently picks one. So the switch has to remove this definition.
+//
+// Unlike tor_decompress, the Rust side cannot be handed everything it needs
+// through this signature: tor_compress_chunk also reads the file-scope
+// `compress_all_at_once` (Common.cpp:6). The drop-in in exports.rs imports
+// that symbol directly and passes it on.
+//
+// Everything tor_compress reaches -- tor_compress0/2/3/4, the match finders,
+// the LZ77 coders, the entropy encoders and check_for_data_table -- is
+// template or static and has no other caller, so excluding this one entry
+// point leaves all of it uninstantiated. The decoder half of EntropyCoder.cpp,
+// LZ77_Coder.cpp and DataTables.cpp stays compiled, since Unarc needs it.
+//
+// Verified byte-identical to the C encoder on every preset 0-11, covering all
+// nine live instantiations; see rust/difftest/tornado-encode-check.sh.
+#ifndef DARC_RUST
 // Compress data using compression method m and callback for i/o
 int tor_compress (PackMethod m, CALLBACK_FUNC *callback, void *auxdata)
 {
@@ -360,6 +381,7 @@ int tor_compress (PackMethod m, CALLBACK_FUNC *callback, void *auxdata)
     }
 #endif
 }
+#endif  // !DARC_RUST (tor_compress)
 
 #endif // FREEARC_DECOMPRESS_ONLY
 
