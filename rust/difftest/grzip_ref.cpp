@@ -25,10 +25,14 @@ int darc_grz_stream_compress  (int method, int blocksize, int enable_lzp, int mi
                                int hashlog, int altsort, int adaptive, int deltaflt,
                                int (*cb)(const char*, void*, int, void*), void *aux);
 int darc_grz_stream_decompress(int (*cb)(const char*, void*, int, void*), void *aux);
+int darc_grz_lzp_encode(unsigned char *in, unsigned size, unsigned char *out,
+                        unsigned min_match_len, unsigned ht_size);
 #ifdef USE_RUST
 int darc_rs_grzip_decompress_block (const unsigned char *in, int in_size,
                                     unsigned char *out, int out_cap);
 int darc_rs_grzip_decompress (int (*cb)(const char*, void*, int, void*), void *aux);
+int darc_rs_grzip_lzp_encode (const unsigned char *in, int size, unsigned char *out,
+                              int out_size, int min_match_len, int ht_size);
 #endif
 }
 
@@ -61,6 +65,36 @@ static int io_callback (const char *what, void *data, int size, void *aux) {
 }
 
 int main (int argc, char **argv) {
+  // LZP stage on its own: "l MML HTBITS". GRZip's encoder is being ported stage
+  // by stage, and the block driver cannot produce a comparable stream until
+  // every stage exists -- so each stage gets its own comparison.
+  if (argc>1 && argv[1][0]=='l') {
+    int mml = argc>2? atoi(argv[2]) : 32;
+    int htb = argc>3? atoi(argv[3]) : 15;
+    int ht  = (1<<htb)-1;
+    size_t cap=1<<20, len=0; unsigned char *in=(unsigned char*)malloc(cap); if(!in) return 3;
+    for(;;){ if(len==cap){cap*=2; unsigned char*g=(unsigned char*)realloc(in,cap); if(!g){free(in);return 3;} in=g;}
+      size_t n=fread(in+len,1,cap-len,stdin); if(n==0)break; len+=n; }
+    // 64 zero bytes past the input. The C reads up to MinMatchLen-1 bytes past
+    // the end (LZP.c:89 -- confirmed under ASan as a heap-buffer-overflow READ
+    // of size 4), so without padding it would be comparing against whatever
+    // malloc happened to leave there. Padding makes the reference DEFINED. The
+    // Rust port reads a zero-padded view by construction and never goes out of
+    // bounds, which is why the two agree.
+    unsigned char *padded=(unsigned char*)calloc(len+64,1);
+    memcpy(padded,in,len);
+    unsigned char *out=(unsigned char*)calloc(len+1024,1);
+    int r;
+#ifdef USE_RUST
+    r = darc_rs_grzip_lzp_encode(padded,(int)len,out,(int)len+1024,mml,ht);
+#else
+    r = darc_grz_lzp_encode(padded,(unsigned)len,out,mml,ht);
+#endif
+    fprintf(stderr,"rc=%d\n",r);
+    if (r>0) fwrite(out,1,r,stdout);
+    free(in); free(padded); free(out);
+    return r>0? 0 : 1;
+  }
   int stream = (argc>1 && argv[1][0]=='s');
   const char *op = stream? argv[1]+1 : (argc>1? argv[1] : "");
   if (argc<2 || (op[0]!='c'&&op[0]!='d')) {

@@ -50,4 +50,11 @@ int darc_grz_stream_compress (int method, int blocksize, int enable_lzp, int min
 
 int darc_grz_stream_decompress (CALLBACK_FUNC *cb, void *aux)
 { return grzip_decompress (cb, aux); }
+
+// Individual stages, for the stage-by-stage encoder port. The block driver
+// cannot produce a comparable stream until every stage exists, so each stage is
+// compared on its own first.
+int darc_grz_lzp_encode (unsigned char *in, unsigned size, unsigned char *out,
+                         unsigned min_match_len, unsigned ht_size)
+{ return GRZip_LZP_Encode (in, size, out, min_match_len, ht_size); }
 }

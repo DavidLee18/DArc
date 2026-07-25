@@ -916,3 +916,29 @@ pub unsafe extern "C" fn zstd_stream_compress(
 ) -> c_int {
     darc_rs_zstd_stream_compress(level, window_log, workers, callback, auxdata)
 }
+
+/// GRZip's LZP stage, forward direction. Exposed for the differential harness
+/// only -- not a drop-in, because the C `GRZip_LZP_Encode` is still what the
+/// block driver calls until that is ported too.
+///
+/// # Safety
+/// `input`/`output` must be valid for `size`/`out_size` bytes.
+#[no_mangle]
+pub unsafe extern "C" fn darc_rs_grzip_lzp_encode(
+    input: *const u8,
+    size: c_int,
+    output: *mut u8,
+    out_size: c_int,
+    min_match_len: c_int,
+    ht_size: c_int,
+) -> c_int {
+    if input.is_null() || output.is_null() || size < 0 || out_size < 0 {
+        return FREEARC_ERRCODE_GENERAL;
+    }
+    let inp = core::slice::from_raw_parts(input, size as usize);
+    let out = core::slice::from_raw_parts_mut(output, out_size as usize);
+    match grzip::lzp::encode(inp, out, min_match_len as u32, ht_size as u32) {
+        Ok(n) => n as c_int,
+        Err(e) => e,
+    }
+}
