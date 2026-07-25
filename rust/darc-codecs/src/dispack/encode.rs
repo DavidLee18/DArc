@@ -1,0 +1,447 @@
+//! DisPack forward filter -- `DisFilter` and `DisFilterCtx` (`DisPack.cpp:328-654`).
+//!
+//! The mirror of [`super::filter`]. Where the decoder reassembles one
+//! instruction stream from `ST_MAX` parallel byte streams, this splits it: the
+//! opcode goes to `ST_OP`, a byte displacement to whichever `ST_DISP8_Rn`
+//! matches the register, an immediate to `ST_IMM8/16/32`, and so on. Grouping
+//! like with like is the whole trick -- the entropy coder downstream sees runs
+//! of similar bytes instead of interleaved instruction fields.
+//!
+//! Two transforms go beyond splitting, and both are why this must be
+//! byte-exact rather than merely reversible:
+//!
+//! * **Relative call/jump targets become absolute.** The same callee reached
+//!   from different call sites has a different relative displacement each time
+//!   but one absolute address, which compresses far better.
+//! * **Call targets are then MTF-coded.** A recently-called function costs one
+//!   index byte in `ST_CALL_IDX` instead of four address bytes in `ST_CALL32`.
+//!
+//! ## Endianness is asymmetric, and deliberately so
+//!
+//! The instruction stream is x86, so operands are read **little-endian**
+//! (`Fetch16`/`Fetch32`). The values written into the output streams are
+//! **big-endian** (`Store16B`/`Store32B`) -- putting the high-order byte first
+//! groups the slowly-varying bytes of nearby addresses together, which is again
+//! about what the entropy coder sees. But the `ST_MAX` stream *sizes* in the
+//! block header are written with `Write32`, which is **little-endian**.
+//!
+//! So: header LE, payload BE. Confirmed against the ported decoder rather than
+//! inferred -- [`super::filter`] reads the header with `from_le_bytes` and the
+//! payload with `from_be_bytes`.
+
+use super::tables::*;
+
+/// `MAXINSTR` (`DisPack.cpp:121`) -- the longest instruction this encoder will
+/// consume. The tail loop pads to this, so `process_instr` may always read it.
+pub const MAXINSTR: usize = 15;
+
+/// `OP_CALLF` -- far call, one of the three opcodes carrying a 16-bit operand
+/// ahead of the normal operand flow.
+const OP_CALLF: u8 = 0x9a;
+
+/// `FindMTF` (`DisPack.cpp:246`): index of `val`, moving it to the front.
+///
+/// Returns `None` when absent, having inserted it -- the caller then emits the
+/// full 32-bit address and a `0` index byte, which is what tells the decoder to
+/// read one. Note the search covers 255 entries, not 256: the last slot is
+/// write-only, evicted by `add_mtf` before it can ever be found.
+fn find_mtf(mtf: &mut [u32; 256], val: u32) -> Option<usize> {
+    for i in 0..255 {
+        if mtf[i] == val {
+            move_to_front(mtf, i, val);
+            return Some(i);
+        }
+    }
+    add_mtf(mtf, val);
+    None
+}
+
+/// `DisFilterCtx` (`DisPack.cpp:371`).
+struct Encoder {
+    /// One output buffer per stream. `DataBuffer` in the C, which grows by
+    /// doubling; a `Vec` does the same thing without the realloc bookkeeping.
+    buf: Vec<Vec<u8>>,
+    func_table: [u32; 256],
+    next_is_func: bool,
+    code_start: u32,
+    code_end: u32,
+}
+
+impl Encoder {
+    fn new(code_start: u32, code_end: u32) -> Self {
+        Encoder {
+            buf: vec![Vec::new(); ST_MAX],
+            func_table: [0u32; 256],
+            // The first instruction of a block starts a function.
+            next_is_func: true,
+            code_start,
+            code_end,
+        }
+    }
+
+    #[inline]
+    fn put8(&mut self, stream: usize, v: u8) {
+        self.buf[stream].push(v);
+    }
+    /// Big-endian, unlike the little-endian read that produced `v`.
+    #[inline]
+    fn put16(&mut self, stream: usize, v: u16) {
+        self.buf[stream].extend_from_slice(&v.to_be_bytes());
+    }
+    #[inline]
+    fn put32(&mut self, stream: usize, v: u32) {
+        self.buf[stream].extend_from_slice(&v.to_be_bytes());
+    }
+
+    /// `DetectJumpTable` (`DisPack.cpp:396`) -- count leading dwords that look
+    /// like in-range code addresses.
+    ///
+    /// Fewer than three in a row is treated as coincidence, not a table; that
+    /// threshold is format, since the decoder trusts the `JUMPTAB` marker.
+    fn detect_jump_table(&self, instr: &[u8], addr: u32) -> usize {
+        if addr >= self.code_end {
+            return 0;
+        }
+        let n_max = ((self.code_end - addr) / 4) as usize;
+        let mut count = 0usize;
+        while count < n_max {
+            let off = count * 4;
+            let Some(w) = instr.get(off..off + 4) else { break };
+            let coded = u32::from_le_bytes([w[0], w[1], w[2], w[3]]);
+            if coded >= self.code_start && coded < self.code_end {
+                count += 1;
+            } else {
+                break;
+            }
+        }
+        if count < 3 {
+            0
+        } else {
+            count
+        }
+    }
+
+    /// Emit one call target: an MTF index when the function is known, otherwise
+    /// index 0 plus the absolute address.
+    fn put_call_target(&mut self, target: u32) {
+        match find_mtf(&mut self.func_table, target) {
+            Some(ind) => self.put8(ST_CALL_IDX, (ind + 1) as u8),
+            None => {
+                self.put8(ST_CALL_IDX, 0);
+                self.put32(ST_CALL32, target);
+            }
+        }
+    }
+
+    /// `ProcessInstr` (`DisPack.cpp:418`) -- encode one instruction (or one
+    /// jump-table run) and return the number of input bytes consumed.
+    ///
+    /// `instr` is guaranteed to hold at least `MAXINSTR` bytes: the driver's
+    /// main loop stops that far from the end, and its tail loop pads.
+    fn process_instr(&mut self, instr: &[u8], memory: u32) -> usize {
+        let n_jump = self.detect_jump_table(instr, memory);
+        if n_jump != 0 {
+            // A jump/vtable run, emitted in chunks of at most 256 because the
+            // count is stored in one byte as count-1.
+            let mut remaining = n_jump;
+            let mut p = 0usize;
+            while remaining != 0 {
+                let count = remaining.min(256);
+                self.put8(ST_OP, JUMPTAB);
+                self.put8(ST_JUMPTBL_COUNT, (count - 1) as u8);
+                for _ in 0..count {
+                    let w = &instr[p..p + 4];
+                    let target = u32::from_le_bytes([w[0], w[1], w[2], w[3]]);
+                    p += 4;
+                    self.put_call_target(target);
+                }
+                remaining -= count;
+            }
+            return n_jump * 4;
+        }
+
+        let mut p = 0usize;
+        let mut code = instr[p];
+        p += 1;
+        let mut code2 = 0u8;
+        let mut o16 = false;
+
+        // A function begins after the previous one returned. int3 is padding
+        // between functions, so it does not count as the entry point.
+        if self.next_is_func && code != OP_INT3 {
+            add_mtf(&mut self.func_table, memory);
+            self.next_is_func = false;
+        }
+
+        if code == OP_OSIZE {
+            o16 = true;
+            code = instr[p];
+            p += 1;
+        }
+
+        let mut flags = if code == OP_2BYTE {
+            code2 = instr[p];
+            p += 1;
+            TABLE2[code2 as usize]
+        } else {
+            TABLE1[code as usize]
+        };
+
+        if code == OP_RETNI || code == OP_RETN || code == OP_INT3 {
+            self.next_is_func = true;
+        }
+
+        // Opcodes whose operand shape lives in the ModR/M reg field.
+        if flags == F_MEXTRA {
+            let m = instr[p];
+            flags = TABLEX[(((m >> 3) & 7) | ((code & 0x01) << 3) | ((code & 0x08) << 1)) as usize];
+        }
+
+        if flags == F_ERR {
+            // Not decodable: escape the single byte and resynchronise.
+            self.put8(ST_OP, ESCAPE);
+            self.put8(ST_OP, instr[0]);
+            return 1;
+        }
+
+        if o16 {
+            self.put8(ST_OP, OP_OSIZE);
+        }
+        self.put8(ST_OP, code);
+        if code == OP_2BYTE {
+            self.put8(ST_OP2, code2);
+        }
+
+        // Far call/jump carry a 48-bit address: the segment word is copied
+        // here and the 32-bit offset falls out of the normal flow below.
+        // `enter` likewise has a word operand followed by a byte operand.
+        if code == OP_CALLF || code == OP_JMPF || code == OP_ENTER {
+            let v = u16::from_le_bytes([instr[p], instr[p + 1]]);
+            p += 2;
+            self.put16(ST_IMM16, v);
+        }
+
+        if flags & F_MODE == F_MR {
+            let modrm = instr[p];
+            p += 1;
+            self.put8(ST_MODRM, modrm);
+            let mut sib = 0u8;
+
+            if modrm & 0x07 == 4 && modrm < 0xc0 {
+                sib = instr[p];
+                p += 1;
+                self.put8(ST_SIB, sib);
+            }
+
+            if modrm & 0xc0 == 0x40 {
+                // register + byte displacement: one stream per base register,
+                // which is what makes these bytes compressible.
+                let v = instr[p];
+                p += 1;
+                self.put8(ST_DISP8_R0 + (modrm & 0x07) as usize, v);
+            }
+
+            if modrm & 0xc0 == 0x80 || modrm & 0xc7 == 0x05 || (modrm < 0x40 && sib & 0x07 == 5) {
+                let w = &instr[p..p + 4];
+                let v = u32::from_le_bytes([w[0], w[1], w[2], w[3]]);
+                p += 4;
+                let stream = if modrm & 0xc7 == 0x05 { ST_ADDR32 } else { ST_DISP32 };
+                self.put32(stream, v);
+            }
+        }
+
+        if flags & F_MODE == F_AM {
+            match flags & F_TYPE {
+                F_AD => {
+                    let w = &instr[p..p + 4];
+                    let v = u32::from_le_bytes([w[0], w[1], w[2], w[3]]);
+                    p += 4;
+                    self.put32(ST_ADDR32, v);
+                }
+                F_DA => {
+                    let w = &instr[p..p + 4];
+                    let v = u32::from_le_bytes([w[0], w[1], w[2], w[3]]);
+                    p += 4;
+                    self.put32(ST_AJUMP32, v);
+                }
+                F_BR => {
+                    let v = instr[p];
+                    p += 1;
+                    self.put8(ST_JUMP8, v);
+                }
+                _ => {
+                    // F_DR: relative dword target -> absolute.
+                    let w = &instr[p..p + 4];
+                    let disp = u32::from_le_bytes([w[0], w[1], w[2], w[3]]);
+                    p += 4;
+                    // `p` is now the full instruction length, so this is
+                    // "displacement + address of the next instruction".
+                    let target = disp.wrapping_add(p as u32).wrapping_add(memory);
+                    if code != OP_CALLN {
+                        self.put32(ST_JUMP32, target);
+                    } else {
+                        self.put_call_target(target);
+                    }
+                }
+            }
+        } else {
+            match flags & F_TYPE {
+                F_BI => {
+                    let v = instr[p];
+                    p += 1;
+                    self.put8(ST_IMM8, v);
+                }
+                F_WI => {
+                    let v = u16::from_le_bytes([instr[p], instr[p + 1]]);
+                    p += 2;
+                    self.put16(ST_IMM16, v);
+                }
+                F_DI => {
+                    if !o16 {
+                        let w = &instr[p..p + 4];
+                        let v = u32::from_le_bytes([w[0], w[1], w[2], w[3]]);
+                        p += 4;
+                        self.put32(ST_IMM32, v);
+                    } else {
+                        let v = u16::from_le_bytes([instr[p], instr[p + 1]]);
+                        p += 2;
+                        self.put16(ST_IMM16, v);
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        p
+    }
+
+    /// `Flush` (`DisPack.cpp:565`): `ST_MAX` little-endian sizes, then the
+    /// stream bodies back to back.
+    fn flush(self) -> Vec<u8> {
+        let total: usize = ST_MAX * 4 + self.buf.iter().map(|b| b.len()).sum::<usize>();
+        let mut out = Vec::with_capacity(total);
+        for b in &self.buf {
+            // Little-endian here, unlike the payload -- see the module header.
+            out.extend_from_slice(&(b.len() as u32).to_le_bytes());
+        }
+        for b in &self.buf {
+            out.extend_from_slice(b);
+        }
+        debug_assert_eq!(out.len(), total);
+        out
+    }
+}
+
+/// `DisFilter` (`DisPack.cpp:600`) -- filter one block of x86 code.
+///
+/// `origin` is the address the block would be loaded at; call/jump targets are
+/// made absolute relative to it, so the same bytes at a different origin
+/// produce a different (and equally valid) filtered stream.
+pub fn dis_filter(src: &[u8], origin: u32) -> Vec<u8> {
+    let size = src.len();
+    let mut ctx = Encoder::new(origin, origin.wrapping_add(size as u32));
+    let mut pos = 0usize;
+
+    // Main loop: stay MAXINSTR bytes clear of the end so every read is in
+    // range. Signed comparison, because `size - MAXINSTR` is negative for a
+    // short block and must skip the loop rather than wrap.
+    while (pos as isize) < size as isize - MAXINSTR as isize {
+        let bytes = ctx.process_instr(&src[pos..], origin.wrapping_add(pos as u32));
+        if bytes == 0 {
+            break; // cannot happen -- every path consumes >= 1 -- but never spin
+        }
+        pos += bytes;
+    }
+
+    // Tail: an instruction here could run past the end of the input, so encode
+    // into a zero-padded copy, and if it turns out to have consumed more than
+    // is really there, roll every stream back and stop.
+    while pos < size {
+        let mut instr_buf = [0u8; MAXINSTR];
+        let n = size - pos;
+        instr_buf[..n].copy_from_slice(&src[pos..]);
+
+        let checkpoint: Vec<usize> = ctx.buf.iter().map(|b| b.len()).collect();
+        let bytes = ctx.process_instr(&instr_buf, origin.wrapping_add(pos as u32));
+
+        if bytes != 0 && pos + bytes <= size {
+            pos += bytes;
+        } else {
+            for (b, &mark) in ctx.buf.iter_mut().zip(checkpoint.iter()) {
+                b.truncate(mark);
+            }
+            break;
+        }
+    }
+
+    // Whatever is left cannot be a whole instruction: escape it byte by byte.
+    while pos < size {
+        ctx.put8(ST_OP, ESCAPE);
+        ctx.put8(ST_OP, src[pos]);
+        pos += 1;
+    }
+
+    ctx.flush()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The header is `ST_MAX` little-endian sizes covering the rest exactly.
+    #[test]
+    fn header_describes_the_body() {
+        let out = dis_filter(&[0x90u8; 64], 0x401000);
+        assert!(out.len() >= ST_MAX * 4);
+        let mut sum = 0usize;
+        for i in 0..ST_MAX {
+            let b = &out[i * 4..i * 4 + 4];
+            sum += u32::from_le_bytes([b[0], b[1], b[2], b[3]]) as usize;
+        }
+        assert_eq!(ST_MAX * 4 + sum, out.len());
+    }
+
+    /// A run of nops is all one-byte opcodes: they land in ST_OP and nowhere
+    /// else, which is the simplest check that streams are being separated.
+    #[test]
+    fn nops_go_only_to_the_opcode_stream() {
+        let out = dis_filter(&[0x90u8; 64], 0x401000);
+        let sizes: Vec<u32> = (0..ST_MAX)
+            .map(|i| {
+                let b = &out[i * 4..i * 4 + 4];
+                u32::from_le_bytes([b[0], b[1], b[2], b[3]])
+            })
+            .collect();
+        assert!(sizes[ST_OP] > 0, "opcode stream is empty");
+        for (i, &s) in sizes.iter().enumerate() {
+            if i != ST_OP {
+                assert_eq!(s, 0, "stream {i} should be empty for a nop run");
+            }
+        }
+    }
+
+    /// Every input length must terminate and be accounted for, including the
+    /// ones shorter than MAXINSTR that skip the main loop entirely.
+    #[test]
+    fn every_length_terminates() {
+        for len in 0..64usize {
+            let src: Vec<u8> = (0..len).map(|i| (i * 7 % 251) as u8).collect();
+            let out = dis_filter(&src, 0x401000);
+            assert!(out.len() >= ST_MAX * 4, "len {len} produced no header");
+        }
+    }
+
+    /// find_mtf searches 255 entries, not 256: the final slot is write-only.
+    /// A hit must move to the front so the next lookup is cheaper.
+    #[test]
+    fn find_mtf_moves_to_front_and_misses_insert() {
+        let mut t = [0u32; 256];
+        assert_eq!(find_mtf(&mut t, 0xdead), None); // absent -> inserted
+        assert_eq!(t[0], 0xdead);
+        assert_eq!(find_mtf(&mut t, 0xdead), Some(0)); // now found at the front
+        assert_eq!(find_mtf(&mut t, 0xbeef), None);
+        assert_eq!(t[0], 0xbeef);
+        assert_eq!(find_mtf(&mut t, 0xdead), Some(1)); // pushed back by one
+        assert_eq!(t[0], 0xdead); // and moved to the front again
+    }
+}

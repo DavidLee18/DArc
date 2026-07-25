@@ -293,7 +293,7 @@ not a thin corpus — at a given position every candidate path shares the same
 inputs were built specifically to break that (`priced`, `competing`) and did
 not. Those three lines are verified by transcription against the C only.
 
-### 8. Port the DisPack ENCODER — reconnaissance done, port not started
+### 8. Port the DisPack ENCODER — DONE
 
 The first encoder to take, and the only one whose completion deletes a whole
 directory. Cheaper than `DisPack.cpp`'s 31 KB suggests: most of that file is
@@ -310,6 +310,26 @@ clean rather than surgical:
 | `DisFilterCtx` | 371-599 | `DetectJumpTable`, `ProcessInstr` (418-564, the bulk), `Flush` (565-598) |
 | `DisFilter` | 600-654 | driver: main loop, then a checkpoint/undo tail so the last `MAXINSTR` bytes never read past the end, then escape-encodes any remainder |
 | `detect()` | `C_DisPack.cpp:142` | ~35 lines, EXE-type detection that decides whether to filter at all |
+
+**Result: byte-identical to the C over 76 comparisons across four load
+origins**, and the `dispack` fingerprint `6a46351e39373082` is unchanged, so
+archives are the same end to end. Wired under `DARC_RUST` in `C_DisPack.cpp`;
+the C `DisFilter` stays for `DARC_NO_RUST` until the directory is deleted.
+
+Seven sabotages, all caught — but **two were blind until the corpus was fixed,
+and the second fix needed a mechanism, not more data**:
+
+- *Jump-table threshold 3→2* was unobservable because the corpus had only a
+  run of 64 **consecutive** in-range dwords, which both thresholds accept
+  identically. Only a run of **exactly two** distinguishes them.
+- *MTF search bound 255→254* survived a first attempt that simply threw 400
+  distinct targets at it: every distinct target is a **miss**, so `find_mtf`
+  never returns a hit and the bound is unreachable. It only matters on a lookup
+  landing at exactly index 254. `add_mtf` pushes to the front, so inserting
+  `t0..t299` leaves `mtf[k] == t(299-k)` and puts `t45` at 254; referencing
+  `t45` next is found with the real bound and missed with a smaller one. The
+  catch confirms it exactly — 1581 vs 1585 bytes, the four extra bytes of a
+  full address where a one-byte index belonged.
 
 Two things to get right, both already known from the decode port:
 
