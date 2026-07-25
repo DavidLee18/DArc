@@ -653,6 +653,25 @@ pub unsafe extern "C" fn darc_rs_dispack_filter(
     out.len() as c_int
 }
 
+/// DisPack executable detection, mirroring `detect` (`C_DisPack.cpp:151`).
+///
+/// Returns 2 for `EXETYPE_EXE`, 1 for `EXETYPE_DATA`, matching the C enum so
+/// the differential harness can compare the classification directly.
+///
+/// # Safety
+/// `buf` must be valid for `len` bytes.
+#[no_mangle]
+pub unsafe extern "C" fn darc_rs_dispack_detect(buf: *const u8, len: c_int) -> c_int {
+    if buf.is_null() || len < 0 {
+        return FREEARC_ERRCODE_GENERAL;
+    }
+    let b = core::slice::from_raw_parts(buf, len as usize);
+    match dispack::encode::detect(b) {
+        dispack::encode::ExeType::Exe => 2,
+        dispack::encode::ExeType::Data => 1,
+    }
+}
+
 /// LZ4 high-compression encode, mirroring `LZ4_compress_HC`: returns the
 /// compressed length, or 0 when the block does not fit -- which `C_LZ4.cpp`
 /// treats as "store this block raw", not as an error.

@@ -332,6 +332,69 @@ impl Encoder {
     }
 }
 
+/// `EXETYPE` (`C_DisPack.cpp:149`). Only the EXE/DATA distinction is used.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ExeType {
+    Data,
+    Exe,
+}
+
+/// `detect` (`C_DisPack.cpp:151`) -- decide whether a chunk is x86 code.
+///
+/// This is the gate in front of the whole filter: a chunk classified `Data` is
+/// stored verbatim and [`dis_filter`] never sees it. That makes these three
+/// ratios format-relevant, not a heuristic detail -- they decide which chunks
+/// get a `TAG_EXE` header, so changing them changes the archive.
+///
+/// The signal is the density of `E8` (near call) bytes and what follows their
+/// 4-byte displacement: a high byte of `0xFF` means a backward call, typical of
+/// linked executables, while `0x00` means a forward call into a relocation
+/// placeholder, typical of object files. Both count toward "this disassembles";
+/// only the executable form is separately required to appear at all.
+///
+/// The thresholds are transcribed, not derived:
+/// * at least 0.2% of bytes start an `E8`
+/// * at least 20% of those look like a call (exe or obj form)
+/// * at least 1% look specifically like the executable form
+///
+/// Division is `double` in the C. It is kept as `f64` here rather than
+/// rearranged into integer comparisons: the multiplied-out forms are equivalent
+/// in exact arithmetic but not necessarily at the rounding boundary, and this
+/// decides archive bytes.
+pub fn detect(buf: &[u8]) -> ExeType {
+    let (mut e8, mut exe, mut obj) = (0i64, 0i64, 0i64);
+    let len = buf.len();
+    // `for (p = buf; p+5 < buf+len; p++)` -- reads p[4] and p[5], so the last
+    // start position is len-6.
+    let mut i = 0usize;
+    while i + 5 < len {
+        if buf[i] == 0xE8 {
+            e8 += 1;
+            if buf[i + 4] == 0xFF && buf[i + 5] != 0xFF {
+                exe += 1;
+            }
+            if buf[i + 4] == 0x00 && buf[i + 5] != 0x00 {
+                obj += 1;
+            }
+        }
+        i += 1;
+    }
+    // The C divides by `len` and by `e8` without guarding either. len==0 gives
+    // 0/0 = NaN and every comparison false -> Data, which is what returning
+    // early reproduces; e8==0 gives the same via the first test failing.
+    if len == 0 || e8 == 0 {
+        return ExeType::Data;
+    }
+    let dense = e8 as f64 / len as f64 >= 0.002;
+    let callish = (exe + obj) as f64 / e8 as f64 >= 0.20;
+    let executable = exe as f64 / e8 as f64 >= 0.01;
+    if dense && callish && executable {
+        ExeType::Exe
+    } else {
+        ExeType::Data
+    }
+}
+
 /// `DisFilter` (`DisPack.cpp:600`) -- filter one block of x86 code.
 ///
 /// `origin` is the address the block would be loaded at; call/jump targets are
