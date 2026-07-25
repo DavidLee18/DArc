@@ -33,9 +33,10 @@
 
 use super::lz77_enc::{DynamicCoder, Lz77Encoder, IMPOSSIBLE_LEN};
 use super::matchfinder::{
-    CachingMatchFinder, MatchFinder, MatchFinder1, MatchFinder2, MAX_HASHED_BYTES,
+    CachingMatchFinder, Hash3, LazyMatching, MatchFinder, MatchFinder1, MatchFinder2,
+    MAX_HASHED_BYTES,
 };
-use super::{BITCODER, BYTECODER, HUFCODER, STORING};
+use super::{ARICODER, BITCODER, BYTECODER, HUFCODER, STORING};
 use crate::ffi::{Io, FREEARC_ERRCODE_GENERAL};
 use core::ffi::c_int;
 
@@ -323,10 +324,30 @@ pub fn compress(mut m: PackMethod, io: &Io, all_at_once: bool) -> c_int {
         // (:338) CachingMatchFinder<4>. The condition tests `m.caching_finder`
         // for truth, not for 1.
         run(io, &m, CachingMatchFinder::new(4, m.hashsize, row), HUFCODER, all_at_once)
+    } else if (e == ARICODER || e == HUFCODER)
+        && row >= 2
+        && m.hash3 == 1
+        && m.caching_finder == 1
+        && m.match_parser == LAZY_ON
+    {
+        // (:340) and (:343): the same finder under both coders. The second is
+        // what FreeArc's -m4$compressed reaches via "-5 -c3".
+        //
+        // Hash3 makes min_length() 2 rather than 4, so the header's minlen byte
+        // and the coder's MINLEN both change -- it is not merely an extra
+        // lookup. Note this arm tests caching_finder == 1 exactly, where the
+        // huffman arm above tests it for truth.
+        let mf = LazyMatching::new(Hash3::new(
+            CachingMatchFinder::new(4, m.hashsize, row),
+            12,
+            10,
+            false,
+        ));
+        run(io, &m, mf, e, all_at_once)
     } else {
-        // The remaining six instantiations need the caching finders, the 3-byte
-        // hash, lazy matching or the data-table detector, none of which are
-        // ported yet. Refusing is what the C's own chain does for a combination
+        // The remaining instantiations need the cycled caching finder, the
+        // exact finder and CombineMF, or the data-table detector, none of
+        // which are ported yet. Refusing is what the C's own chain does for a combination
         // it was not compiled for (:358).
         return FREEARC_ERRCODE_INVALID_COMPRESSOR;
     };
@@ -336,9 +357,9 @@ pub fn compress(mut m: PackMethod, io: &Io, all_at_once: bool) -> c_int {
     }
 }
 
-/// `GREEDY` (Tornado.cpp:35). Named for what the condition tests rather than
-/// for the enumerator, since every ported arm requires it.
+/// `GREEDY` and `LAZY` (Tornado.cpp:35).
 const LAZY_OFF: c_int = 1;
+const LAZY_ON: c_int = 2;
 
 fn run<M: MatchFinder + 'static>(
     io: &Io,

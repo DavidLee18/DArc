@@ -760,3 +760,260 @@ impl MatchFinder for CachingMatchFinder {
         None
     }
 }
+
+// ---------------------------------------------------------------------------
+// Wrappers: LazyMatching and Hash3
+// ---------------------------------------------------------------------------
+
+/// `value16` / `value24` (Common.h:250-251). `value24` loads **four** bytes and
+/// masks, so it needs the same slack past `bufend` as a 32-bit load.
+#[inline]
+fn value16(buf: &[u8], at: usize) -> u32 {
+    u16::from_le_bytes([buf[at], buf[at + 1]]) as u32
+}
+
+#[inline]
+fn value24(buf: &[u8], at: usize) -> u32 {
+    value32(buf, at) & 0xff_ffff
+}
+
+/// `LazyMatching<MatchFinder>` (:673). Looks one byte ahead and prefers the
+/// match at `p+1` when it is enough better, which is what "lazy" means here.
+///
+/// Two details are load-bearing. The lookahead match may be extended one byte
+/// *backwards* (`nextq[-1] == *p`), which is the reason the empty hash slot is
+/// offset 1 rather than 0 -- at offset 0 that read would leave the buffer. And
+/// `invalidate_match` resets `nextlen` to `MINLEN-1`, not to 0, because the
+/// position has already been inserted into the hash and a fresh search could
+/// return `q == p` (:753).
+pub struct LazyMatching<M: MatchFinder> {
+    mf: M,
+    nextlen: u32,
+    prevq: usize,
+    /// Signed: `shift` rebases it unconditionally, and the C lets the pointer
+    /// go below the buffer when no match is pending.
+    nextq: isize,
+}
+
+impl<M: MatchFinder> LazyMatching<M> {
+    pub fn new(mf: M) -> Self {
+        LazyMatching { mf, nextlen: 0, prevq: 1, nextq: 1 }
+    }
+}
+
+impl<M: MatchFinder> MatchFinder for LazyMatching<M> {
+    fn min_length(&self) -> u32 {
+        self.mf.min_length()
+    }
+
+    fn find_matchlen(&mut self, buf: &[u8], p: usize, bufend: usize, prevlen_in: u32) -> u32 {
+        let minlen = self.min_length();
+        if self.nextlen == 0 {
+            self.nextlen = self.mf.find_matchlen(buf, p, bufend, prevlen_in);
+            self.nextq = self.mf.get_matchptr() as isize;
+        }
+        let mut prevlen = self.nextlen;
+        self.prevq = self.nextq.max(0) as usize;
+
+        self.nextlen = self.mf.find_matchlen(buf, p + 1, bufend, prevlen);
+        self.nextq = self.mf.get_matchptr() as isize;
+
+        let nextdist = (p + 1) as isize - self.nextq;
+        let prevdist = p as isize - self.prevq as isize;
+
+        // Extend the lookahead match one char backwards if that beats the match
+        // at p. The four alternatives are transcribed from :720-723.
+        let can_extend_back = self.nextq >= 1 && buf[(self.nextq - 1) as usize] == buf[p];
+        if self.nextlen >= minlen
+            && can_extend_back
+            && ((self.nextlen + 1 >= prevlen && nextdist < prevdist)
+                || (self.nextlen + 1 == prevlen + 1
+                    && !change_pair(prevdist.max(0) as usize, nextdist.max(0) as usize))
+                || (self.nextlen + 1 > prevlen + 1)
+                || (self.nextlen + 2 >= prevlen
+                    && prevlen >= minlen
+                    && change_pair(nextdist.max(0) as usize, prevdist.max(0) as usize)))
+        {
+            prevlen = self.nextlen + 1;
+            self.prevq = (self.nextq - 1) as usize;
+            return prevlen;
+        }
+
+        // Otherwise drop the current match entirely if the next one is better
+        // (LZMA's rule, :732-735).
+        if (self.nextlen >= prevlen && nextdist < prevdist / 4)
+            || (self.nextlen == prevlen + 1
+                && !change_pair(prevdist.max(0) as usize, nextdist.max(0) as usize))
+            || (self.nextlen > prevlen + 1)
+            || (self.nextlen + 1 >= prevlen
+                && prevlen >= minlen
+                && change_pair(nextdist.max(0) as usize, prevdist.max(0) as usize))
+        {
+            minlen - 1
+        } else {
+            prevlen
+        }
+    }
+
+    fn get_matchptr(&self) -> usize {
+        self.prevq
+    }
+
+    fn update_hash(&mut self, buf: &[u8], p: usize, len: u32, step: u32) {
+        self.mf.update_hash(buf, p + 1, len.saturating_sub(1), step);
+        self.nextlen = 0;
+    }
+
+    fn clear_hash(&mut self, buf: &[u8]) {
+        self.mf.clear_hash(buf);
+        self.nextlen = 0;
+    }
+
+    fn shift(&mut self, shift: usize) {
+        self.mf.shift(shift);
+        self.nextq -= shift as isize;
+    }
+
+    fn invalidate_match(&mut self) {
+        self.mf.invalidate_match();
+        // Not 0: p is already in the hash, so a fresh search could return q==p.
+        self.nextlen = self.min_length() - 1;
+    }
+
+    fn error(&self) -> Option<c_int> {
+        self.mf.error()
+    }
+}
+
+/// `Hash3<MatchFinder, HASH3_LOG, HASH2_LOG, FULL_UPDATE>` (:763). Adds two
+/// small direct-mapped tables for 3-byte and 2-byte matches, tried only when the
+/// wrapped finder comes up short.
+///
+/// **This changes `min_length()` to 2**, which is not a detail: the compression
+/// loop writes `mf.min_length()` into the stream header and passes it to the
+/// coder as MINLEN, so wrapping a finder in `Hash3` changes what a given length
+/// code means on both sides.
+pub struct Hash3<M: MatchFinder> {
+    mf: M,
+    hash3_log: u32,
+    hash2_log: u32,
+    full_update: bool,
+    t3: Vec<u32>,
+    t2: Vec<u32>,
+    q: usize,
+}
+
+impl<M: MatchFinder> Hash3<M> {
+    pub fn new(mf: M, hash3_log: u32, hash2_log: u32, full_update: bool) -> Self {
+        Hash3 {
+            mf,
+            hash3_log,
+            hash2_log,
+            full_update,
+            t3: vec![1u32; 1 << hash3_log],
+            t2: vec![1u32; 1 << hash2_log],
+            q: 1,
+        }
+    }
+
+    /// `hash` (:779) -- note there is no mask; the shift alone bounds it.
+    #[inline]
+    fn h3(&self, x: u32) -> usize {
+        (x.wrapping_mul(234567913) >> (32 - self.hash3_log)) as usize
+    }
+
+    #[inline]
+    fn h2(&self, x: u32) -> usize {
+        (x.wrapping_mul(123456791) >> (32 - self.hash2_log)) as usize
+    }
+
+    fn update_hash1(&mut self, buf: &[u8], p: usize) {
+        let h = self.h3(value24(buf, p));
+        self.t3[h] = p as u32;
+        if self.full_update {
+            let h = self.h2(value16(buf, p));
+            self.t2[h] = p as u32;
+        }
+    }
+}
+
+impl<M: MatchFinder> MatchFinder for Hash3<M> {
+    /// Two, not the wrapped finder's four.
+    fn min_length(&self) -> u32 {
+        2
+    }
+
+    fn find_matchlen(&mut self, buf: &[u8], p: usize, bufend: usize, prevlen: u32) -> u32 {
+        let len = self.mf.find_matchlen(buf, p, bufend, prevlen);
+        self.q = self.mf.get_matchptr();
+
+        // `len < mf.MINLEN` -- the *wrapped* finder's minimum, not this one's.
+        if len < self.mf.min_length() {
+            let h = self.h3(value24(buf, p));
+            let q = self.t3[h] as usize;
+            self.t3[h] = p as u32;
+            self.q = q;
+            if p - q < 6 * KB && p + 3 <= bufend && value24(buf, p) == value24(buf, q) {
+                let h2 = self.h2(value16(buf, p));
+                self.t2[h2] = p as u32;
+                return 3;
+            }
+            let h2 = self.h2(value16(buf, p));
+            let q = self.t2[h2] as usize;
+            self.t2[h2] = p as u32;
+            self.q = q;
+            if p - q < 256 && p + 2 <= bufend && value16(buf, p) == value16(buf, q) {
+                return 2;
+            }
+            return self.min_length() - 1;
+        }
+
+        let h = self.h3(value24(buf, p));
+        self.t3[h] = p as u32;
+        let h2 = self.h2(value16(buf, p));
+        self.t2[h2] = p as u32;
+        len
+    }
+
+    fn get_matchptr(&self) -> usize {
+        self.q
+    }
+
+    fn update_hash(&mut self, buf: &[u8], p: usize, len: u32, step: u32) {
+        self.mf.update_hash(buf, p, len, step);
+        if self.full_update {
+            for i in 1..len as usize {
+                self.update_hash1(buf, p + i);
+            }
+        } else {
+            if len > 1 {
+                self.update_hash1(buf, p + 1);
+            }
+            if len > 3 {
+                self.update_hash1(buf, p + len as usize - 1);
+            }
+        }
+    }
+
+    fn clear_hash(&mut self, buf: &[u8]) {
+        self.mf.clear_hash(buf);
+        self.t3.fill(1);
+        self.t2.fill(1);
+    }
+
+    fn shift(&mut self, shift: usize) {
+        self.mf.shift(shift);
+        let s = shift as u32;
+        for e in self.t3.iter_mut().chain(self.t2.iter_mut()) {
+            *e = if *e > s { *e - s } else { 1 };
+        }
+    }
+
+    fn invalidate_match(&mut self) {
+        self.mf.invalidate_match();
+    }
+
+    fn error(&self) -> Option<c_int> {
+        self.mf.error()
+    }
+}
