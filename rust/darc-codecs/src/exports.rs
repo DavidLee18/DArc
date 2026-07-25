@@ -1096,3 +1096,26 @@ pub unsafe extern "C" fn darc_rs_grzip_bwt_encode(
         Err(e) => e,
     }
 }
+
+/// GRZip's block driver, forward direction. Returns bytes written to `output`.
+///
+/// # Safety
+/// `input` valid for `size`; `output` must have room for `size + 28 + slack`.
+#[no_mangle]
+pub unsafe extern "C" fn darc_rs_grzip_compress_block(
+    input: *const u8,
+    size: c_int,
+    output: *mut u8,
+    out_cap: c_int,
+    mode: c_int,
+) -> c_int {
+    if input.is_null() || output.is_null() || size <= 0 || out_cap <= 0 {
+        return FREEARC_ERRCODE_GENERAL;
+    }
+    let inp = core::slice::from_raw_parts(input, size as usize);
+    let out = core::slice::from_raw_parts_mut(output, out_cap as usize);
+    match grzip::block::compress_block(inp, size as usize, out, mode) {
+        Ok(n) => n as c_int,
+        Err(e) => e,
+    }
+}

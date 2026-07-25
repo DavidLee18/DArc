@@ -175,18 +175,21 @@ pub fn encode(
         return Err(GRZ_UNEXPECTED_EOF);
     }
     let mml = min_match_len as usize;
-    if mml < 4 {
-        // The early check indexes `MinMatchLen-4`; below 4 that is negative in C.
-        return Err(GRZ_NOT_COMPRESSIBLE);
-    }
     let mut contexts = vec![0usize; ht_size as usize + 1];
 
-    /// Four little-endian bytes at `at`, treating anything past the end as zero
-    /// -- see the note above on the C overread.
-    fn word_padded(b: &[u8], at: usize) -> u32 {
+    /// Four little-endian bytes at `at`, treating anything OUTSIDE the buffer
+    /// as zero -- past the end, and also BEFORE the start.
+    ///
+    /// `at` is signed because `MinMatchLen` can be less than 4: the archiver
+    /// reaches this with mml == 0 (mode words 0x100-0x106), where C's
+    /// `Ptr + LZP_MinMatchLen - 4` points four bytes before the block. Guarding
+    /// mml < 4 by declining to compress is NOT equivalent -- C runs the filter
+    /// anyway, and a whole family of modes then diverges.
+    fn word_padded(b: &[u8], at: isize) -> u32 {
         let mut v = 0u32;
         for i in 0..4 {
-            let byte = b.get(at + i).copied().unwrap_or(0);
+            let idx = at + i as isize;
+            let byte = if idx < 0 { 0 } else { b.get(idx as usize).copied().unwrap_or(0) };
             v |= (byte as u32) << (8 * i);
         }
         v
@@ -211,7 +214,8 @@ pub fn encode(
 
         if pointer != 0 {
             let mut common = 0usize;
-            if word_padded(input, ip + mml - 4) == word_padded(input, pointer + mml - 4) {
+            let probe = mml as isize - 4;
+            if word_padded(input, ip as isize + probe) == word_padded(input, pointer as isize + probe) {
                 let mut p = ip;
                 let mut q = pointer;
                 while p < size {
@@ -223,6 +227,9 @@ pub fn encode(
                     common += 1;
                 }
             }
+            // With mml == 0 this comparison is `common < 0`, which is false --
+            // so ANY match length survives, including zero, and the length
+            // written out is `common + 1`. Preserved rather than special-cased.
             if common < mml {
                 common = 0;
             }

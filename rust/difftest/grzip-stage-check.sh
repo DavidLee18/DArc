@@ -255,7 +255,12 @@ done
 
 # --- LZP -------------------------------------------------------------------
 fail=0; total=0
-for mml in 8 16 32 64; do
+# mml 0 and 2 matter: the archiver reaches LZP with MinMatchLen == 0 for every
+# mode word in the 0x100-0x106 family, and there C's early-match probe indexes
+# `Ptr + mml - 4` -- four bytes BEFORE the block. Guarding that by declining to
+# compress diverted the whole family down the LZP-declined path and produced
+# wrong archives, while this sweep stayed green because it only tried mml >= 8.
+for mml in 0 2 8 16 32 64; do
   for htb in 8 12 15; do
     for f in "$W"/in/*; do
       total=$((total+1))

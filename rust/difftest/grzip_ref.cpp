@@ -34,6 +34,7 @@ int darc_grz_wfc_ari_encode(unsigned char *in, int size, unsigned char *out);
 int darc_grz_strong_bwt_encode(unsigned char *in, int size, unsigned char *out);
 int darc_grz_bwt_encode(unsigned char *in, int size, unsigned char *out, int fast);
 #ifdef USE_RUST
+int darc_rs_grzip_compress_block (const unsigned char *in, int size, unsigned char *out, int cap, int mode);
 int darc_rs_grzip_decompress_block (const unsigned char *in, int in_size,
                                     unsigned char *out, int out_cap);
 int darc_rs_grzip_decompress (int (*cb)(const char*, void*, int, void*), void *aux);
@@ -267,7 +268,11 @@ int main (int argc, char **argv) {
 
   if (op[0]=='c') {
     int mode = argc>2? (int)strtol(argv[2],NULL,0) : 0;
+#ifdef USE_RUST
+    rc = darc_rs_grzip_compress_block (in, (int)len, out, (int)(len+8192), mode);
+#else
     rc = darc_grz_compress_block (in, (int)len, out, mode);
+#endif
   } else {
     int size = argc>2? atoi(argv[2]) : (int)out_cap;
     if ((size_t)size > out_cap) size = (int)out_cap;

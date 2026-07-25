@@ -68,6 +68,11 @@ for mode in 0 2 4 6 0x100 0x102 0x104 0x106 0x50104 0x50100; do
     n=$((n+1)); name=$(basename "$f")
     sz=$(( $(wc -c < "$f") * 2 + 1048576 ))
     "$W/c"  c "$mode" < "$f"   >| "$W/s"  2>/dev/null || { echo "  [$mode] $name: C-compress FAILED"; fail=$((fail+1)); continue; }
+    # The block driver is ported too, so the STREAM must match, not just the
+    # round-trip. Without this the Rust compressor is never invoked at all and
+    # the run is green regardless of what it would have produced.
+    "$W/rs" c "$mode" < "$f"   >| "$W/s_rs" 2>/dev/null || { echo "  [$mode] $name: RUST-compress FAILED"; fail=$((fail+1)); continue; }
+    cmp -s "$W/s" "$W/s_rs" || { echo "  [$mode] $name: RUST-encode != C-encode"; fail=$((fail+1)); continue; }
     "$W/c"  d "$sz"   < "$W/s" >| "$W/oc" 2>/dev/null || { echo "  [$mode] $name: C-decode FAILED";   fail=$((fail+1)); continue; }
     "$W/rs" d "$sz"   < "$W/s" >| "$W/or" 2>/dev/null || { echo "  [$mode] $name: RUST-decode FAILED"; fail=$((fail+1)); continue; }
     cmp -s "$f" "$W/oc" || { echo "  [$mode] $name: C-decode != original (harness bug)"; fail=$((fail+1)); continue; }
