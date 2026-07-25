@@ -27,9 +27,9 @@ Keep these separate when reporting progress. Four deletions have landed --
 zstd's `libzstd` (52,856 lines), Delta/Dict/REP (2,912), LZ4's `lz4.c`/
 `lz4hc.c` (6,319), LZP (259) and DisPack (1,018) -- for a running total of
 **63,364 lines of C removed**.
-Those four codecs are Rust-only, with no `DARC_NO_RUST` fallback. Everything
+Those four codecs are Rust-only. Everything
 else is still present: every other `#ifndef DARC_RUST` block and vendored tree
-remains, because `DARC_NO_RUST=1` still builds them.
+remains, because `Unarc/` still builds them.
 
 | codec | Rust module | wired under `DARC_RUST` | C pruned |
 |---|---|---|---|
@@ -43,7 +43,7 @@ remains, because `DARC_NO_RUST=1` still builds them.
 | MM | `mm`, `mmdet` (both directions) | yes (encode + decode) | partly — `mm_compress` excluded; `mmdet.cpp` stays for TTA |
 | REP | `rep` | yes (both directions, byte-exact) | **YES** |
 | SREP | `srep` (decode only) | external binary, no `DARC_RUST` wiring | no — see §14 before porting the encoder |
-| Tornado | `tornado` (both directions) | yes (encode + decode, all 9 instantiations) | not yet — encoder C still in place |
+| Tornado | `tornado` (both directions) | yes (encode + decode, all 9 instantiations) | **YES — 1,315 encoder lines deleted**; decoder C stays for Unarc |
 | TTA | `tta` | yes | no |
 | zstd | `zstd` (`zstd-safe` binding) | yes | **YES — 2.2 MB deleted** |
 | Encryption | `darc-crypto` | yes | no |
@@ -164,7 +164,7 @@ existing, so the `PATH` export still runs on a cache hit.
 
 ### 4. Flip `DARC_RUST` to the default — DONE
 
-The Rust codecs are built and linked by default; `DARC_NO_RUST=1` opts out.
+The Rust codecs are mandatory; the `DARC_NO_RUST=1` opt-out was removed.
 The opt-out is deliberately kept: CI builds both ways and asserts the archives
 are byte-identical, and that comparison is what licenses deleting the C. Both
 Windows jobs invert the same way, and their uploaded artifacts — the ones the
@@ -179,7 +179,7 @@ binaries differ, and all 24 fingerprints are identical across them.
   `-mzstd` is in no fingerprint case, so the oracle-pinning prerequisite did not
   apply; that only blocks codecs that *have* a harness. zstd is now Rust-only:
   there is no C to fall back to, so its entry points left the `dropin` feature
-  gate and the Rust staticlib is linked even under `DARC_NO_RUST` (which
+  gate and the Rust staticlib is always linked (which
   otherwise still binds every other codec's C).
 
   **Worth knowing:** before this, the vendored 1.5.6 objects were `ld -r`-merged
@@ -193,7 +193,7 @@ binaries differ, and all 24 fingerprints are identical across them.
 - ~~**Delta, Dict, REP**~~ — **DONE.** `Delta.cpp`, `dict.cpp` and `rep.cpp`
   deleted (2,815 lines). Like zstd they are now Rust-only, so their drop-ins
   left the `dropin` feature gate; LZP's stayed gated, because its C survives and
-  ungating it would be a multiple definition under `DARC_NO_RUST`.
+  ungating it would be a multiple definition in the Unarc build.
 
   Two things the wrappers still needed from the deleted files, neither of which
   a "which entry points does it call?" check would have found: `C_REP.cpp` uses
@@ -315,7 +315,7 @@ clean rather than surgical:
 **Result: byte-identical to the C over 76 comparisons across four load
 origins**, and the `dispack` fingerprint `6a46351e39373082` is unchanged, so
 archives are the same end to end. Wired under `DARC_RUST` in `C_DisPack.cpp`;
-the C `DisFilter` stays for `DARC_NO_RUST` until the directory is deleted.
+the C `DisFilter` stays for `Unarc/` until the directory is deleted.
 
 Seven sabotages, all caught — but **two were blind until the corpus was fixed,
 and the second fix needed a mechanism, not more data**:

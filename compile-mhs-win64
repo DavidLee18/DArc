@@ -45,7 +45,7 @@ mkdir -p "$WINOUT"
 # ── Rust codecs, cross-compiled for the Windows target ──────────────────────
 #
 # Builds rust/darc-codecs + darc-crypto for this target and links them. This is
-# the default; DARC_NO_RUST=1 opts out. It must run BEFORE any C is compiled:
+# mandatory. It must run BEFORE any C is compiled:
 # the codec headers key off DARC_RUST, so adding the define after
 # compile-win64-c would leave the C++ symbols bound while the staticlibs sat
 # unused in the link -- the mistake ./compile documents at length.
@@ -63,9 +63,9 @@ mkdir -p "$WINOUT"
 # long-width family of bugs this repository has fixed a dozen times, so the
 # target is passed explicitly rather than left to default.
 rust_libs=""
-# The staticlibs are ALWAYS built and linked, even under DARC_NO_RUST: zstd has
+# The staticlibs are always built and linked: zstd has
 # no C implementation left, so C_Zstd.o resolves zstd_stream_* from the crate
-# either way. DARC_NO_RUST only drops the `dropin` feature and -DDARC_RUST, so
+# either way, and the `dropin` feature supplies the rest, so
 # every other codec compiles and binds its C. Same arrangement as ./compile.
 if true; then
   command -v cargo >/dev/null 2>&1 ||
@@ -148,8 +148,8 @@ if true; then
   fi
 
   rust_features=""
-  [ -z "${DARC_NO_RUST:-}" ] && rust_features="--features darc-codecs/dropin"
-  echo "building Rust codecs and crypto for $rust_target${DARC_NO_RUST:+ (dropins off)}"
+  rust_features="--features darc-codecs/dropin"
+  echo "building Rust codecs and crypto for $rust_target"
   ( cd rust && cargo build --release -p darc-codecs -p darc-crypto \
       $rust_features --target "$rust_target" ) ||
     { echo "error: cargo build failed for $rust_target" >&2; exit 1; }
@@ -161,7 +161,7 @@ if true; then
   done
 
   # Reaches the per-codec makefiles through win32-common.mak; make imports it.
-  [ -z "${DARC_NO_RUST:-}" ] && export DARC_EXTRA_DEFINES="-DDARC_RUST"
+  export DARC_EXTRA_DEFINES="-DDARC_RUST"
 fi
 
 # 1) Build C/C++ objects for the Windows target with __MHS__ defined
@@ -173,7 +173,7 @@ MHS=1 WINOUT="$WINOUT" DARC_WIN_ARCH="$arch" DARC_WIN_TOOLCHAIN="$toolchain" ./c
 # 3) MHS cross-compile setup
 # mhs targets.conf has [environment] block that pulls cc/ccflags/cclibs/conf from env vars
 defines="-DFREEARC_WIN -DFREEARC_INTEL_BYTE_ORDER -DFREEARC_64BIT -DFREEARC_NOURL -DFREEARC_NO_LUA"
-[ -z "${DARC_NO_RUST:-}" ] && defines="$defines -DDARC_RUST"
+defines="$defines -DDARC_RUST"
 
 c_objs=(
   "$WINOUT/Environment.o" "$WINOUT/URL.o" "$WINOUT/Common.o"

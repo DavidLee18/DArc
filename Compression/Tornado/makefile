@@ -10,5 +10,5 @@ OPT_FLAGS   = -O3 \
 DEBUG_FLAGS = -g0
 CFLAGS = $(CODE_FLAGS) $(OPT_FLAGS) $(DEBUG_FLAGS) $(DEFINES)
 
-$(TEMPDIR)/C_Tornado.o: C_Tornado.cpp C_Tornado.h Tornado.cpp MatchFinder.cpp LZ77_Coder.cpp EntropyCoder.cpp DataTables.cpp makefile
+$(TEMPDIR)/C_Tornado.o: C_Tornado.cpp C_Tornado.h Tornado.cpp LZ77_Coder.cpp EntropyCoder.cpp DataTables.cpp makefile
 	$(GCC) -c $(CFLAGS) -o $*.o $<

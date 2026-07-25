@@ -2,7 +2,39 @@
 // (c) Joachim Henke
 // GPL'ed code of Tornado - fast LZ77 compression algorithm.
 #include "../Compression.h"
-#include "MatchFinder.cpp"
+// MatchFinder.cpp held the encoder's match finders and was deleted with the
+// rest of the C encoder; these are the only two things the surviving code
+// needed from it. PtrVal is used by C_Tornado.cpp's SetDictionary, and the
+// debug macros by the decompressor's output loop below.
+typedef uint   HashVal;      // Result of hashing function
+typedef uint32 PtrVal;       // Pointers to buf stored in HTable
+typedef uint32 HintVal;      // Cached bytes from buf stored in HTable
+
+// Maximum number of bytes used for hashing in any match finder.
+// If this value will be smaller than real, we can hash bytes in buf that are not yet read
+// Also it's number of bytes reserved after bufend in order to simplify p+N<=bufend checks
+#define MAX_HASHED_BYTES 12
+
+
+#ifdef DEBUG
+void check_match (BYTE *p, BYTE *q, int len)
+{
+    if (p==q || memcmp(p,q,len))   printf("Bad match:  ");
+}
+void print_literal (int pos, BYTE c)
+{
+    printf (isprint(c)? "%08x: '%c'\n" : "%08x: \\0x%02x\n", pos, c);
+}
+void print_match (int pos, int len, int dist)
+{
+    printf ("%08x: %3d %6d\n", pos, len, -dist);
+}
+#else
+#define check_match(p,q,len)
+#define print_literal(pos,c)
+#define print_match(pos,len,dist)
+#endif
+
 #include "EntropyCoder.cpp"
 #include "LZ77_Coder.cpp"
 #include "DataTables.cpp"
@@ -68,322 +100,15 @@ uint tornado_compressor_outbuf_size (uint buffer, int bytes_to_compress = -1)
                                HUGE_BUFFER_SIZE;}
 
 
-#ifndef FREEARC_DECOMPRESS_ONLY
-
-// Check for data table with N byte elements at current pos
-#define CHECK_FOR_DATA_TABLE(N)                                                                         \
-{                                                                                                       \
-    if (p[-1]==p[N-1]                                                                                   \
-    &&  uint(p[  N-1] - p[2*N-1] + 4) <= 2*4                                                            \
-    &&  uint(p[2*N-1] - p[3*N-1] + 4) <= 2*4                                                            \
-    &&  !val32equ(p+2*N-4, p+N-4))                                                                      \
-    {                                                                                                   \
-        int type, items;                                                                                \
-        if (check_for_data_table (N, type, items, p, bufend, table_end, buf, offset, last_checked)) {   \
-            coder.encode_table (type, items);                                                           \
-            /* If data table was diffed, we should invalidate match cached by lazy match finder */      \
-            mf.invalidate_match();                                                                      \
-            goto found;                                                                                 \
-        }                                                                                               \
-    }                                                                                                   \
-}
-
-
-// Read next datachunk into buffer, shifting old contents if required
-template <class MatchFinder, class Coder>
-int read_next_chunk (PackMethod &m, CALLBACK_FUNC *callback, void *auxdata, MatchFinder &mf, Coder &coder, byte *&p, byte *buf, BYTE *&bufend, BYTE *&table_end, BYTE *&last_found, BYTE *&read_point, int &bytes, int &chunk, uint64 &offset, byte *(&last_checked)[MAX_TABLE_ROW][MAX_TABLE_ROW])
-{
-    if (bytes==0 || compress_all_at_once)  return 0;     // All input data was successfully compressed
-    // If we can't provide 256 byte lookahead then shift data toward buffer beginning,
-    // freeing space at buffer end for the new data
-    if (bufend-buf > m.buffer-LOOKAHEAD) {
-        int sh;
-        if (m.shift==-1) {
-            sh = p-(buf+2);  // p should become buf+2 after this shift
-            memcpy (buf, buf+sh, bufend-(buf+sh));
-            mf.clear_hash (buf);
-        } else {
-            sh = m.shift>0? m.shift : bufend-buf+m.shift;
-            memcpy (buf, buf+sh, bufend-(buf+sh));
-            mf.shift (buf, sh);
-        }
-        p      -= sh;
-        bufend -= sh;
-        offset += sh;
-        if (coder.support_tables && m.find_tables)
-            table_end  = table_end >buf+sh? table_end -sh : buf,
-            last_found = last_found>buf+sh? last_found-sh : buf;
-        iterate_var(i,MAX_TABLE_ROW)  iterate_var(j,MAX_TABLE_ROW)  last_checked[i][j] = buf;
-        mf.invalidate_match();  // invalidate match stored in lazy MF; otherwise it may fuck up the NEXT REPCHAR checking
-        coder.shift_occurs();   // Tell to the coder what shift occurs
-        debug (printf ("==== SHIFT %08x: p=%08x ====\n", sh, p-buf));
-    }
-    bytes = callback ("read", bufend, mymin (chunk, buf+m.buffer-bufend), auxdata);
-    debug (printf ("==== read %08x ====\n", bytes));
-    if (bytes<0)  return bytes;    // Return errcode on error
-    bufend += bytes;
-    read_point = bytes==0? bufend:bufend-LOOKAHEAD;
-    coder.flush();          // Sometimes data should be written to disk :)
-    return p<bufend? 1 : 0; // Result code: 1 if we still have bytes to compress, 0 otherwise
-}
-
-
-// Compress one chunk of data
-template <class MatchFinder, class Coder>
-int tor_compress_chunk (PackMethod m, CALLBACK_FUNC *callback, void *auxdata, byte *buf, int bytes_to_compress)
-{
-    // Read data in these chunks
-    int chunk = compress_all_at_once? m.buffer : mymin (m.shift>0? m.shift:m.buffer, LARGE_BUFFER_SIZE);
-    uint64 offset = 0;                        // Current offset of buf[] contents relative to file (increased with each shift() operation)
-    int bytes = bytes_to_compress!=-1? bytes_to_compress : callback ("read", buf, chunk, auxdata);   // Number of bytes read by last "read" call
-    if (bytes<0)  return bytes;               // Return errcode on error
-    BYTE *bufend = buf + bytes;               // Current end of real data in buf[]
-    BYTE *matchend = bufend - mymin (MAX_HASHED_BYTES, bufend-buf);   // Maximum pos where match may finish (less than bufend in order to simplify hash updating)
-    BYTE *read_point = compress_all_at_once || bytes_to_compress!=-1? bufend : bufend-mymin(LOOKAHEAD,bytes); // Next point where next chunk of data should be read to buf
-    // Match finder will search strings similar to current one in previous data
-    MatchFinder mf (buf, m.hashsize, m.hash_row_width, m.auxhash_size, m.auxhash_row_width);
-    if (mf.error() != FREEARC_OK)  return mf.error();
-    // Coder will encode LZ output into bits and put them to outstream
-    Coder coder (m.encoding_method, callback, auxdata, tornado_compressor_outbuf_size (m.buffer, bytes_to_compress), chunk*2);   // Data should be written in HUGE_BUFFER_SIZE chunks (at least) plus chunk*2 bytes should be allocated to ensure that no buffer overflow may occur (because we flush() data only after processing each 'chunk' input bytes)
-    if (coder.error() != FREEARC_OK)  return coder.error();
-    BYTE *table_end  = coder.support_tables && m.find_tables? buf : buf+m.buffer+LOOKAHEAD;    // The end of last data table processed
-    BYTE *last_found = buf;                             // Last position where data table was found
-    byte *last_checked[MAX_TABLE_ROW][MAX_TABLE_ROW];   // Last position where data table of size %1 with offset %2 was tried
-    if(coder.support_tables)  {iterate_var(i,MAX_TABLE_ROW)  iterate_var(j,MAX_TABLE_ROW)  last_checked[i][j] = buf;}
-    // Use first output bytes to store encoding_method, minlen and buffer size
-    coder.put8 (m.encoding_method);
-    coder.put8 (mf.min_length());
-    coder.put32(m.buffer);
-    // Encode first four bytes directly (at least 2 bytes should be saved directly in order to avoid problems with using p-2 in MatchFinder.update())
-    for (BYTE *p=buf; p<buf+4; p++) {
-        if (p>=bufend)  goto finished;
-        coder.encode (0, p, buf, mf.min_length());
-    }
-
-    // ========================================================================
-    // MAIN CYCLE: FIND AND ENCODE MATCHES UNTIL DATA END
-    for (BYTE *p=buf+4; TRUE; ) {
-        // Read next chunk of data if all data up to read_point was already processed
-        if (p >= read_point) {
-            if (bytes_to_compress!=-1)  goto finished;  // We shouldn't read/write any data!
-            byte *p1=p;  // This trick allows to not take address of p and this buys us a bit better program optimization
-            int res = read_next_chunk (m, callback, auxdata, mf, coder, p1, buf, bufend, table_end, last_found, read_point, bytes, chunk, offset, last_checked);
-            p=p1, matchend = bufend - mymin (MAX_HASHED_BYTES, bufend-buf);
-            if (res==0)  goto finished;    // All input data was successfully compressed
-            if (res<0)   return res;       // Error occured while reading data
-        }
-
-        // Check for data table that may be subtracted to improve compression
-        if (coder.support_tables  &&  p > table_end) {
-            if (mf.min_length() < 4)                      // increase speed by skipping this check in faster modes
-              CHECK_FOR_DATA_TABLE (2);
-            CHECK_FOR_DATA_TABLE (4);
-            if (p-last_found > table_dist)  table_end = p + table_shift;
-            goto not_found;
-            found: last_found=table_end;
-            not_found:;
-        }
-
-        // Find match length and position
-        UINT len = mf.find_matchlen (p, matchend, 0);
-        BYTE *q  = mf.get_matchptr();
-        // Encode either match or literal
-        if (!coder.encode (len, p, q, mf.min_length())) {      // literal encoded
-            print_literal (p-buf+offset, *p); p++;
-        } else {                                               // match encoded
-            // Update hash and skip matched data
-            check_match (p, q, len);
-            print_match (p-buf+offset, len, p-q);
-            mf.update_hash (p, len, m.update_step);
-            p += len;
-        }
-    }
-    // END OF MAIN CYCLE
-    // ========================================================================
-
-finished:
-    stat (printf("\nTables %d * %d = %d bytes\n", int(table_count), int(table_sumlen/mymax(table_count,1)), int(table_sumlen)));
-    // Return mf/coder error code or mark data end and flush coder
-    if (mf.error()    != FREEARC_OK)   return mf.error();
-    if (coder.error() != FREEARC_OK)   return coder.error();
-    coder.encode (IMPOSSIBLE_LEN, buf, buf-IMPOSSIBLE_DIST, mf.min_length());
-    coder.finish();
-    return coder.error();
-}
-
-
-// tor_compress template parameterized by MatchFinder and Coder
-template <class MatchFinder, class Coder>
-int tor_compress0 (PackMethod m, CALLBACK_FUNC *callback, void *auxdata)
-{
-    //SET_JMP_POINT( FREEARC_ERRCODE_GENERAL);
-    // Make buffer at least 32kb long and round its size up to 4kb chunk
-    m.buffer = (mymax(m.buffer, 32*kb) + 4095) & ~4095;
-    // If hash is too large - make it smaller
-    if (m.hashsize/8     > m.buffer)  m.hashsize     = 1<<lb(m.buffer*8);
-    if (m.auxhash_size/8 > m.buffer)  m.auxhash_size = 1<<lb(m.buffer*8);
-    // >0: shift data in these chunks, <0: how many old bytes should be kept when buf shifts,
-    // -1: don't slide buffer, fill it with new data instead
-    m.shift = m.shift?  m.shift  :  (m.hash_row_width>4? m.buffer/4   :
-                                     m.hash_row_width>2? m.buffer/2   :
-                                     m.hashsize>=512*kb? m.buffer/4*3 :
-                                                         -1);
-    // Alocate buffer for input data
-    byte *buf = (byte*) calloc (m.buffer+LOOKAHEAD, 1);     // make Valgrind happy :)
-    if (!buf)  return FREEARC_ERRCODE_NOT_ENOUGH_MEMORY;
-
-#if 0
-    // Create compression threads
-    for (int i=0; i<NumThreads; i++)
-    {
-        CThread t; t.Create(TornadoCompressionThread, &job[i]);
-    }
-    // Perform I/O and assign compression jobs
-    for (int i=0; ; i=(i+1)%NumThreads)
-    {
-        // Save results of previous compression job
-        job[i].Finished.Wait();
-        callback ("write", job[i].outbuf, job[i].outsize, auxdata);
-
-        // Read next chunk of data
-        int bytes = callback ("read", buf, m.buffer, auxdata);   // Number of bytes read by last "read" call
-        if (bytes<0)  return bytes;               // Return errcode on error
-
-        // Send signal to start compression
-        job[i].Compress.Signal();
-    }
-#endif
-
-    // MAIN COMPRESSION FUNCTION
-    int result = tor_compress_chunk<MatchFinder,Coder> (m, callback, auxdata, buf, -1);
-
-    free(buf);
-    return result;
-}
-
-
-template <class MatchFinder, class Coder>
-int tor_compress4 (PackMethod m, CALLBACK_FUNC *callback, void *auxdata)
-{
-    switch (m.match_parser) {
-    case GREEDY: return tor_compress0 <             MatchFinder,  Coder> (m, callback, auxdata);
-    case LAZY:   return tor_compress0 <LazyMatching<MatchFinder>, Coder> (m, callback, auxdata);
-    }
-}
-
-template <class MatchFinder, class Coder>
-int tor_compress3 (PackMethod m, CALLBACK_FUNC *callback, void *auxdata)
-{
-    switch (m.hash3) {
-    case 0: return tor_compress4 <MatchFinder, Coder> (m, callback, auxdata);
-    case 1: return tor_compress4 <Hash3<MatchFinder,12,10,FALSE>, Coder> (m, callback, auxdata);
-    case 2: return tor_compress4 <Hash3<MatchFinder,16,12,TRUE >, Coder> (m, callback, auxdata);
-    }
-}
-
-template <class MatchFinder>
-int tor_compress2 (PackMethod m, CALLBACK_FUNC *callback, void *auxdata)
-{
-    switch (m.encoding_method) {
-    case STORING:   // Storing - go to any tor_compress2 call
-    case BYTECODER: // Byte-aligned encoding
-                    return tor_compress3 <MatchFinder, LZ77_ByteCoder>                          (m, callback, auxdata);
-    case BITCODER:  // Bit-precise encoding
-                    return tor_compress3 <MatchFinder, LZ77_BitCoder>                           (m, callback, auxdata);
-    case HUFCODER:  // Huffman encoding
-                    return tor_compress3 <MatchFinder, LZ77_Coder <HuffmanEncoder<EOB_CODE> > > (m, callback, auxdata);
-    case ARICODER:  // Arithmetic encoding
-                    return tor_compress3 <MatchFinder, LZ77_Coder <ArithCoder<EOB_CODE> >     > (m, callback, auxdata);
-    }
-}
-
-template <class MatchFinder>
-int tor_compress2d (PackMethod m, CALLBACK_FUNC *callback, void *auxdata)
-{
-    return tor_compress3 <MatchFinder, LZ77_DynamicCoder> (m, callback, auxdata);
-}
-
-// DARC_RUST=1 selects the Rust port of the encoder (rust/darc-codecs).
+// The LZ77 compressor lived here, guarded by FREEARC_DECOMPRESS_ONLY. It is
+// gone: the Rust port in rust/darc-codecs/src/tornado/ is byte-identical to it
+// on every preset 0-11, covering all nine instantiations the archiver ever
+// built (rust/difftest/tornado-encode-check.sh, which compares against a
+// pinned revision of this file rather than the working tree).
 //
-// Excluded rather than redeclared, for the same reason as tor_decompress
-// below: both definitions have C linkage and GNU ld reports a multiple
-// definition when the staticlib and this object are linked together, while
-// macOS ld silently picks one. So the switch has to remove this definition.
-//
-// Unlike tor_decompress, the Rust side cannot be handed everything it needs
-// through this signature: tor_compress_chunk also reads the file-scope
-// `compress_all_at_once` (Common.cpp:6). The drop-in in exports.rs imports
-// that symbol directly and passes it on.
-//
-// Everything tor_compress reaches -- tor_compress0/2/3/4, the match finders,
-// the LZ77 coders, the entropy encoders and check_for_data_table -- is
-// template or static and has no other caller, so excluding this one entry
-// point leaves all of it uninstantiated. The decoder half of EntropyCoder.cpp,
-// LZ77_Coder.cpp and DataTables.cpp stays compiled, since Unarc needs it.
-//
-// Verified byte-identical to the C encoder on every preset 0-11, covering all
-// nine live instantiations; see rust/difftest/tornado-encode-check.sh.
-#ifndef DARC_RUST
-// Compress data using compression method m and callback for i/o
-int tor_compress (PackMethod m, CALLBACK_FUNC *callback, void *auxdata)
-{
-// When FULL_COMPILE is defined, we compile all the 4*8*3*2=192 possible compressor variants
-// Otherwise, we compile only 8 variants actually used by -0..-11 predefined modes
-#ifdef FULL_COMPILE
-    switch (m.caching_finder) {
-    case 7:  if (m.hash_row_width > 256)  return FREEARC_ERRCODE_INVALID_COMPRESSOR;
-             return tor_compress2d <CombineMF <CycledCachingMatchFinder<7>, CycledCachingMatchFinder<4> > > (m, callback, auxdata);
-    case 6:  if (m.hash_row_width > 256)  return FREEARC_ERRCODE_INVALID_COMPRESSOR;
-             return tor_compress2d <CombineMF <CycledCachingMatchFinder<6>, CycledCachingMatchFinder<4> > > (m, callback, auxdata);
-    case 5:  if (m.hash_row_width > 256)  return FREEARC_ERRCODE_INVALID_COMPRESSOR;
-             return tor_compress2d <CombineMF <CycledCachingMatchFinder<5>, ExactMatchFinder<4> > >         (m, callback, auxdata);
-    case 2:  if (m.hash_row_width > 256)  return FREEARC_ERRCODE_INVALID_COMPRESSOR;
-             return tor_compress2d <CycledCachingMatchFinder<4> > (m, callback, auxdata);
-    case 1:  return tor_compress2  <CachingMatchFinder<4> >       (m, callback, auxdata);
+// Unarc never compiled any of it -- Unarc/makefile builds with
+// -DFREEARC_DECOMPRESS_ONLY -- so nothing there changes.
 
-    default: switch (m.hash_row_width) {
-             case 1:    return tor_compress2 <MatchFinder1>     (m, callback, auxdata);
-             case 2:    return tor_compress2 <MatchFinder2>     (m, callback, auxdata);
-             default:   return tor_compress2 <MatchFinderN<4> > (m, callback, auxdata);
-             }
-    }
-#else
-    // -1..-5(-6)
-    if (m.encoding_method==BYTECODER && m.hash_row_width==1 && m.hash3==0 && !m.caching_finder && m.match_parser==GREEDY ||
-        m.encoding_method==STORING ) {
-        return tor_compress0 <MatchFinder1, LZ77_ByteCoder> (m, callback, auxdata);
-    } else if (m.encoding_method==BITCODER && m.hash_row_width==1 && m.hash3==0 && !m.caching_finder && m.match_parser==GREEDY ) {
-        return tor_compress0 <MatchFinder1, LZ77_BitCoder > (m, callback, auxdata);
-    } else if (m.encoding_method==HUFCODER && m.hash_row_width==2 && m.hash3==0 && !m.caching_finder && m.match_parser==GREEDY ) {
-        return tor_compress0 <MatchFinder2, LZ77_Coder<HuffmanEncoder<EOB_CODE> > > (m, callback, auxdata);
-    } else if (m.encoding_method==HUFCODER && m.hash_row_width>=2 && m.hash3==0 && m.caching_finder && m.match_parser==GREEDY ) {
-        return tor_compress0 <CachingMatchFinder<4>, LZ77_Coder<HuffmanEncoder<EOB_CODE> > > (m, callback, auxdata);
-    } else if (m.encoding_method==ARICODER && m.hash_row_width>=2 && m.hash3==1 && m.caching_finder==1 && m.match_parser==LAZY ) {
-        return tor_compress0 <LazyMatching<Hash3<CachingMatchFinder<4>,12,10,FALSE> >, LZ77_Coder<ArithCoder<EOB_CODE> > > (m, callback, auxdata);
-    // -5 -c3 - used for FreeArc -m4$compressed
-    } else if (m.encoding_method==HUFCODER && m.hash_row_width>=2 && m.hash3==1 && m.caching_finder==1 && m.match_parser==LAZY ) {
-        return tor_compress0 <LazyMatching<Hash3<CachingMatchFinder<4>,12,10,FALSE> >, LZ77_Coder<HuffmanEncoder<EOB_CODE> > > (m, callback, auxdata);
-
-    // -7..-9
-    } else if (m.hash_row_width>=2 && m.hash3==2 && m.caching_finder==5 && m.match_parser==LAZY ) {
-        return tor_compress0 <LazyMatching <CombineMF <CycledCachingMatchFinder<5>, Hash3<ExactMatchFinder<4>,16,12,TRUE> > >,
-                              LZ77_DynamicCoder > (m, callback, auxdata);
-    // -10 and -11
-    } else if (m.hash_row_width>=2 && m.hash3==2 && m.caching_finder==6 && m.match_parser==LAZY ) {
-        return tor_compress0 <LazyMatching <CombineMF <CycledCachingMatchFinder<6>, Hash3<CycledCachingMatchFinder<4>,16,12,TRUE> > >,
-                              LZ77_DynamicCoder > (m, callback, auxdata);
-    } else if (m.hash_row_width>=2 && m.hash3==2 && m.caching_finder==7 && m.match_parser==LAZY ) {
-        return tor_compress0 <LazyMatching <CombineMF <CycledCachingMatchFinder<7>, Hash3<CycledCachingMatchFinder<4>,16,12,TRUE> > >,
-                              LZ77_DynamicCoder > (m, callback, auxdata);
-
-    } else {
-        return FREEARC_ERRCODE_INVALID_COMPRESSOR;
-    }
-#endif
-}
-#endif  // !DARC_RUST (tor_compress)
-
-#endif // FREEARC_DECOMPRESS_ONLY
 
 // LZ77 decompressor ******************************************************************************
 

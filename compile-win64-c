@@ -60,7 +60,7 @@ command -v "$CC" >/dev/null 2>&1 ||
 # the Rust staticlib. Compiling them without it binds the C implementations and
 # leaves the staticlib unused in the link -- the failure ./compile documents.
 RUST_DEF=""
-[[ -z "${DARC_NO_RUST:-}" ]] && RUST_DEF="-DDARC_RUST"
+RUST_DEF="-DDARC_RUST"
 
 MHS_DEF=""
 if [[ -n "${MHS:-}" ]]; then
