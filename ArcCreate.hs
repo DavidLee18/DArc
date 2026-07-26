@@ -324,8 +324,14 @@ writeSFX sfxname archive old_archive = do
     "-"      -> return ()                              --   delete the old sfx module
     "--"     -> unless (arcPhantom old_archive) $ do   --   copy the sfx from the source archive (the default)
                   archiveCopyData oldArchive 0 oldSFXSize archive
+    -- SFX support was removed with Unarc/: the modules WERE Unarc, compiled as
+    -- a headless stub, so nothing builds arc.sfx or freearc.sfx any more. The
+    -- option still parses (and "-"/"--" still work, since those only delete or
+    -- copy a module already present in an existing archive), but naming a file
+    -- can no longer succeed. Say so, rather than reporting a missing file and
+    -- letting the user hunt for a module that is never going to exist.
     filename -> bracket (archiveOpen sfxname              --   read the sfx module from the given file
-                          `catch` (\(e::SomeException) -> registerError$ GENERAL_ERROR ["0315 can't open SFX module %1", sfxname]))
+                          `catch` (\(e::SomeException) -> registerError$ GENERAL_ERROR ["0315 SFX modules were removed from DArc, so -sfx=%1 cannot be satisfied; self-extracting archives are no longer supported", sfxname]))
                         archiveClose
                         (\sfxfile -> do size <- archiveGetSize sfxfile
                                         archiveCopyData sfxfile 0 size archive)

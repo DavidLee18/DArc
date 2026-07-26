@@ -24,7 +24,10 @@ int darc_rs_tor_decompress (CALLBACK_FUNC *callback, void *auxdata);
 }
 struct PackMethod;
 extern PackMethod std_Tornado_method[];
-int tor_compress_preset (int preset, CALLBACK_FUNC *callback, void *auxdata);
+int tor_compress_preset (int preset, int notables, CALLBACK_FUNC *callback, void *auxdata);
+#ifdef USE_RUST
+extern "C" int rust_tor_compress_preset (int preset, int notables, CALLBACK_FUNC *callback, void *auxdata);
+#endif
 
 struct Buffers {
   const unsigned char *in; size_t in_len, in_pos;
@@ -52,15 +55,24 @@ static int io_callback (const char *what, void *data, int size, void *aux) {
 }
 
 int main (int argc, char **argv) {
+  // 'c' compresses, 'd' decompresses; under -DUSE_RUST both drive the Rust
+  // port. Compression is a separate mode rather than a flag because the
+  // encoder covers only some presets so far and must be able to refuse.
   if (argc<2 || (argv[1][0]!='c'&&argv[1][0]!='d')) {
-    fprintf(stderr,"usage: %s c PRESET | d\n",argv[0]); return 2; }
+    fprintf(stderr,"usage: %s c PRESET [NOTABLES] | d\n",argv[0]); return 2; }
   size_t cap=1<<20, len=0; unsigned char *in=(unsigned char*)malloc(cap); if(!in) return 3;
   for(;;){ if(len==cap){cap*=2; unsigned char*g=(unsigned char*)realloc(in,cap); if(!g){free(in);return 3;} in=g;}
     size_t n=fread(in+len,1,cap-len,stdin); if(n==0)break; len+=n; }
   Buffers b={in,len,0,NULL,0,0};
   int rc;
   if (argv[1][0]=='c') {
-    rc = tor_compress_preset (argc>2? atoi(argv[2]) : 4, io_callback, &b);
+    int preset = argc>2? atoi(argv[2]) : 4;
+    int notables = argc>3? atoi(argv[3]) : 0;
+#ifdef USE_RUST
+    rc = rust_tor_compress_preset (preset, notables, io_callback, &b);
+#else
+    rc = tor_compress_preset (preset, notables, io_callback, &b);
+#endif
   } else {
 #ifdef USE_RUST
     rc = darc_rs_tor_decompress (io_callback, &b);

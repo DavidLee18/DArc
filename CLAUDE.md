@@ -30,7 +30,7 @@ Since Wine has no ARM64 emulation, the ARM64 binary cannot be exercised on the m
 
 Binaries land in `Tests/`, which despite the name is a build *output* directory, not a test suite — it holds the produced binaries (gitignored via `Tests/*arc`) alongside the committed `arc.groups` solid-ordering config.
 
-Prerequisites: `mhs`, `clang`, `make`, `cargo`, `liblua5.1-dev`, `libncurses-dev`. **The Rust codecs are built and linked by default** — `cargo` is required. `DARC_NO_RUST=1` opts out and builds the C implementations instead; it exists so CI can build both and prove they produce identical archives. `libcurl` is optional and auto-detected — its absence adds `-DFREEARC_NOURL` and drops URL-archive support. CI pins MicroHs to a specific commit SHA with a checksum (`.github/workflows/build.yml`); match that commit when reproducing CI failures locally.
+Prerequisites: `mhs`, `clang`, `make`, `cargo`, `liblua5.1-dev`, `libncurses-dev`. **The Rust codecs are mandatory** — `cargo` is required. The `DARC_NO_RUST=1` opt-out was removed once the codecs it compared against started being deleted; byte-identity is now proved per codec by the harnesses in `rust/difftest`, which compare against a *pinned* revision of the C rather than the working tree. `libcurl` is optional and auto-detected — its absence adds `-DFREEARC_NOURL` and drops URL-archive support. CI pins MicroHs to a specific commit SHA with a checksum (`.github/workflows/build.yml`); match that commit when reproducing CI failures locally.
 
 ### Build-system gotchas
 
@@ -48,7 +48,7 @@ CPP defines are the main axis of variation, threaded through both the Haskell an
 | `FREEARC_UNIX` / `FREEARC_WIN` | Target OS |
 | `FREEARC_64BIT` | Set from `getconf LONG_BIT` |
 | `__MHS__` | Building under MicroHs rather than GHC |
-| `DARC_RUST` | Codec entry points come from the Rust crates (default; `DARC_NO_RUST=1` disables) |
+| `DARC_RUST` | Codec entry points come from the Rust crates. Always set; the opt-out and the last non-`DARC_RUST` consumer (`Unarc/`) are both gone, so the `#ifndef DARC_RUST` fallbacks were deleted with them |
 | `FREEARC_GUI` | Build the GUI binary instead of console |
 | `FREEARC_NOURL` | No libcurl/WinInet — URL support compiled out |
 | `FREEARC_NO_LUA` | No Lua — `Options.hs` stubs the interpreter out |
@@ -212,7 +212,8 @@ Separately, an earlier tool **truncated comments at a `--` appearing inside the 
 
 These build separately from the main binary and are not covered by `./compile-O2`:
 
-- **`Unarc/`** — standalone extractor and the SFX modules embedded into self-extracting archives (`arc.sfx`, `freearc.sfx`, …). Pure C++, built with `cd Unarc && make linux` (or `make windows`). Also produces `FreeArc.fmt`, a FAR Manager plugin.
+(`Unarc/` — the standalone extractor, the SFX modules and the FAR plugin — was deleted. It had been failing to compile for some time: `Environment.cpp` calls `Compress`, which is not declared under `FREEARC_DECOMPRESS_ONLY`, and no CI job built it. The `-sfx` option still parses, but `writeSFX` looks its module up by filename at run time and nothing produces those files any more.)
+
 - **`srep/`** — SREP 3.93a, a huge-dictionary LZ77 preprocessor, invoked as an external compressor. Vendored repackage of Bulat Ziganshin's original; sources also mirrored under `Compression/SREP/`. Its `srep/Compression/*.h` are an older, diverged vintage of the root `Compression/` headers (19–62% similar) — they are not interchangeable, so fix them independently.
 - **`HsLua/`** — vendored Lua 5.1 plus Haskell bindings, used by `Options.hs` for `arc.*.lua` config scripts. `./compile` builds the vendored Lua from `HsLua/src`; the Windows cross-build sets `FREEARC_NO_LUA` and links none of it.
 - **`Installer/`** — NSIS installer scripts and packaging assets (Windows).

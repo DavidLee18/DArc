@@ -1,6 +1,6 @@
-//! Semi-adaptive Huffman decoder, ported from
+//! Semi-adaptive Huffman codec, ported from
 //! `Compression/Tornado/EntropyCoder.cpp` (`HuffmanTree` :278,
-//! `HuffmanDecoder` :483).
+//! `HuffmanEncoder` :458, `HuffmanDecoder` :483).
 //!
 //! ## Why the tree builder has to be ported, not just the code reader
 //!
@@ -27,6 +27,7 @@
 //! longer code are marked -1, and those fall back to `index`, which is sized
 //! `1 << maxbits` so it always resolves in one step.
 
+use super::out_stream::OutputBitStream;
 use super::stream::InputBitStream;
 
 /// Maximum symbols in a tree (EntropyCoder.cpp:262).
@@ -47,12 +48,25 @@ struct Node {
     bits: u8,
 }
 
+/// `CodecDirection` (EntropyCoder.cpp:14). The tree builder is shared; only the
+/// last step differs -- an encoder wants `code[]` per symbol, a decoder wants the
+/// two reverse-lookup tables.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Direction {
+    Encoder,
+    Decoder,
+}
+
 pub struct HuffmanTree {
     n: usize,
+    dir: Direction,
     counter: Vec<u32>,
     /// Longest code in the current table; `index` is sized `1 << maxbits`.
+    /// Decoder-only: the C never assigns it on the encoder path.
     pub maxbits: i32,
     pub bits: Vec<u8>,
+    /// Encoder-only: the bit sequence for each symbol.
+    pub code: Vec<u32>,
     fast_index: Vec<i32>,
     index: Vec<u16>,
 }
@@ -61,12 +75,24 @@ impl HuffmanTree {
     /// Decoder-side construction: all counters start at 1 and the first tree is
     /// built immediately, matching `HuffmanTree::HuffmanTree` (:308).
     pub fn new(n: usize) -> Self {
+        Self::with_direction(n, Direction::Decoder)
+    }
+
+    pub fn with_direction(n: usize, dir: Direction) -> Self {
         let mut t = HuffmanTree {
             n,
+            dir,
             counter: vec![1u32; n],
             maxbits: 0,
             bits: vec![0u8; n],
-            fast_index: vec![0i32; 1 << FAST_BITS],
+            code: match dir {
+                Direction::Encoder => vec![0u32; n],
+                Direction::Decoder => Vec::new(),
+            },
+            fast_index: match dir {
+                Direction::Encoder => Vec::new(),
+                Direction::Decoder => vec![0i32; 1 << FAST_BITS],
+            },
             index: Vec::new(),
         };
         t.build_tree(0);
@@ -188,6 +214,17 @@ impl HuffmanTree {
             i -= 1;
         }
 
+        // Encoder side: all it needs is bits/code indexed by symbol (:412).
+        if self.dir == Direction::Encoder {
+            for i in 0..b {
+                let s = buf[i].left as usize;
+                self.bits[s] = buf[i].bits;
+                self.code[s] = buf[i].code;
+            }
+            self.rescale(rescale_mode);
+            return;
+        }
+
         // Decoder side: the least frequent symbol has the longest code, and it
         // sorted first, so buf[0].bits is maxbits.
         self.maxbits = buf[0].bits as i32;
@@ -234,6 +271,49 @@ impl HuffmanTree {
             let c = self.counter[s];
             self.counter[s] -= if c > 1 && c < factor { 1 } else { c / factor };
         }
+    }
+}
+
+/// `HUFBLOCKSIZE` (:455) -- symbols between tree rebuilds.
+pub const HUFBLOCKSIZE: i32 = 5000;
+
+/// The rescale mode the encoder always picks (:471). It travels in the stream as
+/// three bits after every EOB, so the decoder never has to agree in advance --
+/// but both sides must age counters by the same factor afterwards.
+pub const ENCODER_RESCALE_MODE: u32 = 3;
+
+/// `HuffmanEncoder<EOB>` (:458).
+pub struct HuffmanEncoder {
+    pub huf: HuffmanTree,
+    eob: usize,
+    /// Symbols left before the next rebuild. The first block is a quarter length
+    /// (:465), so the initial flat tree is replaced quickly.
+    remainder: i32,
+}
+
+impl HuffmanEncoder {
+    pub fn new(n: usize, eob: usize) -> Self {
+        HuffmanEncoder {
+            huf: HuffmanTree::with_direction(n, Direction::Encoder),
+            eob,
+            remainder: HUFBLOCKSIZE / 4,
+        }
+    }
+
+    /// Encode one symbol and count it. On a rebuild the EOB code goes out first,
+    /// followed by the three-bit rescale mode, which is how the decoder learns
+    /// to rebuild at the same point.
+    pub fn encode(&mut self, bits: &mut OutputBitStream, x: usize) {
+        self.remainder -= 1;
+        if self.remainder == 0 {
+            let eob = self.eob;
+            bits.putbits(self.huf.bits[eob] as i32, self.huf.code[eob]);
+            bits.putbits(3, ENCODER_RESCALE_MODE);
+            self.huf.build_tree(ENCODER_RESCALE_MODE);
+            self.remainder = HUFBLOCKSIZE;
+        }
+        self.huf.inc(x);
+        bits.putbits(self.huf.bits[x] as i32, self.huf.code[x]);
     }
 }
 

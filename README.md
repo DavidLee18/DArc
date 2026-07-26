@@ -33,13 +33,6 @@ Archives produced by DArc are format-compatible with [DArc86](https://github.com
    compile-GUI-O2
    ```
 5. The compiled binaries are placed in the `Tests/` subdirectory.
-6. To compile SFX modules and Unarc (optional):
-   ```
-   cd Unarc
-   make windows
-   ```
-   This creates `unarc.exe` and various SFX modules (`arc.sfx`, `freearc.sfx`, etc.).
-
 ### On Unix (Linux/macOS)
 
 1. Install [MicroHs](https://github.com/augustss/MicroHs) (`mhs`) for Haskell compilation, plus `clang` and `make`.

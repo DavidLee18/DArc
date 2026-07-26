@@ -329,27 +329,25 @@ jobs:
         path: Tests/arc-mhs-win64.exe
         if-no-files-found: error
 
-    # The same target built against the Rust codecs. Windows is where this is
-    # least obvious and most likely to break: cargo has to cross-compile, and
-    # zstd-sys and bindgen both need the mingw toolchain rather than the host's.
-    # Until this passes, no C decoder can be deleted -- the shipped Windows
-    # binaries would be left with nothing.
-    - name: Build (Windows cross, C-only) and compare
-      run: |
-        cp Tests/arc-mhs-win64.exe /tmp/arc-win-rs.exe
-        DARC_NO_RUST=1 ./compile-mhs-win64
-        cp Tests/arc-mhs-win64.exe /tmp/arc-win-c.exe
-        # restore the default (Rust) build as the artifact under test
-        cp /tmp/arc-win-rs.exe Tests/arc-mhs-win64.exe
+    # The C-vs-Rust comparison this used to do went away with DARC_NO_RUST.
+    # What replaced it is stronger and does not need a second build: each
+    # ported codec is compared byte-for-byte against a *pinned* revision of the
+    # C by its own harness in rust/difftest, so the check survives the C being
+    # deleted from the tree.
     - name: Verify the Rust codecs actually linked
       run: |
-        test -f Tests/arc-mhs-win64.exe || { echo "::error::no DARC_RUST Windows binary"; exit 1; }
-        # Byte-identical would mean the staticlibs were built and then ignored,
-        # which is the failure mode this whole wiring exists to avoid.
-        cmp -s /tmp/arc-win-c.exe Tests/arc-mhs-win64.exe && {
-          echo "::error::DARC_RUST Windows build is byte-identical to the C build -- the Rust codecs were not linked"
-          exit 1; }
-        echo "DARC_RUST binary: $(wc -c < Tests/arc-mhs-win64.exe) bytes (C build: $(wc -c < /tmp/arc-win-c.exe))"
+        test -f Tests/arc-mhs-win64.exe || { echo "::error::no Windows binary"; exit 1; }
+        # Presence alone would only prove the staticlib was linked, not that
+        # anything reaches it. Absence of the C entry points is the stronger
+        # half: tor_compress0 is the C encoder's template and would appear as an
+        # instantiation if any C Tornado encoder were still being built, so if
+        # it is gone the Rust one is necessarily what runs.
+        syms=$("${LLVM_MINGW:-x86_64-w64-mingw32}-nm" Tests/arc-mhs-win64.exe 2>/dev/null)
+        echo "$syms" | grep -q darc_rs_ \
+          || { echo "::error::no darc_rs_* symbols -- the Rust codecs were not linked"; exit 1; }
+        echo "$syms" | grep -q tor_compress0 \
+          && { echo "::error::C Tornado encoder is still present -- the Rust port is not what runs"; exit 1; }
+        echo "Rust codecs linked; no C Tornado encoder present"
 
   # ── Windows on ARM64 ────────────────────────────────────────────────────────
   # Split across two jobs because neither half can be done alone:
@@ -451,26 +449,6 @@ jobs:
         name: arc-win-arm64
         path: Tests/arc-mhs-win-arm64.exe
         if-no-files-found: error
-
-    # The same target built against the Rust codecs, after the artifact above so
-    # what windows-arm64-test receives is unchanged. This target needs cargo to
-    # reach aarch64-pc-windows-gnullvm through llvm-mingw, a different toolchain
-    # from the x86-64 job's mingw-w64, so it is checked separately. Wine has no
-    # ARM64 emulation, so this proves the build and the link, not execution.
-    - name: Build (Windows ARM64 cross, C-only) and compare
-      run: |
-        # The build above is now the Rust one (default), and it is what was
-        # uploaded for the native ARM64 job. Rebuild C-only purely to prove the
-        # two differ, then put the Rust binary back.
-        cp Tests/arc-mhs-win-arm64.exe /tmp/arc-arm64-rs.exe
-        DARC_NO_RUST=1 DARC_WIN_ARCH=aarch64 ./compile-mhs-win64
-        cp Tests/arc-mhs-win-arm64.exe /tmp/arc-arm64-c.exe
-        cp /tmp/arc-arm64-rs.exe Tests/arc-mhs-win-arm64.exe
-        test -f Tests/arc-mhs-win-arm64.exe || { echo "::error::no ARM64 binary"; exit 1; }
-        cmp -s /tmp/arc-arm64-c.exe Tests/arc-mhs-win-arm64.exe && {
-          echo "::error::DARC_RUST ARM64 build is byte-identical to the C build -- the Rust codecs were not linked"
-          exit 1; }
-        echo "DARC_RUST ARM64 binary: $(wc -c < Tests/arc-mhs-win-arm64.exe) bytes"
 
   windows-arm64-test:
     needs: [ windows-arm64-cross, interop-produce ]
@@ -829,6 +807,15 @@ jobs:
     - name: Prove the differential test can fail
       run: rust/difftest/run.sh sabotage
 
+    # The same question for the Tornado encoder's unit tests, which cover what
+    # the differential harness cannot reach yet: it breaks each encoder path in
+    # turn and requires the suite to notice. It restores every file it touches
+    # on exit, including on failure.
+    - name: Prove the Tornado encoder tests can fail
+      run: |
+        chmod +x rust/difftest/tornado-encoder-sabotage.sh
+        rust/difftest/tornado-encoder-sabotage.sh
+
     # run.sh covers Delta only. Every codec ported since has its own harness,
     # each compressing with C and requiring the C and Rust decoders to return
     # the same original bytes over a corpus built for that codec's heuristics.
@@ -841,6 +828,7 @@ jobs:
         rust/difftest/tta-check.sh
         rust/difftest/mm-check.sh
         rust/difftest/tornado-check.sh
+        rust/difftest/tornado-encode-check.sh
         rust/difftest/grzip-check.sh
         rust/difftest/dispack-check.sh
         # The other direction: DisPack's ENCODER must be byte-exact too, since
@@ -877,62 +865,25 @@ jobs:
         test -x Tests/srep || { echo "::error::srep/compile produced no Tests/srep"; exit 1; }
         rust/difftest/srep-check.sh
 
-    # Build the archiver twice and require identical archives. This is the check
-    # that actually guards the format.
-    - name: Archives identical with and without the Rust codecs
+    # This used to run C-crypto against Rust-crypto in both directions, using
+    # the /tmp/arc-c binary from the DARC_NO_RUST build. Both are gone: the
+    # opt-out was removed and C_Encryption.cpp's #ifndef DARC_RUST fallbacks
+    # went with the last build that did not define DARC_RUST. There is no
+    # second implementation left to interoperate with, so the cross-check is
+    # not merely unwired, it is unrepresentable.
+    #
+    # What remains is the round-trip, which is what actually guards the format:
+    # encrypted archives must still be created and read back correctly.
+    # Builds the archiver itself. The deleted "archives identical with and
+    # without the Rust codecs" step used to leave Tests/arc behind as a side
+    # effect, and this step silently depended on that; removing it took the
+    # binary away as well as the /tmp/arc-c it obviously needed.
+    - name: Encrypted archives round-trip
       run: |
         chmod +x compile* Tests/*.sh
-        DARC_NO_RUST=1 ./compile > /tmp/build-c.log 2>&1 || { tail -30 /tmp/build-c.log; exit 1; }
-        cp Tests/arc /tmp/arc-c
-        Tests/run-tests.sh /tmp/arc-c > /tmp/suite-c.log 2>&1 || { tail -40 /tmp/suite-c.log; exit 1; }
-
-        rm -rf /tmp/out/FreeArc
-        ./compile > /tmp/build-rs.log 2>&1 || { tail -30 /tmp/build-rs.log; exit 1; }
-        # If the Rust library were not really linked the binary would be
-        # unchanged, which is exactly how this went wrong once.
-        cmp -s /tmp/arc-c Tests/arc && { echo "::error::default build is byte-identical to the DARC_NO_RUST build -- the Rust codecs were not linked"; exit 1; }
-        Tests/run-tests.sh Tests/arc > /tmp/suite-rs.log 2>&1 || { tail -40 /tmp/suite-rs.log; exit 1; }
-
-        grep -E "^[a-z0-9-]+ +(ok|FAIL) " /tmp/suite-c.log  | awk '{print $1, $NF}' | sort > /tmp/fp-c.txt
-        grep -E "^[a-z0-9-]+ +(ok|FAIL) " /tmp/suite-rs.log | awk '{print $1, $NF}' | sort > /tmp/fp-rs.txt
-        test -s /tmp/fp-c.txt || { echo "::error::no fingerprints parsed from the C run"; exit 1; }
-        if ! diff -u /tmp/fp-c.txt /tmp/fp-rs.txt; then
-          echo "::error::archives differ between the C and Rust codec builds"
-          exit 1
-        fi
-        echo "archives identical across $(wc -l < /tmp/fp-c.txt) configurations"
-
-    # Encryption had NO CI coverage at all until now: enc-roundtrip.sh existed
-    # but was referenced by no workflow, and run-tests.sh has no -p/-ae case.
-    # That is why a known ARM64 Serpent miscompile survived two releases -- the
-    # bug was even documented, by exact file and line, in enc-roundtrip.sh's own
-    # header, where it read as an expected caveat rather than a defect.
-    #
-    # This runs the two binaries the step above already built, each reading what
-    # the other wrote. A SAME-binary round-trip cannot catch this class: a broken
-    # build round-trips its own archives perfectly, which is precisely how the
-    # Serpent bug hid. Only cross-implementation agreement distinguishes
-    # "self-consistent" from "correct".
-    #
-    # It covers what the LibTomCrypt self-tests cannot: AES has no runnable
-    # self-test here (ENCRYPT_ONLY omits the decrypt half, so rijndael_test is
-    # commented out upstream), and hmac/ctr/cfb are likewise commented out. Those
-    # primitives are reachable ONLY through this check. Proven to bite: reversing
-    # the Rust CTR carry direction -- the documented hazard, since every -p
-    # archive ever written uses a little-endian counter -- fails 5 configurations
-    # here, and exactly the CTR-mode ones, leaving CFB green.
-    #
-    # </dev/null is required, not cosmetic: on a failed decrypt the archiver
-    # prompts for a password and would otherwise block until the job times out
-    # instead of reporting a failure.
-    - name: Encrypted archives interoperate between the C and Rust crypto
-      run: |
-        chmod +x Tests/enc-roundtrip.sh
-        test -x /tmp/arc-c || { echo "::error::the C-crypto binary from the previous step is missing"; exit 1; }
-        echo "--- C-crypto writes, Rust-crypto reads ---"
-        Tests/enc-roundtrip.sh /tmp/arc-c Tests/arc < /dev/null
-        echo "--- Rust-crypto writes, C-crypto reads ---"
-        Tests/enc-roundtrip.sh Tests/arc /tmp/arc-c < /dev/null
+        ./compile > /tmp/build-enc.log 2>&1 || { tail -30 /tmp/build-enc.log; exit 1; }
+        test -x Tests/arc || { echo "::error::./compile produced no Tests/arc"; exit 1; }
+        Tests/enc-roundtrip.sh Tests/arc Tests/arc < /dev/null
 
   # ── AddressSanitizer on x86-64 ──────────────────────────────────────────────
   # Added to diagnose a double free that only appeared on this runner. It found

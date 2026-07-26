@@ -1,13 +1,17 @@
-//! Tornado LZ77 decoder, ported from `Compression/Tornado/`.
-//!
-//! **Work in progress.** The stream and table layers are ported; the four
-//! entropy back-ends, the data-table undiffer and the output loop are not, so
-//! nothing here is wired to `tor_decompress` yet and the C decoder is still the
-//! one that runs. Nothing is excluded C-side until the port is complete and
-//! verified byte-exact, the same order used for REP, Dict, LZP, TTA and MM.
+//! Tornado LZ77 codec, ported from `Compression/Tornado/`.
 //!
 //! Tornado is the highest-value target left: `tor` is a default method, so
 //! every `-m4`-and-up archive contains Tornado streams.
+//!
+//! **Decoding is done** -- ported, verified byte-exact by
+//! `rust/difftest/tornado-check.sh`, and wired up as the `tor_decompress`
+//! drop-in (`exports.rs`).
+//!
+//! **Encoding is in progress.** The output streams, the four entropy back-ends
+//! and the LZ77 coders are ported (`out_stream`, `huffman`, `range`,
+//! `lz77_enc`); the match finders and the compression loop are not. Nothing is
+//! excluded C-side until the port is complete and verified byte-exact, the same
+//! order used for REP, Dict, LZP, TTA, MM and GRZip.
 //!
 //! ## Shape of the thing
 //!
@@ -28,17 +32,28 @@
 //!
 //! The Huffman and arithmetic back-ends are *semi-adaptive*: both sides update
 //! symbol counters as they go and rebuild their tables on the same schedule, so
-//! the decoder has to reproduce the tree builder and the rescale exactly, not
-//! merely read the codes. That is the bulk of the remaining work.
+//! each side has to reproduce the tree builder and the rescale exactly, not
+//! merely read or write the codes.
 //!
-//! Encoder-only files are not in scope: `MatchFinder.cpp` (956 lines) and
-//! `OptimalParsing.cpp` (44) are reached only from `tor_compress`.
+//! ## Scope of the encoder
+//!
+//! `tor_compress` (Tornado.cpp:307) is a template over five axes, but
+//! `FULL_COMPILE` is **not** defined in the archiver build, so the `#else`
+//! if-chain ships and only **nine** concrete instantiations exist -- not the
+//! 4*8*3*2=192 the comment at :309 describes, and one more than the "8 variants"
+//! it claims, since a `caching_finder==7` arm was added at :354 without the
+//! comment being updated. `main.cpp` (451 lines) is not built at all; the
+//! makefile lists six sources and that is not one of them.
 
 #![allow(dead_code)] // WIP: layers land before the entry point that uses them
 
 pub mod decode;
+pub mod encode;
 pub mod huffman;
 pub mod lz77;
+pub mod lz77_enc;
+pub mod matchfinder;
+pub mod out_stream;
 pub mod range;
 pub mod stream;
 pub mod tables;
@@ -72,6 +87,81 @@ pub const PAD_FOR_TABLES: usize = MAX_TABLE_ROW_AT_DECOMPRESSION * 2;
 #[cfg(test)]
 mod tests {
     use super::vle::*;
+
+    /// Every VLE table, pinned against the C constructors.
+    ///
+    /// The six tables were dumped from a verbatim transcription of `VLE::VLE`,
+    /// `LengthCoder` and `DistanceCoder` (LZ77_Coder.cpp:173/195/233) compiled on
+    /// its own, and came out byte-identical to what this crate builds -- all
+    /// 52,251 entries, not a sampled few. This hash is over exactly that content.
+    ///
+    /// A single wrong entry in `dc_code` picks a neighbouring distance code, and
+    /// the stream stays perfectly decodable: the decoder reads the extra bits the
+    /// wrong code calls for and reconstructs a *different distance*. So this
+    /// cannot be left to a spot check of a few indices, which is what the
+    /// per-value assertions below would amount to on their own.
+    #[test]
+    fn tables_match_the_c_constructors() {
+        let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+        let mut eat = |b: u8| {
+            h ^= b as u64;
+            h = h.wrapping_mul(0x100_0000_01b3);
+        };
+        for base in [
+            &length_bases(&EXTRA_LBITS)[..],
+            &length_bases(&EXTRA_LBITS2)[..],
+            &distance_bases()[..],
+        ] {
+            for b in base {
+                for x in b.to_le_bytes() {
+                    eat(x);
+                }
+            }
+        }
+        for codes in [length_codes(&EXTRA_LBITS), length_codes(&EXTRA_LBITS2), distance_codes()] {
+            for c in codes {
+                eat(c);
+            }
+        }
+        assert_eq!(h, 0xc2a2_177e_0e0b_2b1a, "VLE tables diverged from the C constructors");
+    }
+
+    /// The encoder's `value -> code` map and the decoder's `code -> base` map are
+    /// built by separate code paths, so this checks they are actually inverses:
+    /// the code chosen for a value must have a base at or below it, and the next
+    /// code's base must be above it.
+    #[test]
+    fn distance_codes_bracket_their_bases() {
+        let t = Tables::for_encoding();
+        let base = distance_bases();
+        for dist in (0u32..1 << 20).step_by(7) {
+            let c = t.dc_code(dist);
+            assert!(base[c] <= dist, "dist {dist} got code {c} with base {}", base[c]);
+            if c + 1 < base.len() {
+                assert!(dist < base[c + 1], "dist {dist} got code {c}, but base[{}] <= it", c + 1);
+            }
+        }
+    }
+
+    /// Same inverse check for both length alphabets, over every length the
+    /// coders can hand them (`code()` clamps past 600).
+    #[test]
+    fn length_codes_bracket_their_bases() {
+        let t = Tables::for_encoding();
+        let lc_base = length_bases(&EXTRA_LBITS);
+        let lc2_base = length_bases(&EXTRA_LBITS2);
+        for len in 0u32..=600 {
+            for (which, bases, c) in [
+                ("lc", &lc_base[..], t.lc_code(len)),
+                ("lc2", &lc2_base[..], t.lc2_code(len)),
+            ] {
+                assert!(bases[c] <= len, "{which}: len {len} got code {c}, base {}", bases[c]);
+                if c + 1 < bases.len() {
+                    assert!(len < bases[c + 1], "{which}: len {len} got code {c}, next base too low");
+                }
+            }
+        }
+    }
 
     /// The distance base values are the one table where an off-by-one is
     /// invisible until archives decode to subtly wrong bytes, so they are

@@ -241,3 +241,149 @@ impl Default for DataTables {
         Self::new()
     }
 }
+
+// ---------------------------------------------------------------------------
+// Encoder side: finding a table worth diffing
+// ---------------------------------------------------------------------------
+
+/// `MAX_TABLE_ROW` (DataTables.cpp:7) -- the widest row the *compressor* will
+/// consider. Note this is 64, while the decompressor accepts up to 256
+/// (`MAX_TABLE_ROW_AT_DECOMPRESSION`); the two limits are deliberately
+/// different and only the smaller one bounds `last_checked`.
+pub const MAX_TABLE_ROW: usize = 64;
+
+/// Positions already tried, indexed by row width and by phase within the row
+/// (`last_checked[N][(p-buf)%N]`, :83). Scanning is expensive, so a position
+/// that failed is not retried until the scan pointer passes it.
+pub struct LastChecked(pub [[usize; MAX_TABLE_ROW]; MAX_TABLE_ROW]);
+
+impl LastChecked {
+    pub fn new() -> Self {
+        LastChecked([[0usize; MAX_TABLE_ROW]; MAX_TABLE_ROW])
+    }
+    /// Reset every entry to the buffer start, as the C does on each window slide.
+    pub fn reset(&mut self) {
+        for row in self.0.iter_mut() {
+            row.fill(0);
+        }
+    }
+}
+
+impl Default for LastChecked {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+/// Signed 16-bit little-endian load (`value16s`, :79).
+#[inline]
+fn value16s(buf: &[u8], at: usize) -> i32 {
+    i16::from_le_bytes([buf[at], buf[at + 1]]) as i32
+}
+
+/// `lb` (Common.h:507) over a positive value.
+#[inline]
+fn lb(n: u32) -> u32 {
+    31 - n.max(1).leading_zeros()
+}
+
+/// The cheap pre-filter, `CHECK_FOR_DATA_TABLE(N)` (Tornado.cpp:74).
+///
+/// Four byte comparisons that a genuine table of N-byte records almost always
+/// passes and random data almost never does, so the expensive scan below runs
+/// rarely. The two middle tests are `uint(a - b + 4) <= 8` on values promoted
+/// from `BYTE`, which is "the difference is within +/-4".
+pub fn looks_like_table(buf: &[u8], p: usize, n: usize) -> bool {
+    // n == 2 reads buf[p+n-4] = buf[p-2], so p must be at least 2. The main
+    // loop starts at p == 4 and never moves backwards, so this cannot fire --
+    // but an underflow here would panic across the C ABI, which is not a
+    // failure mode worth leaving to an invariant held somewhere else.
+    if p < 2 || p + 3 * n > buf.len() {
+        return false;
+    }
+    let b = |i: usize| buf[i] as i32;
+    let near = |a: i32, c: i32| (a - c + 4) as u32 <= 8;
+    buf[p - 1] == buf[p + n - 1]
+        && near(b(p + n - 1), b(p + 2 * n - 1))
+        && near(b(p + 2 * n - 1), b(p + 3 * n - 1))
+        && buf[p + 2 * n - 4..p + 2 * n] != buf[p + n - 4..p + n]
+}
+
+/// A table the detector accepted: row width and record count.
+pub struct FoundTable {
+    pub row: usize,
+    pub items: usize,
+}
+
+/// `check_for_data_table` (DataTables.cpp:80).
+///
+/// Walks forward in strides of `N`, reading each record's first two bytes as a
+/// signed value, and scores how consistently they move in one direction by a
+/// step smaller than the values themselves -- which is what a table of
+/// addresses or counters looks like and what makes delta-coding it pay. The
+/// `lensum` accumulator decays by an eighth on every direction change and the
+/// scan stops when it falls below 500.
+///
+/// On success the table is diffed **in place** and the buffer is modified, so
+/// the caller must invalidate any cached match.
+pub fn check_for_data_table(
+    buf: &mut [u8],
+    n: usize,
+    p: usize,
+    bufend: usize,
+    last_checked: &mut LastChecked,
+) -> Option<FoundTable> {
+    debug_assert!(n < MAX_TABLE_ROW);
+    if p < 2 {
+        return None;
+    }
+    let phase = p % n;
+    if last_checked.0[n][phase] > p {
+        return None;
+    }
+
+    let mut t = p - 2 + n;
+    let mut lastpoint = t;
+    let mut lensum: i32 = 600;
+    let mut len: i32 = 0;
+    let mut lenminus: i32 = 0;
+    let mut dir: i32 = if value16s(buf, p - 2 + n) - value16s(buf, p - 2) < 0 { -1 } else { 1 };
+
+    while t + 2 <= bufend {
+        let diff = value16s(buf, t) - value16s(buf, t - n);
+        let mut itemlb = lb(1 + value16s(buf, t).unsigned_abs());
+        let difflb = lb(1 + diff.unsigned_abs());
+        itemlb -= u32::from(itemlb > 10);
+
+        if dir < 0 && diff < 0 && difflb < itemlb {
+            len += 1;
+        } else if dir > 0 && diff > 0 && difflb < itemlb {
+            len += 1;
+        } else if diff == 0 {
+            lenminus += 1;
+        } else {
+            if len > 3 {
+                lastpoint = t;
+            }
+            lensum -= lensum / 8;
+            lensum += len.min(10) * 30;
+            dir = if diff < 0 { -1 } else { 1 };
+            len = 0;
+            if lensum < 500 {
+                break;
+            }
+        }
+        t += n;
+    }
+
+    last_checked.0[n][phase] = t;
+
+    if (t - p) as i64 > (n as i64) * (40 + lenminus as i64)
+        && (lastpoint - p) > n.max(20)
+    {
+        let items = (lastpoint - p) / n;
+        diff_table(buf, n, p, items);
+        return Some(FoundTable { row: n, items });
+    }
+    None
+}

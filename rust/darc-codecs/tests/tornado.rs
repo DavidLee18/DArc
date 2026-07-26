@@ -174,3 +174,178 @@ fn a_write_error_is_propagated_not_ignored() {
         let _ = rc;
     }
 }
+
+// ---------------------------------------------------------------------------
+// Encoder round-trips
+// ---------------------------------------------------------------------------
+//
+// The entropy and LZ77 encoder layers land before the match finder, so there is
+// nothing yet to compare against `tor_compress` byte for byte. What is available
+// is better than nothing and sharper than it sounds: the *decoder* is already
+// verified byte-exact against the C by rust/difftest/tornado-check.sh, so
+// feeding it hand-built token streams tests the encoders against a known-good
+// reference rather than against themselves.
+//
+// This catches the failure modes that matter at this layer -- a wrong code
+// assignment, a mis-sized extra-bits field, a bit buffer that spills in the
+// wrong order, a rep-distance history that shuffles differently on the two
+// sides. It cannot catch a *choice* the C makes differently (which of several
+// legal encodings of the same match it picks); that is what the differential
+// harness will be for once the match finder exists.
+
+use darc_codecs::ffi::Io as EncIo;
+use darc_codecs::tornado::lz77_enc::{DynamicCoder, Lz77Encoder, IMPOSSIBLE_LEN};
+
+/// `IMPOSSIBLE_DIST` (LZ77_Coder.cpp:8).
+const IMPOSSIBLE_DIST: i32 = i32::MAX / 2;
+
+#[derive(Clone, Copy, Debug)]
+enum Token {
+    Lit(u8),
+    /// A match of `len` bytes reaching `dist` bytes back.
+    Match { len: i32, dist: i32 },
+}
+
+/// Replay tokens the way the decoder's output loop would, to get the bytes the
+/// round-trip must reproduce.
+fn replay(tokens: &[Token]) -> Vec<u8> {
+    let mut out: Vec<u8> = Vec::new();
+    for t in tokens {
+        match *t {
+            Token::Lit(b) => out.push(b),
+            Token::Match { len, dist } => {
+                let start = out.len() - dist as usize;
+                for i in 0..len as usize {
+                    let b = out[start + i];
+                    out.push(b);
+                }
+            }
+        }
+    }
+    out
+}
+
+/// Encode `tokens` with one back-end and return the complete stream, header and
+/// end-of-stream token included -- the same sequence `tor_compress_chunk` emits.
+fn encode_tokens(method: u32, minlen: i32, bufsize: u32, tokens: &[Token]) -> Vec<u8> {
+    let plain = replay(tokens);
+    let mut mem = Mem { input: Vec::new(), pos: 0, output: Vec::new(), limit: 64 << 20 };
+    {
+        let io = unsafe { EncIo::new(Some(mem_callback), &mut mem as *mut Mem as *mut c_void) }
+            .expect("callback was not null");
+        let mut coder =
+            DynamicCoder::new(method, &io, 1 << 16, 1 << 16).expect("known encoding method");
+
+        // Tornado.cpp:154 -- method, minimum match length, window size.
+        coder.put8(method);
+        coder.put8(minlen as u32);
+        coder.put32(bufsize);
+
+        let mut pos = 0usize;
+        for t in tokens {
+            match *t {
+                Token::Lit(_) => {
+                    // A literal is "a match too short to use": the C passes 0.
+                    coder.encode(0, &plain, pos, 0, minlen);
+                    pos += 1;
+                }
+                Token::Match { len, dist } => {
+                    coder.encode(len, &plain, pos, dist, minlen);
+                    pos += len as usize;
+                }
+            }
+        }
+        // Tornado.cpp:209 -- end of data.
+        coder.encode(IMPOSSIBLE_LEN, &plain, 0, IMPOSSIBLE_DIST, minlen);
+        coder.finish();
+        assert_eq!(coder.error(), None, "encoder reported an error");
+    }
+    mem.output
+}
+
+fn roundtrip_case(name: &str, tokens: &[Token]) {
+    let expected = replay(tokens);
+    for method in 1u32..=4 {
+        for minlen in [3i32, 4] {
+            let stream = encode_tokens(method, minlen, 1 << 20, tokens);
+            let mut mem =
+                Mem { input: stream.clone(), pos: 0, output: Vec::new(), limit: 64 << 20 };
+            let io = unsafe { Io::new(Some(mem_callback), &mut mem as *mut Mem as *mut c_void) }
+                .expect("callback was not null");
+            let rc = decode::decompress(&io);
+            drop(io);
+            assert_eq!(rc, 0, "{name}: method {method} minlen {minlen} failed to decode");
+            assert_eq!(
+                mem.output, expected,
+                "{name}: method {method} minlen {minlen} round-tripped to different bytes \
+                 ({} in, {} out)",
+                expected.len(),
+                mem.output.len()
+            );
+        }
+    }
+}
+
+#[test]
+fn literals_only_roundtrip() {
+    let tokens: Vec<Token> = prng(7, 5000).into_iter().map(Token::Lit).collect();
+    roundtrip_case("literals", &tokens);
+}
+
+/// Exercises every length code and a spread of distance codes. The point is the
+/// boundaries: a length or distance one either side of a code's base value is
+/// where an off-by-one in the VLE tables shows up.
+#[test]
+fn matches_across_the_code_space_roundtrip() {
+    let mut tokens: Vec<Token> = prng(9, 1024).into_iter().map(Token::Lit).collect();
+    let mut produced = 1024usize;
+    for dist in [1i32, 2, 15, 16, 17, 31, 32, 511, 512, 513, 1000] {
+        for len in [4i32, 5, 6, 10, 11, 18, 19, 34, 35, 50, 51, 99, 100, 101, 105, 306, 307] {
+            if (dist as usize) <= produced {
+                tokens.push(Token::Match { len, dist });
+                produced += len as usize;
+            }
+        }
+    }
+    roundtrip_case("code space", &tokens);
+}
+
+/// Repeated distances drive the four REPDIST codes and the encoder's
+/// shuffle-as-you-test history update, which has no counterpart in the decoder's
+/// straightforward move-to-front -- so the two agreeing is a real check.
+#[test]
+fn repeated_distances_roundtrip() {
+    let mut tokens: Vec<Token> = prng(11, 600).into_iter().map(Token::Lit).collect();
+    // Cycle four distances so every REPDIST slot is hit, including re-hitting
+    // the most recent one twice in a row (code 0).
+    let dists = [40i32, 7, 300, 40, 40, 7, 300, 40, 123, 40, 7, 7, 300, 123];
+    for (i, d) in dists.iter().cycle().take(120).enumerate() {
+        tokens.push(Token::Match { len: 4 + (i as i32 % 9), dist: *d });
+    }
+    roundtrip_case("repdist", &tokens);
+}
+
+/// Long runs from distance 1 are how LZ77 encodes a constant region; they are
+/// also the overlapping-copy path in the decoder.
+#[test]
+fn overlapping_runs_roundtrip() {
+    let mut tokens = vec![Token::Lit(0xAB)];
+    for len in [4i32, 60, 200, 700, 5000] {
+        tokens.push(Token::Match { len, dist: 1 });
+    }
+    roundtrip_case("overlap", &tokens);
+}
+
+/// Enough symbols to force several Huffman rebuilds (HUFBLOCKSIZE is 5000, and
+/// the first block is a quarter of that) and several arithmetic rescales
+/// (RANGE is 16384). A tree rebuilt on one side only would desynchronise here
+/// and nowhere in the shorter cases.
+#[test]
+fn model_rebuilds_stay_in_sync() {
+    let lits = prng(13, 40_000);
+    let mut tokens: Vec<Token> = lits.into_iter().map(Token::Lit).collect();
+    for i in 0..4000 {
+        tokens.push(Token::Match { len: 4 + (i % 20), dist: 1 + (i * 7) % 4000 });
+    }
+    roundtrip_case("rebuilds", &tokens);
+}

@@ -252,8 +252,6 @@ struct GRZipMTCompressor;
 // Verified byte-identical to the C across ten mode words at block level and
 // over the multi-block stream; see rust/difftest/grzip-check.sh, which now
 // compares the produced STREAM rather than only round-tripping.
-#ifndef DARC_RUST
-#endif  // !DARC_RUST (grzip_compress)
 
 #endif  // !defined (FREEARC_DECOMPRESS_ONLY)
 
@@ -328,13 +326,6 @@ struct GRZipMTDecompressor : MTCompressor<GRZipDecompressionThread>
 //
 // Verified byte-identical to the C decoder across all four transform/coder
 // combinations; see rust/difftest/grzip-check.sh.
-#ifndef DARC_RUST
-int __cdecl grzip_decompress (CALLBACK_FUNC *callback, void *auxdata)
-{
-  GRZipMTDecompressor grz (callback, auxdata);
-  return grz.run();
-}
-#endif  // !DARC_RUST (grzip_decompress)
 
 
 /*-------------------------------------------------*/

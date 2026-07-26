@@ -486,6 +486,31 @@ pub unsafe extern "C" fn tor_decompress(
     darc_rs_tor_decompress(callback, auxdata)
 }
 
+/// Tornado encoder, for the differential harness only.
+///
+/// `PackMethod` crosses the ABI by value, which is how `tor_compress` itself
+/// takes it (Tornado.cpp:307). There is no `tor_compress` drop-in yet: the port
+/// covers three of the nine live instantiations, and the rest return
+/// INVALID_COMPRESSOR rather than a stream that would differ from the C's.
+///
+/// `all_at_once` is the C's `compress_all_at_once` global (Common.cpp:6), which
+/// a drop-in could not read; the caller passes it explicitly.
+///
+/// # Safety
+/// `callback` and `auxdata` must be what the C caller supplied.
+#[no_mangle]
+pub unsafe extern "C" fn darc_rs_tor_compress(
+    m: tornado::encode::PackMethod,
+    all_at_once: c_int,
+    callback: CALLBACK_FUNC,
+    auxdata: *mut c_void,
+) -> c_int {
+    match Io::new(callback, auxdata) {
+        Some(io) => tornado::encode::compress(m, &io, all_at_once != 0),
+        None => FREEARC_ERRCODE_GENERAL,
+    }
+}
+
 /// GRZip block decoder, for the differential harness only.
 ///
 /// GRZip is still being ported -- there is no `grzip_decompress` drop-in yet,

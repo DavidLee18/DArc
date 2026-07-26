@@ -66,10 +66,72 @@ pub fn distance_bases() -> [u32; 32] {
     base
 }
 
-/// The three tables the decoders index, built once per decode call. They are a
-/// few hundred bytes and building them is a handful of shifts, so there is no
-/// reason to reach for a global the way the C does (`lc`, `lc2`, `dc` are
-/// file-scope objects with static constructors there).
+/// `VLE_SIZE` (LZ77_Coder.cpp:146) -- entries in the `value -> code` table.
+/// The three ranges of `DistanceCoder` occupy `[0,512)`, `[512,1024)` and
+/// `[1024,..)` of it.
+pub const VLE_SIZE: usize = 1024 + 16384 + 1;
+
+/// `VLE`'s `xcode` (LZ77_Coder.cpp:173): the encoder's `value -> code` map, one
+/// entry per representable value, filled by walking each code over the values
+/// its extra bits span.
+pub fn length_codes<const N: usize>(extra: &[u32; N]) -> Vec<u8> {
+    let mut xcode = vec![0u8; VLE_SIZE];
+    let mut value: usize = 0;
+    'outer: for (code, &bits) in extra.iter().enumerate() {
+        for _ in 0..(1u64 << bits) {
+            if value >= VLE_SIZE {
+                break 'outer;
+            }
+            xcode[value] = code as u8;
+            value += 1;
+        }
+    }
+    xcode
+}
+
+/// `DistanceCoder`'s `xcode` (LZ77_Coder.cpp:233). Distances below 512 are
+/// mapped one by one; then in units of 256 at offset 512; then in units of 65536
+/// at offset 1024. `distance_code` does the matching three-way lookup.
+pub fn distance_codes() -> Vec<u8> {
+    let extra = &EXTRA_DBITS;
+    let mut xcode = vec![0u8; VLE_SIZE];
+    let mut dist: usize = 0;
+    let mut code = 0usize;
+
+    while dist < 512 {
+        for _ in 0..(1usize << extra[code]) {
+            xcode[dist] = code as u8;
+            dist += 1;
+        }
+        code += 1;
+    }
+    dist >>= 8;
+    while dist < 512 {
+        for _ in 0..(1usize << (extra[code] - 8)) {
+            xcode[512 + dist] = code as u8;
+            dist += 1;
+        }
+        code += 1;
+    }
+    dist >>= 8;
+    while code < extra.len() {
+        for _ in 0..(1u64 << (extra[code] - 16)) {
+            if 1024 + dist >= VLE_SIZE {
+                break;
+            }
+            xcode[1024 + dist] = code as u8;
+            dist += 1;
+        }
+        code += 1;
+    }
+    xcode
+}
+
+/// The three tables the coders index, built once per call. They are a few
+/// hundred bytes on the decode side and about 34 KB with the encoder's two
+/// `xcode` maps, so there is still no reason to reach for a global the way the C
+/// does (`lc`, `lc2`, `dc` are file-scope objects with static constructors
+/// there, built before `main` whether or not anything uses them).
 pub struct Tables {
     pub lc_extra: [u32; 8],
     pub lc_base: [u32; 8],
@@ -77,6 +139,10 @@ pub struct Tables {
     pub lc2_base: [u32; 16],
     pub dc_extra: [u32; 32],
     pub dc_base: [u32; 32],
+    /// Encoder-only `value -> code` maps; empty on the decode path.
+    lc_code: Vec<u8>,
+    lc2_code: Vec<u8>,
+    dc_code: Vec<u8>,
 }
 
 impl Tables {
@@ -88,6 +154,53 @@ impl Tables {
             lc2_base: length_bases(&EXTRA_LBITS2),
             dc_extra: EXTRA_DBITS,
             dc_base: distance_bases(),
+            lc_code: Vec::new(),
+            lc2_code: Vec::new(),
+            dc_code: Vec::new(),
+        }
+    }
+
+    /// Same tables plus the encoder's `value -> code` direction.
+    pub fn for_encoding() -> Self {
+        Tables {
+            lc_code: length_codes(&EXTRA_LBITS),
+            lc2_code: length_codes(&EXTRA_LBITS2),
+            dc_code: distance_codes(),
+            ..Tables::new()
+        }
+    }
+
+    /// `LengthCoder::code` (:199) for the bitcoder's 8-code alphabet. Lengths
+    /// past 600 all take the last code, whose 30 extra bits cover the rest.
+    #[inline]
+    pub fn lc_code(&self, length: u32) -> usize {
+        if length > 600 {
+            EXTRA_LBITS.len() - 1
+        } else {
+            self.lc_code[length as usize] as usize
+        }
+    }
+
+    /// `LengthCoder::code` for the huffman/arith 16-code alphabet.
+    #[inline]
+    pub fn lc2_code(&self, length: u32) -> usize {
+        if length > 600 {
+            EXTRA_LBITS2.len() - 1
+        } else {
+            self.lc2_code[length as usize] as usize
+        }
+    }
+
+    /// `DistanceCoder::code` (:221).
+    #[inline]
+    pub fn dc_code(&self, distance: u32) -> usize {
+        let d = distance as usize;
+        if d < 512 {
+            self.dc_code[d] as usize
+        } else if d < 512 * 256 {
+            self.dc_code[512 + (d >> 8)] as usize
+        } else {
+            self.dc_code[1024 + (d >> 16)] as usize
         }
     }
 }

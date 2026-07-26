@@ -75,6 +75,23 @@ impl Io {
         self.call(b"write\0", buf.as_ptr() as *mut c_void, clamp_len(buf.len()))
     }
 
+    /// `QUASIWRITE` (Compression.h:132): tell the caller how many bytes *would*
+    /// have been produced, without producing them, so the progress indicator
+    /// keeps moving while a codec buffers output. The callback is handed a
+    /// pointer to the `int64` count as its buffer, and the same count again as
+    /// its length -- an odd protocol, but it is the one the C side implements.
+    ///
+    /// Purely informational: the return value is discarded, exactly as the macro
+    /// discards it. Tornado is the only codec in the tree that sends one.
+    pub fn quasiwrite(&self, size: i64) {
+        let mut local = size;
+        self.call(
+            b"quasiwrite\0",
+            &mut local as *mut i64 as *mut c_void,
+            clamp_len(size.max(0) as usize),
+        );
+    }
+
     /// Write the whole buffer, mapping a short write to an IO error exactly as
     /// `checked_write` does in Compression.h.
     pub fn write_all(&self, buf: &[u8]) -> Result<(), c_int> {
