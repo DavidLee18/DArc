@@ -35,6 +35,11 @@ int darc_bsc_coder_decode_block (const unsigned char *in, unsigned char *out, in
 
 int darc_bsc_init (int features) { return bsc_init(features); }
 
+/* The coder layer above the three encode bodies: block splitting plus framing.
+ * bsc_coder_compress is what bsc_compress actually calls. */
+int darc_bsc_coder_compress (const unsigned char *in, unsigned char *out, int n, int coder, int features)
+{ return bsc_coder_compress(in, out, n, coder, features); }
+
 /* Forward BWT (with auxiliary indexes) and its inverse, for the inverse-BWT
  * differential harness. The encoder is the same libsais forward transform a
  * real archive was built with, so the index / num_indexes / transformed bytes

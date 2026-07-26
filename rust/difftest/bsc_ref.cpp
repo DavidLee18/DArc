@@ -23,6 +23,7 @@
 
 extern "C" {
 int darc_bsc_coder_encode_block (const unsigned char *in, unsigned char *out, int inSize, int outSize, int coder);
+int darc_bsc_coder_compress (const unsigned char *in, unsigned char *out, int n, int coder, int features);
 int darc_bsc_coder_decode_block (const unsigned char *in, unsigned char *out, int coder);
 int darc_bsc_init (int features);
 #ifdef USE_RUST
@@ -30,12 +31,13 @@ int darc_rs_bsc_qlfc_decode (const unsigned char *in, int inSize, unsigned char 
 int darc_rs_bsc_qlfc_static_encode (const unsigned char *in, int inSize, unsigned char *out, int outSize);
 int darc_rs_bsc_qlfc_adaptive_encode (const unsigned char *in, int inSize, unsigned char *out, int outSize);
 int darc_rs_bsc_qlfc_fast_encode (const unsigned char *in, int inSize, unsigned char *out, int outSize);
+int darc_rs_bsc_coder_compress (const unsigned char *in, int inSize, unsigned char *out, int outSize, int coder);
 #endif
 }
 
 int main (int argc, char **argv) {
-  if (argc < 2 || (argv[1][0] != 'c' && argv[1][0] != 'd')) {
-    fprintf(stderr, "usage: %s c CODER | d CODER SIZE\n", argv[0]); return 2; }
+  if (argc < 2 || (argv[1][0] != 'c' && argv[1][0] != 'd' && argv[1][0] != 'C')) {
+    fprintf(stderr, "usage: %s c CODER | C CODER | d CODER SIZE\n", argv[0]); return 2; }
   darc_bsc_init(0);
   int coder = argc > 2 ? atoi(argv[2]) : 1;
 
@@ -53,6 +55,23 @@ int main (int argc, char **argv) {
   size_t outCap = argv[1][0] == 'c' ? len * 2 + (1<<16) : (size_t)size + 4096;
   unsigned char *out = (unsigned char*)malloc(outCap); if (!out) { free(in); return 3; }
   int rc;
+
+  if (argv[1][0] == 'C') {
+    /* The whole coder layer: split + frame + code, which is what bsc_compress
+     * calls. The buffer is exactly len bytes on both sides, since the C treats
+     * running out of it as "not compressible". */
+    if (len == 0) { free(in); free(out); return 6; }
+    unsigned char *cbuf = (unsigned char*)malloc(len);
+    if (!cbuf) { free(in); free(out); return 3; }
+#ifdef USE_RUST
+    rc = darc_rs_bsc_coder_compress(in, (int)len, cbuf, (int)len, coder);
+#else
+    rc = darc_bsc_coder_compress(in, cbuf, (int)len, coder, 0);
+#endif
+    if (rc < 0) { free(cbuf); free(in); free(out); return 6; }
+    if (fwrite(cbuf, 1, (size_t)rc, stdout) != (size_t)rc) { free(cbuf); free(in); free(out); return 5; }
+    free(cbuf); free(in); free(out); return 0;
+  }
 
   if (argv[1][0] == 'c') {
     if (len == 0) { free(in); free(out); return 6; }   /* nothing to code */

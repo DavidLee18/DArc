@@ -77,6 +77,47 @@ for f in "$W"/in/*; do
 done
 done
 
+# --- The coder LAYER: block splitting plus framing -------------------------
+# bsc_coder_compress is what bsc_compress actually calls. Its splitter is NOT an
+# even division -- it samples every 32nd byte, counts how often the sample
+# changes, and cuts so that blocks carry equal amounts of variation.
+#
+# That path only runs above 2*2*65536 bytes, so the two inputs below are sized
+# to force 2 and 4 blocks. Without them every case takes the single-block
+# shortcut and the splitter is never executed at all -- which is exactly what
+# the first run of this harness did.
+python3 - "$W/big" <<'BIG'
+import os,sys
+d=sys.argv[1]; os.makedirs(d,exist_ok=True)
+def prng(seed,n):
+    s=seed; o=bytearray()
+    for _ in range(n): s=(s*1103515245+12345)&0xffffffff; o.append((s>>16)&0xff)
+    return bytes(o)
+open(f"{d}/two",  "wb").write((b"the quick brown fox "*20000 + prng(5,60000))*2)
+open(f"{d}/four", "wb").write(bytes(sorted(prng(3,1200000))))
+BIG
+
+layer=0; multi=0
+for coder in 1 2 3; do
+  for f in "$W"/big/*; do
+    bn="$(basename "$f") coder$coder"
+    "$W/c"  C "$coder" < "$f" >| "$W/oc" 2>/dev/null; rc_c=$?
+    "$W/rs" C "$coder" < "$f" >| "$W/or" 2>/dev/null; rc_r=$?
+    if [ "$rc_c" -ne "$rc_r" ]; then
+      echo "  $bn: C exited $rc_c, Rust $rc_r"; fail=$((fail+1)); continue
+    fi
+    [ "$rc_c" -eq 0 ] || continue
+    layer=$((layer+1))
+    cmp -s "$W/oc" "$W/or" || { echo "  $bn: coder layer differs from the C"; fail=$((fail+1)); }
+    # output[0] is the block count; anything above 1 means the splitter ran.
+    nb=$(od -An -N1 -tu1 < "$W/oc" | tr -d ' ')
+    [ "${nb:-1}" -gt 1 ] && multi=$((multi+1))
+  done
+done
+[ "$multi" -ge 3 ] || {
+  echo "the multi-block splitter was reached $multi times; the large inputs are not"
+  echo "large enough, and split_blocks is going untested"; fail=$((fail+1)); }
+
 # Byte-identity already implies the blocks decode, but a harness that only ever
 # compared two empty outputs would pass too. Require real payloads.
 big=0
@@ -88,4 +129,5 @@ done
 [ "$tested" -gt 0 ] || { echo "no blocks were coded -- the harness reached nothing"; exit 1; }
 [ "$big" -ge 3 ] || { echo "only $big of 3 inputs produced a real coded block"; fail=$((fail+1)); }
 [ "$fail" -eq 0 ] || { echo "bsc-qlfc-encode: $fail failures"; exit 1; }
-echo "bsc-qlfc-encode: $tested/$tested byte-identical to the C (all three coders; $declined declined by both)"
+echo "bsc-qlfc-encode: $tested/$tested blocks + $layer coder-layer cases byte-identical to the C"
+echo "bsc-qlfc-encode: (all three coders; $declined declined by both; $multi multi-block)"
