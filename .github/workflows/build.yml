@@ -1010,6 +1010,10 @@ jobs:
         # All three QLFC encoders, plus the coder layer above them (block
         # splitting and framing).
         rust/difftest/bsc-qlfc-encode-check.sh
+        # The forward sort-transform (ST3), BSC's alternative block sorter.
+        # Compares the primary index as well as the bytes: the index alone
+        # decides where the decoder starts unwinding.
+        rust/difftest/bsc-st-encode-check.sh
 
   # SREP is not an in-process codec: the archiver spawns a `srep` binary
   # (arc.ini's [External compressor:srep]), so this compares files rather than

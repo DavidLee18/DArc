@@ -1107,3 +1107,85 @@ pub fn coder_compress(input: &[u8], output: &mut [u8], coder: u32) -> i32 {
 
     output_ptr as i32
 }
+
+/// `bsc_st3_transform_serial` (`st.cpp:56`), reached through `bsc_st_encode`
+/// with `k == 3` -- the forward sort-transform of order 3, the alternative to
+/// the BWT as BSC's block sorter.
+///
+/// Sorts the rotations of `T` by their first 3 bytes, using a bucket table over
+/// the leading bigram and a 24-bit sliding window `W`. Returns the primary
+/// index: the position of the rotation that starts at offset 0, which the
+/// decoder needs to invert it.
+///
+/// **`t` must be at least `n + 28` bytes.** The C opens with
+/// `for (i = 0; i < LIBBSC_HEADER_SIZE; ++i) T[n + i] = T[i]`, wrapping the
+/// first 28 bytes past the end so the window can run off the edge without a
+/// bounds test. That is padding the caller must supply, not an overread to
+/// reproduce -- and `bsc_compress` does supply it, since the block sorter works
+/// inside the output buffer behind the 28-byte header.
+pub fn st3_encode(t: &mut [u8], n: usize) -> i32 {
+    if n <= 1 {
+        return 0;
+    }
+    assert!(
+        t.len() >= n + 28,
+        "st3_encode needs n + 28 bytes: the transform wraps the first 28 past the end"
+    );
+
+    let mut count = [0u32; ALPHABET_SIZE];
+    let mut bucket = vec![0i32; ALPHABET_SIZE * ALPHABET_SIZE];
+
+    for i in 0..28 {
+        t[n + i] = t[i];
+    }
+
+    let mut c0 = t[n - 1];
+    for i in 0..n {
+        let c1 = t[i];
+        count[c1 as usize] += 1;
+        bucket[((c0 as usize) << 8) | c1 as usize] += 1;
+        c0 = c1;
+    }
+
+    // Both tables become exclusive prefix sums, i.e. the start offset of each
+    // bucket rather than its size.
+    let mut sum = 0i32;
+    for b in bucket.iter_mut() {
+        let tmp = sum;
+        sum += *b;
+        *b = tmp;
+    }
+    let mut sum = 0u32;
+    for c in count.iter_mut() {
+        let tmp = sum;
+        sum += *c;
+        *c = tmp;
+    }
+
+    let pos = bucket[((t[1] as usize) << 8) | t[2] as usize] as usize;
+
+    let mut p = vec![0u16; n];
+    let mut w = ((t[n - 1] as u32) << 16) | ((t[0] as u32) << 8) | t[1] as u32;
+    for i in 0..n {
+        w = (w << 8) | t[i + 2] as u32;
+        let b = (w & 0x0000_ffff) as usize;
+        p[bucket[b] as usize] = (w >> 16) as u16;
+        bucket[b] += 1;
+    }
+
+    // Scatter back, in two halves: the index is read between them, at exactly
+    // the point the rotation starting at offset 0 lands.
+    for i in 0..pos {
+        let c = (p[i] & 0x00ff) as usize;
+        t[count[c] as usize] = (p[i] >> 8) as u8;
+        count[c] += 1;
+    }
+    let index = count[(p[pos] & 0x00ff) as usize] as i32;
+    for i in pos..n {
+        let c = (p[i] & 0x00ff) as usize;
+        t[count[c] as usize] = (p[i] >> 8) as u8;
+        count[c] += 1;
+    }
+
+    index
+}

@@ -781,6 +781,21 @@ pub unsafe extern "C" fn darc_rs_bsc_coder_compress(
     bsc::qlfc_enc::coder_compress(inp, out, coder as u32)
 }
 
+/// `bsc_st_encode` for `k == 3`: the forward sort-transform of order 3.
+/// Returns the primary index, or a negative libbsc code.
+///
+/// # Safety
+/// `data` must be valid for `n + 28` bytes -- the transform wraps the first 28
+/// past the end, exactly as the C does.
+#[no_mangle]
+pub unsafe extern "C" fn darc_rs_bsc_st3_encode(data: *mut u8, n: c_int) -> c_int {
+    if data.is_null() || n < 0 {
+        return FREEARC_ERRCODE_GENERAL;
+    }
+    let t = core::slice::from_raw_parts_mut(data, n as usize + 28);
+    bsc::qlfc_enc::st3_encode(t, n as usize)
+}
+
 /// `bsc_qlfc_transform`: the QLFC forward transform. Writes the rank array into
 /// the tail of `buffer` and the alphabet into `mtf` (256 bytes), returning the
 /// offset in `buffer` where the ranks begin.

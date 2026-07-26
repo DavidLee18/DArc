@@ -1,0 +1,69 @@
+#!/usr/bin/env bash
+# Differential-test the BSC forward sort-transform (ST3) against the C.
+#
+# ST is the alternative to the BWT as BSC's block sorter, selected by
+# -mbsc:b3..b6. This covers order 3; orders 4-6 are still C.
+#
+# Byte-identity on BOTH outputs -- the primary index and the transformed bytes.
+# The index alone decides where the decoder starts unwinding, so a port that
+# permuted correctly but returned the wrong index would produce blocks that
+# decode to garbage while looking plausible here.
+#
+# The C reference comes from a pinned revision, not the working tree -- see
+# c-reference.sh for why.
+set -uo pipefail
+ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+. "$ROOT/rust/difftest/c-reference.sh"
+CREF="$(darc_c_reference "$ROOT")" || exit 1
+W="${TMPDIR:-/tmp}/bsc-st-enc.$$"; mkdir -p "$W"
+trap 'rm -rf "$W"' EXIT
+
+( cd "$ROOT/rust" && cargo build --release -p darc-codecs ) >/dev/null 2>&1 \
+  || { echo "cargo build failed" >&2; exit 1; }
+LIB="$ROOT/rust/target/release/libdarc_codecs.a"
+
+cc() { local out="$1"; shift
+  clang++ -std=c++17 -O2 -w -DFREEARC_UNIX -DFREEARC_INTEL_BYTE_ORDER -DFREEARC_64BIT \
+    -I"$CREF" -I"$CREF/Compression" \
+    "$CREF/rust/difftest/bsc_st_enc_ref.cpp" "$CREF/rust/difftest/bsc_ccodec.cpp" \
+    "$CREF/Compression/BSC/libbsc/bwt/libsais/libsais.c" "$@" -o "$out"; }
+cc "$W/c"                    || { echo "C reference build failed" >&2; exit 1; }
+cc "$W/rs" -DUSE_RUST "$LIB" || { echo "Rust driver build failed" >&2; exit 1; }
+# A build that silently produced nothing would leave both sides writing empty
+# files, and `cmp` calls two empty files equal. Caught exactly that way once.
+[ -x "$W/c" ] && [ -x "$W/rs" ] || { echo "a driver binary is missing" >&2; exit 1; }
+
+# ST3 sorts rotations by their leading 3 bytes, so what matters is the bigram
+# and trigram distribution: text, flat noise, a single symbol, long runs, sorted
+# data, the full alphabet, and lengths down to the n <= 1 early return.
+python3 - "$W/in" <<'CORPUS'
+import os,sys
+d=sys.argv[1]; os.makedirs(d,exist_ok=True)
+def prng(seed,n):
+    s=seed; o=bytearray()
+    for _ in range(n): s=(s*1103515245+12345)&0xffffffff; o.append((s>>16)&0xff)
+    return bytes(o)
+w=lambda n,b: open(f"{d}/{n}","wb").write(b)
+w("text",   b"the quick brown fox jumps over the lazy dog. "*2000)
+w("noise",  prng(7,120000))
+w("zeros",  b"\x00"*60000)
+w("runs",   b"".join(bytes([i%251])*150 for i in range(400)))
+w("sorted", bytes(sorted(prng(11,90000))))
+w("alpha",  bytes(range(256))*300)
+for n in (2,3,4,17,255,256,65537):
+    w(f"n_{n}", (b"abracadabra"*10000)[:n])
+CORPUS
+
+fail=0; tested=0
+for f in "$W"/in/*; do
+  bn=$(basename "$f")
+  "$W/c"  < "$f" >| "$W/oc" 2>/dev/null || { echo "  $bn: C driver failed";    fail=$((fail+1)); continue; }
+  "$W/rs" < "$f" >| "$W/or" 2>/dev/null || { echo "  $bn: Rust driver failed"; fail=$((fail+1)); continue; }
+  [ -s "$W/oc" ] || { echo "  $bn: the C produced no output"; fail=$((fail+1)); continue; }
+  tested=$((tested+1))
+  cmp -s "$W/oc" "$W/or" || { echo "  $bn: transform or index differs from the C"; fail=$((fail+1)); }
+done
+
+[ "$tested" -gt 0 ] || { echo "nothing was transformed -- the harness reached nothing"; exit 1; }
+[ "$fail" -eq 0 ] || { echo "bsc-st-encode: $fail failures"; exit 1; }
+echo "bsc-st-encode: $tested/$tested byte-identical to the C (ST3; orders 4-6 still C)"
