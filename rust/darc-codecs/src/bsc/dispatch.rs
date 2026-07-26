@@ -21,7 +21,7 @@
 //! (`CODER_QLFC_FAST`, via [`qlfc::fast_decode`]). The coder segmentation
 //! wrapper `bsc_coder_decompress` sits in [`qlfc::decompress`].
 
-use super::header::{self, BlockHeader};
+use super::header::{self};
 use super::{
     adler32::adler32, bwt, lzp, qlfc, st, BLOCKSORTER_BWT, BLOCKSORTER_ST3, BLOCKSORTER_ST8,
     HEADER_SIZE, LIBBSC_DATA_CORRUPT, LIBBSC_NO_ERROR, LIBBSC_UNEXPECTED_EOB,
@@ -29,27 +29,6 @@ use super::{
 
 fn word(b: &[u8], at: usize) -> u32 {
     u32::from_le_bytes([b[at], b[at + 1], b[at + 2], b[at + 3]])
-}
-
-/// The `bsc_block_info` checks that `header::parse` does not do: the LZP
-/// parameter ranges (guarded on the params being present) and the `blockSize` /
-/// `index` bounds. Returns the libbsc code the C would.
-fn block_info_extra_checks(h: &BlockHeader) -> Result<(), i32> {
-    if !h.is_stored() && (h.lzp_min_len != 0 || h.lzp_hash_size != 0) {
-        if h.lzp_min_len < 4 || h.lzp_min_len > 255 {
-            return Err(LIBBSC_DATA_CORRUPT);
-        }
-        if h.lzp_hash_size < 10 || h.lzp_hash_size > 28 {
-            return Err(LIBBSC_DATA_CORRUPT);
-        }
-    }
-    if h.block_size < HEADER_SIZE as i32 || h.block_size > HEADER_SIZE as i32 + h.data_size {
-        return Err(LIBBSC_DATA_CORRUPT);
-    }
-    if h.index < 0 || h.index > h.data_size {
-        return Err(LIBBSC_DATA_CORRUPT);
-    }
-    Ok(())
 }
 
 /// `bsc_decompress(input, inputSize, output, outputSize, features)`: decode one
@@ -60,10 +39,6 @@ pub fn decompress(input: &[u8], output: &mut [u8]) -> i32 {
         Ok(h) => h,
         Err(e) => return e,
     };
-    if let Err(e) = block_info_extra_checks(&h) {
-        return e;
-    }
-
     let block_size = h.block_size as usize;
     let data_size = h.data_size as usize;
 
