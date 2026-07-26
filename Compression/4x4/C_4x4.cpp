@@ -447,8 +447,17 @@ static int do_decompress (_4x4_METHOD *self, CALLBACK_FUNC *callback, void *auxd
   // Use BlockSize if set, else GetDictionary, else 64MB fallback.
   int out_cap = self->BlockSize;
   if (out_cap == 0) {
+#ifndef FREEARC_DECOMPRESS_ONLY
     MemSize dict = ::GetDictionary (self->Method);
     out_cap = dict > 0 ? dict : 8*mb;
+#else
+    // ::GetDictionary is compress-only -- COMPRESSION_METHOD declares every
+    // getter inside the same guard -- so a decompress-only build (Unarc, the
+    // SFX modules) cannot ask. It is only a starting hint in any case: the
+    // loop below grows the buffer to each block's own orig_size when it needs
+    // to, so the sole cost of guessing low is one realloc.
+    out_cap = 8*mb;
+#endif
   }
   if (out_cap < 64*kb) out_cap = 64*kb;
 

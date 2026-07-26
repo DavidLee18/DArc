@@ -121,15 +121,17 @@ int DISPACK_METHOD::compress (CALLBACK_FUNC *callback, void *auxdata)
     return darc_rs_dispack_compress (BlockSize, callback, auxdata);
 }
 
-#endif  // !defined (FREEARC_DECOMPRESS_ONLY)
 
 // Write into buf[MAX_METHOD_STRLEN] a string describing the compression method and its parameters (the inverse of parse_DISPACK)
+// Inside the guard, where its declaration in C_DisPack.h has always been.
 void DISPACK_METHOD::ShowCompressionMethod (char *buf)
 {
     DISPACK_METHOD defaults; char BlockSizeStr[100]=":";
     showMem (BlockSize, BlockSizeStr+1);
     sprintf (buf, "dispack070%s%s", BlockSize!=defaults.BlockSize? BlockSizeStr:"", ExtendedTables? ":x":"");
 }
+
+#endif  // !defined (FREEARC_DECOMPRESS_ONLY)
 
 // Constructs a DISPACK_METHOD object with the given compression parameters
 // or returns NULL if this is a different compression method, or a parameter is malformed

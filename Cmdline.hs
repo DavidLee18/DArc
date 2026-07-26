@@ -169,12 +169,11 @@ parseCmdline cmdline  =  (`mapMaybeM` split ";" cmdline) $ \args -> do
   sfx <- if sfxname `notElem` words "- --" && takeFileName sfxname == sfxname
            then findFile libraryFilePlaces sfxname   -- use the module with the given name from the standard directory
            else return sfxname
-  -- SFX support was removed with Unarc/: the modules WERE Unarc, compiled as a
-  -- headless stub, so nothing builds arc.sfx or freearc.sfx any more. This is
-  -- the check the user actually reaches -- writeSFX's own error is downstream
-  -- of it and only fires if a module is somehow found and then unreadable.
+  -- This is the check the user actually reaches: -sfx is resolved here, at
+  -- parse time, and writeSFX's own error is downstream of it -- it only fires
+  -- if a module is found and then turns out to be unreadable.
   when (sfx=="") $
-    registerError$ GENERAL_ERROR ["0342 SFX modules were removed from DArc, so -sfx=%1 cannot be satisfied; self-extracting archives are no longer supported", sfxname]
+    registerError$ GENERAL_ERROR ["0342 SFX module %1 is not found", sfxname]
 
   -- Append a date/time stamp to the archive base name if the -ag option is given
   current_time <- getClockTime

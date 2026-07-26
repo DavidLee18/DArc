@@ -21,13 +21,18 @@ public:
 
   // Decompression and compression functions
   virtual int decompress (CALLBACK_FUNC *callback, void *auxdata);
+
+  // Outside the guard: SetDecompressionMem below forwards to it, and that one
+  // is part of the COMPRESSION_METHOD interface in every build. Leaving it in
+  // meant a FREEARC_DECOMPRESS_ONLY build -- which is what Unarc and the SFX
+  // modules are -- did not compile at all.
+  virtual void    SetMinDecompressionMem   (MemSize mem)        {if (mem>0)   BlockSize = mymax(mem/ 9*4,64*kb);}
 #ifndef FREEARC_DECOMPRESS_ONLY
   virtual int compress   (CALLBACK_FUNC *callback, void *auxdata);
 
   // Get/set the amount of memory used for compression/decompression, the dictionary size or the block size
   virtual MemSize GetCompressionMem        (void)               {return 3*BlockSize+BlockSize/4+1024;}
   virtual void    SetCompressionMem        (MemSize mem)        {if (mem>0)   BlockSize = mymax(mem/13*4,64*kb);}
-  virtual void    SetMinDecompressionMem   (MemSize mem)        {if (mem>0)   BlockSize = mymax(mem/ 9*4,64*kb);}
   virtual void    ShowCompressionMethod    (char *buf);
 #endif
   virtual MemSize GetDecompressionMem      (void)               {return 2*BlockSize+BlockSize/4+1024;}

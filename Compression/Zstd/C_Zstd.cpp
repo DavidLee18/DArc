@@ -87,6 +87,12 @@ void ZSTD_METHOD::ShowCompressionMethod (char *buf)
   sprintf (buf, "zstd:%d%s", Level, extras);
 }
 
+#endif  // !FREEARC_DECOMPRESS_ONLY
+
+// Outside the guard, where C_Zstd.h has always declared it. Left inside, the
+// vtable of a decompress-only build referenced a definition that was never
+// compiled -- which no build noticed, because nothing had been built
+// decompress-only since the codec was added.
 MemSize ZSTD_METHOD::GetDecompressionMem (void)
 {
   // Decompression memory is dominated by the window size. When LDM is off,
@@ -95,8 +101,6 @@ MemSize ZSTD_METHOD::GetDecompressionMem (void)
   size_t est = ((size_t)1 << wl) + (128 << 10);
   return (MemSize)est;
 }
-
-#endif  // !FREEARC_DECOMPRESS_ONLY
 
 COMPRESSION_METHOD* parse_ZSTD (char** parameters)
 {

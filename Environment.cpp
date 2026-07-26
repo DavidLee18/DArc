@@ -1083,6 +1083,13 @@ static int pipeline_callback(const char *what, void *buf, int size, void *auxdat
 // Compress the pipeline buffer in-place with a single method using streaming Compress().
 // After success, pipeline buffer contains compressed data.
 // Writes compressed size (>=0) or negative error code to *out_result.
+//
+// Compress() itself is declared only when compression is compiled in
+// (Compression.h guards it with FREEARC_DECOMPRESS_ONLY), so every caller of it
+// has to be guarded too. Unarc and the SFX modules are the builds that define
+// it; they extract and never compress, and this pipeline is Haskell-facing in
+// any case.
+#ifndef FREEARC_DECOMPRESS_ONLY
 void darc_pipeline_compress_step_w(const char *method, long *out_result) {
     if (!g_pipeline_buf || g_pipeline_size == 0) {
         *out_result = 0;
@@ -1112,6 +1119,7 @@ void darc_pipeline_compress_step_w(const char *method, long *out_result) {
         *out_result = (long)ret;
     }
 }
+#endif  // !defined (FREEARC_DECOMPRESS_ONLY)
 
 // Decompress the pipeline buffer in-place with a single method using streaming Decompress().
 // orig_size_hint is used as initial output buffer size (0 = auto-size).
@@ -1183,6 +1191,14 @@ static int pipeline_read_files(
 }
 
 // --- Pipelined streaming solid-block compression --------------------------
+//
+// Compression-side only, and guarded as one block down to the end of
+// darc_compress_solid_block_w: the whole ring-buffer machinery below exists to
+// feed Compress(), which is undeclared under FREEARC_DECOMPRESS_ONLY.
+// darc_extract_solid_block_w, further down, shares none of it -- it drives the
+// darc_pipeline_* helpers directly -- so the guard stops before it.
+#ifndef FREEARC_DECOMPRESS_ONLY
+//
 // Three-stage pipeline inspired by FreeArc 0.67 MTCompressor:
 //   reader thread  -> ring of filled buffers  -> Compress() (main thread)
 //   Compress write -> ring of output buffers  -> writer thread (darc_bfile_write)
@@ -1552,6 +1568,7 @@ void darc_compress_solid_block_w(
     else if (ctx.writer_err) *out_result = ctx.writer_err;
     #undef Q_AT
 }
+#endif  // !defined (FREEARC_DECOMPRESS_ONLY)
 
 // Extract a solid block: read from archive, decompress, write files to disk.
 //

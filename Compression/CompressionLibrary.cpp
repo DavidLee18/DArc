@@ -258,10 +258,20 @@ static int multi_decompress_callback (const char *what, void *buf, int size, voi
 // Decompress data compressed by a chain of methods
 int MultiDecompress (char *method, CALLBACK_FUNC *callback, void *auxdata)
 {
-  // Split the compressor into individual algorithms and start a separate thread for each of them
+  // Split the compressor into individual algorithms and start a separate thread for each of them.
+  //
+  // On a COPY: split() overwrites each delimiter with '\0', so splitting the
+  // caller's string in place truncates it to its first method permanently.
+  // Unarc passes DIRECTORY_BLOCK::data_block[].compressor straight in, so a
+  // failure reported afterwards named only the first method of the chain --
+  // "unsupported compression method rep:60kb" when rep was fine and something
+  // later in the chain was missing -- and a second decompression of the same
+  // block would have used the truncated chain.
+  char local_method[MAX_METHOD_STRLEN];
+  strncopy (local_method, method, MAX_METHOD_STRLEN);
   CMETHOD cm[MAX_METHODS_IN_COMPRESSOR];
   Params  param[MAX_METHODS_IN_COMPRESSOR];
-  int N = split (method, COMPRESSION_METHODS_DELIMITER, cm, MAX_METHODS_IN_COMPRESSOR);
+  int N = split (local_method, COMPRESSION_METHODS_DELIMITER, cm, MAX_METHODS_IN_COMPRESSOR);
 
   CManualResetEvent  done;           // Set when (de)compression is finished or error was found
   int                retcode = 0;    // multi_decompress return code
