@@ -5,10 +5,10 @@
 # every -mbsc block, so an encoding that merely decodes correctly would still
 # change every archive. `bsc_coder_encode_block` is the oracle.
 #
-# Covers the static coder (LIBBSC_DEFAULT_CODER, so the body a default -mbsc
-# archive goes through) and the adaptive one. The fast encoder is still C; the
-# Rust driver exits 7 for it, and the harness reports that rather than passing
-# silently.
+# Covers all three coders: static (LIBBSC_DEFAULT_CODER, so the body a default
+# -mbsc archive goes through), adaptive, and fast. They are three different
+# models, not three settings of one -- fast in particular uses a different
+# range-coder precision per field, P = 13 for rank and P = 11 for run.
 #
 # The C reference comes from a pinned revision, not the working tree -- see
 # c-reference.sh for why.
@@ -58,7 +58,7 @@ for n in (256, 1024, 65536):
 CORPUS
 
 fail=0; tested=0; declined=0
-for coder in 1 2; do
+for coder in 1 2 3; do
 for f in "$W"/in/*; do
   bn="$(basename "$f") coder$coder"
   "$W/c"  c "$coder" < "$f" >| "$W/oc" 2>/dev/null; rc_c=$?
@@ -88,5 +88,4 @@ done
 [ "$tested" -gt 0 ] || { echo "no blocks were coded -- the harness reached nothing"; exit 1; }
 [ "$big" -ge 3 ] || { echo "only $big of 3 inputs produced a real coded block"; fail=$((fail+1)); }
 [ "$fail" -eq 0 ] || { echo "bsc-qlfc-encode: $fail failures"; exit 1; }
-echo "bsc-qlfc-encode: $tested/$tested byte-identical to the C (static + adaptive coders; $declined declined by both)"
-echo "bsc-qlfc-encode: the fast encoder is still C -- not covered here"
+echo "bsc-qlfc-encode: $tested/$tested byte-identical to the C (all three coders; $declined declined by both)"

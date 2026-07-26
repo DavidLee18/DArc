@@ -4,8 +4,7 @@
  *     bsc_ref d CODER SIZE <coded >out
  *
  * Built a second time with -DUSE_RUST, where `d` drives the Rust decoder and
- * `c` the Rust static and adaptive ENCODERS (exit 7 for `fast`, which has none
- * yet).
+ * `c` the Rust ENCODERS -- all three coders.
  *
  * CODER: 1 = QLFC static (libbsc's default), 2 = adaptive, 3 = fast.
  *
@@ -30,6 +29,7 @@ int darc_bsc_init (int features);
 int darc_rs_bsc_qlfc_decode (const unsigned char *in, int inSize, unsigned char *out, int outCap, int coder);
 int darc_rs_bsc_qlfc_static_encode (const unsigned char *in, int inSize, unsigned char *out, int outSize);
 int darc_rs_bsc_qlfc_adaptive_encode (const unsigned char *in, int inSize, unsigned char *out, int outSize);
+int darc_rs_bsc_qlfc_fast_encode (const unsigned char *in, int inSize, unsigned char *out, int outSize);
 #endif
 }
 
@@ -61,7 +61,8 @@ int main (int argc, char **argv) {
      * others from the C on both sides, which compares nothing and says so. */
     if (coder == 1)      rc = darc_rs_bsc_qlfc_static_encode  (in, (int)len, out, (int)outCap);
     else if (coder == 2) rc = darc_rs_bsc_qlfc_adaptive_encode(in, (int)len, out, (int)outCap);
-    else { free(in); free(out); return 7; }   /* fast encoder is still C */
+    else if (coder == 3) rc = darc_rs_bsc_qlfc_fast_encode    (in, (int)len, out, (int)outCap);
+    else { free(in); free(out); return 7; }
 #else
     rc = darc_bsc_coder_encode_block(in, out, (int)len, (int)outCap, coder);
 #endif

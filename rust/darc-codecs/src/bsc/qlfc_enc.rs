@@ -210,7 +210,7 @@ mod tests {
 use super::model::{model_rank_state, model_run_state, QlfcModel1};
 use super::model_consts::*;
 use super::predictor::ProbabilityCounter;
-use super::qlfc::{bit_scan_reverse, mix3};
+use super::qlfc::{bit_scan_reverse, mix3, Model2};
 use super::rangecoder::RangeEncoder;
 use super::LIBBSC_NOT_COMPRESSIBLE;
 
@@ -814,6 +814,162 @@ pub fn adaptive_encode(input: &[u8], output: &mut [u8]) -> i32 {
         context_rank0 = ((context_rank0 << 1) | usize::from(rank == 0)) & 0x7;
         context_rank4 = ((context_rank4 << 2) | (rank.min(3) as usize)) & 0xff;
         context_run = ((context_run << 1) | usize::from(run_size < 3)) & 0xf;
+    }
+
+    coder.finish() as i32
+}
+
+/// `bsc_qlfc_fast_encode` (`qlfc.cpp:1206`), the mirror of
+/// [`super::qlfc::fast_decode`].
+///
+/// A different animal from the other two: one predictor per (character,
+/// position) with no state, static or mixer component, tuned constants written
+/// inline rather than named, and a different range-coder precision per field --
+/// **P = 13 for rank, P = 11 for run**. Those precisions are not decoration; a
+/// stream coded at the wrong one decodes to noise.
+///
+/// Two structural differences from static/adaptive worth naming:
+///
+/// * the preamble's equiprobable bit is `EncodeBit<1>(bit, 1)`, not the
+///   `EncodeBit(bit)` default of probability 2048 at P = 12 -- the same 50%
+///   split expressed at a different precision;
+/// * the rank exponent stops at a fixed 7 rather than at `maxRank`, so no
+///   preamble bookkeeping feeds it.
+pub fn fast_encode(input: &[u8], output: &mut [u8]) -> i32 {
+    let n = input.len();
+    if n == 0 {
+        return LIBBSC_NOT_COMPRESSIBLE;
+    }
+
+    let mut model = Model2::new();
+    let mut buffer = vec![0u8; n];
+    let mut mtf = [0u8; ALPHABET_SIZE];
+
+    let mut rank_ptr = transform(input, &mut buffer, &mut mtf);
+
+    let mut coder = RangeEncoder::new(output);
+    coder.encode_word(n as u32);
+
+    let mut used_char = [0u8; ALPHABET_SIZE];
+    let mut prev_char: i32 = -1;
+    for rank in 0..ALPHABET_SIZE {
+        let current_char = mtf[rank] as i32;
+        for bit in (0..8).rev() {
+            let (mut bit0, mut bit1) = (false, false);
+            for c in 0..ALPHABET_SIZE as i32 {
+                if c == prev_char || used_char[c as usize] == 0 {
+                    if (current_char >> (bit + 1)) == (c >> (bit + 1)) {
+                        if c & (1 << bit) != 0 { bit1 = true; } else { bit0 = true; }
+                        if bit0 && bit1 { break; }
+                    }
+                }
+            }
+            if bit0 && bit1 {
+                // EncodeBit<1>(bit, 1): probability 1 at P = 1, i.e. even odds.
+                coder.encode_bit_p(((current_char & (1 << bit)) != 0) as u32, 1, 1);
+            }
+        }
+        if current_char == prev_char {
+            break;
+        }
+        prev_char = current_char;
+        used_char[current_char as usize] = 1;
+    }
+
+    let mut ip = 0usize;
+    while rank_ptr < n {
+        if coder.check_eob() {
+            return LIBBSC_NOT_COMPRESSIBLE;
+        }
+
+        let current_rank = buffer[rank_ptr] as u32;
+        rank_ptr += 1;
+
+        let current_char = input[ip] as usize;
+        let run_start = ip;
+        ip += 1;
+        while ip < n && input[ip] as usize == current_char {
+            ip += 1;
+        }
+        let current_run = (ip - run_start) as u32;
+
+        // --- Rank, at P = 13 ------------------------------------------------
+        if current_rank == 1 {
+            let p = model.re(current_char, 0);
+            ProbabilityCounter::update_bit_r1(model.re_mut(current_char, 0), 8016, 4);
+            coder.encode_bit0_p(p as u32, 13);
+        } else {
+            let p = model.re(current_char, 0);
+            ProbabilityCounter::update_bit_r1(model.re_mut(current_char, 0), 83, 4);
+            coder.encode_bit1_p(p as u32, 13);
+
+            let bit_rank_size = bit_scan_reverse(current_rank) as usize;
+            for bit in 1..bit_rank_size {
+                let p = model.re(current_char, bit);
+                ProbabilityCounter::update_bit_r1(model.re_mut(current_char, bit), 122, 4);
+                coder.encode_bit1_p(p as u32, 13);
+            }
+            // Fixed 7, not maxRank: the fast coder keeps no preamble state.
+            if bit_rank_size < 7 {
+                let p = model.re(current_char, bit_rank_size);
+                ProbabilityCounter::update_bit_r1(model.re_mut(current_char, bit_rank_size), 8114, 4);
+                coder.encode_bit0_p(p as u32, 13);
+            }
+
+            let mut context = 1usize;
+            for bit in (0..bit_rank_size).rev() {
+                let b = (current_rank >> bit) & 1;
+                let p = model.rm(current_char, bit_rank_size, context);
+                ProbabilityCounter::update_bit_r(b, model.rm_mut(current_char, bit_rank_size, context), 7999, 235, 7);
+                coder.encode_bit_p(b, p as u32, 13);
+                context += context + b as usize;
+            }
+        }
+
+        // --- Run, at P = 11 -------------------------------------------------
+        if current_run == 1 {
+            let p = model.rue(current_char, 0);
+            ProbabilityCounter::update_bit_r1(model.rue_mut(current_char, 0), 2025, 5);
+            coder.encode_bit0_p(p as u32, 11);
+        } else {
+            let p = model.rue(current_char, 0);
+            ProbabilityCounter::update_bit_r1(model.rue_mut(current_char, 0), 42, 5);
+            coder.encode_bit1_p(p as u32, 11);
+
+            let bit_run_size = bit_scan_reverse(current_run) as usize;
+            for bit in 1..bit_run_size {
+                let p = model.rue(current_char, bit);
+                ProbabilityCounter::update_bit_r1(model.rue_mut(current_char, bit), 142, 4);
+                coder.encode_bit1_p(p as u32, 11);
+            }
+            {
+                let p = model.rue(current_char, bit_run_size);
+                ProbabilityCounter::update_bit_r1(model.rue_mut(current_char, bit_run_size), 1962, 4);
+                coder.encode_bit0_p(p as u32, 11);
+            }
+
+            // Two whole loops, not one with a conditional step: short runs
+            // accumulate the bits into the context, long ones only count.
+            // Different constants and a different shift on each side.
+            let mut context = 1usize;
+            if bit_run_size <= 5 {
+                for bit in (0..bit_run_size).rev() {
+                    let b = (current_run >> bit) & 1;
+                    let p = model.rum(current_char, bit_run_size, context);
+                    ProbabilityCounter::update_bit_r(b, model.rum_mut(current_char, bit_run_size, context), 1951, 147, 6);
+                    coder.encode_bit_p(b, p as u32, 11);
+                    context += context + b as usize;
+                }
+            } else {
+                for bit in (0..bit_run_size).rev() {
+                    let b = (current_run >> bit) & 1;
+                    let p = model.rum(current_char, bit_run_size, context);
+                    ProbabilityCounter::update_bit_r(b, model.rum_mut(current_char, bit_run_size, context), 1987, 46, 5);
+                    coder.encode_bit_p(b, p as u32, 11);
+                    context += 1;
+                }
+            }
+        }
     }
 
     coder.finish() as i32
