@@ -133,7 +133,7 @@ pub fn decompress(input: &[u8], output: &mut [u8], coder: u32) -> Result<usize, 
 /// Model1 there is no mixer -- just raw probability counters, so it is flat i16
 /// arrays. Init values come from `bsc_qlfc_init_static_model`: Rank counters to
 /// 4096, Run counters to 1024.
-struct Model2 {
+pub(super) struct Model2 {
     rank_exp: Vec<i16>, // [ALPHABET_SIZE][8]
     rank_man: Vec<i16>, // [ALPHABET_SIZE][8][ALPHABET_SIZE]
     run_exp: Vec<i16>,  // [ALPHABET_SIZE][32]
@@ -141,7 +141,7 @@ struct Model2 {
 }
 
 impl Model2 {
-    fn new() -> Self {
+    pub(super) fn new() -> Self {
         Model2 {
             rank_exp: vec![4096; ALPHABET_SIZE * 8],
             rank_man: vec![4096; ALPHABET_SIZE * 8 * ALPHABET_SIZE],
@@ -150,35 +150,35 @@ impl Model2 {
         }
     }
     #[inline]
-    fn re(&self, c: usize, k: usize) -> i32 {
+    pub(super) fn re(&self, c: usize, k: usize) -> i32 {
         self.rank_exp[c * 8 + k] as i32
     }
     #[inline]
-    fn re_mut(&mut self, c: usize, k: usize) -> &mut i16 {
+    pub(super) fn re_mut(&mut self, c: usize, k: usize) -> &mut i16 {
         &mut self.rank_exp[c * 8 + k]
     }
     #[inline]
-    fn rm(&self, c: usize, k: usize, r: usize) -> i32 {
+    pub(super) fn rm(&self, c: usize, k: usize, r: usize) -> i32 {
         self.rank_man[(c * 8 + k) * ALPHABET_SIZE + r] as i32
     }
     #[inline]
-    fn rm_mut(&mut self, c: usize, k: usize, r: usize) -> &mut i16 {
+    pub(super) fn rm_mut(&mut self, c: usize, k: usize, r: usize) -> &mut i16 {
         &mut self.rank_man[(c * 8 + k) * ALPHABET_SIZE + r]
     }
     #[inline]
-    fn rue(&self, c: usize, k: usize) -> i32 {
+    pub(super) fn rue(&self, c: usize, k: usize) -> i32 {
         self.run_exp[c * 32 + k] as i32
     }
     #[inline]
-    fn rue_mut(&mut self, c: usize, k: usize) -> &mut i16 {
+    pub(super) fn rue_mut(&mut self, c: usize, k: usize) -> &mut i16 {
         &mut self.run_exp[c * 32 + k]
     }
     #[inline]
-    fn rum(&self, c: usize, k: usize, r: usize) -> i32 {
+    pub(super) fn rum(&self, c: usize, k: usize, r: usize) -> i32 {
         self.run_man[(c * 32 + k) * 32 + r] as i32
     }
     #[inline]
-    fn rum_mut(&mut self, c: usize, k: usize, r: usize) -> &mut i16 {
+    pub(super) fn rum_mut(&mut self, c: usize, k: usize, r: usize) -> &mut i16 {
         &mut self.run_man[(c * 32 + k) * 32 + r]
     }
 }
