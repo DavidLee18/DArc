@@ -3,7 +3,9 @@
  *     bsc_ref c CODER  <in >coded     (C encodes one QLFC block)
  *     bsc_ref d CODER SIZE <coded >out
  *
- * Built a second time with -DUSE_RUST so `d` drives the Rust port.
+ * Built a second time with -DUSE_RUST, where `d` drives the Rust decoder and
+ * `c` the Rust static ENCODER (exit 7 for the other coders, which have none
+ * yet).
  *
  * CODER: 1 = QLFC static (libbsc's default), 2 = adaptive, 3 = fast.
  *
@@ -26,6 +28,7 @@ int darc_bsc_coder_decode_block (const unsigned char *in, unsigned char *out, in
 int darc_bsc_init (int features);
 #ifdef USE_RUST
 int darc_rs_bsc_qlfc_decode (const unsigned char *in, int inSize, unsigned char *out, int outCap, int coder);
+int darc_rs_bsc_qlfc_static_encode (const unsigned char *in, int inSize, unsigned char *out, int outSize);
 #endif
 }
 
@@ -52,7 +55,14 @@ int main (int argc, char **argv) {
 
   if (argv[1][0] == 'c') {
     if (len == 0) { free(in); free(out); return 6; }   /* nothing to code */
+#ifdef USE_RUST
+    /* Only the static coder has a Rust encoder so far; the harness asks for the
+     * others from the C on both sides, which compares nothing and says so. */
+    if (coder != 1) { free(in); free(out); return 7; }
+    rc = darc_rs_bsc_qlfc_static_encode(in, (int)len, out, (int)outCap);
+#else
     rc = darc_bsc_coder_encode_block(in, out, (int)len, (int)outCap, coder);
+#endif
     if (rc < 0) { free(in); free(out); return 6; }     /* encoder declined: skip */
   } else {
 #ifdef USE_RUST

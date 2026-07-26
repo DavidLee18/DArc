@@ -206,3 +206,303 @@ mod tests {
         assert_eq!(num_blocks(128 * 128 * 65536), 128);
     }
 }
+
+use super::model::{model_rank_state, model_run_state, QlfcModel1};
+use super::model_consts::*;
+use super::predictor::ProbabilityCounter;
+use super::qlfc::{bit_scan_reverse, mix3};
+use super::rangecoder::RangeEncoder;
+use super::LIBBSC_NOT_COMPRESSIBLE;
+
+/// `bsc_qlfc_static_encode` (`qlfc.cpp:900`), the mirror of
+/// [`super::qlfc::static_decode`] and the body reached by
+/// `LIBBSC_DEFAULT_CODER`.
+///
+/// Returns the coded length in bytes, or `LIBBSC_NOT_COMPRESSIBLE` when the
+/// block will not fit -- which the C decides by polling `CheckEOB` at the top
+/// of every run, not by checking afterwards.
+///
+/// The decoder is the specification for every model update here: each branch
+/// updates the same three predictors with the same thresholds, and a single
+/// transposed constant produces a stream that decodes for a while and then
+/// diverges. They are written in the same order as the C so the two can be read
+/// side by side.
+pub fn static_encode(input: &[u8], output: &mut [u8]) -> i32 {
+    let n = input.len();
+    if n == 0 {
+        return LIBBSC_NOT_COMPRESSIBLE;
+    }
+
+    let mut model = QlfcModel1::new();
+    let mut buffer = vec![0u8; n];
+    let mut mtf = [0u8; ALPHABET_SIZE];
+
+    let mut context_rank0 = 0usize;
+    let mut context_rank4 = 0usize;
+    let mut context_run = 0usize;
+    let mut max_rank = 7i32;
+    let mut avg_rank = 0i32;
+
+    let mut rank_history = [0u8; ALPHABET_SIZE];
+    let mut run_history = [0u8; ALPHABET_SIZE];
+
+    let mut rank_ptr = transform(input, &mut buffer, &mut mtf);
+
+    let mut coder = RangeEncoder::new(output);
+    coder.encode_word(n as u32);
+
+    // --- Alphabet preamble --------------------------------------------------
+    // A bit is coded only where the prefix so far leaves both values reachable
+    // among the characters not yet used; everywhere else the decoder can infer
+    // it. Encoder and decoder must agree exactly on which those are, so the
+    // reachability scan is the same loop on both sides.
+    let mut used_char = [0u8; ALPHABET_SIZE];
+    let mut prev_char: i32 = -1;
+    for rank in 0..ALPHABET_SIZE {
+        let current_char = mtf[rank] as i32;
+
+        for bit in (0..8).rev() {
+            let (mut bit0, mut bit1) = (false, false);
+            for c in 0..ALPHABET_SIZE as i32 {
+                if c == prev_char || used_char[c as usize] == 0 {
+                    if (current_char >> (bit + 1)) == (c >> (bit + 1)) {
+                        if c & (1 << bit) != 0 {
+                            bit1 = true;
+                        } else {
+                            bit0 = true;
+                        }
+                        if bit0 && bit1 {
+                            break;
+                        }
+                    }
+                }
+            }
+            if bit0 && bit1 {
+                coder.encode_bit((current_char & (1 << bit)) as u32);
+            }
+        }
+
+        if current_char == prev_char {
+            max_rank = bit_scan_reverse(rank as u32 - 1) as i32;
+            break;
+        }
+        prev_char = current_char;
+        used_char[current_char as usize] = 1;
+    }
+
+    // --- Main loop: one (rank, run) pair per run of equal bytes --------------
+    let mut ip = 0usize;
+    while rank_ptr < n {
+        if coder.check_eob() {
+            return LIBBSC_NOT_COMPRESSIBLE;
+        }
+
+        let current_char = input[ip] as usize;
+        let run_start = ip;
+        ip += 1;
+        while ip < n && input[ip] as usize == current_char {
+            ip += 1;
+        }
+        let run_size = (ip - run_start) as i32;
+
+        let mut rank = buffer[rank_ptr] as i32;
+        rank_ptr += 1;
+
+        let history = rank_history[current_char] as usize;
+        let state = model_rank_state(context_rank4, context_run, history);
+
+        if avg_rank < 32 {
+            if rank == 1 {
+                rank_history[current_char] = 0;
+                let p = mix3(
+                    model.rank.char_model[current_char] as i32,
+                    model.rank.state_model[state] as i32,
+                    model.rank.static_model as i32,
+                    F_RANK_TM_LR0, F_RANK_TM_LR1, F_RANK_TM_LR2,
+                );
+                ProbabilityCounter::update_bit0(&mut model.rank.state_model[state], F_RANK_TS_TH0, F_RANK_TS_AR0);
+                ProbabilityCounter::update_bit0(&mut model.rank.char_model[current_char], F_RANK_TC_TH0, F_RANK_TC_AR0);
+                ProbabilityCounter::update_bit0(&mut model.rank.static_model, F_RANK_TP_TH0, F_RANK_TP_AR0);
+                coder.encode_bit0_p(p, 12);
+            } else {
+                let p = mix3(
+                    model.rank.char_model[current_char] as i32,
+                    model.rank.state_model[state] as i32,
+                    model.rank.static_model as i32,
+                    F_RANK_TM_LR0, F_RANK_TM_LR1, F_RANK_TM_LR2,
+                );
+                ProbabilityCounter::update_bit1(&mut model.rank.state_model[state], F_RANK_TS_TH1, F_RANK_TS_AR1);
+                ProbabilityCounter::update_bit1(&mut model.rank.char_model[current_char], F_RANK_TC_TH1, F_RANK_TC_AR1);
+                ProbabilityCounter::update_bit1(&mut model.rank.static_model, F_RANK_TP_TH1, F_RANK_TP_AR1);
+                coder.encode_bit1_p(p, 12);
+
+                let bit_rank_size = bit_scan_reverse(rank as u32) as usize;
+                rank_history[current_char] = bit_rank_size as u8;
+
+                // Exponent, unary: `bit_rank_size - 1` ones then, if it fits
+                // under maxRank, a terminating zero. `k` is the offset the C
+                // advances its three row pointers by in lockstep.
+                for k in 1..bit_rank_size {
+                    let p = mix3(
+                        model.rank.exponent.char_model[current_char][k - 1] as i32,
+                        model.rank.exponent.state_model[state][k - 1] as i32,
+                        model.rank.exponent.static_model[k - 1] as i32,
+                        F_RANK_EM_LR0, F_RANK_EM_LR1, F_RANK_EM_LR2,
+                    );
+                    ProbabilityCounter::update_bit1(&mut model.rank.exponent.state_model[state][k - 1], F_RANK_ES_TH1, F_RANK_ES_AR1);
+                    ProbabilityCounter::update_bit1(&mut model.rank.exponent.char_model[current_char][k - 1], F_RANK_EC_TH1, F_RANK_EC_AR1);
+                    ProbabilityCounter::update_bit1(&mut model.rank.exponent.static_model[k - 1], F_RANK_EP_TH1, F_RANK_EP_AR1);
+                    coder.encode_bit1_p(p, 12);
+                }
+                if (bit_rank_size as i32) < max_rank {
+                    let k = bit_rank_size - 1;
+                    let p = mix3(
+                        model.rank.exponent.char_model[current_char][k] as i32,
+                        model.rank.exponent.state_model[state][k] as i32,
+                        model.rank.exponent.static_model[k] as i32,
+                        F_RANK_EM_LR0, F_RANK_EM_LR1, F_RANK_EM_LR2,
+                    );
+                    ProbabilityCounter::update_bit0(&mut model.rank.exponent.state_model[state][k], F_RANK_ES_TH0, F_RANK_ES_AR0);
+                    ProbabilityCounter::update_bit0(&mut model.rank.exponent.char_model[current_char][k], F_RANK_EC_TH0, F_RANK_EC_AR0);
+                    ProbabilityCounter::update_bit0(&mut model.rank.exponent.static_model[k], F_RANK_EP_TH0, F_RANK_EP_AR0);
+                    coder.encode_bit0_p(p, 12);
+                }
+
+                // Mantissa: the remaining bits of rank, most significant first,
+                // with the context accumulating them.
+                let m = &mut model.rank.mantissa[bit_rank_size];
+                let mut context = 1usize;
+                for bit in (0..bit_rank_size).rev() {
+                    let p = mix3(
+                        m.char_model[current_char][context] as i32,
+                        m.state_model[state][context] as i32,
+                        m.static_model[context] as i32,
+                        F_RANK_MM_LR0, F_RANK_MM_LR1, F_RANK_MM_LR2,
+                    );
+                    let b = ((rank >> bit) & 1) as u32;
+                    ProbabilityCounter::update_bit(b, &mut m.state_model[state][context], F_RANK_MS_TH0, F_RANK_MS_AR0, F_RANK_MS_TH1, F_RANK_MS_AR1);
+                    ProbabilityCounter::update_bit(b, &mut m.char_model[current_char][context], F_RANK_MC_TH0, F_RANK_MC_AR0, F_RANK_MC_TH1, F_RANK_MC_AR1);
+                    ProbabilityCounter::update_bit(b, &mut m.static_model[context], F_RANK_MP_TH0, F_RANK_MP_AR0, F_RANK_MP_TH1, F_RANK_MP_AR1);
+                    context += context + b as usize;
+                    coder.encode_bit_p(b, p, 12);
+                }
+            }
+        } else {
+            // Escape path: a high running average rank codes the whole value
+            // against its own model instead of exponent + mantissa.
+            rank_history[current_char] = bit_scan_reverse(rank as u32) as u8;
+            let e = &mut model.rank.escape;
+            let mut context = 1usize;
+            for bit in (0..=max_rank).rev() {
+                let p = mix3(
+                    e.char_model[current_char][context] as i32,
+                    e.state_model[state][context] as i32,
+                    e.static_model[context] as i32,
+                    F_RANK_PM_LR0, F_RANK_PM_LR1, F_RANK_PM_LR2,
+                );
+                let b = ((rank >> bit) & 1) as u32;
+                ProbabilityCounter::update_bit(b, &mut e.state_model[state][context], F_RANK_PS_TH0, F_RANK_PS_AR0, F_RANK_PS_TH1, F_RANK_PS_AR1);
+                ProbabilityCounter::update_bit(b, &mut e.char_model[current_char][context], F_RANK_PC_TH0, F_RANK_PC_AR0, F_RANK_PC_TH1, F_RANK_PC_AR1);
+                ProbabilityCounter::update_bit(b, &mut e.static_model[context], F_RANK_PP_TH0, F_RANK_PP_AR0, F_RANK_PP_TH1, F_RANK_PP_AR1);
+                context += context + b as usize;
+                coder.encode_bit_p(b, p, 12);
+            }
+        }
+
+        avg_rank = (avg_rank * 124 + rank * 4) >> 7;
+        rank -= 1;
+
+        // --- Run length -----------------------------------------------------
+        let history = run_history[current_char] as usize;
+        let state = model_run_state(context_rank0, context_run, rank as usize, history);
+
+        if run_size == 1 {
+            run_history[current_char] = (run_history[current_char] + 2) >> 2;
+            let p = mix3(
+                model.run.char_model[current_char] as i32,
+                model.run.state_model[state] as i32,
+                model.run.static_model as i32,
+                F_RUN_TM_LR0, F_RUN_TM_LR1, F_RUN_TM_LR2,
+            );
+            ProbabilityCounter::update_bit0(&mut model.run.state_model[state], F_RUN_TS_TH0, F_RUN_TS_AR0);
+            ProbabilityCounter::update_bit0(&mut model.run.char_model[current_char], F_RUN_TC_TH0, F_RUN_TC_AR0);
+            ProbabilityCounter::update_bit0(&mut model.run.static_model, F_RUN_TP_TH0, F_RUN_TP_AR0);
+            coder.encode_bit0_p(p, 12);
+        } else {
+            let p = mix3(
+                model.run.char_model[current_char] as i32,
+                model.run.state_model[state] as i32,
+                model.run.static_model as i32,
+                F_RUN_TM_LR0, F_RUN_TM_LR1, F_RUN_TM_LR2,
+            );
+            ProbabilityCounter::update_bit1(&mut model.run.state_model[state], F_RUN_TS_TH1, F_RUN_TS_AR1);
+            ProbabilityCounter::update_bit1(&mut model.run.char_model[current_char], F_RUN_TC_TH1, F_RUN_TC_AR1);
+            ProbabilityCounter::update_bit1(&mut model.run.static_model, F_RUN_TP_TH1, F_RUN_TP_AR1);
+            coder.encode_bit1_p(p, 12);
+
+            let bit_run_size = bit_scan_reverse(run_size as u32) as usize;
+            run_history[current_char] =
+                ((run_history[current_char] as u32 + 3 * bit_run_size as u32 + 3) >> 2) as u8;
+
+            for k in 1..bit_run_size {
+                let p = mix3(
+                    model.run.exponent.char_model[current_char][k - 1] as i32,
+                    model.run.exponent.state_model[state][k - 1] as i32,
+                    model.run.exponent.static_model[k - 1] as i32,
+                    F_RUN_EM_LR0, F_RUN_EM_LR1, F_RUN_EM_LR2,
+                );
+                ProbabilityCounter::update_bit1(&mut model.run.exponent.state_model[state][k - 1], F_RUN_ES_TH1, F_RUN_ES_AR1);
+                ProbabilityCounter::update_bit1(&mut model.run.exponent.char_model[current_char][k - 1], F_RUN_EC_TH1, F_RUN_EC_AR1);
+                ProbabilityCounter::update_bit1(&mut model.run.exponent.static_model[k - 1], F_RUN_EP_TH1, F_RUN_EP_AR1);
+                coder.encode_bit1_p(p, 12);
+            }
+            {
+                // Unlike rank's exponent, run's terminating zero is
+                // unconditional -- there is no maxRank to run into.
+                let k = bit_run_size - 1;
+                let p = mix3(
+                    model.run.exponent.char_model[current_char][k] as i32,
+                    model.run.exponent.state_model[state][k] as i32,
+                    model.run.exponent.static_model[k] as i32,
+                    F_RUN_EM_LR0, F_RUN_EM_LR1, F_RUN_EM_LR2,
+                );
+                ProbabilityCounter::update_bit0(&mut model.run.exponent.state_model[state][k], F_RUN_ES_TH0, F_RUN_ES_AR0);
+                ProbabilityCounter::update_bit0(&mut model.run.exponent.char_model[current_char][k], F_RUN_EC_TH0, F_RUN_EC_AR0);
+                ProbabilityCounter::update_bit0(&mut model.run.exponent.static_model[k], F_RUN_EP_TH0, F_RUN_EP_AR0);
+                coder.encode_bit0_p(p, 12);
+            }
+
+            let m = &mut model.run.mantissa[bit_run_size];
+            let mut context = 1usize;
+            for bit in (0..bit_run_size).rev() {
+                let p = mix3(
+                    m.char_model[current_char][context] as i32,
+                    m.state_model[state][context] as i32,
+                    m.static_model[context] as i32,
+                    F_RUN_MM_LR0, F_RUN_MM_LR1, F_RUN_MM_LR2,
+                );
+                let b = ((run_size >> bit) & 1) as u32;
+                ProbabilityCounter::update_bit(b, &mut m.state_model[state][context], F_RUN_MS_TH0, F_RUN_MS_AR0, F_RUN_MS_TH1, F_RUN_MS_AR1);
+                ProbabilityCounter::update_bit(b, &mut m.char_model[current_char][context], F_RUN_MC_TH0, F_RUN_MC_AR0, F_RUN_MC_TH1, F_RUN_MC_AR1);
+                ProbabilityCounter::update_bit(b, &mut m.static_model[context], F_RUN_MP_TH0, F_RUN_MP_AR0, F_RUN_MP_TH1, F_RUN_MP_AR1);
+                // NOT a plain doubling: the context only accumulates the bit
+                // for short runs. `int ctx = context + context + b; context++;
+                // if (bitRunSize <= 5) { context = ctx; }` -- the decoder
+                // carries the same asymmetry, and getting it wrong desynchronises
+                // only on runs long enough to reach it.
+                let ctx = context + context + b as usize;
+                context += 1;
+                if bit_run_size <= 5 {
+                    context = ctx;
+                }
+                coder.encode_bit_p(b, p, 12);
+            }
+        }
+
+        context_rank0 = ((context_rank0 << 1) | usize::from(rank == 0)) & 0x7;
+        context_rank4 = ((context_rank4 << 2) | (rank.min(3) as usize)) & 0xff;
+        context_run = ((context_run << 1) | usize::from(run_size < 3)) & 0xf;
+    }
+
+    coder.finish() as i32
+}

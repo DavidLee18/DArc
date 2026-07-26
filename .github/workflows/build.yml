@@ -857,6 +857,10 @@ jobs:
         # Compares the rank array AND the MTF table, since the table is an
         # output that becomes the block's preamble.
         rust/difftest/bsc-qlfc-transform-check.sh
+        # The QLFC STATIC encoder -- LIBBSC_DEFAULT_CODER, so the body a default
+        # -mbsc block is entropy-coded by. Byte-identity against
+        # bsc_coder_encode_block; the adaptive and fast encoders are still C.
+        rust/difftest/bsc-qlfc-encode-check.sh
         # LZ4-HC is the one ENCODER-side harness: it requires the Rust encoder
         # to be byte-identical to the C for every level DArc can select (1-9),
         # and decodes each block with the C decoder rather than lz4_flex.
