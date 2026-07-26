@@ -291,12 +291,59 @@ pub const DEFAULT_LZP_MIN_LEN: u32 = 72;
 /// per-position paths advance over bytes that are already in the output rather
 /// than writing them -- including the `MATCH_NOT_FOUND` path, which *reads back*
 /// the byte it just committed to decide whether it needs escaping.
-pub fn encode_large(input: &[u8], output: &mut [u8], hash_size: u32, min_len: u32) -> i32 {
+/// Which of the four unrolled bodies to run. They share one skeleton and differ
+/// in exactly four places, which is why they are one function here rather than
+/// four transcriptions of the same 100 lines of goto-threaded code.
+///
+/// | body | `end_slack` | second probe | `len` from | `len -=` | heuristic |
+/// |---|---|---|---|---|---|
+/// | `small<T>`   | `T`      | none              | `T`      | `T`      | no |
+/// | `small2x<T>` | `2T`     | `T`               | `2T`     | `2T`     | no |
+/// | `medium<T>`  | `2T`     | `minLen - T`      | `minLen` | `minLen` | no |
+/// | `large<u64>` | `minLen` | `minLen - 8`      | `8`      | `minLen` | **yes** |
+///
+/// `large` is the only one that carries the `heuristic` short-circuit; the other
+/// three take a match whenever the probe passes, because their `len` already
+/// starts at or above the length they require.
+#[derive(Clone, Copy)]
+struct Unrolled {
+    /// `sizeof(T)`: the width of the match probes, 4 or 8.
+    t_size: usize,
+    /// `inputEnd - end_slack - 32` is where the unrolled loop stops.
+    end_slack: usize,
+    /// Offset of the second, earlier-rejecting probe, or `None` for `small`,
+    /// which has only one.
+    probe: Option<usize>,
+    len_start: usize,
+    len_sub: usize,
+    heuristic: bool,
+}
+
+/// The four unrolled encoder bodies of `lzp.cpp` (`encode_small` :74,
+/// `encode_small2x` :170, `encode_medium` :266, `encode_large` :362) --
+/// and `encode_large_fast_path` (:469), which is `encode_large<u64>` with the
+/// default constants folded in. Established by diffing them under the
+/// substitution, not by reading: they are ~100 lines each of nearly-the-same
+/// goto-threaded code with four unrolled positions and eight labels, exactly the
+/// shape an eye skims and calls equivalent while missing a shift.
+///
+/// None of them is an optimisation of [`encode_generic`]; they find different
+/// match lengths and emit different bytes. See the module header.
+///
+/// Four positions are examined per iteration. The four literal bytes are
+/// written up-front by the C's `*(unsigned int *)output = ...` store, so the
+/// per-position paths advance over bytes already in the output rather than
+/// writing them -- including the `MATCH_NOT_FOUND` path, which *reads back* the
+/// byte it just committed to decide whether it needs escaping.
+fn encode_unrolled(input: &[u8], output: &mut [u8], hash_size: u32, min_len: u32, v: Unrolled) -> i32 {
     let min_len_u = min_len as usize;
-    let mask = ((1u64 << hash_size) - 1) as u64;
+    let mask = (1u64 << hash_size) - 1;
 
     let n = input.len();
-    if (n as i64) - (min_len_u as i64) < 32 {
+    // The C's own guard is on minLen; the loop bound additionally needs
+    // end_slack bytes, so both are required for the arithmetic below to stay
+    // inside the buffer.
+    if (n as i64) - (min_len_u as i64) < 32 || (n as i64) - (v.end_slack as i64) < 32 {
         return LIBBSC_NOT_COMPRESSIBLE;
     }
     if output.len() < 9 {
@@ -305,14 +352,25 @@ pub fn encode_large(input: &[u8], output: &mut [u8], hash_size: u32, min_len: u3
 
     let mut lookup = vec![0i32; 1usize << hash_size];
     let output_eob = output.len() - 8;
-    let input_min_len_end = n - min_len_u - 32;
+    let input_min_len_end = n - v.end_slack - 32;
+
+    // `*(T *)a == *(T *)b` at the body's width.
+    let probe_eq = |a: usize, b: usize| -> bool {
+        if v.t_size == 8 {
+            u64_at(input, a) == u64_at(input, b)
+        } else {
+            u32_at(input, a) == u32_at(input, b)
+        }
+    };
 
     let mut ip = 0usize;
     let mut op = 0usize;
     let mut heuristic = 0usize;
-    // The C guards this load with `input < inputMinLenEnd`; the length check
-    // above already guarantees it, but the shape is kept so the two read alike.
-    let mut heuristic_v: u64 = if ip < input_min_len_end { u64_at(input, ip) } else { 0 };
+    let mut heuristic_v: u64 = if v.heuristic && ip < input_min_len_end {
+        u64_at(input, ip)
+    } else {
+        0
+    };
 
     for _ in 0..4 {
         output[op] = input[ip];
@@ -329,16 +387,12 @@ pub fn encode_large(input: &[u8], output: &mut [u8], hash_size: u32, min_len: u3
         // from the low byte up, which is what the shifts below index.
         let next8 = next8_le.swap_bytes();
 
-        // ((a >> 12) ^ a) >> 3 ^ a, i.e. a ^ (a >> 3) ^ (a >> 15) evaluated at
-        // 64 bits. The generic body computes the same expression over a 32-bit
-        // context; at 64 bits the shifts pull in neighbouring bytes, which is
-        // one of the reasons the two bodies choose different matches.
+        // a ^ (a >> 3) ^ (a >> 15), evaluated at 64 bits. The generic body
+        // computes the same expression over a 32-bit context; at 64 bits the
+        // shifts pull in neighbouring bytes, which is one of the reasons the
+        // bodies choose different matches.
         let mix = ((next8 >> 12) ^ next8) >> 3 ^ next8;
 
-        // Each of the four positions: claim the hash slot, then test either for
-        // a match worth taking or for a literal flag byte needing an escape.
-        // `k` is the offset within the four, and the flag byte for offset k is
-        // `next8 >> (3 - k) * 8`.
         let mut good: Option<(usize, usize)> = None; // (offset, reference)
         let mut bad: Option<usize> = None; // offset
         for k in 0..4usize {
@@ -347,9 +401,11 @@ pub fn encode_large(input: &[u8], output: &mut [u8], hash_size: u32, min_len: u3
             lookup[index] = (ip + k) as i32;
             if value > 0 {
                 let reference = value as usize;
-                if u64_at(input, ip + min_len_u - 8 + k) == u64_at(input, reference + min_len_u - 8)
-                    && u64_at(input, ip + k) == u64_at(input, reference)
-                {
+                let probe_ok = match v.probe {
+                    Some(off) => probe_eq(ip + off + k, reference + off),
+                    None => true,
+                };
+                if probe_ok && probe_eq(ip + k, reference) {
                     good = Some((k, reference));
                     break;
                 }
@@ -381,30 +437,31 @@ pub fn encode_large(input: &[u8], output: &mut [u8], hash_size: u32, min_len: u3
         ip += k;
         op += k;
 
-        // GOOD_MATCH_FOUND: verify against the heuristic, then measure.
-        let mut not_found = heuristic > ip && heuristic_v != u64_at(input, reference + (heuristic - ip));
+        let mut not_found = v.heuristic
+            && heuristic > ip
+            && heuristic_v != u64_at(input, reference + (heuristic - ip));
 
         if !not_found {
-            let mut len = 8usize;
+            let mut len = v.len_start;
+            // Eight bytes at a time whatever `T` is, then the exact mismatching
+            // byte. The generic body has no equivalent -- it steps in fours and
+            // compares a 2-byte and a 1-byte tail, which is where they part.
             while ip + len < input_min_len_end {
                 let m = u64_at(input, ip + len) ^ u64_at(input, reference + len);
                 if m != 0 {
-                    // The exact mismatching byte. The generic body has no
-                    // equivalent -- it steps in fours and then compares a
-                    // 2-byte and a 1-byte tail, which is where the two part.
                     len += (m.trailing_zeros() / 8) as usize;
                     break;
                 }
                 len += 8;
             }
 
-            if len < min_len_u {
+            if v.heuristic && len < min_len_u {
                 heuristic = ip + len;
                 heuristic_v = u64_at(input, heuristic);
                 not_found = true;
             } else {
                 ip += len;
-                let mut rem = len - min_len_u;
+                let mut rem = len - v.len_sub;
                 output[op] = MATCH_FLAG;
                 op += 1;
                 while rem >= 254 {
@@ -421,8 +478,8 @@ pub fn encode_large(input: &[u8], output: &mut [u8], hash_size: u32, min_len: u3
             }
         }
 
-        // MATCH_NOT_FOUND: the literal is already in the output; read it back
-        // to see whether it is a flag byte needing an escape.
+        // MATCH_NOT_FOUND, reachable only in the `large` body: the literal is
+        // already in the output; read it back to see whether it needs escaping.
         ip += 1;
         let written = output[op];
         op += 1;
@@ -432,9 +489,9 @@ pub fn encode_large(input: &[u8], output: &mut [u8], hash_size: u32, min_len: u3
         }
     }
 
-    // The tail is identical to the generic body's: no room left to match, but
-    // the hash table still has to be walked so that a literal flag byte is
-    // escaped exactly when the decoder will expect it.
+    // The tail is the generic body's: no room left to match, but the hash table
+    // still has to be walked so a literal flag byte is escaped exactly when the
+    // decoder expects it.
     {
         let mut context = input[ip - 1] as u32
             | ((input[ip - 2] as u32) << 8)
@@ -465,6 +522,57 @@ pub fn encode_large(input: &[u8], output: &mut [u8], hash_size: u32, min_len: u3
     }
 }
 
+/// `bsc_lzp_encode_large<unsigned long long>` (:362), which is also
+/// `bsc_lzp_encode_large_fast_path` (:469) with the defaults folded in.
+pub fn encode_large(input: &[u8], output: &mut [u8], hash_size: u32, min_len: u32) -> i32 {
+    let m = min_len as usize;
+    encode_unrolled(input, output, hash_size, min_len, Unrolled {
+        t_size: 8,
+        end_slack: m,
+        probe: Some(m.saturating_sub(8)),
+        len_start: 8,
+        len_sub: m,
+        heuristic: true,
+    })
+}
+
+/// `bsc_lzp_encode_small<T>` (:74), for `minLen == sizeof(T)`.
+pub fn encode_small(input: &[u8], output: &mut [u8], hash_size: u32, min_len: u32, t_size: usize) -> i32 {
+    encode_unrolled(input, output, hash_size, min_len, Unrolled {
+        t_size,
+        end_slack: t_size,
+        probe: None,
+        len_start: t_size,
+        len_sub: t_size,
+        heuristic: false,
+    })
+}
+
+/// `bsc_lzp_encode_small2x<T>` (:170), for `minLen == 2 * sizeof(T)`.
+pub fn encode_small2x(input: &[u8], output: &mut [u8], hash_size: u32, min_len: u32, t_size: usize) -> i32 {
+    encode_unrolled(input, output, hash_size, min_len, Unrolled {
+        t_size,
+        end_slack: 2 * t_size,
+        probe: Some(t_size),
+        len_start: 2 * t_size,
+        len_sub: 2 * t_size,
+        heuristic: false,
+    })
+}
+
+/// `bsc_lzp_encode_medium<T>` (:266), for `minLen <= 2 * sizeof(T)`.
+pub fn encode_medium(input: &[u8], output: &mut [u8], hash_size: u32, min_len: u32, t_size: usize) -> i32 {
+    let m = min_len as usize;
+    encode_unrolled(input, output, hash_size, min_len, Unrolled {
+        t_size,
+        end_slack: 2 * t_size,
+        probe: Some(m.saturating_sub(t_size)),
+        len_start: m,
+        len_sub: m,
+        heuristic: false,
+    })
+}
+
 /// `bsc_lzp_encode_block` (:679): pick the body the C would pick.
 ///
 /// This reproduces the **x86-64 / AArch64** dispatch, because those are the
@@ -480,14 +588,15 @@ pub fn encode_block(input: &[u8], output: &mut [u8], hash_size: u32, min_len: u3
     if hash_size <= 17 {
         // The C's chain, in order. Each arm is `result = (cond && result ==
         // NOT_ENOUGH_MEMORY) ? f(...) : result`, and none of these ever returns
-        // NOT_ENOUGH_MEMORY, so the first matching condition wins.
+        // NOT_ENOUGH_MEMORY, so the FIRST matching condition wins -- which is
+        // why 4 and 8 reach `small` rather than the `minLen <= 8` `medium` arm
+        // below them, and 16 reaches `small2x` rather than `medium`.
         match min_len {
-            //  4 => encode_small<unsigned int>          not ported yet
-            //  8 => encode_small<unsigned long long>    not ported yet
-            // 16 => encode_small2x<unsigned long long>  not ported yet
-            //  5..=7  => encode_medium<unsigned int>          not ported yet
-            //  9..=15 => encode_medium<unsigned long long>    not ported yet
-            4..=16 => encode_generic(input, output, hash_size, min_len),
+            4 => encode_small(input, output, hash_size, min_len, 4),
+            8 => encode_small(input, output, hash_size, min_len, 8),
+            16 => encode_small2x(input, output, hash_size, min_len, 8),
+            m if m <= 8 => encode_medium(input, output, hash_size, min_len, 4),
+            m if m <= 16 => encode_medium(input, output, hash_size, min_len, 8),
             _ => encode_large(input, output, hash_size, min_len),
         }
     } else {

@@ -87,13 +87,13 @@ fail=0; tested=0; ncmp=0; outstanding=0; outstanding_names=""
 #   15:72  encode_large_fast_path  <- DArc's DEFAULT, every ordinary -mbsc block
 #   18:*   encode_generic          <- hashSize >= 18 leaves the specialised chain
 #   23:*   encode_generic
-# encode_large covers every minLen >= 17 at hashSize <= 17, and the
-# "fast path" is that same function with the defaults folded in -- the two
-# C bodies are textually identical once the constants are substituted.
-PORTED="12:32 12:64 12:72 15:32 15:64 15:72 16:32 16:64 16:72 17:32 17:64 17:72 \
-18:4 18:8 18:16 18:32 18:64 18:72 23:4 23:8 23:16 23:32 23:64 23:72"
+# ALL six bodies are ported, so every cell must match. The literal is kept
+# rather than dropping the mechanism: it is what makes a body regressing out of
+# the ported set a hard failure rather than a quiet line of prose.
+PORTED="ALL"
 
 is_ported() {
+  case "$PORTED" in ALL) return 0;; esac
   case " $PORTED " in *" $1:$2 "*) return 0;; esac
   return 1
 }
