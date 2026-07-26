@@ -337,10 +337,17 @@ jobs:
     - name: Verify the Rust codecs actually linked
       run: |
         test -f Tests/arc-mhs-win64.exe || { echo "::error::no Windows binary"; exit 1; }
-        # The staticlib being built and then ignored is the failure mode this
-        # wiring exists to catch, so require its symbols to be present.
-        "${LLVM_MINGW:-x86_64-w64-mingw32}-nm" Tests/arc-mhs-win64.exe 2>/dev/null \
-          | grep -q darc_rs_ || { echo "::error::no darc_rs_* symbols -- the Rust codecs were not linked"; exit 1; }
+        # Presence alone would only prove the staticlib was linked, not that
+        # anything reaches it. Absence of the C entry points is the stronger
+        # half: tor_compress0 is the C encoder's template and would appear as an
+        # instantiation if any C Tornado encoder were still being built, so if
+        # it is gone the Rust one is necessarily what runs.
+        syms=$("${LLVM_MINGW:-x86_64-w64-mingw32}-nm" Tests/arc-mhs-win64.exe 2>/dev/null)
+        echo "$syms" | grep -q darc_rs_ \
+          || { echo "::error::no darc_rs_* symbols -- the Rust codecs were not linked"; exit 1; }
+        echo "$syms" | grep -q tor_compress0 \
+          && { echo "::error::C Tornado encoder is still present -- the Rust port is not what runs"; exit 1; }
+        echo "Rust codecs linked; no C Tornado encoder present"
 
   # ── Windows on ARM64 ────────────────────────────────────────────────────────
   # Split across two jobs because neither half can be done alone:
