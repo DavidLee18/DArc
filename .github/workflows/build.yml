@@ -758,12 +758,213 @@ jobs:
   # that caught the port being linked in name only: an earlier wiring produced a
   # binary byte-identical to the C build because both defined the same symbol and
   # the linker never pulled the Rust one.
+  # ── The differential harnesses, split four ways ─────────────────────────────
+  #
+  # These were one job running fifteen independent checks in sequence, and it
+  # grew into the critical path for every merge -- consistently the last thing
+  # standing while everything else had finished. Nothing here depends on
+  # anything else here, so the only reason it was serial was that it was written
+  # as one `run:` block.
+  #
+  # Three of the four need NO MicroHs. Only the encryption round-trip builds the
+  # archiver; every harness compiles C references directly with clang, and
+  # srep-check.sh builds its own reference from srep/compile, which is C too.
+  # That removes a `make minstall` from three jobs' critical path.
+  #
+  # Two things are checked across all of them, and they are not the same:
+  #
+  #   1. The ported codec produces byte-identical output to the C original, over
+  #      inputs built to exercise its heuristics (rust/difftest).
+  #   2. The archiver built against it produces byte-identical archives, and the
+  #      whole suite still passes.
+  #
+  # The second is what actually protects the archive format, and it is the check
+  # that caught the port being linked in name only: an earlier wiring produced a
+  # binary byte-identical to the C build because both defined the same symbol and
+  # the linker never pulled the Rust one.
   rust-codecs:
     runs-on: ubuntu-latest
     steps:
     - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
       with:
         lfs: false
+    - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+    - name: Install LLVM and Clang
+      uses: KyleMayes/install-llvm-action@ebc0426251bc40c7cd31162802432c68818ab8f0 # v2
+      with:
+        version: "21.1.8"
+    - name: Install packages
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y liblua5.1-dev libncurses-dev libcurl4-openssl-dev cpphs
+    - name: Codec differential test (Rust vs C)
+      run: |
+        chmod +x rust/difftest/run.sh
+        rust/difftest/run.sh diff
+
+    # A differential test that has never failed proves nothing. This mutates the
+    # port and asserts every mutation is caught by at least one input; it also
+    # aborts if a mutation pattern no longer matches, because a mutation that
+    # silently fails to apply reports as "0 detected" and reads like coverage.
+    - name: Prove the differential test can fail
+      run: rust/difftest/run.sh sabotage
+
+    # The same question for the Tornado encoder's unit tests, which cover what
+    # the differential harness cannot reach yet: it breaks each encoder path in
+    # turn and requires the suite to notice. It restores every file it touches
+    # on exit, including on failure.
+    - name: Prove the Tornado encoder tests can fail
+      run: |
+        chmod +x rust/difftest/tornado-encoder-sabotage.sh
+        rust/difftest/tornado-encoder-sabotage.sh
+
+    # run.sh covers Delta only. Every codec ported since has its own harness,
+    # each compressing with C and requiring the C and Rust decoders to return
+    # the same original bytes over a corpus built for that codec's heuristics.
+    - name: Per-codec differential tests (REP, TTA, MM, Tornado, GRZip, DisPack, LZP, LZ4-HC)
+      run: |
+        chmod +x rust/difftest/*.sh
+        rust/difftest/rep-check.sh
+        rust/difftest/tta-check.sh
+        rust/difftest/mm-check.sh
+        rust/difftest/tornado-check.sh
+        rust/difftest/tornado-encode-check.sh
+        rust/difftest/grzip-check.sh
+        rust/difftest/dispack-check.sh
+        # The other direction: DisPack's ENCODER must be byte-exact too, since
+        # DisPack is one of DArc's own formats. Filtered output that merely
+        # round-trips through our own decoder would still make archives that
+        # older builds read differently.
+        rust/difftest/dispack-filter-check.sh
+        # LZP is ported in BOTH directions and its C is deleted, so this is the
+        # only remaining oracle for it -- and it had no check script at all
+        # until the C was pruned (lzp_ref.cpp sat orphaned; run.sh covers Delta).
+        rust/difftest/lzp-check.sh
+        # LZ4-HC is the one ENCODER-side harness here: it requires the Rust
+        # encoder to be byte-identical to the C for every level DArc can select
+        # (1-9), and decodes each block with the C decoder rather than lz4_flex.
+        rust/difftest/lz4hc-check.sh
+
+  # BSC on its own: it is the largest codec and now carries five harnesses, two
+  # of them encoder-side and one comparing 576 (parameter, input) pairs. Left in
+  # with the rest it dominated the job.
+  rust-codecs-bsc:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      with:
+        lfs: false
+    - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+    - name: Install LLVM and Clang
+      uses: KyleMayes/install-llvm-action@ebc0426251bc40c7cd31162802432c68818ab8f0 # v2
+      with:
+        version: "21.1.8"
+    - name: Install packages
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y liblua5.1-dev libncurses-dev libcurl4-openssl-dev cpphs
+    - name: BSC decoder differential tests
+      run: |
+        chmod +x rust/difftest/*.sh
+        # Stage by stage (QLFC entropy, inverse BWT, inverse ST) then the whole
+        # block codec end to end.
+        rust/difftest/bsc-check.sh
+        rust/difftest/bsc-bwt-check.sh
+        rust/difftest/bsc-st-check.sh
+        rust/difftest/bsc-full-check.sh
+
+    - name: BSC encoder differential tests
+      run: |
+        chmod +x rust/difftest/*.sh
+        # LZP, the compressor's first stage. Byte-identity, not round-tripping:
+        # LZP output is what the block sorter and the entropy coder consume, so a
+        # merely-legal encoding would change every -mbsc archive while decoding
+        # perfectly. 576 (parameter, input) pairs, covering all six of the C's
+        # encoder bodies -- they emit DIFFERENT bytes from each other, so the
+        # grid is not redundant.
+        rust/difftest/bsc-lzp-encode-check.sh
+        # The QLFC forward transform: the stage all three encode bodies share.
+        # Compares the rank array AND the MTF table, since the table is an
+        # output that becomes the block's preamble.
+        rust/difftest/bsc-qlfc-transform-check.sh
+        # All three QLFC encoders, plus the coder layer above them (block
+        # splitting and framing).
+        rust/difftest/bsc-qlfc-encode-check.sh
+
+  # SREP is not an in-process codec: the archiver spawns a `srep` binary
+  # (arc.ini's [External compressor:srep]), so this compares files rather than
+  # callback streams and has no DARC_RUST/fingerprint story. srep-check.sh
+  # builds the C reference from srep/compile itself, but that build is done here
+  # too so a failure in it is attributed to SREP rather than to the differential
+  # run. The harness forces -hash=md5, so the ARM64 VMAC issue documented in it
+  # does not apply to this x86-64 runner regardless.
+  rust-codecs-srep:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      with:
+        lfs: false
+    - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+    - name: Install LLVM and Clang
+      uses: KyleMayes/install-llvm-action@ebc0426251bc40c7cd31162802432c68818ab8f0 # v2
+      with:
+        version: "21.1.8"
+    - name: Install packages
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y liblua5.1-dev libncurses-dev libcurl4-openssl-dev cpphs
+    - name: SREP decoder differential test
+      run: |
+        chmod +x srep/compile rust/difftest/*.sh
+        ( cd srep && ./compile )
+        test -x Tests/srep || { echo "::error::srep/compile produced no Tests/srep"; exit 1; }
+        rust/difftest/srep-check.sh
+
+  # The C-vs-Rust crypto comparison. It compiles C_Encryption.cpp twice -- the
+  # pinned copy without -DDARC_RUST so vendored LibTomCrypt runs, and the
+  # working tree's copy with it so the production forwarding shim is what gets
+  # tested -- and requires byte-identical ciphertext in both directions across
+  # every cipher, mode and key size DArc can select, plus the PBKDF2 derivation.
+  #
+  # No MicroHs: it drives docrypt and Pbkdf2Hmac directly, not through arc.
+  crypto-difftest:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      with:
+        lfs: false
+    - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+    - name: Install LLVM and Clang
+      uses: KyleMayes/install-llvm-action@ebc0426251bc40c7cd31162802432c68818ab8f0 # v2
+      with:
+        version: "21.1.8"
+    - name: Install packages
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y liblua5.1-dev libncurses-dev libcurl4-openssl-dev cpphs
+    - name: Encryption differential test (Rust vs C)
+      run: |
+        chmod +x rust/difftest/*.sh
+        rust/difftest/crypto-check.sh
+
+    # Seven one-line breaks -- CTR's counter direction, its state across
+    # docrypt's 256 KB read chunk, CFB's feedback register and IV
+    # pre-encryption, the PBKDF2 iteration count and two in the shim -- each of
+    # which the check must notice. It restores every file it touches on exit,
+    # including on failure.
+    - name: Prove the encryption differential test can fail
+      run: rust/difftest/crypto-sabotage.sh
+
+  # The one job here that needs the archiver, and therefore MicroHs. The
+  # C-vs-Rust crypto comparison is crypto-difftest above; this is the other
+  # half -- encrypted archives must still be created and read back correctly.
+  encryption-roundtrip:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      with:
+        lfs: false
+    - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
     - name: Install LLVM and Clang
       uses: KyleMayes/install-llvm-action@ebc0426251bc40c7cd31162802432c68818ab8f0 # v2
       with:
@@ -795,122 +996,9 @@ jobs:
         fi
         echo "$HOME/.mcabal/bin" >> "$GITHUB_PATH"
 
-    - name: Codec differential test (Rust vs C)
-      run: |
-        chmod +x rust/difftest/run.sh
-        rust/difftest/run.sh diff
-
-    # A differential test that has never failed proves nothing. This mutates the
-    # port and asserts every mutation is caught by at least one input; it also
-    # aborts if a mutation pattern no longer matches, because a mutation that
-    # silently fails to apply reports as "0 detected" and reads like coverage.
-    - name: Prove the differential test can fail
-      run: rust/difftest/run.sh sabotage
-
-    # The same question for the Tornado encoder's unit tests, which cover what
-    # the differential harness cannot reach yet: it breaks each encoder path in
-    # turn and requires the suite to notice. It restores every file it touches
-    # on exit, including on failure.
-    - name: Prove the Tornado encoder tests can fail
-      run: |
-        chmod +x rust/difftest/tornado-encoder-sabotage.sh
-        rust/difftest/tornado-encoder-sabotage.sh
-
-    # run.sh covers Delta only. Every codec ported since has its own harness,
-    # each compressing with C and requiring the C and Rust decoders to return
-    # the same original bytes over a corpus built for that codec's heuristics.
-    # They were runnable but unrun until now: a differential test nothing
-    # invokes is documentation, not a check.
-    - name: Per-codec differential tests (REP, TTA, MM, Tornado, GRZip, DisPack, LZP, BSC, LZ4-HC)
-      run: |
-        chmod +x rust/difftest/*.sh
-        rust/difftest/rep-check.sh
-        rust/difftest/tta-check.sh
-        rust/difftest/mm-check.sh
-        rust/difftest/tornado-check.sh
-        rust/difftest/tornado-encode-check.sh
-        rust/difftest/grzip-check.sh
-        rust/difftest/dispack-check.sh
-        # The other direction: DisPack's ENCODER must be byte-exact too, since
-        # DisPack is one of DArc's own formats. Filtered output that merely
-        # round-trips through our own decoder would still make archives that
-        # older builds read differently.
-        rust/difftest/dispack-filter-check.sh
-        # LZP is ported in BOTH directions and its C is deleted, so this is the
-        # only remaining oracle for it -- and it had no check script at all
-        # until the C was pruned (lzp_ref.cpp sat orphaned; run.sh covers Delta).
-        rust/difftest/lzp-check.sh
-        # BSC, stage by stage (QLFC entropy, inverse BWT, inverse ST) then the
-        # whole block codec end to end.
-        rust/difftest/bsc-check.sh
-        rust/difftest/bsc-bwt-check.sh
-        rust/difftest/bsc-st-check.sh
-        rust/difftest/bsc-full-check.sh
-        # The BSC ENCODER, starting with LZP -- the compressor's first stage.
-        # Byte-identity, not round-tripping: LZP output is what the block sorter
-        # and the entropy coder consume, so a merely-legal encoding would change
-        # every -mbsc archive while decoding perfectly. 576 (parameter, input)
-        # pairs, covering all six of the C's encoder bodies -- they emit
-        # DIFFERENT bytes from each other, so the grid is not redundant.
-        rust/difftest/bsc-lzp-encode-check.sh
-        # The QLFC forward transform: the stage all three encode bodies share.
-        # Compares the rank array AND the MTF table, since the table is an
-        # output that becomes the block's preamble.
-        rust/difftest/bsc-qlfc-transform-check.sh
-        # The QLFC STATIC encoder -- LIBBSC_DEFAULT_CODER, so the body a default
-        # -mbsc block is entropy-coded by. Byte-identity against
-        # bsc_coder_encode_block; the adaptive and fast encoders are still C.
-        rust/difftest/bsc-qlfc-encode-check.sh
-        # LZ4-HC is the one ENCODER-side harness: it requires the Rust encoder
-        # to be byte-identical to the C for every level DArc can select (1-9),
-        # and decodes each block with the C decoder rather than lz4_flex.
-        rust/difftest/lz4hc-check.sh
-
-    # SREP is not an in-process codec: the archiver spawns a `srep` binary
-    # (arc.ini's [External compressor:srep]), so this compares files rather than
-    # callback streams and has no DARC_RUST/fingerprint story. srep-check.sh
-    # builds the C reference from srep/compile itself, but that build is done
-    # here too so a failure in it is attributed to SREP rather than to the
-    # differential run. The harness forces -hash=md5, so the ARM64 VMAC issue
-    # documented in it does not apply to this x86-64 runner regardless.
-    - name: SREP decoder differential test
-      run: |
-        chmod +x srep/compile rust/difftest/*.sh
-        ( cd srep && ./compile )
-        test -x Tests/srep || { echo "::error::srep/compile produced no Tests/srep"; exit 1; }
-        rust/difftest/srep-check.sh
-
-    # The C-vs-Rust crypto cross-check, restored. It used to compare a
-    # DARC_NO_RUST `arc` against a DARC_RUST one; both the opt-out and
-    # C_Encryption.cpp's #ifndef DARC_RUST fallbacks are gone, so there is no
-    # second implementation left in the working tree. There is one in history,
-    # and this takes it from the same pinned revision every other codec harness
-    # uses -- which is strictly better than the old arrangement, since a pinned
-    # oracle cannot drift as the tree changes.
-    #
-    # It compares ciphertext byte-for-byte in both directions across every
-    # cipher, mode and key size DArc can select, plus the PBKDF2 key
-    # derivation, and it tests the production forwarding shim rather than a
-    # harness-local copy of it.
-    - name: Encryption differential test (Rust vs C)
-      run: |
-        chmod +x rust/difftest/*.sh
-        rust/difftest/crypto-check.sh
-
-    # And the same question asked of it: seven one-line breaks -- CTR's counter
-    # direction, its state across docrypt's 256 KB read chunk, CFB's feedback
-    # register and IV pre-encryption, the PBKDF2 iteration count and two in the
-    # shim -- each of which the check must notice. It restores every file it
-    # touches on exit, including on failure.
-    - name: Prove the encryption differential test can fail
-      run: rust/difftest/crypto-sabotage.sh
-
-    # The round-trip is the other half, and the one that guards the format:
-    # encrypted archives must still be created and read back correctly.
     # Builds the archiver itself. The deleted "archives identical with and
     # without the Rust codecs" step used to leave Tests/arc behind as a side
-    # effect, and this step silently depended on that; removing it took the
-    # binary away as well as the /tmp/arc-c it obviously needed.
+    # effect, and an earlier version of this silently depended on that.
     - name: Encrypted archives round-trip
       run: |
         chmod +x compile* Tests/*.sh
@@ -918,19 +1006,6 @@ jobs:
         test -x Tests/arc || { echo "::error::./compile produced no Tests/arc"; exit 1; }
         Tests/enc-roundtrip.sh Tests/arc Tests/arc < /dev/null
 
-  # ── The standalone extractor and the SFX modules ────────────────────────────
-  # Unarc is a SECOND implementation of the archive READER: it shares the codecs
-  # with `arc` but not the archive-structure parser, which is Haskell in the
-  # archiver and C++ in Unarc/ArcStructure.h. No job ever built it, and it duly
-  # rotted -- it stopped compiling, and before that it had silently stopped
-  # being able to extract anything, because it read the file-time field as 4
-  # bytes while ByteStream.hs had long been writing 8. Everything stored after
-  # that field -- the directory flags and the CRCs -- came out of the wrong
-  # offset.
-  #
-  # So this job builds it AND round-trips through it, including running a real
-  # self-extracting archive. A build-only job would not have caught the bug that
-  # made the feature useless.
   unarc-sfx:
     runs-on: ubuntu-latest
     steps:
