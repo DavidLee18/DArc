@@ -781,6 +781,55 @@ pub unsafe extern "C" fn darc_rs_bsc_coder_compress(
     bsc::qlfc_enc::coder_compress(inp, out, coder as u32)
 }
 
+/// `bsc_st_encode` for `k == 3`: the forward sort-transform of order 3.
+/// Returns the primary index, or a negative libbsc code.
+///
+/// # Safety
+/// `data` must be valid for `n + 28` bytes -- the transform wraps the first 28
+/// past the end, exactly as the C does.
+#[no_mangle]
+pub unsafe extern "C" fn darc_rs_bsc_st3_encode(data: *mut u8, n: c_int) -> c_int {
+    if data.is_null() || n < 0 {
+        return FREEARC_ERRCODE_GENERAL;
+    }
+    let t = core::slice::from_raw_parts_mut(data, n as usize + 28);
+    bsc::qlfc_enc::st_encode(t, n as usize, 3)
+}
+
+/// `bsc_st_encode`: the forward sort-transform at order `k` (3..6; 7 and 8 have
+/// no CPU encoder in the C either). Returns the primary index.
+///
+/// # Safety
+/// `data` must be valid for `n + 28` bytes.
+#[no_mangle]
+pub unsafe extern "C" fn darc_rs_bsc_st_encode(data: *mut u8, n: c_int, k: c_int) -> c_int {
+    if data.is_null() || n < 0 || k < 0 {
+        return FREEARC_ERRCODE_GENERAL;
+    }
+    let t = core::slice::from_raw_parts_mut(data, n as usize + 28);
+    bsc::qlfc_enc::st_encode(t, n as usize, k as u32)
+}
+
+/// `bsc_compress`: build one framed BSC block. Supports the ST3..ST6 block
+/// sorters; BWT needs libsais, which is unported, and returns NOT_SUPPORTED.
+///
+/// # Safety
+/// `input` must be valid for `in_size` bytes, `output` for `out_size` (which
+/// must be at least `in_size + 28`).
+#[no_mangle]
+pub unsafe extern "C" fn darc_rs_bsc_compress(
+    input: *const u8, in_size: c_int, output: *mut u8, out_size: c_int,
+    lzp_hash_size: c_int, lzp_min_len: c_int, block_sorter: c_int, coder: c_int,
+) -> c_int {
+    if input.is_null() || output.is_null() || in_size < 0 || out_size < 0 {
+        return FREEARC_ERRCODE_GENERAL;
+    }
+    let inp = core::slice::from_raw_parts(input, in_size as usize);
+    let out = core::slice::from_raw_parts_mut(output, out_size as usize);
+    bsc::qlfc_enc::compress(inp, out, lzp_hash_size as u32, lzp_min_len as u32,
+                            block_sorter as u32, coder as u32)
+}
+
 /// `bsc_qlfc_transform`: the QLFC forward transform. Writes the rank array into
 /// the tail of `buffer` and the alphabet into `mtf` (256 bytes), returning the
 /// offset in `buffer` where the ranks begin.
