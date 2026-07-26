@@ -867,9 +867,15 @@ jobs:
     #
     # What remains is the round-trip, which is what actually guards the format:
     # encrypted archives must still be created and read back correctly.
+    # Builds the archiver itself. The deleted "archives identical with and
+    # without the Rust codecs" step used to leave Tests/arc behind as a side
+    # effect, and this step silently depended on that; removing it took the
+    # binary away as well as the /tmp/arc-c it obviously needed.
     - name: Encrypted archives round-trip
       run: |
-        chmod +x Tests/enc-roundtrip.sh
+        chmod +x compile* Tests/*.sh
+        ./compile > /tmp/build-enc.log 2>&1 || { tail -30 /tmp/build-enc.log; exit 1; }
+        test -x Tests/arc || { echo "::error::./compile produced no Tests/arc"; exit 1; }
         Tests/enc-roundtrip.sh Tests/arc Tests/arc < /dev/null
 
   # ── AddressSanitizer on x86-64 ──────────────────────────────────────────────
