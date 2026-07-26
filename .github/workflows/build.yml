@@ -846,6 +846,13 @@ jobs:
         rust/difftest/bsc-bwt-check.sh
         rust/difftest/bsc-st-check.sh
         rust/difftest/bsc-full-check.sh
+        # The BSC ENCODER, starting with LZP -- the compressor's first stage.
+        # Byte-identity, not round-tripping: LZP output is what the block sorter
+        # and the entropy coder consume, so a merely-legal encoding would change
+        # every -mbsc archive while decoding perfectly. 576 (parameter, input)
+        # pairs, covering all six of the C's encoder bodies -- they emit
+        # DIFFERENT bytes from each other, so the grid is not redundant.
+        rust/difftest/bsc-lzp-encode-check.sh
         # LZ4-HC is the one ENCODER-side harness: it requires the Rust encoder
         # to be byte-identical to the C for every level DArc can select (1-9),
         # and decodes each block with the C decoder rather than lz4_flex.

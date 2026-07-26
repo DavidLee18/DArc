@@ -48,6 +48,7 @@ pub mod bwt;
 pub mod dispatch;
 pub mod header;
 pub mod lzp;
+pub mod lzp_enc;
 pub mod model;
 pub mod model_consts;
 pub mod predictor;
@@ -60,6 +61,9 @@ pub mod tables;
 pub const LIBBSC_NO_ERROR: i32 = 0;
 pub const LIBBSC_BAD_PARAMETER: i32 = -1;
 pub const LIBBSC_NOT_ENOUGH_MEMORY: i32 = -2;
+/// Not an error the caller must propagate: the encoder returns it to mean
+/// "this block did not shrink", and `bsc_compress` answers by storing it.
+pub const LIBBSC_NOT_COMPRESSIBLE: i32 = -3;
 pub const LIBBSC_UNEXPECTED_EOB: i32 = -5;
 pub const LIBBSC_DATA_CORRUPT: i32 = -6;
 

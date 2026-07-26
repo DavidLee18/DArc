@@ -53,6 +53,13 @@ int darc_bsc_st_encode (unsigned char *T, int n, int k, int features)
 int darc_bsc_st_decode (unsigned char *T, int n, int k, int index, int features)
 { return bsc_st_decode(T, n, k, index, features); }
 
+/* Forward LZP, for the LZP-ENCODER differential harness. This is the first
+ * encoder-side cut into BSC: LZP is the compressor's first stage and depends on
+ * neither the block sorter nor the entropy coder, so a mismatch here points at
+ * the match finder alone. */
+int darc_bsc_lzp_compress (const unsigned char *in, unsigned char *out, int n, int hashSize, int minLen, int features)
+{ return bsc_lzp_compress(in, out, n, hashSize, minLen, features); }
+
 /* The whole codec, for the end-to-end differential harness: bsc_compress builds
  * a real framed block (header + entropy + block-sort + optional LZP), and the C
  * and Rust dispatchers both invert it. */

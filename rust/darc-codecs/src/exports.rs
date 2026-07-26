@@ -699,6 +699,35 @@ pub unsafe extern "C" fn darc_rs_bsc_decompress_block(
     bsc::dispatch::decompress(inp, out)
 }
 
+/// `bsc_lzp_compress`: LZP-encode `input` into `output`. Returns the number of
+/// bytes written, or a negative libbsc code -- `LIBBSC_NOT_COMPRESSIBLE` (-3)
+/// when the input does not shrink, which the caller answers by skipping LZP.
+///
+/// Exported for the differential harness ahead of the rest of the BSC encoder;
+/// nothing in the archiver calls it yet.
+///
+/// # Safety
+/// `input` must be valid for `in_size` bytes, `output` for `out_cap` bytes.
+#[no_mangle]
+pub unsafe extern "C" fn darc_rs_bsc_lzp_compress(
+    input: *const u8,
+    in_size: c_int,
+    output: *mut u8,
+    out_cap: c_int,
+    hash_size: c_int,
+    min_len: c_int,
+) -> c_int {
+    if input.is_null() || output.is_null() || in_size < 0 || out_cap < 0 {
+        return FREEARC_ERRCODE_GENERAL;
+    }
+    if !(10..=28).contains(&hash_size) || !(4..=255).contains(&min_len) {
+        return bsc::LIBBSC_BAD_PARAMETER;
+    }
+    let inp = core::slice::from_raw_parts(input, in_size as usize);
+    let out = core::slice::from_raw_parts_mut(output, out_cap as usize);
+    bsc::lzp_enc::compress(inp, out, hash_size as u32, min_len as u32)
+}
+
 /// LZ4 raw-block decode, mirroring `LZ4_decompress_safe`: returns the number of
 /// bytes written, or a negative code. This is the *safe* variant -- it must not
 /// read past `src` nor write past `dst` however malformed the block is, since
