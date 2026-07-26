@@ -24,6 +24,8 @@ int darc_bsc_compress (const unsigned char *in, unsigned char *out, int n, int l
 int darc_bsc_decompress (const unsigned char *in, int inSize, unsigned char *out, int outSize, int features);
 #ifdef USE_RUST
 int darc_rs_bsc_decompress_block (const unsigned char *in, int inSize, unsigned char *out, int outCap);
+int darc_rs_bsc_compress (const unsigned char *in, int inSize, unsigned char *out, int outSize,
+                          int lzpHashSize, int lzpMinLen, int blockSorter, int coder);
 #endif
 }
 
@@ -42,13 +44,43 @@ static unsigned char *slurp (size_t *outLen) {
 }
 
 int main (int argc, char **argv) {
-  if (argc < 2 || (argv[1][0] != 'e' && argv[1][0] != 'd')) {
-    fprintf(stderr, "usage: %s e SORTER CODER HASH MINLEN | d SIZE\n", argv[0]); return 2;
+  if (argc < 2 || (argv[1][0] != 'e' && argv[1][0] != 'd' && argv[1][0] != 'E')) {
+    fprintf(stderr, "usage: %s e|E SORTER CODER HASH MINLEN | d SIZE\n", argv[0]); return 2;
   }
   darc_bsc_init(0);
 
   size_t len = 0;
   unsigned char *in = slurp(&len);
+
+  /* `E` is the ENCODER-side comparison: it emits the framed block that
+   * bsc_compress produced, so the two builds can be diffed byte for byte.
+   * Mode `e` always uses the C, because the decode test needs a block the C
+   * definitely agrees with; only `E` switches implementation under USE_RUST.
+   * Without this mode nothing exercised the Rust encoder at all -- the decode
+   * test encodes with the C and would pass with no Rust encoder in the tree. */
+  if (argv[1][0] == 'E') {
+    int n      = (int)len;
+    int sorter = argc > 2 ? atoi(argv[2]) : 1;
+    int coder  = argc > 3 ? atoi(argv[3]) : 1;
+    int hash   = argc > 4 ? atoi(argv[4]) : 0;
+    int minlen = argc > 5 ? atoi(argv[5]) : 0;
+    if (n <= 0) { free(in); return 6; }
+
+    size_t cap = (size_t)n + (1 << 16);
+    unsigned char *out = (unsigned char *)malloc(cap);
+    if (!out) { free(in); return 3; }
+#ifdef USE_RUST
+    int csize = darc_rs_bsc_compress(in, n, out, (int)cap, hash, minlen, sorter, coder);
+#else
+    int csize = darc_bsc_compress(in, out, n, hash, minlen, sorter, coder, 0);
+#endif
+    /* The return code is emitted even on refusal, so that one side declining
+     * while the other codes shows up as a difference rather than as a skip. */
+    fwrite(&csize, sizeof(int), 1, stdout);
+    if (csize > 0) fwrite(out, 1, (size_t)csize, stdout);
+    free(in); free(out);
+    return 0;
+  }
 
   if (argv[1][0] == 'e') {
     int n      = (int)len;

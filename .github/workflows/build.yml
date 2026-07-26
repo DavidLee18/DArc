@@ -1014,6 +1014,13 @@ jobs:
         # Compares the primary index as well as the bytes: the index alone
         # decides where the decoder starts unwinding.
         rust/difftest/bsc-st-encode-check.sh
+        # The forward BWT. Not a translation of libsais: a string's suffixes all
+        # have distinct lengths, so the suffix array has no ties to break and the
+        # BWT is a function of it, which makes any correct construction produce
+        # libsais's bytes. Verified before the port was written -- a qsort/memcmp
+        # suffix array matched libsais over 21 inputs -- and held here against
+        # SA-IS, for libsais_bwt, libsais_bwt_aux and the libbsc wrapper.
+        rust/difftest/bsc-bwt-encode-check.sh
 
   # SREP is not an in-process codec: the archiver spawns a `srep` binary
   # (arc.ini's [External compressor:srep]), so this compares files rather than

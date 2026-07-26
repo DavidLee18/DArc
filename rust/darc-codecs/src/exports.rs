@@ -810,6 +810,66 @@ pub unsafe extern "C" fn darc_rs_bsc_st_encode(data: *mut u8, n: c_int, k: c_int
     bsc::qlfc_enc::st_encode(t, n as usize, k as u32)
 }
 
+/// `libsais_bwt`: the forward BWT, in libsais's packed output convention --
+/// `input[n-1]` first, then the transform with the position-0 entry omitted.
+/// Returns `p + 1` where `SA[p] == 0`.
+///
+/// # Safety
+/// `input` and `output` must both be valid for `n` bytes.
+#[no_mangle]
+pub unsafe extern "C" fn darc_rs_bsc_bwt_encode(
+    input: *const u8, output: *mut u8, n: c_int,
+) -> c_int {
+    if input.is_null() || output.is_null() || n < 0 {
+        return FREEARC_ERRCODE_GENERAL;
+    }
+    let inp = core::slice::from_raw_parts(input, n as usize);
+    let out = core::slice::from_raw_parts_mut(output, n as usize);
+    bsc::bwt_enc::bwt_encode(inp, out)
+}
+
+/// `libsais_bwt_aux`: as [`darc_rs_bsc_bwt_encode`], plus the sampled indexes
+/// `i_out[j] = (position with SA == j*r) + 1`. Returns 0 on success; the
+/// primary index comes back in `i_out[0]`, matching the C.
+///
+/// # Safety
+/// `input`/`output` must be valid for `n` bytes and `i_out` for at least
+/// `(n-1)/r + 1` `int32`s.
+#[no_mangle]
+pub unsafe extern "C" fn darc_rs_bsc_bwt_aux_encode(
+    input: *const u8, output: *mut u8, n: c_int, r: c_int, i_out: *mut c_int,
+) -> c_int {
+    if input.is_null() || output.is_null() || i_out.is_null() || n < 0 || r < 2 {
+        return FREEARC_ERRCODE_GENERAL;
+    }
+    let inp = core::slice::from_raw_parts(input, n as usize);
+    let out = core::slice::from_raw_parts_mut(output, n as usize);
+    let cnt = if n <= 1 { 1 } else { (n as usize - 1) / (r as usize) + 1 };
+    let ia = core::slice::from_raw_parts_mut(i_out, cnt);
+    bsc::bwt_enc::bwt_aux_encode(inp, out, r as usize, ia)
+}
+
+/// `bsc_bwt_encode` (`bwt.cpp:178`): the in-place forward BWT plus the sampled
+/// indexes the caller stores in the block. Returns the primary index.
+///
+/// # Safety
+/// `data` must be valid for `n` bytes, `num_indexes` for one byte, and
+/// `indexes` for 256 `int32`s.
+#[no_mangle]
+pub unsafe extern "C" fn darc_rs_bsc_bwt_encode_full(
+    data: *mut u8, n: c_int, num_indexes: *mut u8, indexes: *mut c_int,
+) -> c_int {
+    if data.is_null() || num_indexes.is_null() || indexes.is_null() || n < 0 {
+        return FREEARC_ERRCODE_GENERAL;
+    }
+    let d = core::slice::from_raw_parts_mut(data, n as usize);
+    let idx = core::slice::from_raw_parts_mut(indexes, 256);
+    let mut ni: u8 = 0;
+    let r = bsc::bwt_enc::bsc_bwt_encode(d, n as usize, &mut ni, idx);
+    *num_indexes = ni;
+    r
+}
+
 /// `bsc_compress`: build one framed BSC block. Supports the ST3..ST6 block
 /// sorters; BWT needs libsais, which is unported, and returns NOT_SUPPORTED.
 ///

@@ -1389,10 +1389,9 @@ pub fn store(input: &[u8], output: &mut [u8]) -> i32 {
 /// `bsc_compress` (`libbsc.cpp:213`), the out-of-place form: LZP, block sort,
 /// entropy code, frame.
 ///
-/// **Block sorter 1 (BWT) is not supported yet** -- `bsc_bwt_encode` needs
-/// libsais, which is unported -- so this handles ST3..ST6 and returns
-/// NOT_SUPPORTED for BWT. That is also why the `lzSize <= HEADER_SIZE` fallback
-/// below, which forces BWT, is reported rather than silently mis-sorted.
+/// Handles every block sorter the C has a CPU encoder for: BWT (via
+/// [`super::bwt_enc`]) and ST3..ST6. ST7/ST8 return NOT_SUPPORTED, as they do
+/// in the C without CUDA.
 ///
 /// `output` must have at least `n + 28` bytes: the block sorters wrap the first
 /// 28 bytes past the end of their working area.
@@ -1450,17 +1449,27 @@ pub fn compress(
         output[..n].copy_from_slice(input);
     }
 
+    let mut block_sorter = block_sorter;
     if lz_size <= super::HEADER_SIZE {
-        // The C forces BWT here. Without libsais there is nothing to force it
-        // to, so this is refused rather than answered with a different sorter.
-        return -4; // LIBBSC_NOT_SUPPORTED
+        // libbsc.cpp:279 -- too little data to sort; fall back to BWT and record
+        // that in the mode, so the decoder reads it back as BWT.
+        block_sorter = 1; // LIBBSC_BLOCKSORTER_BWT
+        mode = (mode & 0xffff_ffe0) | 1;
     }
 
-    let sorter_k = match block_sorter {
-        3..=6 => block_sorter,
-        _ => return -4, // BWT and ST7/ST8: no encoder here
+    let mut num_indexes: u8 = 0;
+    let mut indexes = [0i32; 256];
+    let index = match block_sorter {
+        1 => super::bwt_enc::bsc_bwt_encode(output, lz_size, &mut num_indexes, &mut indexes),
+        3..=6 => st_encode(output, lz_size, block_sorter),
+        _ => return -4, // ST7/ST8 have no CPU encoder in the C either
     };
-    let index = st_encode(output, lz_size, sorter_k);
+
+    // libbsc.cpp:303 -- small blocks carry no sampled indexes even though the
+    // sorter computed them. This is on `n`, the ORIGINAL size, not `lz_size`.
+    if n < 64 * 1024 {
+        num_indexes = 0;
+    }
     if index < 0 {
         return index;
     }
@@ -1470,18 +1479,21 @@ pub fn compress(
     // The out-of-place bsc_compress STORES the block here; only the in-place
     // variant returns NOT_COMPRESSIBLE. Carrying the in-place behaviour over is
     // the bug the differential harness caught -- the C succeeded on
-    // incompressible noise while this refused it. `num_indexes` is 0 for every
-    // ST sorter, so the C's `result + 1 + 4 * num_indexes` reduces to
-    // `result + 1`.
-    if result < 0 || (result as usize) + 1 >= n {
+    // incompressible noise while this refused it.
+    let ni = num_indexes as usize;
+    if result < 0 || (result as usize) + 1 + 4 * ni >= n {
         return store(input, output);
     }
     let result = result as usize;
     output[super::HEADER_SIZE..super::HEADER_SIZE + result].copy_from_slice(&coded[..result]);
-    // num_indexes is 0 for every ST sorter; the trailing count byte is still
-    // written, which is what the decoder reads.
-    output[super::HEADER_SIZE + result] = 0;
-    let result = result + 1;
+    // The sampled indexes, then the count byte the decoder reads first. For the
+    // ST sorters `ni` is 0 and this reduces to a single zero byte.
+    for (t, &v) in indexes[..ni].iter().enumerate() {
+        let at = super::HEADER_SIZE + result + 4 * t;
+        output[at..at + 4].copy_from_slice(&v.to_le_bytes());
+    }
+    output[super::HEADER_SIZE + result + 4 * ni] = num_indexes;
+    let result = result + 1 + 4 * ni;
 
     let w = |o: &mut [u8], at: usize, v: u32| o[at..at + 4].copy_from_slice(&v.to_le_bytes());
     w(output, 0, (result + super::HEADER_SIZE) as u32);
