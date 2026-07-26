@@ -1493,3 +1493,120 @@ pub unsafe extern "C" fn grzip_compress(
         alternative_bwt_sort, adaptive_block_size, delta_filter, callback, auxdata,
     )
 }
+
+// ---------------------------------------------------------------------------
+// PPMd suballocator, for the allocator-level differential harness.
+//
+// The codec as a whole has no seam below the stream -- coder, model and
+// allocator are one system -- but the ALLOCATOR does have a testable
+// interface, and it is the part the compressed format is most sensitive to
+// (the model branches on GetUsedMemory() and on pText/UnitsStart crossings).
+// A single process-wide instance mirrors the C, whose allocator is file-scope
+// state in Model.cpp's translation unit.
+//
+// Offsets, not pointers: the C's heap is a malloc'ed block, this one is a
+// Vec<u8>, and only HeapStart-relative positions are comparable. -1 is NULL.
+// ---------------------------------------------------------------------------
+
+static mut PPMD_SA: Option<bsc_ppmd_sa::SubAllocator> = None;
+
+mod bsc_ppmd_sa {
+    pub use crate::ppmd::suballoc::SubAllocator;
+}
+
+#[inline]
+#[allow(static_mut_refs)]
+unsafe fn sa() -> &'static mut bsc_ppmd_sa::SubAllocator {
+    if PPMD_SA.is_none() {
+        PPMD_SA = Some(bsc_ppmd_sa::SubAllocator::new());
+    }
+    PPMD_SA.as_mut().unwrap()
+}
+
+/// # Safety
+/// Single-threaded harness use only, mirroring the C's file-scope allocator.
+#[no_mangle]
+pub unsafe extern "C" fn darc_rs_ppmd_sa_start(t: u32) -> i64 {
+    if sa().start(t as usize) { 1 } else { 0 }
+}
+
+/// # Safety
+/// See [`darc_rs_ppmd_sa_start`].
+#[no_mangle]
+pub unsafe extern "C" fn darc_rs_ppmd_sa_init() { sa().init() }
+
+/// # Safety
+/// See [`darc_rs_ppmd_sa_start`].
+#[no_mangle]
+pub unsafe extern "C" fn darc_rs_ppmd_sa_stop() { sa().stop() }
+
+/// # Safety
+/// See [`darc_rs_ppmd_sa_start`].
+#[no_mangle]
+pub unsafe extern "C" fn darc_rs_ppmd_sa_used() -> u32 { sa().get_used_memory() as u32 }
+
+/// # Safety
+/// See [`darc_rs_ppmd_sa_start`].
+#[no_mangle]
+pub unsafe extern "C" fn darc_rs_ppmd_sa_alloc_units(nu: u32) -> i64 {
+    let p = sa().alloc_units(nu as usize);
+    if p == 0 { -1 } else { p as i64 }
+}
+
+/// # Safety
+/// See [`darc_rs_ppmd_sa_start`].
+#[no_mangle]
+pub unsafe extern "C" fn darc_rs_ppmd_sa_alloc_context() -> i64 {
+    let p = sa().alloc_context();
+    if p == 0 { -1 } else { p as i64 }
+}
+
+/// # Safety
+/// See [`darc_rs_ppmd_sa_start`].
+#[no_mangle]
+pub unsafe extern "C" fn darc_rs_ppmd_sa_free_units(off: i64, nu: u32) {
+    sa().free_units(off as usize, nu as usize)
+}
+
+/// # Safety
+/// See [`darc_rs_ppmd_sa_start`].
+#[no_mangle]
+pub unsafe extern "C" fn darc_rs_ppmd_sa_expand_units(off: i64, nu: u32) -> i64 {
+    let p = sa().expand_units(off as usize, nu as usize);
+    if p == 0 { -1 } else { p as i64 }
+}
+
+/// # Safety
+/// See [`darc_rs_ppmd_sa_start`].
+#[no_mangle]
+pub unsafe extern "C" fn darc_rs_ppmd_sa_shrink_units(off: i64, nu: u32, newnu: u32) -> i64 {
+    let p = sa().shrink_units(off as usize, nu as usize, newnu as usize);
+    if p == 0 { -1 } else { p as i64 }
+}
+
+/// # Safety
+/// See [`darc_rs_ppmd_sa_start`].
+#[no_mangle]
+pub unsafe extern "C" fn darc_rs_ppmd_sa_special_free(off: i64) {
+    sa().special_free_unit(off as usize)
+}
+
+/// # Safety
+/// See [`darc_rs_ppmd_sa_start`].
+#[no_mangle]
+pub unsafe extern "C" fn darc_rs_ppmd_sa_ptext() -> i64 { sa().p_text as i64 }
+
+/// # Safety
+/// See [`darc_rs_ppmd_sa_start`].
+#[no_mangle]
+pub unsafe extern "C" fn darc_rs_ppmd_sa_units_start() -> i64 { sa().units_start as i64 }
+
+/// # Safety
+/// See [`darc_rs_ppmd_sa_start`].
+#[no_mangle]
+pub unsafe extern "C" fn darc_rs_ppmd_sa_lo_unit() -> i64 { sa().lo_unit as i64 }
+
+/// # Safety
+/// See [`darc_rs_ppmd_sa_start`].
+#[no_mangle]
+pub unsafe extern "C" fn darc_rs_ppmd_sa_hi_unit() -> i64 { sa().hi_unit as i64 }

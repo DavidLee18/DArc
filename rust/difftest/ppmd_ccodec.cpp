@@ -47,6 +47,59 @@ FARPROC LoadFromDLL (char *)          { return 0; }
 #undef ppmd_compress
 #undef ppmd_decompress
 
+/* Allocator-level entry points.
+ *
+ * The header comment says the STREAM is the only honest cut, and that is true
+ * of comparing compressed output -- the coder, model and allocator have no seam
+ * between them. But the allocator on its own does have a testable interface:
+ * drive both implementations through the same operation sequence and compare
+ * the offsets they hand back plus GetUsedMemory(). That is a real oracle for
+ * the part this codec is most sensitive to, and it does not have to wait for
+ * the model to be ported.
+ *
+ * Offsets rather than pointers, so the two sides are comparable at all: the
+ * Rust heap is a Vec<u8> and the C's is a malloc'ed block at an arbitrary
+ * address. Everything is reported relative to HeapStart, which is exactly what
+ * the C's own BLKREF/CTX_REF already do.
+ *
+ * C_PPMD.cpp includes Model.cpp TWICE, inside `namespace PPMD_compression` and
+ * again inside `namespace PPMD_decompression`, so the allocator exists twice
+ * with completely independent state -- the encoder and the decoder never share
+ * a heap. These wrappers drive the COMPRESSION side; the two are the same code,
+ * and the port keeps them as two instances for the same reason.
+ */
+using namespace PPMD_compression;
+extern "C" {
+long darc_ppmd_sa_start (unsigned t)  { return StartSubAllocator(t) ? 1 : 0; }
+void darc_ppmd_sa_init  (void)        { InitSubAllocator(); }
+void darc_ppmd_sa_stop  (void)        { StopSubAllocator(); }
+unsigned darc_ppmd_sa_used (void)     { return (unsigned) GetUsedMemory(); }
+
+long darc_ppmd_sa_alloc_units (unsigned nu)
+{ void *p = AllocUnits(nu); return p ? (long)((BYTE*)p - HeapStart) : -1; }
+
+long darc_ppmd_sa_alloc_context (void)
+{ void *p = AllocContext(); return p ? (long)((BYTE*)p - HeapStart) : -1; }
+
+void darc_ppmd_sa_free_units (long off, unsigned nu)
+{ FreeUnits(HeapStart + off, nu); }
+
+long darc_ppmd_sa_expand_units (long off, unsigned nu)
+{ void *p = ExpandUnits(HeapStart + off, nu); return p ? (long)((BYTE*)p - HeapStart) : -1; }
+
+long darc_ppmd_sa_shrink_units (long off, unsigned nu, unsigned newnu)
+{ void *p = ShrinkUnits(HeapStart + off, nu, newnu); return p ? (long)((BYTE*)p - HeapStart) : -1; }
+
+void darc_ppmd_sa_special_free (long off)
+{ SpecialFreeUnit(HeapStart + off); }
+
+/* The four layout cursors the model branches on. */
+long darc_ppmd_sa_ptext       (void) { return (long)(pText      - HeapStart); }
+long darc_ppmd_sa_units_start (void) { return (long)(UnitsStart - HeapStart); }
+long darc_ppmd_sa_lo_unit     (void) { return (long)(LoUnit     - HeapStart); }
+long darc_ppmd_sa_hi_unit     (void) { return (long)(HiUnit     - HeapStart); }
+}
+
 extern "C" {
 int darc_ppmd_stream_compress (int order, MemSize mem, int mrmethod,
                                CALLBACK_FUNC *cb, void *aux)
