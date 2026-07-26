@@ -45,6 +45,7 @@
 
 pub mod adler32;
 pub mod bwt;
+pub mod bwt_enc;
 pub mod dispatch;
 pub mod header;
 pub mod lzp;
