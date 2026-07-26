@@ -1364,3 +1364,141 @@ pub fn st_encode(t: &mut [u8], n: usize, k: u32) -> i32 {
         _ => -4, // LIBBSC_NOT_SUPPORTED
     }
 }
+
+/// `bsc_store` (`libbsc.cpp:68`): the fallback frame for data that will not
+/// compress -- a 28-byte header with `mode == 0`, then the input verbatim.
+pub fn store(input: &[u8], output: &mut [u8]) -> i32 {
+    let n = input.len();
+    if output.len() < n + super::HEADER_SIZE {
+        return super::LIBBSC_NOT_ENOUGH_MEMORY;
+    }
+    let adler = super::adler32::adler32(input);
+    output[super::HEADER_SIZE..super::HEADER_SIZE + n].copy_from_slice(input);
+    let w = |o: &mut [u8], at: usize, v: u32| o[at..at + 4].copy_from_slice(&v.to_le_bytes());
+    w(output, 0, (n + super::HEADER_SIZE) as u32);
+    w(output, 4, n as u32);
+    w(output, 8, 0);
+    w(output, 12, 0);
+    w(output, 16, adler);
+    w(output, 20, adler);
+    let h = super::adler32::adler32(&output[..24]);
+    w(output, 24, h);
+    (n + super::HEADER_SIZE) as i32
+}
+
+/// `bsc_compress` (`libbsc.cpp:213`), the out-of-place form: LZP, block sort,
+/// entropy code, frame.
+///
+/// **Block sorter 1 (BWT) is not supported yet** -- `bsc_bwt_encode` needs
+/// libsais, which is unported -- so this handles ST3..ST6 and returns
+/// NOT_SUPPORTED for BWT. That is also why the `lzSize <= HEADER_SIZE` fallback
+/// below, which forces BWT, is reported rather than silently mis-sorted.
+///
+/// `output` must have at least `n + 28` bytes: the block sorters wrap the first
+/// 28 bytes past the end of their working area.
+pub fn compress(
+    input: &[u8],
+    output: &mut [u8],
+    lzp_hash_size: u32,
+    lzp_min_len: u32,
+    block_sorter: u32,
+    coder: u32,
+) -> i32 {
+    let n = input.len();
+    let bad = super::LIBBSC_BAD_PARAMETER;
+
+    let mut mode: u32 = match block_sorter {
+        1 | 3 | 4 | 5 | 6 | 7 | 8 => block_sorter,
+        _ => return bad,
+    };
+    match coder {
+        1 | 2 | 3 => mode += coder << 5,
+        _ => return bad,
+    }
+    if lzp_min_len != 0 || lzp_hash_size != 0 {
+        if !(4..=255).contains(&lzp_min_len) || !(10..=28).contains(&lzp_hash_size) {
+            return bad;
+        }
+        mode += lzp_min_len << 8;
+        mode += lzp_hash_size << 16;
+    }
+    if n > 1_073_741_824 {
+        return bad;
+    }
+    if n <= super::HEADER_SIZE {
+        return store(input, output);
+    }
+    if output.len() < n + super::HEADER_SIZE {
+        return super::LIBBSC_NOT_ENOUGH_MEMORY;
+    }
+
+    let adler32_data = super::adler32::adler32(input);
+
+    // LZP writes into `output` directly; if it declines, the mode's LZP fields
+    // are cleared and the input is copied instead.
+    let mut lz_size = 0usize;
+    if mode != (mode & 0xff) {
+        let r = compress_lzp_into(input, output, lzp_hash_size, lzp_min_len);
+        if r < 0 {
+            mode &= 0xff;
+        } else {
+            lz_size = r as usize;
+        }
+    }
+    if mode == (mode & 0xff) {
+        lz_size = n;
+        output[..n].copy_from_slice(input);
+    }
+
+    if lz_size <= super::HEADER_SIZE {
+        // The C forces BWT here. Without libsais there is nothing to force it
+        // to, so this is refused rather than answered with a different sorter.
+        return -4; // LIBBSC_NOT_SUPPORTED
+    }
+
+    let sorter_k = match block_sorter {
+        3..=6 => block_sorter,
+        _ => return -4, // BWT and ST7/ST8: no encoder here
+    };
+    let index = st_encode(output, lz_size, sorter_k);
+    if index < 0 {
+        return index;
+    }
+
+    let mut coded = vec![0u8; lz_size];
+    let result = coder_compress(&output[..lz_size], &mut coded, coder);
+    // The out-of-place bsc_compress STORES the block here; only the in-place
+    // variant returns NOT_COMPRESSIBLE. Carrying the in-place behaviour over is
+    // the bug the differential harness caught -- the C succeeded on
+    // incompressible noise while this refused it. `num_indexes` is 0 for every
+    // ST sorter, so the C's `result + 1 + 4 * num_indexes` reduces to
+    // `result + 1`.
+    if result < 0 || (result as usize) + 1 >= n {
+        return store(input, output);
+    }
+    let result = result as usize;
+    output[super::HEADER_SIZE..super::HEADER_SIZE + result].copy_from_slice(&coded[..result]);
+    // num_indexes is 0 for every ST sorter; the trailing count byte is still
+    // written, which is what the decoder reads.
+    output[super::HEADER_SIZE + result] = 0;
+    let result = result + 1;
+
+    let w = |o: &mut [u8], at: usize, v: u32| o[at..at + 4].copy_from_slice(&v.to_le_bytes());
+    w(output, 0, (result + super::HEADER_SIZE) as u32);
+    w(output, 4, n as u32);
+    w(output, 8, mode);
+    w(output, 12, index as u32);
+    w(output, 16, adler32_data);
+    let a = super::adler32::adler32(&output[super::HEADER_SIZE..super::HEADER_SIZE + result]);
+    w(output, 20, a);
+    let h = super::adler32::adler32(&output[..24]);
+    w(output, 24, h);
+    (result + super::HEADER_SIZE) as i32
+}
+
+/// LZP into a caller buffer, matching `bsc_lzp_compress`'s contract that the
+/// output window is exactly `n` bytes.
+fn compress_lzp_into(input: &[u8], output: &mut [u8], hash_size: u32, min_len: u32) -> i32 {
+    let n = input.len();
+    super::lzp_enc::compress(input, &mut output[..n], hash_size, min_len)
+}
