@@ -865,14 +865,32 @@ jobs:
         test -x Tests/srep || { echo "::error::srep/compile produced no Tests/srep"; exit 1; }
         rust/difftest/srep-check.sh
 
-    # This used to run C-crypto against Rust-crypto in both directions, using
-    # the /tmp/arc-c binary from the DARC_NO_RUST build. Both are gone: the
-    # opt-out was removed and C_Encryption.cpp's #ifndef DARC_RUST fallbacks
-    # went with the last build that did not define DARC_RUST. There is no
-    # second implementation left to interoperate with, so the cross-check is
-    # not merely unwired, it is unrepresentable.
+    # The C-vs-Rust crypto cross-check, restored. It used to compare a
+    # DARC_NO_RUST `arc` against a DARC_RUST one; both the opt-out and
+    # C_Encryption.cpp's #ifndef DARC_RUST fallbacks are gone, so there is no
+    # second implementation left in the working tree. There is one in history,
+    # and this takes it from the same pinned revision every other codec harness
+    # uses -- which is strictly better than the old arrangement, since a pinned
+    # oracle cannot drift as the tree changes.
     #
-    # What remains is the round-trip, which is what actually guards the format:
+    # It compares ciphertext byte-for-byte in both directions across every
+    # cipher, mode and key size DArc can select, plus the PBKDF2 key
+    # derivation, and it tests the production forwarding shim rather than a
+    # harness-local copy of it.
+    - name: Encryption differential test (Rust vs C)
+      run: |
+        chmod +x rust/difftest/*.sh
+        rust/difftest/crypto-check.sh
+
+    # And the same question asked of it: seven one-line breaks -- CTR's counter
+    # direction, its state across docrypt's 256 KB read chunk, CFB's feedback
+    # register and IV pre-encryption, the PBKDF2 iteration count and two in the
+    # shim -- each of which the check must notice. It restores every file it
+    # touches on exit, including on failure.
+    - name: Prove the encryption differential test can fail
+      run: rust/difftest/crypto-sabotage.sh
+
+    # The round-trip is the other half, and the one that guards the format:
     # encrypted archives must still be created and read back correctly.
     # Builds the archiver itself. The deleted "archives identical with and
     # without the Rust codecs" step used to leave Tests/arc behind as a side
