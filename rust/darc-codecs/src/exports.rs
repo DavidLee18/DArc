@@ -699,6 +699,31 @@ pub unsafe extern "C" fn darc_rs_bsc_decompress_block(
     bsc::dispatch::decompress(inp, out)
 }
 
+/// `bsc_qlfc_transform`: the QLFC forward transform. Writes the rank array into
+/// the tail of `buffer` and the alphabet into `mtf` (256 bytes), returning the
+/// offset in `buffer` where the ranks begin.
+///
+/// Exported for the differential harness ahead of the QLFC encode bodies;
+/// nothing in the archiver calls it yet.
+///
+/// # Safety
+/// `input` and `buffer` must be valid for `n` bytes, `mtf` for 256.
+#[no_mangle]
+pub unsafe extern "C" fn darc_rs_bsc_qlfc_transform(
+    input: *const u8,
+    n: c_int,
+    buffer: *mut u8,
+    mtf: *mut u8,
+) -> c_int {
+    if input.is_null() || buffer.is_null() || mtf.is_null() || n <= 0 {
+        return FREEARC_ERRCODE_GENERAL;
+    }
+    let inp = core::slice::from_raw_parts(input, n as usize);
+    let buf = core::slice::from_raw_parts_mut(buffer, n as usize);
+    let mtf = &mut *(mtf as *mut [u8; 256]);
+    bsc::qlfc_enc::transform(inp, buf, mtf) as c_int
+}
+
 /// `bsc_lzp_compress`: LZP-encode `input` into `output`. Returns the number of
 /// bytes written, or a negative libbsc code -- `LIBBSC_NOT_COMPRESSIBLE` (-3)
 /// when the input does not shrink, which the caller answers by skipping LZP.
