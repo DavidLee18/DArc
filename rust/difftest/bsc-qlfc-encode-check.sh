@@ -5,9 +5,9 @@
 # every -mbsc block, so an encoding that merely decodes correctly would still
 # change every archive. `bsc_coder_encode_block` is the oracle.
 #
-# The static coder is LIBBSC_DEFAULT_CODER, so this is the body a default -mbsc
-# archive goes through. The adaptive and fast encoders are still C; the Rust
-# driver exits 7 for them, and the harness reports that rather than passing
+# Covers the static coder (LIBBSC_DEFAULT_CODER, so the body a default -mbsc
+# archive goes through) and the adaptive one. The fast encoder is still C; the
+# Rust driver exits 7 for it, and the harness reports that rather than passing
 # silently.
 #
 # The C reference comes from a pinned revision, not the working tree -- see
@@ -58,10 +58,11 @@ for n in (256, 1024, 65536):
 CORPUS
 
 fail=0; tested=0; declined=0
+for coder in 1 2; do
 for f in "$W"/in/*; do
-  bn=$(basename "$f")
-  "$W/c"  c 1 < "$f" >| "$W/oc" 2>/dev/null; rc_c=$?
-  "$W/rs" c 1 < "$f" >| "$W/or" 2>/dev/null; rc_r=$?
+  bn="$(basename "$f") coder$coder"
+  "$W/c"  c "$coder" < "$f" >| "$W/oc" 2>/dev/null; rc_c=$?
+  "$W/rs" c "$coder" < "$f" >| "$W/or" 2>/dev/null; rc_r=$?
   # 6 = the encoder declined the block ("not compressible"). Both sides must
   # make the same call: one coding what the other refuses is a difference, and
   # a driver that wrote nothing on refusal would hide it behind two empty files.
@@ -73,6 +74,7 @@ for f in "$W"/in/*; do
   if [ "$rc_c" -ne 0 ]; then echo "  $bn: both drivers failed with $rc_c"; fail=$((fail+1)); continue; fi
   tested=$((tested+1))
   cmp -s "$W/oc" "$W/or" || { echo "  $bn: coded block differs from the C"; fail=$((fail+1)); }
+done
 done
 
 # Byte-identity already implies the blocks decode, but a harness that only ever
@@ -86,5 +88,5 @@ done
 [ "$tested" -gt 0 ] || { echo "no blocks were coded -- the harness reached nothing"; exit 1; }
 [ "$big" -ge 3 ] || { echo "only $big of 3 inputs produced a real coded block"; fail=$((fail+1)); }
 [ "$fail" -eq 0 ] || { echo "bsc-qlfc-encode: $fail failures"; exit 1; }
-echo "bsc-qlfc-encode: $tested/$tested byte-identical to the C (static coder; $declined declined by both)"
-echo "bsc-qlfc-encode: adaptive and fast encoders are still C -- not covered here"
+echo "bsc-qlfc-encode: $tested/$tested byte-identical to the C (static + adaptive coders; $declined declined by both)"
+echo "bsc-qlfc-encode: the fast encoder is still C -- not covered here"
