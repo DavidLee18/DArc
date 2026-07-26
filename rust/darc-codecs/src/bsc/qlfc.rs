@@ -51,7 +51,7 @@ use super::{
 /// `bsc_bit_scan_reverse(x)` = `clz(x) ^ 31`, i.e. the index of the highest set
 /// bit. Undefined for 0 in the C (`__builtin_clz(0)`); callers never pass 0.
 #[inline]
-fn bit_scan_reverse(x: u32) -> u32 {
+pub(super) fn bit_scan_reverse(x: u32) -> u32 {
     if x == 0 {
         0
     } else {
@@ -681,7 +681,7 @@ pub fn static_decode(input: &[u8], output: &mut [u8]) -> Result<usize, i32> {
 /// a detectable disagreement into wrong output. The arithmetic wraps like the
 /// C's `int`.
 #[inline]
-fn mix3(char_p: i32, state_p: i32, static_p: i32, lr0: i32, lr1: i32, lr2: i32) -> u32 {
+pub(super) fn mix3(char_p: i32, state_p: i32, static_p: i32, lr0: i32, lr1: i32, lr2: i32) -> u32 {
     (char_p
         .wrapping_mul(lr0)
         .wrapping_add(state_p.wrapping_mul(lr1))
