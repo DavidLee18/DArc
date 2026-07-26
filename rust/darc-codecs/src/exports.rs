@@ -830,10 +830,9 @@ pub unsafe extern "C" fn darc_rs_bsc_store(
 /// `bsc_block_info` (`libbsc.cpp:340`): validate a block header and report the
 /// framed and decoded sizes. Returns 0 or a negative libbsc error.
 ///
-/// The C's validation is `header::parse` PLUS `block_info_extra_checks` -- the
-/// former alone is laxer, missing the LZP parameter ranges and the
-/// `blockSize`/`index` bounds, so both must run here or corrupt input would
-/// size a buffer instead of being rejected.
+/// `header::parse` performs the whole of the C's validation, so this is a thin
+/// wrapper over it. The two used to be split, which meant a caller using
+/// `parse` alone got weaker checks than the C -- see the note in header.rs.
 ///
 /// # Safety
 /// `header` must be valid for `header_size` bytes; the out-pointers may be null.
@@ -850,9 +849,6 @@ pub unsafe extern "C" fn darc_rs_bsc_block_info(
         Ok(p) => p,
         Err(e) => return e,
     };
-    if let Err(e) = bsc::dispatch::block_info_extra_checks(&parsed) {
-        return e;
-    }
     if !block_size.is_null() {
         *block_size = parsed.block_size;
     }
