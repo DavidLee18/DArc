@@ -39,8 +39,23 @@ trap 'rm -rf "$W"' EXIT
 LIB="$ROOT/rust/target/release/libdarc_codecs.a"
 [ -f "$LIB" ] || { echo "the Rust staticlib is missing" >&2; exit 1; }
 
+# -O1, NOT -O2, and this is load-bearing.
+#
+# PPMd's StateCpy/SWAP type-pun through `(WORD&)` references, which violates
+# strict aliasing. In rescale(), the compiler is then free to assume those WORD
+# writes cannot alias the BYTE read in `if (p->Freq == 0)`, and at -O1 it reuses
+# the value ASSIGNED earlier in the loop rather than re-reading the slot the
+# bubble sort has since overwritten. The two readings disagree, so THE SAME C
+# SOURCE PRODUCES DIFFERENT COMPRESSED BYTES AT DIFFERENT -O LEVELS. Measured on
+# a 92-byte input at order 3:
+#
+#     -O0 -> 669d679a...      -O1 -> f6cb8287...      -O2 -> f6cb8287...
+#
+# Compression/PPMD/makefile builds at -O1, so -O1 is what every existing -mppmd
+# archive was written with, and the only defensible oracle. Changing this flag
+# silently changes what "byte-identical" means.
 cc() { local out="$1"; shift
-  clang++ -std=c++17 -O2 -w -DFREEARC_UNIX -DFREEARC_INTEL_BYTE_ORDER -DFREEARC_64BIT \
+  clang++ -std=c++17 -O1 -w -DFREEARC_UNIX -DFREEARC_INTEL_BYTE_ORDER -DFREEARC_64BIT \
     -I"$CREF" -I"$CREF/Compression" \
     "$CREF/rust/difftest/ppmd_ref.cpp" "$CREF/rust/difftest/ppmd_ccodec.cpp" "$@" -o "$out"; }
 cc "$W/c"                    || { echo "C driver failed to build"    >&2; exit 1; }
@@ -58,6 +73,13 @@ def prng(seed,n):
     for _ in range(n): s=(s*1103515245+12345)&0xffffffff; o.append((s>>16)&0xff)
     return bytes(o)
 w=lambda n,b: open(f"{d}/{n}","wb").write(b)
+def _dom():
+    # Small on purpose: PPMd is pathologically slow on this shape at low order
+    # (minutes for 8 KB in the C as much as in the port), and 1.5 KB already
+    # reaches the rescale path this input exists to cover.
+    import random
+    r = random.Random(3)
+    return r.choices(range(256), weights=[4000] + [1]*255, k=1500)
 w("text",       b"the quick brown fox jumps over the lazy dog. "*6000)
 w("english",    (b"compression algorithms rearrange data so that statistical "
                  b"redundancy can be removed by an entropy coder. ")*2500)
@@ -67,6 +89,18 @@ w("runs",       b"".join(bytes([i%97])*(1+(i*7)%200) for i in range(2000)))
 w("full_alpha", bytes(range(256))*500)
 w("sparse",     b"".join(b"\x00"*300 + bytes([i%251]) for i in range(400)))
 w("binaryish",  bytes((i*2654435761>>16)&0xff for i in range(150000)))
+# These three exhaust a 1 MB model and so reach the restart paths. Measured:
+# high-entropy data at 200 KB+ is what fills the heap; text and short runs
+# compress far too well to ever get there.
+# A dominant symbol plus a long tail of rare ones, at LOW order. This is the
+# only shape found that reaches rescale's shrink path -- zero-frequency states
+# dropped while the context keeps more than one -- and it is where the port's
+# one real bug lived: `EscFreq` is UINT in rescale but int in refresh, so a
+# signed port diverges exactly when it wraps. Every other input in this corpus
+# passed with that bug present.
+w("dominant",   bytes(_dom()))
+w("bignoise",   prng(3, 600000))
+w("mixed",      prng(5, 300000) + b"the quick brown fox "*5000)
 for n in (1,2,3,17,255,256,4096,65536):
     w(f"n_{n}", (b"abracadabra"*10000)[:n])
 CORPUS
@@ -74,7 +108,7 @@ CORPUS
 fail=0; enc=0; dec=0; declined=0
 
 # order: PPMd var.H accepts 2..64. mem in MB. mrm: 0 restart, 1 cut off, 2 freeze.
-for order in 4 10 16; do
+for order in 3 4 10 16; do
   for mem in 1 8; do
     for mrm in 0 1 2; do
       for f in "$W"/in/*; do
@@ -110,7 +144,7 @@ done
 # the 1 MB budget never differs from the 8 MB one, the allocator pressure that
 # makes this codec hard is going untested.
 restarts=0
-for f in "$W"/in/noise "$W"/in/binaryish "$W"/in/runs; do
+for f in "$W"/in/noise "$W"/in/bignoise "$W"/in/mixed; do
   "$W/c" c 16 1 0 < "$f" >| "$W/a" 2>/dev/null || continue
   "$W/c" c 16 8 0 < "$f" >| "$W/b" 2>/dev/null || continue
   cmp -s "$W/a" "$W/b" || restarts=$((restarts+1))

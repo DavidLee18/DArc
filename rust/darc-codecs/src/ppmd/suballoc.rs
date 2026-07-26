@@ -190,6 +190,12 @@ impl SubAllocator {
         self.wr32(p + 8, v)
     }
 
+    /// `BList[i].Stamp`, which `RestoreModelRare` reads directly:
+    /// `GlueCount += !(BList[1].Stamp & 1)`.
+    pub fn blist_stamp(&self, i: usize) -> u32 {
+        self.blist[i].stamp
+    }
+
     pub fn heap(&self) -> &[u8] {
         &self.heap
     }

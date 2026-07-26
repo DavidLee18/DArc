@@ -8,7 +8,7 @@
 //! what wires them together; until then these are exercised by the differential
 //! harness rather than by the archiver.
 
-use crate::{bsc, delta, dict, dict_encode, dispack, grzip, lz4, lz4hc, lzp, mm, rep, tornado, tta, zstd};
+use crate::{bsc, delta, ppmd, dict, dict_encode, dispack, grzip, lz4, lz4hc, lzp, mm, rep, tornado, tta, zstd};
 use crate::ffi::{Io, CALLBACK_FUNC, FREEARC_ERRCODE_GENERAL};
 use core::ffi::{c_int, c_void};
 
@@ -1610,3 +1610,33 @@ pub unsafe extern "C" fn darc_rs_ppmd_sa_lo_unit() -> i64 { sa().lo_unit as i64 
 /// See [`darc_rs_ppmd_sa_start`].
 #[no_mangle]
 pub unsafe extern "C" fn darc_rs_ppmd_sa_hi_unit() -> i64 { sa().hi_unit as i64 }
+
+/// `ppmd_compress`: PPMd var.H encode. Callback-driven, like the C.
+///
+/// # Safety
+/// `callback` and `auxdata` must be what the C caller supplied.
+#[no_mangle]
+pub unsafe extern "C" fn darc_rs_ppmd_compress(
+    order: c_int, mem: u32, mr_method: c_int,
+    callback: CALLBACK_FUNC, auxdata: *mut c_void,
+) -> c_int {
+    match Io::new(callback, auxdata) {
+        Some(io) => ppmd::compress(&io, order, mem, mr_method),
+        None => FREEARC_ERRCODE_GENERAL,
+    }
+}
+
+/// `ppmd_decompress`: PPMd var.H decode.
+///
+/// # Safety
+/// `callback` and `auxdata` must be what the C caller supplied.
+#[no_mangle]
+pub unsafe extern "C" fn darc_rs_ppmd_decompress(
+    order: c_int, mem: u32, mr_method: c_int,
+    callback: CALLBACK_FUNC, auxdata: *mut c_void,
+) -> c_int {
+    match Io::new(callback, auxdata) {
+        Some(io) => ppmd::decompress(&io, order, mem, mr_method),
+        None => FREEARC_ERRCODE_GENERAL,
+    }
+}
