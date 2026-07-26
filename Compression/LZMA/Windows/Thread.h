@@ -137,6 +137,12 @@ public:
 	ret = pthread_attr_setdetachstate(&attr,PTHREAD_CREATE_JOINABLE);
 	if (ret) return false;
 
+	/* CreateThread, which this shim emulates, gives 1 MB reserved and growable.
+	   pthreads gives 8 MB on glibc but only 512 KB on macOS, and the codec chain
+	   MultiDecompress runs on these threads overflows that -- SIGBUS inside
+	   ___chkstk_darwin. A failure to honour the request is not fatal. */
+	pthread_attr_setstacksize(&attr, 8*1024*1024);
+
 	ret = pthread_create(&_tid, &attr, (void * (*)(void *))startAddress, parameter);
 
 	/* ret2 = */ pthread_attr_destroy(&attr);

@@ -885,6 +885,92 @@ jobs:
         test -x Tests/arc || { echo "::error::./compile produced no Tests/arc"; exit 1; }
         Tests/enc-roundtrip.sh Tests/arc Tests/arc < /dev/null
 
+  # ── The standalone extractor and the SFX modules ────────────────────────────
+  # Unarc is a SECOND implementation of the archive READER: it shares the codecs
+  # with `arc` but not the archive-structure parser, which is Haskell in the
+  # archiver and C++ in Unarc/ArcStructure.h. No job ever built it, and it duly
+  # rotted -- it stopped compiling, and before that it had silently stopped
+  # being able to extract anything, because it read the file-time field as 4
+  # bytes while ByteStream.hs had long been writing 8. Everything stored after
+  # that field -- the directory flags and the CRCs -- came out of the wrong
+  # offset.
+  #
+  # So this job builds it AND round-trips through it, including running a real
+  # self-extracting archive. A build-only job would not have caught the bug that
+  # made the feature useless.
+  unarc-sfx:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      with:
+        lfs: false
+    - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+    - name: Cache cargo and the pinned toolchain
+      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+      with:
+        path: |
+          ~/.cargo/registry/index
+          ~/.cargo/registry/cache
+          ~/.cargo/git/db
+          ~/.rustup/toolchains
+          rust/target
+        key: cargo-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust-toolchain.toml', 'rust/Cargo.lock') }}
+        restore-keys: |
+          cargo-${{ runner.os }}-${{ runner.arch }}-
+    - name: Install LLVM and Clang
+      uses: KyleMayes/install-llvm-action@ebc0426251bc40c7cd31162802432c68818ab8f0 # v2
+      with:
+        version: "21.1.8"
+    - name: Install packages
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y liblua5.1-dev libncurses-dev libcurl4-openssl-dev cpphs
+    - name: Cache MicroHs
+      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+      with:
+        path: |
+          ~/.mcabal
+          ~/.local/bin
+        key: mcabal-${{ runner.os }}-${{ runner.arch }}-05a3fbd5d73ae6a37111a6ced5b57bb1717b8975
+    - name: Install MicroHs
+      run: |
+        if [ ! -x "$HOME/.mcabal/bin/mhs" ]; then
+          microhs_sha="05a3fbd5d73ae6a37111a6ced5b57bb1717b8975"
+          microhs_tar="/tmp/microhs.tar.gz"
+          microhs_expected_sha256="a1f85821cbae877d0ea3e173235d45c833d9145b2ca9e92e77d284b6730c63b6"
+          curl -fsSL "https://github.com/augustss/MicroHs/archive/$microhs_sha.tar.gz" -o "$microhs_tar"
+          echo "$microhs_expected_sha256  $microhs_tar" | sha256sum -c -
+          tar -xzf "$microhs_tar" -C /tmp
+          cd "/tmp/MicroHs-$microhs_sha"
+          make minstall
+        fi
+        echo "$HOME/.mcabal/bin" >> "$GITHUB_PATH"
+
+    # The archiver, because the round-trip needs something to write archives
+    # with. ./compile also produces common.mak, which Unarc/makefile includes.
+    - name: Build the archiver
+      run: |
+        chmod +x compile* Tests/*.sh
+        ./compile > /tmp/build-arc.log 2>&1 || { tail -30 /tmp/build-arc.log; exit 1; }
+        test -x Tests/arc || { echo "::error::./compile produced no Tests/arc"; exit 1; }
+
+    - name: Build unarc and the SFX modules
+      run: |
+        mkdir -p /tmp/out/FreeArc-unarc
+        make -C Unarc linux > /tmp/build-unarc.log 2>&1 || { tail -40 /tmp/build-unarc.log; exit 1; }
+        for f in Unarc/unarc Unarc/arc.linux.sfx Unarc/arc-mini.linux.sfx Unarc/arc-tiny.linux.sfx; do
+          test -x "$f" || { echo "::error::Unarc build produced no $f"; exit 1; }
+        done
+        # A DARC_RUST build must actually contain the Rust codecs. Presence of a
+        # drop-in symbol is what tells the two apart -- the C forwarders link
+        # either way.
+        nm -C Unarc/unarc 2>/dev/null | grep -q 'tor_decompress' \
+          || { echo "::error::unarc contains no tor_decompress; the Rust staticlib was not linked in"; exit 1; }
+        ls -la Unarc/unarc Unarc/*.sfx
+
+    - name: Round-trip through unarc and a self-extracting archive
+      run: Tests/sfx-roundtrip.sh Tests/arc Unarc/unarc Unarc/arc.linux.sfx
+
   # ── AddressSanitizer on x86-64 ──────────────────────────────────────────────
   # Added to diagnose a double free that only appeared on this runner. It found
   # that one and an out-of-bounds read in Dict/phase1 on its first two runs, and

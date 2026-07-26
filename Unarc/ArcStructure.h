@@ -233,6 +233,7 @@ public:
     template <typename T> MEMORY_BUFFER &read1(T *x)   {*x = *(uint8 *)p & ((1u<< 8)-1); skip(1); return *this;}
     template <typename T> MEMORY_BUFFER &read2(T *x)   {*x = *(uint16*)p & ((1u<<16)-1); skip(2); return *this;}
     template <typename T> MEMORY_BUFFER &read4(T *x)   {*x = *(uint32*)p               ; skip(4); return *this;}
+    template <typename T> MEMORY_BUFFER &read8(T *x)   {*x = *(uint64*)p               ; skip(8); return *this;}
 
     // Read `n` values and build a structured array out of them
     template <typename T> MEMORY_BUFFER &read (int n, ARRAY<T> *array)
@@ -253,6 +254,13 @@ public:
     {
       array->resize(n);
       iterate (n, read4( &((*array)[i]) ));
+      return *this;
+    }
+    // Same as the previous one, but eight-byte values are read
+    template <typename T> MEMORY_BUFFER &read8 (int n, ARRAY<T> *array)
+    {
+      array->resize(n);
+      iterate (n, read8( &((*array)[i]) ));
       return *this;
     }
 
@@ -457,7 +465,14 @@ DIRECTORY_BLOCK::DIRECTORY_BLOCK (ARCHIVE &arc, BLOCK &block_info) : arcfile (ar
   buffer.read  (total_files, &name);
   buffer.read  (total_files, &dir_numbers);
   buffer.read  (total_files, &size);
-  buffer.read4 (total_files, &time);
+  // EIGHT bytes, not four. ByteStream.hs:599 writes CTime as a fixed 64-bit
+  // little-endian value, and :394 records that only FreeArc/Arc.exe 0.67 on
+  // 32-bit wrote it at the native 4-byte stride. Reading 4 here left the buffer
+  // 4*N bytes short of where the next field starts, so `isdir` and `crc` -- the
+  // two fields that follow -- were read from the wrong offset entirely. That is
+  // why directories came out as zero-byte FILES and why every extracted file
+  // failed its CRC check: the data was fine, the flags and checksums were not.
+  buffer.read8 (total_files, &time);
   buffer.read1 (total_files, &isdir);
   buffer.read4 (total_files, &crc);
 

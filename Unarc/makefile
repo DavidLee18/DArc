@@ -20,8 +20,17 @@ LINKOBJ_FAR_PLUGIN = $(OBJDIR)/Environment.o $(OBJDIR)/Common.o $(OBJDIR)/Compre
                      $(OBJDIR)/C_LZMA.o $(OBJDIR)/LzmaDec.o $(OBJDIR)/CpuArch.o
 LINKOBJ_TINY = $(LINKOBJ_FAR_PLUGIN) $(OBJDIR)/C_BCJ.o $(OBJDIR)/C_Dict.o $(OBJDIR)/C_Delta.o
 LINKOBJ_MINI = $(LINKOBJ_TINY) $(OBJDIR)/C_REP.o $(OBJDIR)/C_LZP.o $(OBJDIR)/C_PPMD.o
+# The full module gets every codec the archiver can put in a chain. Everything
+# from C_DisPack onwards is new: the list had not been touched since those
+# codecs were added, so `arc a -m4` produced archives naming methods no SFX
+# module could parse -- and the failure named only the FIRST method of the
+# chain, because MultiDecompress used to split the caller's string in place.
 LINKOBJ = $(LINKOBJ_MINI) $(OBJDIR)/C_MM.o $(OBJDIR)/C_TTA.o \
-          $(OBJDIR)/C_Tornado.o $(OBJDIR)/C_External.o $(OBJDIR)/C_GRZip.o
+          $(OBJDIR)/C_Tornado.o $(OBJDIR)/C_External.o $(OBJDIR)/C_GRZip.o \
+          $(OBJDIR)/C_DisPack.o $(OBJDIR)/C_4x4.o $(OBJDIR)/C_BSC.o \
+          $(OBJDIR)/C_LZ4.o $(OBJDIR)/C_Zstd.o \
+          $(OBJDIR)/C_LZMA2.o $(OBJDIR)/Lzma2Dec.o \
+          $(OBJDIR)/C_Encryption.o
 HEADERS =  ../Compression/Compression.h ../Compression/Common.h
 
 # The Rust codecs, built with the `dropin` feature so the C-ABI entry points are
@@ -32,7 +41,8 @@ HEADERS =  ../Compression/Compression.h ../Compression/Common.h
 # archive only against the undefined symbols it has already seen, so a library
 # placed first is silently dropped. macOS's linker does not care, which is
 # exactly why this has to be got right here rather than noticed in CI.
-RUSTLIB = ../rust/target/release/libdarc_codecs.a
+RUSTLIB = ../rust/target/release/libdarc_codecs.a \
+          ../rust/target/release/libdarc_crypto.a
 
 #makefile
 LINK_FLAGS = -Xlinker --large-address-aware -s
@@ -68,7 +78,7 @@ CFLAGS1= $(CODE_FLAGS) $(OPT_FLAGS) -O1 $(DEBUG_FLAGS) $(DEFINES) $(Extractor_DE
 # the library builds and links nothing.
 .PHONY: windows linux rustlib
 rustlib:
-	cd ../rust && cargo build --release -p darc-codecs --features darc-codecs/dropin
+	cd ../rust && cargo build --release -p darc-codecs -p darc-crypto --features darc-codecs/dropin
 
 
 unarc.exe: $(OBJDIR)/unarc.o $(LINKOBJ) | rustlib
@@ -168,6 +178,29 @@ $(OBJDIR)/C_External.o: ../Compression/External/C_External.cpp ../Compression/Ex
 $(OBJDIR)/C_GRZip.o: ../Compression/GRZip/C_GRZip.cpp ../Compression/GRZip/C_GRZip.h $(HEADERS)
 	$(GCC) -c $(CFLAGS) -o $*.o $<
 
+$(OBJDIR)/C_DisPack.o: ../Compression/DisPack/C_DisPack.cpp ../Compression/DisPack/C_DisPack.h $(HEADERS)
+	$(GCC) -c $(CFLAGS) -o $*.o $<
+
+$(OBJDIR)/C_4x4.o: ../Compression/4x4/C_4x4.cpp ../Compression/4x4/C_4x4.h $(HEADERS)
+	$(GCC) -c $(CFLAGS) -o $*.o $<
+
+$(OBJDIR)/C_BSC.o: ../Compression/BSC/C_BSC.cpp ../Compression/BSC/C_BSC.h $(HEADERS)
+	$(GCC) -c $(CFLAGS) -o $*.o $<
+
+$(OBJDIR)/C_LZ4.o: ../Compression/LZ4/C_LZ4.cpp ../Compression/LZ4/C_LZ4.h $(HEADERS)
+	$(GCC) -c $(CFLAGS) -o $*.o $<
+
+$(OBJDIR)/C_Zstd.o: ../Compression/Zstd/C_Zstd.cpp ../Compression/Zstd/C_Zstd.h $(HEADERS)
+	$(GCC) -c $(CFLAGS) -o $*.o $<
+
+$(OBJDIR)/C_LZMA2.o: ../Compression/LZMA/C_LZMA2.cpp ../Compression/LZMA/C_LZMA2.h $(HEADERS)
+	$(GCC) -c $(CFLAGS) -I../Compression/LZMA/7z24 -o $*.o $<
+
+# -Iheaders is how Compression/_Encryption/makefile compiles it: C_Encryption.cpp
+# reaches LibTomCrypt's headers by bare name.
+$(OBJDIR)/C_Encryption.o: ../Compression/_Encryption/C_Encryption.cpp ../Compression/_Encryption/C_Encryption.h $(HEADERS)
+	$(GCC) -c $(CFLAGS) -I../Compression/_Encryption/headers -o $*.o $<
+
 
 # --- 7-Zip 24.09 C sources (compile as C, not C++) ------------------------
 # Same recipe as Compression/LZMA/makefile, restricted to the decode side:
@@ -180,4 +213,7 @@ $(OBJDIR)/LzmaDec.o: ../Compression/LZMA/7z24/LzmaDec.c
 	$(CC_C) -c $(C7Z_CFLAGS) -o $@ $<
 
 $(OBJDIR)/CpuArch.o: ../Compression/LZMA/7z24/CpuArch.c
+	$(CC_C) -c $(C7Z_CFLAGS) -o $@ $<
+
+$(OBJDIR)/Lzma2Dec.o: ../Compression/LZMA/7z24/Lzma2Dec.c
 	$(CC_C) -c $(C7Z_CFLAGS) -o $@ $<
