@@ -48,7 +48,7 @@ CPP defines are the main axis of variation, threaded through both the Haskell an
 | `FREEARC_UNIX` / `FREEARC_WIN` | Target OS |
 | `FREEARC_64BIT` | Set from `getconf LONG_BIT` |
 | `__MHS__` | Building under MicroHs rather than GHC |
-| `DARC_RUST` | Codec entry points come from the Rust crates. Always set; the opt-out and the last non-`DARC_RUST` consumer (`Unarc/`) are both gone, so the `#ifndef DARC_RUST` fallbacks were deleted with them |
+| `DARC_RUST` | Codec entry points come from the Rust crates. Always set — `Unarc/` too, since the `DARC_NO_RUST` opt-out and the `#ifndef DARC_RUST` C fallbacks are both gone |
 | `FREEARC_GUI` | Build the GUI binary instead of console |
 | `FREEARC_NOURL` | No libcurl/WinInet — URL support compiled out |
 | `FREEARC_NO_LUA` | No Lua — `Options.hs` stubs the interpreter out |
@@ -212,8 +212,17 @@ Separately, an earlier tool **truncated comments at a `--` appearing inside the 
 
 These build separately from the main binary and are not covered by `./compile-O2`:
 
-(`Unarc/` — the standalone extractor, the SFX modules and the FAR plugin — was deleted. It had been failing to compile for some time: `Environment.cpp` calls `Compress`, which is not declared under `FREEARC_DECOMPRESS_ONLY`, and no CI job built it. The `-sfx` option still parses, but `writeSFX` looks its module up by filename at run time and nothing produces those files any more.)
+- **`Unarc/`** — standalone extractor and the SFX modules embedded into self-extracting archives (`arc.linux.sfx`, `arc.sfx`, `freearc.sfx`, …). Built with `cd Unarc && make linux` (or `make windows`); also produces `FreeArc.fmt`, a FAR Manager plugin. It is a **`DARC_RUST` build** and links `rust/target/release/libdarc_codecs.a` (built with the `dropin` feature, and placed *after* the objects — GNU ld resolves an archive only against undefineds it has already seen). Most codecs it needs no longer have a C decoder, so restoring the C to feed it was never an option.
 
+  **It builds but it does not work, and this branch does not claim otherwise.** Reading the archive structure is fine — `unarc l` lists names, sizes and the compressed total correctly — but extraction fails on every target tried:
+
+  | Symptom | Where |
+  |---|---|
+  | `unarc x` hangs indefinitely on every method, including `-m0` | Linux x86-64 (Debian bookworm, clang) |
+  | SIGBUS in `___chkstk_darwin` — a 512 KB pthread stack overflowing in `MultiDecompress`'s worker | macOS arm64 |
+  | Directory entries are written as zero-byte *files*, so the next member cannot be created (`can't open file in/a.txt`) | both |
+
+  `MultiDecompress` (`CompressionLibrary.cpp:259`) is the suspect for the first two: it starts one `CThread` per method in the chain and coordinates them with semaphores, and **nothing else in the tree calls it any more** — the archiver drives `Compress`/`Decompress` one method at a time through `Environment.cpp`'s own pipeline. So it has been dead code for as long as Unarc has been unbuilt. Raising the thread stack to 8 MB in `Compression/LZMA/Windows/Thread.h` stops the macOS crash and then makes previously-correct single-file extractions fail their CRC, which is behaviour changing with stack *layout* — undefined behaviour that AddressSanitizer does not flag. Do not treat that stack bump as a fix.
 - **`srep/`** — SREP 3.93a, a huge-dictionary LZ77 preprocessor, invoked as an external compressor. Vendored repackage of Bulat Ziganshin's original; sources also mirrored under `Compression/SREP/`. Its `srep/Compression/*.h` are an older, diverged vintage of the root `Compression/` headers (19–62% similar) — they are not interchangeable, so fix them independently.
 - **`HsLua/`** — vendored Lua 5.1 plus Haskell bindings, used by `Options.hs` for `arc.*.lua` config scripts. `./compile` builds the vendored Lua from `HsLua/src`; the Windows cross-build sets `FREEARC_NO_LUA` and links none of it.
 - **`Installer/`** — NSIS installer scripts and packaging assets (Windows).

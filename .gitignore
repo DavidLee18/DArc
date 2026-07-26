@@ -54,3 +54,11 @@ rust/*/target/
 # Rust workspace build output
 rust/target/
 rust/darc-codecs/Cargo.lock
+
+# Unarc build output: the standalone extractor, the SFX modules and the FAR
+# plugin are all products of `cd Unarc && make`, not sources.
+Unarc/unarc
+Unarc/unarc.exe
+Unarc/*.sfx
+Unarc/FreeArc.fmt
+Unarc/gui/res.o
