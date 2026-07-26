@@ -2,7 +2,8 @@
 # Differential-test the BSC forward sort-transform (ST3) against the C.
 #
 # ST is the alternative to the BWT as BSC's block sorter, selected by
-# -mbsc:b3..b6. This covers order 3; orders 4-6 are still C.
+# -mbsc:b3..b6. All four orders are covered here. ST7 and ST8 have no CPU
+# encoder in the C either -- they return NOT_SUPPORTED without CUDA.
 #
 # Byte-identity on BOTH outputs -- the primary index and the transformed bytes.
 # The index alone decides where the decoder starts unwinding, so a port that
@@ -55,15 +56,17 @@ for n in (2,3,4,17,255,256,65537):
 CORPUS
 
 fail=0; tested=0
+for k in 3 4 5 6; do
 for f in "$W"/in/*; do
-  bn=$(basename "$f")
-  "$W/c"  < "$f" >| "$W/oc" 2>/dev/null || { echo "  $bn: C driver failed";    fail=$((fail+1)); continue; }
-  "$W/rs" < "$f" >| "$W/or" 2>/dev/null || { echo "  $bn: Rust driver failed"; fail=$((fail+1)); continue; }
+  bn="$(basename "$f") ST$k"
+  "$W/c"  "$k" < "$f" >| "$W/oc" 2>/dev/null || { echo "  $bn: C driver failed";    fail=$((fail+1)); continue; }
+  "$W/rs" "$k" < "$f" >| "$W/or" 2>/dev/null || { echo "  $bn: Rust driver failed"; fail=$((fail+1)); continue; }
   [ -s "$W/oc" ] || { echo "  $bn: the C produced no output"; fail=$((fail+1)); continue; }
   tested=$((tested+1))
   cmp -s "$W/oc" "$W/or" || { echo "  $bn: transform or index differs from the C"; fail=$((fail+1)); }
 done
+done
 
 [ "$tested" -gt 0 ] || { echo "nothing was transformed -- the harness reached nothing"; exit 1; }
 [ "$fail" -eq 0 ] || { echo "bsc-st-encode: $fail failures"; exit 1; }
-echo "bsc-st-encode: $tested/$tested byte-identical to the C (ST3; orders 4-6 still C)"
+echo "bsc-st-encode: $tested/$tested byte-identical to the C (ST3..ST6)"

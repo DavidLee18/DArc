@@ -793,7 +793,21 @@ pub unsafe extern "C" fn darc_rs_bsc_st3_encode(data: *mut u8, n: c_int) -> c_in
         return FREEARC_ERRCODE_GENERAL;
     }
     let t = core::slice::from_raw_parts_mut(data, n as usize + 28);
-    bsc::qlfc_enc::st3_encode(t, n as usize)
+    bsc::qlfc_enc::st_encode(t, n as usize, 3)
+}
+
+/// `bsc_st_encode`: the forward sort-transform at order `k` (3..6; 7 and 8 have
+/// no CPU encoder in the C either). Returns the primary index.
+///
+/// # Safety
+/// `data` must be valid for `n + 28` bytes.
+#[no_mangle]
+pub unsafe extern "C" fn darc_rs_bsc_st_encode(data: *mut u8, n: c_int, k: c_int) -> c_int {
+    if data.is_null() || n < 0 || k < 0 {
+        return FREEARC_ERRCODE_GENERAL;
+    }
+    let t = core::slice::from_raw_parts_mut(data, n as usize + 28);
+    bsc::qlfc_enc::st_encode(t, n as usize, k as u32)
 }
 
 /// `bsc_qlfc_transform`: the QLFC forward transform. Writes the rank array into

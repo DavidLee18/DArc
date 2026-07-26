@@ -1189,3 +1189,178 @@ pub fn st3_encode(t: &mut [u8], n: usize) -> i32 {
 
     index
 }
+
+/// `bsc_st4_transform_serial` (`st.cpp:102`). Order 4.
+///
+/// Unlike [`st3_encode`] there is no separate `count` table: the same `bucket`
+/// is prefix-summed, filled forward, and then walked BACKWARDS as a descending
+/// cursor during the scatter. Reusing one table for both directions is what
+/// makes the scatter loops run from `n - 1` down.
+pub fn st4_encode(t: &mut [u8], n: usize) -> i32 {
+    if n <= 1 { return 0; }
+    assert!(t.len() >= n + 28, "st4_encode needs n + 28 bytes");
+    let mut bucket = vec![0i32; ALPHABET_SIZE * ALPHABET_SIZE];
+    for i in 0..28 { t[n + i] = t[i]; }
+
+    let mut c0 = t[n - 1];
+    for i in 0..n {
+        let c1 = t[i];
+        bucket[((c0 as usize) << 8) | c1 as usize] += 1;
+        c0 = c1;
+    }
+    let mut sum = 0i32;
+    for b in bucket.iter_mut() { let tmp = sum; sum += *b; *b = tmp; }
+
+    let pos = bucket[((t[2] as usize) << 8) | t[3] as usize] as usize;
+
+    let mut p = vec![0u32; n];
+    let mut w = ((t[n - 1] as u32) << 24) | ((t[0] as u32) << 16) | ((t[1] as u32) << 8) | t[2] as u32;
+    for i in 0..n {
+        let c = (w >> 24) as u8;
+        w = (w << 8) | t[i + 3] as u32;
+        let b = (w & 0x0000_ffff) as usize;
+        p[bucket[b] as usize] = (w & 0xffff_0000) | c as u32;
+        bucket[b] += 1;
+    }
+
+    for i in (pos..n).rev() {
+        let b = (p[i] >> 16) as usize;
+        bucket[b] -= 1;
+        t[bucket[b] as usize] = (p[i] & 0xff) as u8;
+    }
+    let index = bucket[(p[pos] >> 16) as usize];
+    for i in (0..pos).rev() {
+        let b = (p[i] >> 16) as usize;
+        bucket[b] -= 1;
+        t[bucket[b] as usize] = (p[i] & 0xff) as u8;
+    }
+    index
+}
+
+/// `bsc_st5_transform_serial` (`st.cpp:141`). Order 5.
+///
+/// The only one that builds its bucket table TWICE: once over the leading
+/// 20 bits to place the rotations, then zeroed and rebuilt over a different
+/// 20-bit slice -- `(P0 << 12) | (P1 << 4) | (P2 >> 4)` -- as an INCLUSIVE
+/// prefix sum for the backward scatter. Missing the second build, or making it
+/// exclusive like the first, silently produces a different permutation.
+pub fn st5_encode(t: &mut [u8], n: usize) -> i32 {
+    if n <= 1 { return 0; }
+    assert!(t.len() >= n + 28, "st5_encode needs n + 28 bytes");
+    const SQRT: usize = 16; // ALPHABET_SQRT_SIZE
+    let mut bucket = vec![0i32; SQRT * ALPHABET_SIZE * ALPHABET_SIZE];
+    for i in 0..28 { t[n + i] = t[i]; }
+
+    let (mut c0, mut c1) = (t[n - 2] & 0xf, t[n - 1]);
+    for i in 0..n {
+        let c2 = t[i];
+        bucket[((c0 as usize) << 16) | ((c1 as usize) << 8) | c2 as usize] += 1;
+        c0 = c1 & 0xf;
+        c1 = c2;
+    }
+    let mut sum = 0i32;
+    for b in bucket.iter_mut() { let tmp = sum; sum += *b; *b = tmp; }
+
+    let pos = bucket[(((t[2] & 0xf) as usize) << 16) | ((t[3] as usize) << 8) | t[4] as usize] as usize;
+
+    let mut p = vec![0u32; n];
+    let mut l = t[n - 1];
+    let mut w = ((t[0] as u32) << 24) | ((t[1] as u32) << 16) | ((t[2] as u32) << 8) | t[3] as u32;
+    for i in 0..n {
+        let v = (w & 0xffff_f000) | l as u32;
+        l = (w >> 24) as u8;
+        w = (w << 8) | t[i + 4] as u32;
+        let b = (w & 0x000f_ffff) as usize;
+        p[bucket[b] as usize] = v;
+        bucket[b] += 1;
+    }
+
+    // Second table, over a different slice, and INCLUSIVE this time.
+    for b in bucket.iter_mut() { *b = 0; }
+    let (mut p0, mut p1) = (t[n - 2], t[n - 1]);
+    for i in 0..n {
+        let p2 = t[i];
+        bucket[((p0 as usize) << 12) | ((p1 as usize) << 4) | (p2 >> 4) as usize] += 1;
+        p0 = p1;
+        p1 = p2;
+    }
+    let mut sum = 0i32;
+    for b in bucket.iter_mut() { sum += *b; *b = sum; }
+
+    for i in (pos..n).rev() {
+        let b = (p[i] >> 12) as usize;
+        bucket[b] -= 1;
+        t[bucket[b] as usize] = (p[i] & 0xff) as u8;
+    }
+    let index = bucket[(p[pos] >> 12) as usize];
+    for i in (0..pos).rev() {
+        let b = (p[i] >> 12) as usize;
+        bucket[b] -= 1;
+        t[bucket[b] as usize] = (p[i] & 0xff) as u8;
+    }
+    index
+}
+
+/// `bsc_st6_transform_serial` (`st.cpp:199`). Order 6, and the widest table --
+/// a full 24-bit trigram, 16 M entries.
+///
+/// Two windows run at once: `W0` trails `W1` by four bytes, and the stored
+/// value is `(W0 << 8) | (W0 >> 24)`, a rotation rather than a mask.
+pub fn st6_encode(t: &mut [u8], n: usize) -> i32 {
+    if n <= 1 { return 0; }
+    assert!(t.len() >= n + 28, "st6_encode needs n + 28 bytes");
+    let mut bucket = vec![0i32; ALPHABET_SIZE * ALPHABET_SIZE * ALPHABET_SIZE];
+    for i in 0..28 { t[n + i] = t[i]; }
+
+    let mut w = ((t[n - 2] as u32) << 16) | ((t[n - 1] as u32) << 8) | t[0] as u32;
+    for i in 0..n {
+        w = (w << 8) | t[i + 1] as u32;
+        bucket[(w >> 8) as usize] += 1;
+    }
+    let mut sum = 0i32;
+    for b in bucket.iter_mut() { let tmp = sum; sum += *b; *b = tmp; }
+
+    let pos = bucket[((t[3] as usize) << 16) | ((t[4] as usize) << 8) | t[5] as usize] as usize;
+
+    let mut p = vec![0u32; n];
+    let mut w0 = ((t[n - 2] as u32) << 24) | ((t[n - 1] as u32) << 16) | ((t[0] as u32) << 8) | t[1] as u32;
+    let mut w1 = ((t[2] as u32) << 24) | ((t[3] as u32) << 16) | ((t[4] as u32) << 8) | t[5] as u32;
+    for i in 0..n {
+        w0 = (w0 << 8) | t[i + 2] as u32;
+        w1 = (w1 << 8) | t[i + 6] as u32;
+        let b = (w1 >> 8) as usize;
+        p[bucket[b] as usize] = (w0 << 8) | (w0 >> 24);
+        bucket[b] += 1;
+    }
+
+    for i in (pos..n).rev() {
+        let b = (p[i] >> 8) as usize;
+        bucket[b] -= 1;
+        t[bucket[b] as usize] = (p[i] & 0xff) as u8;
+    }
+    let index = bucket[(p[pos] >> 8) as usize];
+    for i in (0..pos).rev() {
+        let b = (p[i] >> 8) as usize;
+        bucket[b] -= 1;
+        t[bucket[b] as usize] = (p[i] & 0xff) as u8;
+    }
+    index
+}
+
+/// `bsc_st_encode` (`st.cpp:990`): dispatch on the order. ST7 and ST8 have no
+/// CPU encoder in the C either -- they return NOT_SUPPORTED without CUDA.
+pub fn st_encode(t: &mut [u8], n: usize, k: u32) -> i32 {
+    if !(3..=8).contains(&k) {
+        return super::LIBBSC_BAD_PARAMETER;
+    }
+    if n <= 1 {
+        return 0;
+    }
+    match k {
+        3 => st3_encode(t, n),
+        4 => st4_encode(t, n),
+        5 => st5_encode(t, n),
+        6 => st6_encode(t, n),
+        _ => -4, // LIBBSC_NOT_SUPPORTED
+    }
+}
