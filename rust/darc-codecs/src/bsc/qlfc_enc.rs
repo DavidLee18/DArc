@@ -974,3 +974,136 @@ pub fn fast_encode(input: &[u8], output: &mut [u8]) -> i32 {
 
     coder.finish() as i32
 }
+
+/// `bsc_coder_split_blocks` (`coder.cpp:88`): choose where to cut a large input
+/// into `n_blocks` independently-coded pieces.
+///
+/// Not an even split. It samples every 32nd byte, counts how often the sample
+/// differs from its predecessor -- a cheap proxy for how much the local
+/// statistics move -- and cuts at every `rankSize / nBlocks`-th change, so
+/// blocks carry roughly equal amounts of *variation* rather than equal length.
+/// Only when there are fewer changes than blocks does it fall back to even
+/// division.
+///
+/// The C leaves `blockStart`/`blockSize` entries untouched if the scan ends
+/// before it has made `nBlocks - 1` cuts, and they are uninitialised stack
+/// arrays. That is unreachable -- the branch is guarded by
+/// `rankSize > nBlocks`, so at least `nBlocks` changes exist and
+/// `blockRankSize >= 1` -- but the port does not depend on it: everything is
+/// initialised, and a short scan simply leaves a zero-length block.
+pub fn split_blocks(input: &[u8], n_blocks: usize) -> Vec<(usize, usize)> {
+    let n = input.len();
+    let mut out = vec![(0usize, 0usize); n_blocks];
+    if n_blocks == 0 {
+        return out;
+    }
+
+    let mut rank_size = 0usize;
+    let mut i = 1usize;
+    while i < n {
+        if input[i] != input[i - 1] {
+            rank_size += 1;
+        }
+        i += 32;
+    }
+
+    if rank_size > n_blocks {
+        let block_rank_size = rank_size / n_blocks;
+        out[0].0 = 0;
+        rank_size = 0;
+        let mut id = 0usize;
+        let mut i = 1usize;
+        while i < n {
+            if input[i] != input[i - 1] {
+                rank_size += 1;
+                if rank_size == block_rank_size {
+                    rank_size = 0;
+                    out[id].1 = i - out[id].0;
+                    id += 1;
+                    out[id].0 = i;
+                    if id == n_blocks - 1 {
+                        break;
+                    }
+                }
+            }
+            i += 32;
+        }
+        out[n_blocks - 1].1 = n - out[n_blocks - 1].0;
+    } else {
+        for p in 0..n_blocks {
+            out[p].0 = (n / n_blocks) * p;
+            out[p].1 = if p != n_blocks - 1 {
+                n / n_blocks
+            } else {
+                n - (n / n_blocks) * (n_blocks - 1)
+            };
+        }
+    }
+    out
+}
+
+/// `bsc_coder_compress_serial` (`coder.cpp:130`) -- and therefore
+/// `bsc_coder_compress`, since the parallel variant is inside
+/// `#ifdef LIBBSC_OPENMP` and DArc never defines `LIBBSC_OPENMP_SUPPORT`.
+///
+/// The framing is LZP's, one layer up: a block count, then two little-endian
+/// 32-bit words per block (input size, coded size), then the coded blocks. A
+/// block whose two sizes are equal was stored rather than coded, which is how
+/// the decoder recognises one the encoder gave up on.
+pub fn coder_compress(input: &[u8], output: &mut [u8], coder: u32) -> i32 {
+    let n = input.len();
+    if n == 0 || output.len() < n {
+        return LIBBSC_NOT_COMPRESSIBLE;
+    }
+
+    let encode = |inp: &[u8], out: &mut [u8]| -> i32 {
+        match coder {
+            1 => static_encode(inp, out),
+            2 => adaptive_encode(inp, out),
+            3 => fast_encode(inp, out),
+            _ => super::LIBBSC_BAD_PARAMETER,
+        }
+    };
+
+    let n_blocks = num_blocks(n);
+    if n_blocks == 1 {
+        if n < 2 {
+            return LIBBSC_NOT_COMPRESSIBLE;
+        }
+        let result = encode(input, &mut output[1..n]);
+        if result < 0 {
+            return result;
+        }
+        output[0] = 1;
+        return result + 1;
+    }
+
+    let blocks = split_blocks(input, n_blocks);
+    let mut output_ptr = 1 + 8 * n_blocks;
+    output[0] = n_blocks as u8;
+
+    for (id, &(start, size)) in blocks.iter().enumerate() {
+        let mut out_size = size;
+        if out_size > n - output_ptr {
+            out_size = n - output_ptr;
+        }
+        let result = encode(
+            &input[start..start + size],
+            &mut output[output_ptr..output_ptr + out_size],
+        );
+        let result = if result < 0 {
+            if output_ptr + size >= n {
+                return LIBBSC_NOT_COMPRESSIBLE;
+            }
+            output[output_ptr..output_ptr + size].copy_from_slice(&input[start..start + size]);
+            size
+        } else {
+            result as usize
+        };
+        output[1 + 8 * id..1 + 8 * id + 4].copy_from_slice(&(size as i32).to_le_bytes());
+        output[1 + 8 * id + 4..1 + 8 * id + 8].copy_from_slice(&(result as i32).to_le_bytes());
+        output_ptr += result;
+    }
+
+    output_ptr as i32
+}

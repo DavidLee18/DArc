@@ -760,6 +760,27 @@ pub unsafe extern "C" fn darc_rs_bsc_qlfc_fast_encode(
     bsc::qlfc_enc::fast_encode(inp, out)
 }
 
+/// `bsc_coder_compress`: split a block and entropy-code each piece, producing
+/// the framed payload `bsc_compress` embeds.
+///
+/// # Safety
+/// `input` must be valid for `in_size` bytes, `output` for `out_size`.
+#[no_mangle]
+pub unsafe extern "C" fn darc_rs_bsc_coder_compress(
+    input: *const u8,
+    in_size: c_int,
+    output: *mut u8,
+    out_size: c_int,
+    coder: c_int,
+) -> c_int {
+    if input.is_null() || output.is_null() || in_size <= 0 || out_size <= 0 {
+        return FREEARC_ERRCODE_GENERAL;
+    }
+    let inp = core::slice::from_raw_parts(input, in_size as usize);
+    let out = core::slice::from_raw_parts_mut(output, out_size as usize);
+    bsc::qlfc_enc::coder_compress(inp, out, coder as u32)
+}
+
 /// `bsc_qlfc_transform`: the QLFC forward transform. Writes the rank array into
 /// the tail of `buffer` and the alphabet into `mtf` (256 bytes), returning the
 /// offset in `buffer` where the ranks begin.
