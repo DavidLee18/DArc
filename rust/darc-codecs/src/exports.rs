@@ -810,6 +810,58 @@ pub unsafe extern "C" fn darc_rs_bsc_st_encode(data: *mut u8, n: c_int, k: c_int
     bsc::qlfc_enc::st_encode(t, n as usize, k as u32)
 }
 
+/// `bsc_store` (`libbsc.cpp:120`): frame `input` as an uncompressed block.
+/// Returns the framed size, or a negative libbsc error.
+///
+/// # Safety
+/// `input` must be valid for `n` bytes and `output` for `n + 28`.
+#[no_mangle]
+pub unsafe extern "C" fn darc_rs_bsc_store(
+    input: *const u8, output: *mut u8, n: c_int,
+) -> c_int {
+    if input.is_null() || output.is_null() || n < 0 {
+        return FREEARC_ERRCODE_GENERAL;
+    }
+    let inp = core::slice::from_raw_parts(input, n as usize);
+    let out = core::slice::from_raw_parts_mut(output, n as usize + bsc::HEADER_SIZE);
+    bsc::qlfc_enc::store(inp, out)
+}
+
+/// `bsc_block_info` (`libbsc.cpp:340`): validate a block header and report the
+/// framed and decoded sizes. Returns 0 or a negative libbsc error.
+///
+/// The C's validation is `header::parse` PLUS `block_info_extra_checks` -- the
+/// former alone is laxer, missing the LZP parameter ranges and the
+/// `blockSize`/`index` bounds, so both must run here or corrupt input would
+/// size a buffer instead of being rejected.
+///
+/// # Safety
+/// `header` must be valid for `header_size` bytes; the out-pointers may be null.
+#[no_mangle]
+pub unsafe extern "C" fn darc_rs_bsc_block_info(
+    header: *const u8, header_size: c_int,
+    block_size: *mut c_int, data_size: *mut c_int,
+) -> c_int {
+    if header.is_null() || header_size < 0 {
+        return FREEARC_ERRCODE_GENERAL;
+    }
+    let h = core::slice::from_raw_parts(header, header_size as usize);
+    let parsed = match bsc::header::parse(h) {
+        Ok(p) => p,
+        Err(e) => return e,
+    };
+    if let Err(e) = bsc::dispatch::block_info_extra_checks(&parsed) {
+        return e;
+    }
+    if !block_size.is_null() {
+        *block_size = parsed.block_size;
+    }
+    if !data_size.is_null() {
+        *data_size = parsed.data_size;
+    }
+    0 // LIBBSC_NO_ERROR
+}
+
 /// `libsais_bwt`: the forward BWT, in libsais's packed output convention --
 /// `input[n-1]` first, then the transform with the position-0 entry omitted.
 /// Returns `p + 1` where `SA[p] == 0`.

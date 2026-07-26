@@ -34,7 +34,7 @@ fn word(b: &[u8], at: usize) -> u32 {
 /// The `bsc_block_info` checks that `header::parse` does not do: the LZP
 /// parameter ranges (guarded on the params being present) and the `blockSize` /
 /// `index` bounds. Returns the libbsc code the C would.
-fn block_info_extra_checks(h: &BlockHeader) -> Result<(), i32> {
+pub fn block_info_extra_checks(h: &BlockHeader) -> Result<(), i32> {
     if !h.is_stored() && (h.lzp_min_len != 0 || h.lzp_hash_size != 0) {
         if h.lzp_min_len < 4 || h.lzp_min_len > 255 {
             return Err(LIBBSC_DATA_CORRUPT);

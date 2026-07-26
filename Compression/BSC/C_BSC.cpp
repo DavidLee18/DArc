@@ -24,47 +24,37 @@ extern "C" {
 #include "C_BSC.h"
 }
 
-#include "libbsc/libbsc.h"
-#include "libbsc/platform/platform.h"
+// The vendored libbsc is gone: BSC is ported to Rust in BOTH directions and
+// every stage is byte-identical to the C it replaces, proven per stage by the
+// harnesses in rust/difftest (LZP, QLFC transform, all three QLFC coders, the
+// coder layer, ST3..ST6, the forward BWT, and bsc_compress end to end).
+//
+// Only these constants were ever used from libbsc.h, so they are inlined here
+// rather than keeping a header for six defines. Values read from the original
+// libbsc.h, not inferred:
+//
+//   LIBBSC_NO_ERROR 0, LIBBSC_HEADER_SIZE 28, LZPHASHSIZE 15, LZPMINLEN 72,
+//   BLOCKSORTER_BWT 1, CODER_QLFC_STATIC 1.
+//
+// LIBBSC_DEFAULT_FEATURES was FASTMODE|MULTITHREADING (3). It is dropped, not
+// inlined: the only paths that consulted it were OpenMP-gated, and this tree
+// never defines LIBBSC_OPENMP_SUPPORT. Verified rather than assumed --
+// bsc_compress at features=0 and features=3 produces byte-identical output over
+// 240 sorter/coder/LZP combinations, so the Rust port taking no features
+// argument loses nothing.
+#define LIBBSC_NO_ERROR                0
+#define LIBBSC_HEADER_SIZE             28
+#define LIBBSC_DEFAULT_LZPHASHSIZE     15
+#define LIBBSC_DEFAULT_LZPMINLEN       72
+#define LIBBSC_DEFAULT_BLOCKSORTER     1   /* BWT */
+#define LIBBSC_DEFAULT_CODER           1   /* QLFC static */
 
-// Vendored libbsc TUs (compile as part of this object for header-only build).
-#include "libbsc/libbsc/libbsc.cpp"
-#include "libbsc/bwt/bwt.cpp"
-#include "libbsc/bwt/libsais/libsais.c"
-// libsais.c does #undef INLINE — restore it for the rest of the TUs.
-#if defined(__GNUC__)
-  #define INLINE __inline__
-#elif defined(_MSC_VER)
-  #define INLINE __forceinline
-#elif defined(__cplusplus)
-  #define INLINE inline
-#else
-  #define INLINE
-#endif
-#include "libbsc/coder/coder.cpp"
-#include "libbsc/coder/qlfc/qlfc.cpp"
-#include "libbsc/coder/qlfc/qlfc_model.cpp"
-#include "libbsc/filters/detectors.cpp"
-#include "libbsc/filters/preprocessing.cpp"
-#include "libbsc/lzp/lzp.cpp"
-#include "libbsc/platform/platform.cpp"
-#include "libbsc/st/st.cpp"
-#include "libbsc/adler32/adler32.cpp"
-
-// DARC_RUST=1 routes decoding through the Rust port (rust/darc-codecs). The
-// Rust decoder covers all three QLFC coders (static, adaptive, fast) and both
-// block sorters (BWT, ST3..ST8), so every -mbsc block decodes in Rust.
-#ifdef DARC_RUST
-extern "C" int darc_rs_bsc_decompress_block (const unsigned char *input, int inSize, unsigned char *output, int outCap);
-#endif
-
-static int bsc_initialized = 0;
-static int ensure_bsc_init(int features)
-{
-  if (bsc_initialized) return LIBBSC_NO_ERROR;
-  int r = bsc_init(features);
-  if (r == LIBBSC_NO_ERROR) bsc_initialized = 1;
-  return r;
+extern "C" {
+int darc_rs_bsc_decompress_block (const unsigned char *input, int inSize, unsigned char *output, int outCap);
+int darc_rs_bsc_compress (const unsigned char *input, int inSize, unsigned char *output, int outSize,
+                          int lzpHashSize, int lzpMinLen, int blockSorter, int coder);
+int darc_rs_bsc_store (const unsigned char *input, unsigned char *output, int n);
+int darc_rs_bsc_block_info (const unsigned char *header, int headerSize, int *blockSize, int *dataSize);
 }
 
 // Helpers to read/write a full buffer through the streaming callback.
@@ -94,9 +84,6 @@ int bsc_stream_compress (int BlockSize,
                          CALLBACK_FUNC *callback,
                          void *auxdata)
 {
-  int features = LIBBSC_DEFAULT_FEATURES;
-  int err = ensure_bsc_init(features);
-  if (err != LIBBSC_NO_ERROR) return FREEARC_ERRCODE_GENERAL;
 
   unsigned char *inBuf  = (unsigned char*) malloc(BlockSize);
   unsigned char *outBuf = (unsigned char*) malloc(BlockSize + LIBBSC_HEADER_SIZE + 1024);
@@ -112,12 +99,15 @@ int bsc_stream_compress (int BlockSize,
       break;
     }
 
-    int compressed = bsc_compress(inBuf, outBuf, got,
-                                  LzpHashSize, LzpMinLen,
-                                  BlockSorter, Coder, features);
+    int compressed = darc_rs_bsc_compress(inBuf, got, outBuf,
+                                          BlockSize + LIBBSC_HEADER_SIZE + 1024,
+                                          LzpHashSize, LzpMinLen,
+                                          BlockSorter, Coder);
     if (compressed < LIBBSC_NO_ERROR) {
-      // Fallback: store block with libbsc's own store path.
-      compressed = bsc_store(inBuf, outBuf, got, features);
+      // Fallback: frame the block uncompressed. bsc_compress already stores
+      // internally when a block will not compress, so this only catches a
+      // genuine refusal (ST7/ST8, which have no CPU encoder in the C either).
+      compressed = darc_rs_bsc_store(inBuf, outBuf, got);
       if (compressed < LIBBSC_NO_ERROR) { result = FREEARC_ERRCODE_GENERAL; break; }
     }
 
@@ -140,9 +130,9 @@ int bsc_stream_compress (int BlockSize,
 
 int bsc_stream_decompress (CALLBACK_FUNC *callback, void *auxdata)
 {
-  int features = LIBBSC_DEFAULT_FEATURES;
-  int err = ensure_bsc_init(features);
-  if (err != LIBBSC_NO_ERROR) return FREEARC_ERRCODE_GENERAL;
+  // No init step: the Rust port has no global tables to build, so what
+  // bsc_init(features) used to set up (platform, coder, bwt, st) is gone.
+  int err = LIBBSC_NO_ERROR;
 
   unsigned char *inBuf = NULL, *outBuf = NULL;
   int inCap = 0, outCap = 0;
@@ -166,7 +156,7 @@ int bsc_stream_decompress (CALLBACK_FUNC *callback, void *auxdata)
     if (got != compressed) { result = FREEARC_ERRCODE_BAD_COMPRESSED_DATA; break; }
 
     int blockSize = 0, dataSize = 0;
-    err = bsc_block_info(inBuf, LIBBSC_HEADER_SIZE, &blockSize, &dataSize, features);
+    err = darc_rs_bsc_block_info(inBuf, LIBBSC_HEADER_SIZE, &blockSize, &dataSize);
     if (err != LIBBSC_NO_ERROR || blockSize != compressed) { result = FREEARC_ERRCODE_BAD_COMPRESSED_DATA; break; }
 
     if (dataSize > outCap) {
@@ -176,11 +166,7 @@ int bsc_stream_decompress (CALLBACK_FUNC *callback, void *auxdata)
       if (!outBuf) { result = FREEARC_ERRCODE_NOT_ENOUGH_MEMORY; break; }
     }
 
-#ifdef DARC_RUST
     err = darc_rs_bsc_decompress_block(inBuf, compressed, outBuf, dataSize);
-#else
-    err = bsc_decompress(inBuf, compressed, outBuf, dataSize, features);
-#endif
     if (err != LIBBSC_NO_ERROR) { result = FREEARC_ERRCODE_BAD_COMPRESSED_DATA; break; }
 
     full_write(callback, outBuf, dataSize, auxdata);

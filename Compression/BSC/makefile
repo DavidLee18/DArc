@@ -9,10 +9,9 @@ CODE_FLAGS  = -fno-exceptions -fno-rtti \
 OPT_FLAGS   = -O3 \
               -fomit-frame-pointer -fno-strict-aliasing -funroll-loops
 DEBUG_FLAGS = -g0
-# libbsc/libsais use OpenMP for parallelism when available. OMP_FLAGS comes
-# from common.mak, which empties it on Darwin because Apple clang ships no
-# OpenMP. Verified that C_BSC.cpp compiles and links without it.
-CFLAGS = $(CODE_FLAGS) $(OPT_FLAGS) $(DEBUG_FLAGS) $(OMP_FLAGS) $(DEFINES)
+# OMP_FLAGS is gone with the vendored libbsc: this file is now a thin streaming
+# wrapper around the Rust codec, with no OpenMP pragmas left to enable.
+CFLAGS = $(CODE_FLAGS) $(OPT_FLAGS) $(DEBUG_FLAGS) $(DEFINES)
 
 $(TEMPDIR)/C_BSC.o: C_BSC.cpp C_BSC.h makefile
 	$(GCC) -c $(CFLAGS) -o $*.o $<
