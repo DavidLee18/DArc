@@ -207,3 +207,199 @@ mod tests {
         }
     }
 }
+
+
+/// The encoder half of libbsc's `RangeCoder` (`coder/common/rangecoder.h:123`),
+/// the mirror of [`RangeDecoder`] above.
+///
+/// ## The `low`/`carry` union
+///
+/// The C keeps `low` as a union of a `unsigned long long` and a
+/// `{ low32, carry }` pair, so `ari.low += range` overflowing bit 31 lands in
+/// `carry` for the shift step to pick up. That aliasing is little-endian-only,
+/// which DArc is (`FREEARC_INTEL_BYTE_ORDER` is mandatory). Here `low` is a
+/// plain u64 and `carry` is read as `low >> 32`, which is the same value
+/// without depending on layout.
+///
+/// ## Output is 16 bits at a time
+///
+/// `OutputShort` writes a `unsigned short`, so the coded stream is a sequence
+/// of little-endian 16-bit words, not bytes -- and `CheckEOB` compares *short*
+/// pointers against `output + outputSize - 16`. Getting that unit wrong yields
+/// a stream that decodes for a while and then diverges.
+pub struct RangeEncoder<'a> {
+    out: &'a mut [u8],
+    /// Index in 16-bit units, matching the C's `unsigned short *`.
+    pos: usize,
+    eob: usize,
+    low: u64,
+    ffnum: u32,
+    cache: u32,
+    range: u32,
+}
+
+impl<'a> RangeEncoder<'a> {
+    /// `InitEncoder(output, outputSize)`.
+    pub fn new(out: &'a mut [u8]) -> Self {
+        // outputEOB = (unsigned short *)(output + outputSize - 16); a byte
+        // offset converted to a short index, and it may sit before the start
+        // for a very small buffer, which CheckEOB then reports immediately.
+        let eob = out.len().saturating_sub(16) / 2;
+        RangeEncoder { out, pos: 0, eob, low: 0, ffnum: 0, cache: 0, range: 0xffff_ffff }
+    }
+
+    /// `CheckEOB()`: the encoders poll this and give up with
+    /// `LIBBSC_NOT_COMPRESSIBLE` rather than overrun.
+    pub fn check_eob(&self) -> bool {
+        self.pos >= self.eob
+    }
+
+    fn output_short(&mut self, s: u16) {
+        let at = self.pos * 2;
+        if at + 2 <= self.out.len() {
+            self.out[at..at + 2].copy_from_slice(&s.to_le_bytes());
+        }
+        // Past the end the C would write anyway; the counter still advances so
+        // the returned length and CheckEOB agree with it. The bounds test above
+        // is the only divergence, and it only engages after the encoder has
+        // already decided the block does not fit.
+        self.pos += 1;
+    }
+
+    /// `ShiftLow()` and `ShiftLowSlow()`, which differ only in whether the fast
+    /// path applies; folded into one function with the same branch structure.
+    fn shift_low(&mut self) -> u32 {
+        let low32 = self.low as u32;
+        let carry = (self.low >> 32) as u32;
+
+        if self.ffnum == 0 && low32 < 0xffff_0000 {
+            self.output_short((self.cache.wrapping_add(carry)) as u16);
+            self.cache = low32 >> 16;
+            self.low = ((low32 << 16) as u64) & 0xffff_ffff; // clears carry
+            return self.range << 16;
+        }
+
+        // ShiftLowSlow
+        if low32 < 0xffff_0000 || carry != 0 {
+            self.output_short((self.cache.wrapping_add(carry)) as u16);
+            if self.ffnum != 0 {
+                let s = carry.wrapping_sub(1) as u16;
+                while self.ffnum != 0 {
+                    self.output_short(s);
+                    self.ffnum -= 1;
+                }
+            }
+            self.cache = low32 >> 16;
+            // ari.u.carry = 0, leaving low32 untouched until the shift below.
+            self.low &= 0xffff_ffff;
+        } else {
+            self.ffnum += 1;
+        }
+        // `ari.u.low32 <<= 16` -- the low half only; carry keeps whatever it
+        // holds, which the branch above may have just cleared.
+        let carry_now = self.low & 0xffff_ffff_0000_0000;
+        self.low = carry_now | (((low32 << 16) as u64) & 0xffff_ffff);
+
+        self.range << 16
+    }
+
+    /// `FinishEncoder()`: returns the coded length in BYTES.
+    pub fn finish(&mut self) -> usize {
+        if self.range < 0x10000 {
+            self.shift_low();
+        }
+        self.shift_low();
+        self.shift_low();
+        self.shift_low();
+        self.pos * 2
+    }
+
+    pub fn encode_bit0_p(&mut self, probability: u32, p: u32) {
+        if self.range < 0x10000 {
+            self.range = self.shift_low();
+        }
+        self.range = (self.range >> p) * probability;
+    }
+
+    pub fn encode_bit1_p(&mut self, probability: u32, p: u32) {
+        if self.range < 0x10000 {
+            self.range = self.shift_low();
+        }
+        let range = (self.range >> p) * probability;
+        self.low += range as u64;
+        self.range -= range;
+    }
+
+    /// `EncodeBit(bit, probability)`. The C writes it branchlessly with
+    /// `(~bit + 1u) & range`, which is `bit ? range : 0`; spelled as the
+    /// condition here since the masking is an optimisation, not semantics.
+    pub fn encode_bit_p(&mut self, bit: u32, probability: u32, p: u32) {
+        if bit != 0 {
+            self.encode_bit1_p(probability, p);
+        } else {
+            self.encode_bit0_p(probability, p);
+        }
+    }
+
+    /// `EncodeBit(bit)` with no model: probability 2048 at P = 12, i.e. even.
+    pub fn encode_bit(&mut self, bit: u32) {
+        self.encode_bit_p(bit, 2048, 12);
+    }
+
+    pub fn encode_byte(&mut self, byte: u32) {
+        for bit in (0..8).rev() {
+            self.encode_bit(byte & (1 << bit));
+        }
+    }
+
+    pub fn encode_word(&mut self, word: u32) {
+        for bit in (0..32).rev() {
+            self.encode_bit(word & (1 << bit));
+        }
+    }
+}
+
+#[cfg(test)]
+mod encoder_tests {
+    use super::*;
+
+    /// The encoder's only real obligation: the already-verified decoder must
+    /// read back what it wrote. Model-free bits and words only -- the modelled
+    /// paths are exercised by the QLFC harness, where the C is the oracle.
+    #[test]
+    fn round_trips_words_and_bits() {
+        let words = [0u32, 1, 0xffff_ffff, 12345, 0x8000_0000];
+        let bits = [1u32, 0, 1, 1, 0, 0, 0, 1, 1, 0];
+
+        let mut buf = vec![0u8; 4096];
+        let n = {
+            let mut e = RangeEncoder::new(&mut buf);
+            for w in words {
+                e.encode_word(w);
+            }
+            for b in bits {
+                e.encode_bit(b);
+            }
+            e.finish()
+        };
+        assert!(n > 0 && n <= buf.len());
+
+        let mut d = RangeDecoder::new(&buf);
+        for w in words {
+            assert_eq!(d.decode_word(), w, "word round-trip");
+        }
+        for b in bits {
+            assert_eq!(d.decode_bit(), b, "bit round-trip");
+        }
+    }
+
+    #[test]
+    fn reports_eob_before_overrunning_a_small_buffer() {
+        let mut buf = vec![0u8; 32];
+        let mut e = RangeEncoder::new(&mut buf);
+        for _ in 0..64 {
+            e.encode_word(0xdead_beef);
+        }
+        assert!(e.check_eob(), "a full buffer must report EOB");
+    }
+}
