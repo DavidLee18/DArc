@@ -853,6 +853,10 @@ jobs:
         # pairs, covering all six of the C's encoder bodies -- they emit
         # DIFFERENT bytes from each other, so the grid is not redundant.
         rust/difftest/bsc-lzp-encode-check.sh
+        # The QLFC forward transform: the stage all three encode bodies share.
+        # Compares the rank array AND the MTF table, since the table is an
+        # output that becomes the block's preamble.
+        rust/difftest/bsc-qlfc-transform-check.sh
         # LZ4-HC is the one ENCODER-side harness: it requires the Rust encoder
         # to be byte-identical to the C for every level DArc can select (1-9),
         # and decodes each block with the C decoder rather than lz4_flex.

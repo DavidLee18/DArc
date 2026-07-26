@@ -53,6 +53,17 @@ int darc_bsc_st_encode (unsigned char *T, int n, int k, int features)
 int darc_bsc_st_decode (unsigned char *T, int n, int k, int index, int features)
 { return bsc_st_decode(T, n, k, index, features); }
 
+/* The QLFC forward transform, for the transform differential harness. This is
+ * the stage all three encode bodies share, and it is cut out on its own for the
+ * same reason the QLFC decoders were: a mismatch here points at the MTF walk
+ * rather than at the range coder wrapped around it.
+ *
+ * qlfc.cpp is included above, so bsc_qlfc_transform is already declared -- and
+ * with C++ linkage, so re-declaring it inside this extern "C" block is an
+ * error rather than a redundancy. */
+int darc_bsc_qlfc_transform (const unsigned char *in, int n, unsigned char *buffer, unsigned char *mtf)
+{ return (int)(bsc_qlfc_transform(in, buffer, n, mtf) - buffer); }
+
 /* Forward LZP, for the LZP-ENCODER differential harness. This is the first
  * encoder-side cut into BSC: LZP is the compressor's first stage and depends on
  * neither the block sorter nor the entropy coder, so a mismatch here points at

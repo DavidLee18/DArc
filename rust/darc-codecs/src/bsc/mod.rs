@@ -53,6 +53,7 @@ pub mod model;
 pub mod model_consts;
 pub mod predictor;
 pub mod qlfc;
+pub mod qlfc_enc;
 pub mod rangecoder;
 pub mod st;
 pub mod tables;
