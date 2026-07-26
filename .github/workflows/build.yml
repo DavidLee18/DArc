@@ -1093,6 +1093,59 @@ jobs:
     - name: Prove the encryption differential test can fail
       run: rust/difftest/crypto-sabotage.sh
 
+  # TEMPORARY -- remove once the PPMd port is proven and folded into the
+  # per-codec jobs above.
+  #
+  # This exists because the full order x memory x MRMethod grid is too slow to
+  # run on a laptop: PPMd allocates a model heap per case and the `dominant`
+  # corpus entry is pathologically slow at low order (in the C as much as in the
+  # port). CI has the machine for it, so the wide grid runs here.
+  #
+  # NOTE the C driver is pinned to -O1 inside ppmd-check.sh, and that is not a
+  # style choice: PPMd type-puns through `(WORD&)` in StateCpy/SWAP, so the
+  # compiler's aliasing assumptions change rescale()'s result and the SAME
+  # SOURCE EMITS DIFFERENT COMPRESSED BYTES at -O0 vs -O1. Compression/PPMD/
+  # makefile ships -O1, so -O1 is the only oracle that matches real archives.
+  ppmd-difftest-temporary:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      # Wider than the local default (3 4 10 16 / 1 8), but deliberately not the
+      # widest possible: per-case cost has not been measured, and 8 orders x 4
+      # budgets x 3 MRMethods x ~19 inputs is ~1800 encode+decode pairs. Start
+      # at 14 combinations, see the wall-clock this reports, then widen.
+      PPMD_ORDERS: "3 4 6 8 10 12 16"
+      PPMD_MEMS: "1 8"
+    steps:
+    - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      with:
+        lfs: false
+    - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+    - name: Cache LLVM
+      id: cache-llvm
+      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+      with:
+        path: ./llvm
+        key: llvm-21.1.8-${{ runner.os }}-${{ runner.arch }}
+    - name: Install LLVM and Clang
+      uses: KyleMayes/install-llvm-action@ebc0426251bc40c7cd31162802432c68818ab8f0 # v2
+      with:
+        version: "21.1.8"
+        # Skip the download when the cache above already restored ./llvm.
+        cached: ${{ steps.cache-llvm.outputs.cache-hit }}
+    - name: Install packages
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y liblua5.1-dev libncurses-dev libcurl4-openssl-dev cpphs
+    - name: PPMd differential test, wide grid (Rust vs C at -O1)
+      run: |
+        chmod +x rust/difftest/*.sh
+        start=$(date +%s)
+        rust/difftest/ppmd-check.sh
+        echo "ppmd-check wall clock: $(( $(date +%s) - start ))s"
+    - name: PPMd suballocator differential test
+      run: rust/difftest/ppmd-alloc-check.sh
+
   # The one job here that needs the archiver, and therefore MicroHs. The
   # C-vs-Rust crypto comparison is crypto-difftest above; this is the other
   # half -- encrypted archives must still be created and read back correctly.

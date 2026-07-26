@@ -108,8 +108,14 @@ CORPUS
 fail=0; enc=0; dec=0; declined=0
 
 # order: PPMd var.H accepts 2..64. mem in MB. mrm: 0 restart, 1 cut off, 2 freeze.
-for order in 3 4 10 16; do
-  for mem in 1 8; do
+# The grid is parameterised so a laptop can run a cheap slice while CI runs the
+# whole thing. Order 2 is deliberately absent even from the full grid: PPMd is
+# pathologically slow on the `dominant` shape there, in the C as much as in the
+# port, so including it buys nothing but wall-clock.
+ORDERS="${PPMD_ORDERS:-3 4 10 16}"
+MEMS="${PPMD_MEMS:-1 8}"
+for order in $ORDERS; do
+  for mem in $MEMS; do
     for mrm in 0 1 2; do
       for f in "$W"/in/*; do
         bn="$(basename "$f") o$order m${mem}M mrm$mrm"
