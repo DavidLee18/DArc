@@ -87,7 +87,11 @@ fail=0; tested=0; ncmp=0; outstanding=0; outstanding_names=""
 #   15:72  encode_large_fast_path  <- DArc's DEFAULT, every ordinary -mbsc block
 #   18:*   encode_generic          <- hashSize >= 18 leaves the specialised chain
 #   23:*   encode_generic
-PORTED="15:72 18:4 18:8 18:16 18:32 18:64 18:72 23:4 23:8 23:16 23:32 23:64 23:72"
+# encode_large covers every minLen >= 17 at hashSize <= 17, and the
+# "fast path" is that same function with the defaults folded in -- the two
+# C bodies are textually identical once the constants are substituted.
+PORTED="12:32 12:64 12:72 15:32 15:64 15:72 16:32 16:64 16:72 17:32 17:64 17:72 \
+18:4 18:8 18:16 18:32 18:64 18:72 23:4 23:8 23:16 23:32 23:64 23:72"
 
 is_ported() {
   case " $PORTED " in *" $1:$2 "*) return 0;; esac
@@ -146,5 +150,5 @@ is_ported 15 72 || { echo "the DEFAULT parameters (15,72) are no longer in PORTE
 echo "bsc-lzp-encode: $ncmp/$tested byte-identical to the C"
 if [ "$outstanding" -gt 0 ]; then
   echo "bsc-lzp-encode: $outstanding comparisons differ in bodies not ported yet:$outstanding_names"
-  echo "                (encode_small / small2x / medium / large -- see bsc/lzp_enc.rs)"
+  echo "                (encode_small / small2x / medium -- see bsc/lzp_enc.rs)"
 fi

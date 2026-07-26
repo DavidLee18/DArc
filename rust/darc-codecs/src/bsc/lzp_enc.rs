@@ -273,9 +273,17 @@ pub const DEFAULT_LZP_HASH_SIZE: u32 = 15;
 /// `LIBBSC_DEFAULT_LZPMINLEN` (`libbsc.h:79`).
 pub const DEFAULT_LZP_MIN_LEN: u32 = 72;
 
-/// `bsc_lzp_encode_large_fast_path` (:469): the body reached for exactly the
-/// default parameters, and therefore the one every ordinary `-mbsc` archive
-/// goes through. **Not** an optimisation of [`encode_block`] -- it finds
+/// `bsc_lzp_encode_large<unsigned long long>` (:362) **and**
+/// `bsc_lzp_encode_large_fast_path` (:469), which are one function.
+///
+/// The C spells them separately -- the fast path hard-codes
+/// `LIBBSC_DEFAULT_LZPHASHSIZE` and `LIBBSC_DEFAULT_LZPMINLEN` so the compiler
+/// can fold them -- but after substituting those constants and `T = unsigned
+/// long long` the two bodies are textually identical, line for line. Checked by
+/// diffing them rather than by reading: they are 107 and 114 lines of nearly
+/// the same goto-threaded code, which is exactly the shape an eye skims.
+///
+/// This body is **not** an optimisation of [`encode_generic`]. It finds
 /// different match lengths and so emits different bytes; see the module header.
 ///
 /// Four positions are examined per iteration. The four literal bytes are
@@ -283,21 +291,21 @@ pub const DEFAULT_LZP_MIN_LEN: u32 = 72;
 /// per-position paths advance over bytes that are already in the output rather
 /// than writing them -- including the `MATCH_NOT_FOUND` path, which *reads back*
 /// the byte it just committed to decide whether it needs escaping.
-pub fn encode_large_fast_path(input: &[u8], output: &mut [u8]) -> i32 {
-    const MIN_LEN: usize = DEFAULT_LZP_MIN_LEN as usize;
-    let mask = ((1u32 << DEFAULT_LZP_HASH_SIZE) - 1) as u64;
+pub fn encode_large(input: &[u8], output: &mut [u8], hash_size: u32, min_len: u32) -> i32 {
+    let min_len_u = min_len as usize;
+    let mask = ((1u64 << hash_size) - 1) as u64;
 
     let n = input.len();
-    if (n as i64) - (MIN_LEN as i64) < 32 {
+    if (n as i64) - (min_len_u as i64) < 32 {
         return LIBBSC_NOT_COMPRESSIBLE;
     }
     if output.len() < 9 {
         return LIBBSC_NOT_COMPRESSIBLE;
     }
 
-    let mut lookup = vec![0i32; 1usize << DEFAULT_LZP_HASH_SIZE];
+    let mut lookup = vec![0i32; 1usize << hash_size];
     let output_eob = output.len() - 8;
-    let input_min_len_end = n - MIN_LEN - 32;
+    let input_min_len_end = n - min_len_u - 32;
 
     let mut ip = 0usize;
     let mut op = 0usize;
@@ -339,7 +347,7 @@ pub fn encode_large_fast_path(input: &[u8], output: &mut [u8]) -> i32 {
             lookup[index] = (ip + k) as i32;
             if value > 0 {
                 let reference = value as usize;
-                if u64_at(input, ip + MIN_LEN - 8 + k) == u64_at(input, reference + MIN_LEN - 8)
+                if u64_at(input, ip + min_len_u - 8 + k) == u64_at(input, reference + min_len_u - 8)
                     && u64_at(input, ip + k) == u64_at(input, reference)
                 {
                     good = Some((k, reference));
@@ -390,13 +398,13 @@ pub fn encode_large_fast_path(input: &[u8], output: &mut [u8]) -> i32 {
                 len += 8;
             }
 
-            if len < MIN_LEN {
+            if len < min_len_u {
                 heuristic = ip + len;
                 heuristic_v = u64_at(input, heuristic);
                 not_found = true;
             } else {
                 ip += len;
-                let mut rem = len - MIN_LEN;
+                let mut rem = len - min_len_u;
                 output[op] = MATCH_FLAG;
                 op += 1;
                 while rem >= 254 {
@@ -469,10 +477,22 @@ pub fn encode_large_fast_path(input: &[u8], output: &mut [u8]) -> i32 {
 /// specialisations fall through to the generic one, where
 /// `bsc-lzp-encode-check.sh` reports them as mismatches until they land.
 pub fn encode_block(input: &[u8], output: &mut [u8], hash_size: u32, min_len: u32) -> i32 {
-    if hash_size <= 17 && hash_size == DEFAULT_LZP_HASH_SIZE && min_len == DEFAULT_LZP_MIN_LEN {
-        return encode_large_fast_path(input, output);
+    if hash_size <= 17 {
+        // The C's chain, in order. Each arm is `result = (cond && result ==
+        // NOT_ENOUGH_MEMORY) ? f(...) : result`, and none of these ever returns
+        // NOT_ENOUGH_MEMORY, so the first matching condition wins.
+        match min_len {
+            //  4 => encode_small<unsigned int>          not ported yet
+            //  8 => encode_small<unsigned long long>    not ported yet
+            // 16 => encode_small2x<unsigned long long>  not ported yet
+            //  5..=7  => encode_medium<unsigned int>          not ported yet
+            //  9..=15 => encode_medium<unsigned long long>    not ported yet
+            4..=16 => encode_generic(input, output, hash_size, min_len),
+            _ => encode_large(input, output, hash_size, min_len),
+        }
+    } else {
+        encode_generic(input, output, hash_size, min_len)
     }
-    encode_generic(input, output, hash_size, min_len)
 }
 
 /// `bsc_lzp_compress_serial` (:829) -- and therefore `bsc_lzp_compress`, since
