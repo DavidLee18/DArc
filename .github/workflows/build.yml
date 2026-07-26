@@ -68,11 +68,20 @@ jobs:
         restore-keys: |
           cargo-${{ runner.os }}-${{ runner.arch }}-
     # ── Linux steps ────────────────────────────────────────────────────────────
+    - name: Cache LLVM
+      if: runner.os == 'Linux'
+      id: cache-llvm
+      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+      with:
+        path: ./llvm
+        key: llvm-21.1.8-${{ runner.os }}-${{ runner.arch }}
     - name: Install LLVM and Clang
       if: runner.os == 'Linux'
       uses: KyleMayes/install-llvm-action@ebc0426251bc40c7cd31162802432c68818ab8f0 # v2
       with:
         version: "21.1.8"
+        # Skip the download when the cache above already restored ./llvm.
+        cached: ${{ steps.cache-llvm.outputs.cache-hit }}
     - name: Install packages (Linux)
       if: runner.os == 'Linux'
       run: |
@@ -411,10 +420,18 @@ jobs:
     # driver but no libclang.so, so bindgen otherwise falls back to whatever
     # older libclang is on the box and dies on that builtin. Same pinned LLVM
     # the Linux build job uses.
+    - name: Cache LLVM
+      id: cache-llvm
+      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+      with:
+        path: ./llvm
+        key: llvm-21.1.8-${{ runner.os }}-${{ runner.arch }}
     - name: Install LLVM and Clang (for bindgen)
       uses: KyleMayes/install-llvm-action@ebc0426251bc40c7cd31162802432c68818ab8f0 # v2
       with:
         version: "21.1.8"
+        # Skip the download when the cache above already restored ./llvm.
+        cached: ${{ steps.cache-llvm.outputs.cache-hit }}
     # Exported for EVERY later step, not just one: each cargo build in this job
     # runs bindgen, and attaching this to a single step is exactly how the first
     # build ended up on a stale libclang.
@@ -519,9 +536,17 @@ jobs:
     - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
       with:
         lfs: false
+    - name: Cache LLVM
+      id: cache-llvm
+      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+      with:
+        path: ./llvm
+        key: llvm-21.1.8-${{ runner.os }}-${{ runner.arch }}
     - uses: KyleMayes/install-llvm-action@ebc0426251bc40c7cd31162802432c68818ab8f0 # v2
       with:
         version: "21.1.8"
+        # Skip the download when the cache above already restored ./llvm.
+        cached: ${{ steps.cache-llvm.outputs.cache-hit }}
     - name: Install packages
       run: |
         sudo apt-get update
@@ -789,10 +814,18 @@ jobs:
       with:
         lfs: false
     - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+    - name: Cache LLVM
+      id: cache-llvm
+      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+      with:
+        path: ./llvm
+        key: llvm-21.1.8-${{ runner.os }}-${{ runner.arch }}
     - name: Install LLVM and Clang
       uses: KyleMayes/install-llvm-action@ebc0426251bc40c7cd31162802432c68818ab8f0 # v2
       with:
         version: "21.1.8"
+        # Skip the download when the cache above already restored ./llvm.
+        cached: ${{ steps.cache-llvm.outputs.cache-hit }}
     - name: Install packages
       run: |
         sudo apt-get update
@@ -802,31 +835,118 @@ jobs:
         chmod +x rust/difftest/run.sh
         rust/difftest/run.sh diff
 
+  # The sabotage suites: they mutate the port and require the differential tests
+  # to notice. Split out because they are ~2 minutes of work that has nothing to
+  # do with the harnesses above -- a test-of-the-tests, not a test.
+  rust-codecs-sabotage:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      with:
+        lfs: false
+    - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+    - name: Cache LLVM
+      id: cache-llvm
+      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+      with:
+        path: ./llvm
+        key: llvm-21.1.8-${{ runner.os }}-${{ runner.arch }}
+    - name: Install LLVM and Clang
+      uses: KyleMayes/install-llvm-action@ebc0426251bc40c7cd31162802432c68818ab8f0 # v2
+      with:
+        version: "21.1.8"
+        # Skip the download when the cache above already restored ./llvm.
+        cached: ${{ steps.cache-llvm.outputs.cache-hit }}
+    - name: Install packages
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y liblua5.1-dev libncurses-dev libcurl4-openssl-dev cpphs
     # A differential test that has never failed proves nothing. This mutates the
     # port and asserts every mutation is caught by at least one input; it also
     # aborts if a mutation pattern no longer matches, because a mutation that
     # silently fails to apply reports as "0 detected" and reads like coverage.
     - name: Prove the differential test can fail
-      run: rust/difftest/run.sh sabotage
+      run: |
+        chmod +x rust/difftest/run.sh
+        rust/difftest/run.sh sabotage
 
     # The same question for the Tornado encoder's unit tests, which cover what
-    # the differential harness cannot reach yet: it breaks each encoder path in
-    # turn and requires the suite to notice. It restores every file it touches
-    # on exit, including on failure.
+    # the differential harness cannot reach: it breaks each encoder path in turn
+    # and requires the suite to notice. It restores every file it touches on
+    # exit, including on failure.
     - name: Prove the Tornado encoder tests can fail
       run: |
         chmod +x rust/difftest/tornado-encoder-sabotage.sh
         rust/difftest/tornado-encoder-sabotage.sh
 
-    # run.sh covers Delta only. Every codec ported since has its own harness,
-    # each compressing with C and requiring the C and Rust decoders to return
-    # the same original bytes over a corpus built for that codec's heuristics.
-    - name: Per-codec differential tests (REP, TTA, MM, Tornado, GRZip, DisPack, LZP, LZ4-HC)
+  # The per-codec harnesses, split in two. They were 4m45s in one step -- the
+  # largest single lump in CI -- and nine independent checks have no reason to
+  # queue behind each other. Divided by measured cost, not alphabetically:
+  # Tornado's two and BSC's LZ4-HC dominate the set.
+  rust-codecs-a:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      with:
+        lfs: false
+    - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+    - name: Cache LLVM
+      id: cache-llvm
+      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+      with:
+        path: ./llvm
+        key: llvm-21.1.8-${{ runner.os }}-${{ runner.arch }}
+    - name: Install LLVM and Clang
+      uses: KyleMayes/install-llvm-action@ebc0426251bc40c7cd31162802432c68818ab8f0 # v2
+      with:
+        version: "21.1.8"
+        # Skip the download when the cache above already restored ./llvm.
+        cached: ${{ steps.cache-llvm.outputs.cache-hit }}
+    - name: Install packages
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y liblua5.1-dev libncurses-dev libcurl4-openssl-dev cpphs
+    - name: Per-codec differential tests (REP, TTA, MM, LZP, LZ4-HC)
       run: |
         chmod +x rust/difftest/*.sh
         rust/difftest/rep-check.sh
         rust/difftest/tta-check.sh
         rust/difftest/mm-check.sh
+        # LZP is ported in BOTH directions and its C is deleted, so this is the
+        # only remaining oracle for it -- and it had no check script at all
+        # until the C was pruned (lzp_ref.cpp sat orphaned; run.sh covers Delta).
+        rust/difftest/lzp-check.sh
+        # LZ4-HC is an ENCODER-side harness: it requires the Rust encoder to be
+        # byte-identical to the C for every level DArc can select (1-9), and
+        # decodes each block with the C decoder rather than lz4_flex.
+        rust/difftest/lz4hc-check.sh
+
+  rust-codecs-b:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      with:
+        lfs: false
+    - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+    - name: Cache LLVM
+      id: cache-llvm
+      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+      with:
+        path: ./llvm
+        key: llvm-21.1.8-${{ runner.os }}-${{ runner.arch }}
+    - name: Install LLVM and Clang
+      uses: KyleMayes/install-llvm-action@ebc0426251bc40c7cd31162802432c68818ab8f0 # v2
+      with:
+        version: "21.1.8"
+        # Skip the download when the cache above already restored ./llvm.
+        cached: ${{ steps.cache-llvm.outputs.cache-hit }}
+    - name: Install packages
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y liblua5.1-dev libncurses-dev libcurl4-openssl-dev cpphs
+    - name: Per-codec differential tests (Tornado, GRZip, DisPack)
+      run: |
+        chmod +x rust/difftest/*.sh
         rust/difftest/tornado-check.sh
         rust/difftest/tornado-encode-check.sh
         rust/difftest/grzip-check.sh
@@ -836,14 +956,6 @@ jobs:
         # round-trips through our own decoder would still make archives that
         # older builds read differently.
         rust/difftest/dispack-filter-check.sh
-        # LZP is ported in BOTH directions and its C is deleted, so this is the
-        # only remaining oracle for it -- and it had no check script at all
-        # until the C was pruned (lzp_ref.cpp sat orphaned; run.sh covers Delta).
-        rust/difftest/lzp-check.sh
-        # LZ4-HC is the one ENCODER-side harness here: it requires the Rust
-        # encoder to be byte-identical to the C for every level DArc can select
-        # (1-9), and decodes each block with the C decoder rather than lz4_flex.
-        rust/difftest/lz4hc-check.sh
 
   # BSC on its own: it is the largest codec and now carries five harnesses, two
   # of them encoder-side and one comparing 576 (parameter, input) pairs. Left in
@@ -855,10 +967,18 @@ jobs:
       with:
         lfs: false
     - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+    - name: Cache LLVM
+      id: cache-llvm
+      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+      with:
+        path: ./llvm
+        key: llvm-21.1.8-${{ runner.os }}-${{ runner.arch }}
     - name: Install LLVM and Clang
       uses: KyleMayes/install-llvm-action@ebc0426251bc40c7cd31162802432c68818ab8f0 # v2
       with:
         version: "21.1.8"
+        # Skip the download when the cache above already restored ./llvm.
+        cached: ${{ steps.cache-llvm.outputs.cache-hit }}
     - name: Install packages
       run: |
         sudo apt-get update
@@ -905,10 +1025,18 @@ jobs:
       with:
         lfs: false
     - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+    - name: Cache LLVM
+      id: cache-llvm
+      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+      with:
+        path: ./llvm
+        key: llvm-21.1.8-${{ runner.os }}-${{ runner.arch }}
     - name: Install LLVM and Clang
       uses: KyleMayes/install-llvm-action@ebc0426251bc40c7cd31162802432c68818ab8f0 # v2
       with:
         version: "21.1.8"
+        # Skip the download when the cache above already restored ./llvm.
+        cached: ${{ steps.cache-llvm.outputs.cache-hit }}
     - name: Install packages
       run: |
         sudo apt-get update
@@ -934,10 +1062,18 @@ jobs:
       with:
         lfs: false
     - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+    - name: Cache LLVM
+      id: cache-llvm
+      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+      with:
+        path: ./llvm
+        key: llvm-21.1.8-${{ runner.os }}-${{ runner.arch }}
     - name: Install LLVM and Clang
       uses: KyleMayes/install-llvm-action@ebc0426251bc40c7cd31162802432c68818ab8f0 # v2
       with:
         version: "21.1.8"
+        # Skip the download when the cache above already restored ./llvm.
+        cached: ${{ steps.cache-llvm.outputs.cache-hit }}
     - name: Install packages
       run: |
         sudo apt-get update
@@ -965,10 +1101,18 @@ jobs:
       with:
         lfs: false
     - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+    - name: Cache LLVM
+      id: cache-llvm
+      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+      with:
+        path: ./llvm
+        key: llvm-21.1.8-${{ runner.os }}-${{ runner.arch }}
     - name: Install LLVM and Clang
       uses: KyleMayes/install-llvm-action@ebc0426251bc40c7cd31162802432c68818ab8f0 # v2
       with:
         version: "21.1.8"
+        # Skip the download when the cache above already restored ./llvm.
+        cached: ${{ steps.cache-llvm.outputs.cache-hit }}
     - name: Install packages
       run: |
         sudo apt-get update
@@ -1025,10 +1169,18 @@ jobs:
         key: cargo-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust-toolchain.toml', 'rust/Cargo.lock') }}
         restore-keys: |
           cargo-${{ runner.os }}-${{ runner.arch }}-
+    - name: Cache LLVM
+      id: cache-llvm
+      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+      with:
+        path: ./llvm
+        key: llvm-21.1.8-${{ runner.os }}-${{ runner.arch }}
     - name: Install LLVM and Clang
       uses: KyleMayes/install-llvm-action@ebc0426251bc40c7cd31162802432c68818ab8f0 # v2
       with:
         version: "21.1.8"
+        # Skip the download when the cache above already restored ./llvm.
+        cached: ${{ steps.cache-llvm.outputs.cache-hit }}
     - name: Install packages
       run: |
         sudo apt-get update
@@ -1110,10 +1262,18 @@ jobs:
     - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
       with:
         lfs: false
+    - name: Cache LLVM
+      id: cache-llvm
+      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+      with:
+        path: ./llvm
+        key: llvm-21.1.8-${{ runner.os }}-${{ runner.arch }}
     - name: Install LLVM and Clang
       uses: KyleMayes/install-llvm-action@ebc0426251bc40c7cd31162802432c68818ab8f0 # v2
       with:
         version: "21.1.8"
+        # Skip the download when the cache above already restored ./llvm.
+        cached: ${{ steps.cache-llvm.outputs.cache-hit }}
     - name: Install packages
       run: |
         sudo apt-get update
