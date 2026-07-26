@@ -961,11 +961,22 @@ jobs:
         for f in Unarc/unarc Unarc/arc.linux.sfx Unarc/arc-mini.linux.sfx Unarc/arc-tiny.linux.sfx; do
           test -x "$f" || { echo "::error::Unarc build produced no $f"; exit 1; }
         done
-        # A DARC_RUST build must actually contain the Rust codecs. Presence of a
-        # drop-in symbol is what tells the two apart -- the C forwarders link
-        # either way.
-        nm -C Unarc/unarc 2>/dev/null | grep -q 'tor_decompress' \
-          || { echo "::error::unarc contains no tor_decompress; the Rust staticlib was not linked in"; exit 1; }
+        # A DARC_RUST build must actually contain the Rust codecs.
+        #
+        # Checked through `strings`, not `nm`: the Unix link flags pass -s, so
+        # these binaries are stripped and nm reports "no symbols" for a
+        # perfectly good build. The first version of this check used nm and
+        # failed the job while the build was fine.
+        #
+        # The marker is the source paths Rust embeds for panic locations --
+        # roughly 45 of them from darc-codecs alone -- which survive stripping
+        # because they are data, not symbols. Requiring several means one
+        # incidental match cannot carry it.
+        rust_paths=$(strings -a Unarc/unarc | grep -c 'darc-codecs/src/' || true)
+        [ "${rust_paths:-0}" -ge 5 ] || {
+          echo "::error::unarc contains $rust_paths darc-codecs source markers; the Rust staticlib was not linked in"
+          exit 1; }
+        echo "Rust codecs linked in: $rust_paths darc-codecs source markers"
         ls -la Unarc/unarc Unarc/*.sfx
 
     - name: Round-trip through unarc and a self-extracting archive
