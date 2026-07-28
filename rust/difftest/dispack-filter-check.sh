@@ -26,6 +26,10 @@ set -uo pipefail
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 . "$ROOT/rust/difftest/c-reference.sh"
 CREF="$(darc_c_reference "$ROOT")" || exit 1
+# The reference is built the way DArc builds DisPack: see darc_codec_cflags
+# in c-reference.sh for why the makefile's flags, not an -O level, are the
+# oracle.
+CFLAGS_C="$(darc_codec_cflags DisPack)" || exit 1
 W="${TMPDIR:-/tmp}/dispack-filter-check.$$"; mkdir -p "$W" "$W/in"
 trap 'rm -rf "$W"' EXIT
 
@@ -38,7 +42,7 @@ LIB="$ROOT/rust/target/release/libdarc_codecs.a"
 # already seen, so a staticlib ahead of the sources links on macOS and fails on
 # Linux. That exact mistake shipped once.
 cc() { local out="$1" lib="$2"; shift 2
-  clang++ -std=c++17 -O2 -w -DFREEARC_UNIX -DFREEARC_INTEL_BYTE_ORDER -DFREEARC_64BIT \
+  clang++ -std=c++17 $CFLAGS_C -w -DFREEARC_UNIX -DFREEARC_INTEL_BYTE_ORDER -DFREEARC_64BIT \
     -I"$CREF" -I"$CREF/Compression" "$@" \
     "$CREF/rust/difftest/dispack_filter_ref.cpp" \
     "$CREF/rust/difftest/dispack_ccodec.cpp" \

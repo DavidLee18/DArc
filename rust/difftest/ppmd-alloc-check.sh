@@ -50,14 +50,13 @@ trap 'rm -rf "$W"' EXIT
 LIB="$ROOT/rust/target/release/libdarc_codecs.a"
 [ -f "$LIB" ] || { echo "the Rust staticlib is missing" >&2; exit 1; }
 
-# The same flag list as ppmd-check.sh, copied from Compression/PPMD/makefile.
-# See the long note there: for this codec the optimisation flags are part of the
-# format, so the reference is built the way the shipped codec is built rather
-# than at whatever -O level seemed reasonable.
-PPMD_MAKEFILE_FLAGS="-fno-exceptions -fno-rtti -O1 -fomit-frame-pointer -fno-strict-aliasing -funroll-loops -g0"
+# The flags come from Compression/PPMD/makefile via darc_codec_cflags, not from
+# an -O level chosen here. For this codec the optimisation flags are part of the
+# format -- see the note on that function in c-reference.sh.
+CFLAGS_C="$(darc_codec_cflags PPMD)" || exit 1
 cc() { local out="$1"; shift
   # shellcheck disable=SC2086  # the flag list is a word list on purpose
-  clang++ -std=c++17 $PPMD_MAKEFILE_FLAGS -w \
+  clang++ -std=c++17 $CFLAGS_C -w \
     -DFREEARC_UNIX -DFREEARC_INTEL_BYTE_ORDER -DFREEARC_64BIT \
     -I"$CREF" -I"$CREF/Compression" \
     "$CREF/rust/difftest/ppmd_alloc_ref.cpp" "$CREF/rust/difftest/ppmd_ccodec.cpp" "$@" -o "$out"; }

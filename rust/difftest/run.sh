@@ -22,6 +22,10 @@ ROOT="$(cd "$HERE/../.." && pwd)"
 # c-reference.sh. Delta.cpp no longer exists in the checkout.
 . "$HERE/c-reference.sh"
 CREF="$(darc_c_reference "$ROOT")" || exit 1
+# The reference is built the way DArc builds Delta: see darc_codec_cflags
+# in c-reference.sh for why the makefile's flags, not an -O level, are the
+# oracle.
+CFLAGS_C="$(darc_codec_cflags Delta)" || exit 1
 
 # rust/ is a cargo workspace, so build output lands in the WORKSPACE target
 # directory. It was rust/darc-codecs/target/ before the workspace existed, and
@@ -46,7 +50,7 @@ build_ref () {
   # DELTA_LIBRARY suppresses Delta.cpp's own main(); Common.cpp supplies
   # MyAlloc/MyFree. Both are easy to omit and produce link errors that look
   # unrelated to the driver.
-  clang++ -std=c++17 -O2 -w \
+  clang++ -std=c++17 $CFLAGS_C -w \
     -DDELTA_LIBRARY -DFREEARC_UNIX -DFREEARC_INTEL_BYTE_ORDER -DFREEARC_64BIT \
     -I "$CREF/Compression" -I "$CREF" \
     -o "$REF" "$CREF/rust/difftest/delta_ref.cpp" "$CREF/Compression/Delta/Delta.cpp" "$CREF/Compression/Common.cpp" \
@@ -98,7 +102,7 @@ build_rs () {
   ( cd "$ROOT/rust" && cargo build --release -p darc-codecs ) >/dev/null 2>&1 \
     || { echo "error: cargo build failed" >&2; return 1; }
   require_rust_lib || return 1
-  clang++ -std=c++17 -O2 -w \
+  clang++ -std=c++17 $CFLAGS_C -w \
     -DUSE_RUST -DDELTA_LIBRARY -DFREEARC_UNIX -DFREEARC_INTEL_BYTE_ORDER -DFREEARC_64BIT \
     -I "$CREF/Compression" -I "$CREF" \
     -o "$RS" "$CREF/rust/difftest/delta_ref.cpp" "$CREF/Compression/Delta/Delta.cpp" "$CREF/Compression/Common.cpp" \
@@ -217,7 +221,7 @@ sabotage () {
     cp "$bak" "$MUT_SRC"
     if ! apply_mutation "$pat" "$rep"; then status=1; continue; fi
     ( cd "$ROOT/rust" && cargo build --release -p darc-codecs ) >/dev/null 2>&1
-    clang++ -std=c++17 -O2 -w -DUSE_RUST -DDELTA_LIBRARY -DFREEARC_UNIX \
+    clang++ -std=c++17 $CFLAGS_C -w -DUSE_RUST -DDELTA_LIBRARY -DFREEARC_UNIX \
       -DFREEARC_INTEL_BYTE_ORDER -DFREEARC_64BIT -I "$CREF/Compression" -I "$CREF" \
       -o "$broken" "$CREF/rust/difftest/delta_ref.cpp" "$CREF/Compression/Delta/Delta.cpp" "$CREF/Compression/Common.cpp" \
       "$RUST_LIB" 2>/dev/null

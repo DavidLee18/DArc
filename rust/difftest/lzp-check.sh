@@ -22,6 +22,10 @@ set -uo pipefail
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 . "$ROOT/rust/difftest/c-reference.sh"
 CREF="$(darc_c_reference "$ROOT")" || exit 1
+# The reference is built the way DArc builds LZP: see darc_codec_cflags
+# in c-reference.sh for why the makefile's flags, not an -O level, are the
+# oracle.
+CFLAGS_C="$(darc_codec_cflags LZP)" || exit 1
 W="${TMPDIR:-/tmp}/lzp-check.$$"; mkdir -p "$W"
 trap 'rm -rf "$W"' EXIT
 
@@ -41,7 +45,7 @@ LIB="$ROOT/rust/target/release/libdarc_codecs.a"
 # "undefined reference". Passing it through "$@" did exactly that and only CI
 # caught it.
 cc() { local out="$1" lib="$2"; shift 2
-  clang++ -std=c++17 -O2 -w -DFREEARC_UNIX -DFREEARC_INTEL_BYTE_ORDER -DFREEARC_64BIT \
+  clang++ -std=c++17 $CFLAGS_C -w -DFREEARC_UNIX -DFREEARC_INTEL_BYTE_ORDER -DFREEARC_64BIT \
     -I"$CREF" -I"$CREF/Compression" "$@" \
     "$CREF/rust/difftest/lzp_ref.cpp" \
     "$CREF/Compression/LZP/C_LZP.cpp" \

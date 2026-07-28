@@ -69,3 +69,48 @@ darc_c_reference() {
 
   echo "$cref"
 }
+
+# ── The oracle's optimisation flags ──────────────────────────────────────────
+#
+# Usage: darc_codec_cflags <Compression subdirectory>  → echoes its OPT_FLAGS
+#
+# These codecs are compiled by Compression/<codec>/makefile, and for at least
+# one of them THE OPTIMISATION FLAGS ARE PART OF THE ARCHIVE FORMAT. PPMd
+# type-puns through `(WORD&)` in StateCpy/SWAP, so a compiler permitted to
+# assume those writes cannot alias a neighbouring BYTE read reuses a cached
+# value where the source says to reload -- and emits different compressed bytes
+# for it. Measured, on the shape that discriminates:
+#
+#     -O1                        reuses      -O0                        re-reads
+#     -O2                        reuses      -O1 -fno-strict-aliasing   re-reads
+#
+# Every Compression/*/makefile passes -fno-strict-aliasing; every harness here
+# used to build its reference without it. So each oracle was a build DArc does
+# not ship, and for PPMd that produced a port matching the wrong C. Reading the
+# flags from the makefile instead of picking an -O level is the fix, and it is
+# the safer oracle besides: under -fno-strict-aliasing the answer stops
+# depending on how clever a given compiler's alias analysis is.
+#
+# Checked, not assumed: every harness was re-run against these flag sets, and
+# all 23 still pass. Only PPMd was ever sensitive to the difference.
+#
+# OPT_FLAGS only. CODE_FLAGS (-fno-exceptions/-fno-rtti/-W...) change codegen
+# and diagnostics but not the value semantics a byte-comparison can see, and
+# forcing them on the drivers would only constrain how the drivers themselves
+# may be written.
+#
+# Two makefile flags are deliberately absent because clang has no equivalent:
+# -fforce-addr (DisPack, LZ4 -- removed from GCC long ago) and
+# --param inline-unit-growth=999 (Tornado -- GCC-only).
+darc_codec_cflags() {
+  case "$1" in
+    PPMD)                    echo "-O1 -fomit-frame-pointer -fno-strict-aliasing -funroll-loops" ;;
+    GRZip)                   echo "-O2 -fomit-frame-pointer -fno-strict-aliasing -funroll-loops" ;;
+    4x4|Dict)                echo "-O3 -fomit-frame-pointer -fno-strict-aliasing" ;;
+    BSC|Delta|DisPack|LZ4|LZP|MM|REP|Tornado|_Encryption)
+                             echo "-O3 -fomit-frame-pointer -fno-strict-aliasing -funroll-loops" ;;
+    *) echo "darc_codec_cflags: no flag set recorded for '$1' -- read it from" >&2
+       echo "Compression/$1/makefile and add it here rather than guessing" >&2
+       return 1 ;;
+  esac
+}

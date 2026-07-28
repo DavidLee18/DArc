@@ -18,6 +18,10 @@ ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 # The C reference comes from a pinned revision, not the working tree.
 . "$ROOT/rust/difftest/c-reference.sh"
 CREF="$(darc_c_reference "$ROOT")" || exit 1
+# The reference is built the way DArc builds Tornado: see darc_codec_cflags
+# in c-reference.sh for why the makefile's flags, not an -O level, are the
+# oracle.
+CFLAGS_C="$(darc_codec_cflags Tornado)" || exit 1
 W="${TMPDIR:-/tmp}/tornado-encode-check.$$"; mkdir -p "$W"
 trap 'rm -rf "$W"' EXIT
 
@@ -28,7 +32,7 @@ LIB="$ROOT/rust/target/release/libdarc_codecs.a"
 # Trailing arguments land after the sources: GNU ld resolves an archive against
 # only the objects already seen, so a library placed first is silently dropped.
 cc() { local out="$1"; shift
-  clang++ -std=c++17 -O2 -w -DFREEARC_UNIX -DFREEARC_INTEL_BYTE_ORDER -DFREEARC_64BIT \
+  clang++ -std=c++17 $CFLAGS_C -w -DFREEARC_UNIX -DFREEARC_INTEL_BYTE_ORDER -DFREEARC_64BIT \
     -I"$CREF" -I"$CREF/Compression" \
     "$CREF/rust/difftest/tornado_ref.cpp" "$CREF/rust/difftest/tornado_ccodec.cpp" \
     "$CREF/Compression/Common.cpp" "$@" -o "$out"; }
