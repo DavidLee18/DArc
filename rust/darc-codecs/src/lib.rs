@@ -16,6 +16,7 @@ pub mod grzip;
 pub mod lz4;
 pub mod lz4hc;
 pub mod lzp;
+pub mod ppmd;
 pub mod mm;
 pub mod mmdet;
 pub mod rep;

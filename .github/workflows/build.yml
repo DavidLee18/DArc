@@ -1093,6 +1093,72 @@ jobs:
     - name: Prove the encryption differential test can fail
       run: rust/difftest/crypto-sabotage.sh
 
+  # PPMd gets a job of its own rather than a step in rust-codecs-* because the
+  # grid is minutes rather than seconds: PPMd allocates a model heap per case
+  # and the `dominant` corpus entry is pathologically slow at low order (in the
+  # C as much as in the port). Too slow for a laptop, comfortable for a runner.
+  #
+  # NOTE the C driver is built with Compression/PPMD/makefile's WHOLE flag list
+  # inside ppmd-check.sh, and that is not tidiness: PPMd type-puns through
+  # `(WORD&)` in StateCpy/SWAP, so a compiler's aliasing assumptions change
+  # rescale()'s result and THE SAME SOURCE EMITS DIFFERENT COMPRESSED BYTES.
+  # `-fno-strict-aliasing` is the flag that decides it, so pinning the -O level
+  # alone produces an oracle DArc does not ship. See the note in the script.
+  rust-codecs-ppmd:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      # Sized from a measurement, not a guess: 8 pairs took 245s including the
+      # builds, so ~25s per (order, budget) pair and 36 of them land near 15
+      # minutes. Ignore the 634s this job once
+      # reported for 14 pairs -- that run was dominated by a stray per-symbol
+      # eprintln! in the port, not by the codec. The step below echoes the wall
+      # clock, so trim or widen from what it actually reports.
+      PPMD_ORDERS: "3 4 5 6 8 10 12 16 24"
+      # The budgets are all SMALL on purpose. Only a budget the corpus can
+      # exhaust changes anything: at order 16 the 150 KB noise input gives
+      # different output at 1, 2 and 3 MB and byte-identical output at 4, 8 and
+      # 16 MB, because without exhaustion the model never restarts and the
+      # budget stops being an input at all. So three budgets that exhaust, and
+      # 8 MB as the control that does not -- adding 16 MB would buy a duplicate
+      # of the 8 MB column.
+      PPMD_MEMS: "1 2 3 8"
+    steps:
+    - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      with:
+        lfs: false
+    - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+    - name: Cache LLVM
+      id: cache-llvm
+      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+      with:
+        path: ./llvm
+        key: llvm-21.1.8-${{ runner.os }}-${{ runner.arch }}
+    - name: Install LLVM and Clang
+      uses: KyleMayes/install-llvm-action@ebc0426251bc40c7cd31162802432c68818ab8f0 # v2
+      with:
+        version: "21.1.8"
+        # Skip the download when the cache above already restored ./llvm.
+        cached: ${{ steps.cache-llvm.outputs.cache-hit }}
+    - name: Install packages
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y liblua5.1-dev libncurses-dev libcurl4-openssl-dev cpphs
+    - name: PPMd differential test, wide grid (Rust vs the C as shipped)
+      run: |
+        chmod +x rust/difftest/*.sh
+        start=$(date +%s)
+        rust/difftest/ppmd-check.sh
+        echo "ppmd-check wall clock: $(( $(date +%s) - start ))s"
+    - name: PPMd suballocator differential test
+      # Its own cap, well under the job's. Without one, this step once ran 48
+      # minutes on the job's 60-minute budget and took the whole job down as
+      # `cancelled` -- hiding a grid that had passed in 634s twenty minutes
+      # earlier. The script caps each driver run internally too; this is the
+      # backstop for the case where that cap is the thing that breaks.
+      timeout-minutes: 10
+      run: rust/difftest/ppmd-alloc-check.sh
+
   # The one job here that needs the archiver, and therefore MicroHs. The
   # C-vs-Rust crypto comparison is crypto-difftest above; this is the other
   # half -- encrypted archives must still be created and read back correctly.
