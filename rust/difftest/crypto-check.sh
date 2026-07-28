@@ -33,6 +33,10 @@ set -uo pipefail
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 . "$ROOT/rust/difftest/c-reference.sh"
 CREF="$(darc_c_reference "$ROOT")" || exit 1
+# The reference is built the way DArc builds _Encryption: see darc_codec_cflags
+# in c-reference.sh for why the makefile's flags, not an -O level, are the
+# oracle.
+CFLAGS_C="$(darc_codec_cflags _Encryption)" || exit 1
 W="${TMPDIR:-/tmp}/crypto-check.$$"; mkdir -p "$W"
 trap 'rm -rf "$W"' EXIT
 
@@ -50,7 +54,7 @@ DEFS="-DFREEARC_UNIX -DFREEARC_INTEL_BYTE_ORDER -DFREEARC_64BIT"
 # that called darc_rs_docrypt directly stayed green.
 build_c() { # <output> <tree>
   local out="$1" tree="$2"
-  clang++ -std=c++17 -O2 -w $DEFS \
+  clang++ -std=c++17 $CFLAGS_C -w $DEFS \
     -I"$tree" -I"$tree/Compression" -I"$tree/Compression/_Encryption/headers" \
     "$tree/rust/difftest/crypto_ref.cpp" "$tree/rust/difftest/crypto_ccodec.cpp" \
     "$tree/Compression/Common.cpp" -o "$out"
@@ -72,7 +76,7 @@ build_c "$W/c32" "$CREF32" || { echo "building the 32-bit-ulong32 reference fail
 
 # The staticlib goes AFTER the sources that reference it: GNU ld resolves an
 # archive only against the undefined symbols it has already seen.
-clang++ -std=c++17 -O2 -w $DEFS -DDARC_RUST \
+clang++ -std=c++17 $CFLAGS_C -w $DEFS -DDARC_RUST \
   -I"$ROOT" -I"$ROOT/Compression" \
   "$ROOT/rust/difftest/crypto_ref.cpp" "$ROOT/rust/difftest/crypto_ccodec.cpp" \
   "$ROOT/Compression/Common.cpp" "$LIB" -o "$W/rs" \

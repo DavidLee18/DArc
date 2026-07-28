@@ -24,6 +24,10 @@ set -uo pipefail
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 . "$ROOT/rust/difftest/c-reference.sh"
 CREF="$(darc_c_reference "$ROOT")" || exit 1
+# The reference is built the way DArc builds BSC: see darc_codec_cflags
+# in c-reference.sh for why the makefile's flags, not an -O level, are the
+# oracle.
+CFLAGS_C="$(darc_codec_cflags BSC)" || exit 1
 W="${TMPDIR:-/tmp}/bsc-bwt-enc.$$"; mkdir -p "$W"
 trap 'rm -rf "$W"' EXIT
 
@@ -33,7 +37,7 @@ LIB="$ROOT/rust/target/release/libdarc_codecs.a"
 [ -f "$LIB" ] || { echo "the Rust staticlib is missing" >&2; exit 1; }
 
 cc() { local out="$1"; shift
-  clang++ -std=c++17 -O2 -w -DFREEARC_UNIX -DFREEARC_INTEL_BYTE_ORDER -DFREEARC_64BIT \
+  clang++ -std=c++17 $CFLAGS_C -w -DFREEARC_UNIX -DFREEARC_INTEL_BYTE_ORDER -DFREEARC_64BIT \
     -I"$CREF" -I"$CREF/Compression" \
     "$CREF/rust/difftest/bsc_bwt_enc_ref.cpp" "$CREF/rust/difftest/bsc_ccodec.cpp" \
     "$CREF/Compression/BSC/libbsc/bwt/libsais/libsais.c" "$@" -o "$out"; }

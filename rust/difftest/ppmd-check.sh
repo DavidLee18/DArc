@@ -65,10 +65,10 @@ LIB="$ROOT/rust/target/release/libdarc_codecs.a"
 # There is a second reason to prefer this oracle: with -fno-strict-aliasing the
 # answer no longer depends on how clever the compiler's alias analysis is, so it
 # is stable across compilers and versions. The bare -O1 reading was not.
-PPMD_MAKEFILE_FLAGS="-fno-exceptions -fno-rtti -O1 -fomit-frame-pointer -fno-strict-aliasing -funroll-loops -g0"
+CFLAGS_C="$(darc_codec_cflags PPMD)" || exit 1
 cc() { local out="$1"; shift
   # shellcheck disable=SC2086  # the flag list is a word list on purpose
-  clang++ -std=c++17 $PPMD_MAKEFILE_FLAGS -w \
+  clang++ -std=c++17 $CFLAGS_C -w \
     -DFREEARC_UNIX -DFREEARC_INTEL_BYTE_ORDER -DFREEARC_64BIT \
     -I"$CREF" -I"$CREF/Compression" \
     "$CREF/rust/difftest/ppmd_ref.cpp" "$CREF/rust/difftest/ppmd_ccodec.cpp" "$@" -o "$out"; }

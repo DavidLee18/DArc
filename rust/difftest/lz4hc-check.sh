@@ -17,6 +17,10 @@ set -uo pipefail
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 . "$ROOT/rust/difftest/c-reference.sh"
 CREF="$(darc_c_reference "$ROOT")" || exit 1
+# The reference is built the way DArc builds LZ4: see darc_codec_cflags
+# in c-reference.sh for why the makefile's flags, not an -O level, are the
+# oracle.
+CFLAGS_C="$(darc_codec_cflags LZ4)" || exit 1
 W="${TMPDIR:-/tmp}/lz4hc-check.$$"; mkdir -p "$W"
 trap 'rm -rf "$W"' EXIT
 
@@ -26,7 +30,7 @@ LIB="$ROOT/rust/target/release/libdarc_codecs.a"
 
 # The staticlib goes AFTER the sources that reference it: GNU ld resolves an
 # archive only against the undefined symbols it has already seen.
-clang++ -std=c++17 -O2 -w -DFREEARC_UNIX -DFREEARC_INTEL_BYTE_ORDER -DFREEARC_64BIT \
+clang++ -std=c++17 $CFLAGS_C -w -DFREEARC_UNIX -DFREEARC_INTEL_BYTE_ORDER -DFREEARC_64BIT \
   -I"$CREF" -I"$CREF/Compression" \
   "$CREF/rust/difftest/lz4hc_ref.cpp" "$LIB" -o "$W/t" || exit 1
 
