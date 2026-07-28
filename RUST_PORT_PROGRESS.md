@@ -48,8 +48,8 @@ remains, because `Unarc/` still builds them.
 | zstd | `zstd` (`zstd-safe` binding) | yes | **YES — 2.2 MB deleted** |
 | Encryption | `darc-crypto` | yes | no |
 
-**Not ported at all:** PPMD (1,065 lines), 4x4 (700), LZMA (25,385 — stays on
-the 7-Zip SDK), and the Haskell layer (17,843).
+**Not ported at all:** 4x4 (700), LZMA (25,385 — stays on the 7-Zip SDK), and
+the Haskell layer (17,843).
 
 **zstd is a binding, not a port.** `zstd-safe`/`zstd-sys` compiles the same C,
 fetched by cargo instead of vendored. The value is 2.2 MB leaving the repo and
@@ -91,9 +91,10 @@ Line counts over tracked source, which reframe "68% of this repo is C":
 The vendored 60% is mostly out of scope by decision (LZMA stays on the 7-Zip
 SDK; libbsc and LibTomCrypt are kept pristine). **The real target is ~29k, not
 135k.** DArc's own C/C++ concentrates in `Compression/GRZip` (4,148),
-`Tornado` (4,051), `MM` (3,524), `BSC` wrapper (1,316), `DisPack` (1,168) and
-`PPMD` (1,065) — and the first five of those are already decode-ported, with
-only their **encoders** keeping the files alive.
+`Tornado` (4,051), `MM` (3,524), `BSC` wrapper (1,316) and `DisPack` (1,168) —
+already decode-ported, with only their **encoders** keeping the files alive.
+`PPMD` is gone: 1,065 lines deleted, `C_PPMD.cpp` reduced to the
+COMPRESSION_METHOD wrapper.
 
 The Rust port has also nearly drawn level with the Haskell layer (20,100 vs
 20,262 lines), which makes the Haskell the largest single coherent chunk left.
@@ -343,14 +344,26 @@ Two things to get right, both already known from the decode port:
 - **Byte-exactness is required**, not format-validity: DisPack is DArc's own
   format. `-mdispack` has a fingerprint case (`6a46351e39373082`).
 
-### 9. Hand-port PPMD (1,065 lines)
+### 9. Hand-port PPMD (1,065 lines) — DONE
 
-The last real hand-portable codec besides 4x4. **No crate path:** `ppmd-rust`
-was measured and rejected — DArc's PPMD is Shkarin var.H with **Subbotin's**
-carryless range coder (32-bit `low`, `TOP=1<<24`, `MAX_O` 128); `ppmd-rust` is
-7-Zip's Ppmd7 with **Pavlov's** coder (64-bit `Low`, `MAX_O` 64). Same model,
-different stream. Do not revisit the crate. `-mppmd` already has a fingerprint
-case.
+Ported and the C deleted. **No crate path, and that assessment held:**
+`ppmd-rust` was measured and rejected — DArc's PPMD is Shkarin var.H with
+**Subbotin's** carryless range coder (32-bit `low`, `TOP=1<<24`, `MAX_O` 128);
+`ppmd-rust` is 7-Zip's Ppmd7 with **Pavlov's** coder (64-bit `Low`, `MAX_O` 64).
+Same model, different stream. Do not revisit the crate.
+
+Two things this port established that generalise:
+
+* **The C's compiler flags were part of the archive format.** `StateCpy`/`SWAP`
+  type-pun through `(WORD&)`, so `rescale()`'s `if (p->Freq == 0)` re-reads the
+  heap under `-fno-strict-aliasing` and reuses a cached value without it — with
+  different compressed bytes either way. Every harness now builds its oracle
+  from the codec makefile's flags via `darc_codec_cflags`. Swept across all 23
+  harnesses: PPMd was the only codec sensitive to it.
+* **`GlueFreeBlocks` does not always terminate**, in Shkarin's C. Absorbing a
+  block clears its `NU` but leaves `Stamp` reading `~0U`, and a later block
+  whose end lands on that husk loops for ever. The port breaks out, which cannot
+  change any output the C can produce.
 
 ### 10. Decide explicitly whether to port 4x4 — recommendation: no
 

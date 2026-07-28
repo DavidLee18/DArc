@@ -8,94 +8,61 @@
 extern "C" {
 #include "C_PPMD.h"
 }
-#include "PPMdType.h"
+
+// PPMd var.H lives in rust/darc-codecs/src/ppmd/ -- the model, the suballocator,
+// the Subbotin range coder and the PRIME_STREAM buffering. This file is the
+// COMPRESSION_METHOD wrapper around it and nothing else.
+//
+// The port is byte-identical to Shkarin's C as DArc built it, proven per push by
+// rust/difftest/ppmd-check.sh over order x memory x MRMethod x a 19-entry
+// corpus, and by ppmd-alloc-check.sh over the suballocator alone. Byte-identity
+// is the bar because the model branches on allocator state -- GetUsedMemory(),
+// pText/UnitsStart crossings -- so the heap layout is part of the format and a
+// merely-correct implementation still writes different archives.
+extern "C" {
+int darc_rs_ppmd_compress   (int order, unsigned mem, int MRMethod, CALLBACK_FUNC *callback, void *auxdata);
+int darc_rs_ppmd_decompress (int order, unsigned mem, int MRMethod, CALLBACK_FUNC *callback, void *auxdata);
+}
 
 // Valid range for the model order.
 //
 // The lower bound is not cosmetic. PPMd reserves order<2 as an internal signal
 // meaning "do not restart the model, continue the existing one" -- see the
-// comment block in PPMd.h. StartModelRare's solid-mode branch (Model.cpp:119)
-// therefore walks MaxContext without initialising it, and MaxContext is BSS.
-// ppmd_compress calls StartSubAllocator and EncodeFile afresh on every call,
-// so it can never legitimately be handed that signal: "arc a -mppmd:o0" and
-// "-mppmd:o1" dereferenced a NULL MaxContext and died with SIGSEGV.
+// comment block that was in PPMd.h. StartModelRare's solid-mode branch walks
+// MaxContext without initialising it, and MaxContext is BSS. ppmd_compress
+// starts the suballocator and encodes afresh on every call, so it can never
+// legitimately be handed that signal: "arc a -mppmd:o0" and "-mppmd:o1"
+// dereferenced a NULL MaxContext and died with SIGSEGV.
 //
-// MAX_O is the model's own limit, from PPMdType.h.
+// 128 is the model's own limit: `const int MAX_O=128` in the deleted
+// PPMdType.h, mirrored as MAX_O in rust/darc-codecs/src/ppmd/model.rs.
 static const int PPMD_MIN_ORDER = 2;
-static const int PPMD_MAX_ORDER = MAX_O;
+static const int PPMD_MAX_ORDER = 128;
 
 /*-------------------------------------------------*/
-/* ppmd_compress implementation                    */
+/* ppmd_compress / ppmd_decompress                 */
 /*-------------------------------------------------*/
+
+// Straight pass-through. The C used to instantiate Model.cpp twice, in two
+// namespaces, because its model state was file-scope statics and the two
+// directions would otherwise have shared them; the Rust port carries its state
+// in a struct, so one entry point per direction is enough.
+
 #ifndef FREEARC_DECOMPRESS_ONLY
-
-namespace PPMD_compression {
-
-#include "Model.cpp"
-
 extern "C" {
 int ppmd_compress (int order, MemSize mem, int MRMethod, CALLBACK_FUNC *callback, void *auxdata)
 {
-  if ( !StartSubAllocator(mem) ) {
-    return FREEARC_ERRCODE_NOT_ENOUGH_MEMORY;
-  }
-  _PPMD_FILE* fpIn  = new _PPMD_FILE (callback, auxdata);
-  _PPMD_FILE* fpOut = new _PPMD_FILE (callback, auxdata);
-  EncodeFile (fpOut, fpIn, order, MR_METHOD(MRMethod));
-  fpOut->flush();
-  int ErrCode = FREEARC_OK;
-  if (_PPMD_ERROR_CODE(fpIn) <0)  ErrCode = _PPMD_ERROR_CODE (fpIn);
-  if (_PPMD_ERROR_CODE(fpOut)<0)  ErrCode = _PPMD_ERROR_CODE (fpOut);
-  delete fpOut;
-  delete fpIn;
-  StopSubAllocator();
-  return ErrCode;
+  return darc_rs_ppmd_compress (order, mem, MRMethod, callback, auxdata);
 }
 } // extern "C"
-
-void _STDCALL PrintInfo (_PPMD_FILE* DecodedFile, _PPMD_FILE* EncodedFile)
-{
-}
-
-} // namespace PPMD_compression
-#undef _PPMD_H_
-
 #endif // FREEARC_DECOMPRESS_ONLY
-
-
-/*-------------------------------------------------*/
-/* ppmd_decompress implementation                  */
-/*-------------------------------------------------*/
-
-namespace PPMD_decompression {
-
-#include "Model.cpp"
 
 extern "C" {
 int ppmd_decompress (int order, MemSize mem, int MRMethod, CALLBACK_FUNC *callback, void *auxdata)
 {
-  if ( !StartSubAllocator(mem) ) {
-    return FREEARC_ERRCODE_NOT_ENOUGH_MEMORY;
-  }
-  _PPMD_FILE* fpIn  = new _PPMD_FILE (callback, auxdata);
-  _PPMD_FILE* fpOut = new _PPMD_FILE (callback, auxdata);
-  DecodeFile (fpOut, fpIn, order, MR_METHOD(MRMethod));
-  fpOut->flush();
-  int ErrCode = FREEARC_OK;
-  if (_PPMD_ERROR_CODE(fpIn) <0)  ErrCode = _PPMD_ERROR_CODE (fpIn);
-  if (_PPMD_ERROR_CODE(fpOut)<0)  ErrCode = _PPMD_ERROR_CODE (fpOut);
-  delete fpOut;
-  delete fpIn;
-  StopSubAllocator();
-  return ErrCode;
+  return darc_rs_ppmd_decompress (order, mem, MRMethod, callback, auxdata);
 }
 } // extern "C"
-
-void _STDCALL PrintInfo(_PPMD_FILE* DecodedFile,_PPMD_FILE* EncodedFile)
-{
-}
-
-} // namespace PPMD_decompression
 
 
 /*-------------------------------------------------*/

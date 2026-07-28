@@ -98,15 +98,17 @@ build() {
   case "$src" in
     */_Encryption/*) extra=(-IShared_src/_Encryption/headers -ICompression/_Encryption/headers) ;;
   esac
-  # PPMD must match Linux makefile exactly (Compression/PPMD/makefile): -O1,
-  # -fno-strict-aliasing, -fno-exceptions/-fno-rtti, -fomit-frame-pointer,
-  # -funroll-loops. Any mismatch on the WORD&-alias SWAP pattern in Model.cpp
-  # produces cross-incompatible PPMD streams (Linux<->Win64 archives differ and
-  # fail to decode).
+  # Kept matching Compression/PPMD/makefile, though the reason has changed.
+  # It used to be load-bearing: the WORD&-alias SWAP pattern in Model.cpp made
+  # the compressed stream depend on these flags, so a Win64 build that drifted
+  # wrote archives Linux could not decode. (This line once said
+  # -fstrict-aliasing, the exact opposite of what that makefile asks for,
+  # directly under a comment promising to match it -- it survived because GCC
+  # at -O1 did not act on the difference.)
   #
-  # This said -fstrict-aliasing, the exact opposite of what that makefile asks
-  # for, directly under a comment promising to match it. It survived because
-  # GCC at -O1 did not act on the difference.
+  # The model is Rust now and C_PPMD.cpp is a wrapper, so the format no longer
+  # depends on this. Left in place because divergence here is free to fix and
+  # was expensive to find.
   case "$src" in
     */PPMD/*) extra+=(-O1 -fno-strict-aliasing -fno-exceptions -fno-rtti -fomit-frame-pointer -funroll-loops) ;;
   esac
