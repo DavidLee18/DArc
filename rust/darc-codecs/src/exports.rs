@@ -1543,7 +1543,7 @@ pub unsafe extern "C" fn darc_rs_ppmd_sa_stop() { sa().stop() }
 /// # Safety
 /// See [`darc_rs_ppmd_sa_start`].
 #[no_mangle]
-pub unsafe extern "C" fn darc_rs_ppmd_sa_used() -> u32 { sa().get_used_memory() as u32 }
+pub unsafe extern "C" fn darc_rs_ppmd_sa_used() -> u32 { sa().get_used_memory() }
 
 /// # Safety
 /// See [`darc_rs_ppmd_sa_start`].

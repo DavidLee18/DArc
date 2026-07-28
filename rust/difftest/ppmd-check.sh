@@ -112,10 +112,55 @@ fail=0; enc=0; dec=0; declined=0
 # whole thing. Order 2 is deliberately absent even from the full grid: PPMd is
 # pathologically slow on the `dominant` shape there, in the C as much as in the
 # port, so including it buys nothing but wall-clock.
+# Two properties byte-identity cannot see, checked once before the grid starts
+# sending stderr to /dev/null and stops timing anything.
+#
+# They are not hypothetical. A per-symbol `eprintln!` survived in the port
+# through 798 byte-identical streams: every comparison passed, the trace went to
+# /dev/null, and the only visible symptom was a CI job that took 634 seconds
+# instead of twenty. In the shipped archiver it would have flooded the terminal
+# with a line per input byte.
+for drv in c rs; do
+  "$W/$drv" c 8 8 0 < "$W/in/text" >| "$W/q" 2>| "$W/qerr"
+  [ -s "$W/qerr" ] || continue
+  echo "the $drv driver wrote to stderr during a normal encode:"
+  head -3 "$W/qerr"
+  echo "a codec must be silent -- this would print into the archiver's console"
+  exit 1
+done
+now() { perl -MTime::HiRes=time -e 'print time'; }
+t0=$(now); "$W/c"  c 8 8 0 < "$W/in/bignoise" >|/dev/null 2>&1
+t1=$(now); "$W/rs" c 8 8 0 < "$W/in/bignoise" >|/dev/null 2>&1
+t2=$(now)
+c_secs=$(perl -e 'printf "%.3f", $ARGV[1]-$ARGV[0]' "$t0" "$t1")
+r_secs=$(perl -e 'printf "%.3f", $ARGV[1]-$ARGV[0]' "$t1" "$t2")
+# A ratio, not a wall clock, so it does not care how fast the runner is. Ten is
+# far above the ~2x a faithful port costs in bounds checks and byte-offset
+# arithmetic, and far below what stray I/O in the per-symbol path produces --
+# the eprintln! above measured 470x. Skipped rather than guessed if the
+# reference run was too short to time.
+if awk -v c="$c_secs" 'BEGIN { exit (c >= 0.05) ? 0 : 1 }'; then
+  ratio=$(perl -e 'printf "%.1f", $ARGV[0]/$ARGV[1]' "$r_secs" "$c_secs")
+  echo "ppmd: encode speed vs the C on 600 KB: ${ratio}x (${c_secs}s -> ${r_secs}s)"
+  awk -v r="$ratio" 'BEGIN { exit (r <= 10) ? 0 : 1 }' || {
+    echo "${ratio}x is not port overhead. Look for I/O, an allocation, or a"
+    echo "rebuilt table in the per-symbol path."
+    exit 1; }
+else
+  echo "ppmd: the C reference encoded 600 KB in ${c_secs}s, too fast to time a ratio against"
+fi
+
 ORDERS="${PPMD_ORDERS:-3 4 10 16}"
 MEMS="${PPMD_MEMS:-1 8}"
 for order in $ORDERS; do
   for mem in $MEMS; do
+    # One line per (order, budget), because this grid runs for tens of minutes
+    # and printed nothing until the end. A silent run and a hung one then look
+    # identical -- which is exactly how a sibling harness burned 48 minutes of a
+    # CI job before anyone could tell it was stuck.
+    # Printed BEFORE the work, not after: the point is to name the combination
+    # a stuck run is stuck on, and a line printed on completion cannot do that.
+    echo "  order=$order mem=${mem}M"
     for mrm in 0 1 2; do
       for f in "$W"/in/*; do
         bn="$(basename "$f") o$order m${mem}M mrm$mrm"

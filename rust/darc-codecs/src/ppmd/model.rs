@@ -125,7 +125,6 @@ pub struct Model {
     esc_count: u8,
     print_count: u8,
     mr_method: i32,
-    resc_n: u32,
 }
 
 impl Model {
@@ -151,7 +150,6 @@ impl Model {
             esc_count: 0,
             print_count: 0,
             mr_method: MRM_RESTART,
-            resc_n: 0,
         };
         m.startup();
         m
@@ -546,7 +544,10 @@ impl Model {
             self.sa.glue_count = 0;
             self.order_fall = self.max_order;
         } else if self.mr_method == MRM_RESTART
-            || self.sa.get_used_memory() < (self.sa.sub_allocator_size >> 1)
+            // Both sides in 32 bits, as in the C: SubAllocatorSize is a DWORD
+            // and GetUsedMemory returns one, and the used figure can have
+            // wrapped past zero by the time this is asked.
+            || self.sa.get_used_memory() < (self.sa.sub_allocator_size as u32 >> 1)
         {
             let (mo, mrm) = (self.max_order, self.mr_method);
             self.start_model_rare(mo, mrm);
@@ -560,7 +561,7 @@ impl Model {
                 let mc = self.max_context;
                 self.cut_off(mc, 0);
                 self.sa.expand_text_area();
-                if self.sa.get_used_memory() <= 3 * (self.sa.sub_allocator_size >> 2) {
+                if self.sa.get_used_memory() <= 3 * (self.sa.sub_allocator_size as u32 >> 2) {
                     break;
                 }
             }
@@ -660,7 +661,6 @@ impl Model {
 
     /// `PPM_CONTEXT::rescale`.
     fn rescale(&mut self, c: usize) {
-        self.resc_n += 1;
         let s_base = Self::roff(self.stats(c));
         let mut p = self.found_state;
         while p != s_base {
@@ -1464,8 +1464,6 @@ impl Model {
             if stop {
                 break;
             }
-            eprintln!("PRE mc={} min={} fs={} of={} resc={}",
-                self.max_context, min_context, self.found_state, self.order_fall, self.resc_n);
             if self.order_fall == 0 && self.ge_units(self.succ(self.found_state)) {
                 self.max_context = Self::roff(self.succ(self.found_state));
             } else {

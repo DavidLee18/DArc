@@ -239,12 +239,29 @@ impl SubAllocator {
     }
 
     /// `GetUsedMemory`. The model branches on this directly, so the free-list
-    /// bookkeeping it subtracts has to match the C exactly.
-    pub fn get_used_memory(&self) -> usize {
-        let mut ret = self.sub_allocator_size - (self.hi_unit - self.lo_unit)
-            - (self.units_start - self.p_text);
+    /// bookkeeping it subtracts has to match the C exactly -- including where
+    /// it goes negative.
+    ///
+    /// It genuinely does. `BList[i].Stamp` counts the blocks in list `i` and
+    /// this charges each of them `Indx2Units[i]` units, but GlueFreeBlocks
+    /// inserts remainders whose real size is SMALLER than their list's nominal
+    /// one, so the free-list total can exceed what is actually free. Seed 1 on
+    /// a 2 KB heap reaches it after 124 operations of the allocator harness.
+    ///
+    /// The C absorbs that in `DWORD`: the initial expression is evaluated in
+    /// signed 64-bit (the pointer differences drag it there), truncated to 32
+    /// bits by the assignment, and each loop subtraction then wraps in 32 bits.
+    /// Width matters as much as wrapping -- the model compares the result
+    /// against `SubAllocatorSize`, and a 64-bit wrap would give a different
+    /// answer to a 32-bit one on the very comparison that decides a restart.
+    pub fn get_used_memory(&self) -> u32 {
+        let mut ret = (self.sub_allocator_size as i64
+            - (self.hi_unit as i64 - self.lo_unit as i64)
+            - (self.units_start as i64 - self.p_text as i64)) as u32;
         for i in 0..N_INDEXES {
-            ret -= UNIT_SIZE * self.indx2units[i] as usize * self.blist[i].stamp as usize;
+            ret = ret.wrapping_sub(
+                UNIT_SIZE as u32 * self.indx2units[i] as u32 * self.blist[i].stamp,
+            );
         }
         ret
     }
@@ -318,6 +335,26 @@ impl SubAllocator {
                 loop {
                     let p1 = p + self.blk_nu(p) as usize * UNIT_SIZE;
                     if p1 + UNIT_SIZE > self.heap.len() || self.blk_stamp(p1) != STAMP_FREE {
+                        break;
+                    }
+                    // The one deliberate deviation from the C, and it is not
+                    // observable. Absorbing a block clears its NU but leaves
+                    // its Stamp reading STAMP_FREE, so the heap keeps husks:
+                    // twelve bytes that still say "free" and claim zero units.
+                    // When a later block's end lands on one, the C's loop is
+                    //     p->NU += p1->NU;  p1->NU = 0;
+                    // which adds zero and rewrites zero, so `p + p->NU` picks
+                    // out the same husk on the next turn -- for ever. Measured
+                    // on the allocator harness: seed 42, an 8 KB heap, both the
+                    // C and a faithful port spin at operation 146, and the
+                    // husks they spin on were zeroed by an earlier absorb in
+                    // the same run.
+                    //
+                    // Stopping here cannot change any output the C can produce,
+                    // because in this state the C never leaves the loop and so
+                    // never returns a byte at all. Everything the C *does*
+                    // return is reached without meeting a husk.
+                    if self.blk_nu(p1) == 0 {
                         break;
                     }
                     let merged = self.blk_nu(p) + self.blk_nu(p1);
