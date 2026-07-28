@@ -682,16 +682,12 @@ impl Model {
         let nf = (self.freq(p) + adder) >> 1;
         self.set_freq(p, nf);
         let mut summ = nf;
-        // The value most recently ASSIGNED to p->Freq -- deliberately not a
-        // fresh read of the heap. See the note on the zero test below.
-        let mut last_nf = nf;
         let mut i = self.ns(c) as u32;
         while i > 0 {
             p += 6;
             esc_freq = esc_freq.wrapping_sub(self.freq(p));
             let nf = (self.freq(p) + adder) >> 1;
             self.set_freq(p, nf);
-            last_nf = nf;
             summ += nf;
             if self.freq(p) > self.freq(p - 6) {
                 // Bubble the state back into frequency order.
@@ -715,21 +711,29 @@ impl Model {
             i -= 1;
         }
         self.set_summ_freq(c, summ);
-        // `if (p->Freq == 0)` in the C -- but NOT a re-read of the heap.
+        // `if (p->Freq == 0)`, and it must be a genuine RE-READ of the heap --
+        // the bubble sort above may have moved a different state into `p`.
         //
-        // StateCpy/SWAP type-pun through `(WORD&)` references, which violates
-        // strict aliasing. At -O1 the compiler therefore assumes those WORD
-        // writes cannot alias this BYTE read, and reuses the value ASSIGNED to
-        // p->Freq in the loop's final iteration -- even though the bubble sort
-        // has since overwritten that slot. At -O0 it re-reads and sees the new
-        // value, and the two builds produce DIFFERENT COMPRESSED OUTPUT from
-        // the same input. Measured on a 92-byte case: -O0 gives 669d679a...,
-        // -O1 and -O2 give f6cb8287....
+        // This line is the one place where the C's compiler flags decide the
+        // compressed format. StateCpy/SWAP type-pun through `(WORD&)`
+        // references, violating strict aliasing, so a compiler allowed to
+        // assume those WORD writes cannot alias this BYTE read will reuse the
+        // value ASSIGNED to p->Freq in the loop's last iteration instead of
+        // reloading the slot. Measured on the `dominant` corpus shape, all of
+        // orders 3/4/10/16:
         //
-        // Compression/PPMD/makefile builds at -O1, so -O1 is the behaviour
-        // every existing -mppmd archive was produced with, and the one this
-        // port has to reproduce. Hence `last_nf`, not `self.freq(p)`.
-        if last_nf == 0 {
+        //     clang -O1                        reuses the assigned value
+        //     clang -O2                        reuses the assigned value
+        //     clang -O0                        re-reads
+        //     clang -O1 -fno-strict-aliasing   re-reads
+        //
+        // Compression/PPMD/makefile passes `-fno-strict-aliasing`, so every
+        // real -mppmd archive was written by a build that RE-READS, and that is
+        // what this port has to reproduce. Isolated by flag: -fno-strict-
+        // aliasing alone flips it; -fomit-frame-pointer -funroll-loops do not.
+        // ppmd-check.sh builds its oracle with the makefile's flag set for
+        // exactly this reason -- pinning only the -O level is not enough.
+        if self.freq(p) == 0 {
             let mut i = 0u32;
             loop {
                 i += 1;

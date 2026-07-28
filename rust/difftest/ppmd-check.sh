@@ -39,23 +39,37 @@ trap 'rm -rf "$W"' EXIT
 LIB="$ROOT/rust/target/release/libdarc_codecs.a"
 [ -f "$LIB" ] || { echo "the Rust staticlib is missing" >&2; exit 1; }
 
-# -O1, NOT -O2, and this is load-bearing.
+# THE OPTIMISATION FLAGS ARE PART OF THE FORMAT. Copy them from
+# Compression/PPMD/makefile, do not choose them.
 #
 # PPMd's StateCpy/SWAP type-pun through `(WORD&)` references, which violates
-# strict aliasing. In rescale(), the compiler is then free to assume those WORD
-# writes cannot alias the BYTE read in `if (p->Freq == 0)`, and at -O1 it reuses
-# the value ASSIGNED earlier in the loop rather than re-reading the slot the
-# bubble sort has since overwritten. The two readings disagree, so THE SAME C
-# SOURCE PRODUCES DIFFERENT COMPRESSED BYTES AT DIFFERENT -O LEVELS. Measured on
-# a 92-byte input at order 3:
+# strict aliasing. A compiler permitted to assume those WORD writes cannot alias
+# the BYTE read in rescale()'s `if (p->Freq == 0)` reuses the value ASSIGNED
+# earlier in the loop rather than reloading the slot the bubble sort has since
+# overwritten -- and the two readings produce DIFFERENT COMPRESSED BYTES from
+# the same source. Measured on the `dominant` corpus shape at orders 3/4/10/16:
 #
-#     -O0 -> 669d679a...      -O1 -> f6cb8287...      -O2 -> f6cb8287...
+#     -O1                        reuses the assigned value
+#     -O2                        reuses the assigned value
+#     -O0                        re-reads
+#     -O1 -fno-strict-aliasing   re-reads
 #
-# Compression/PPMD/makefile builds at -O1, so -O1 is what every existing -mppmd
-# archive was written with, and the only defensible oracle. Changing this flag
-# silently changes what "byte-identical" means.
+# So pinning the -O level is NOT sufficient, and an oracle built at a bare -O1
+# is wrong: the makefile passes -fno-strict-aliasing, which is what real -mppmd
+# archives were written with. Isolated by flag -- -fno-strict-aliasing alone
+# flips the output; -fomit-frame-pointer and -funroll-loops do not.
+#
+# compile-win64-c carries the same warning for the same reason: a Win64 build
+# whose PPMD flags drift from this list writes archives Linux cannot reproduce.
+#
+# There is a second reason to prefer this oracle: with -fno-strict-aliasing the
+# answer no longer depends on how clever the compiler's alias analysis is, so it
+# is stable across compilers and versions. The bare -O1 reading was not.
+PPMD_MAKEFILE_FLAGS="-fno-exceptions -fno-rtti -O1 -fomit-frame-pointer -fno-strict-aliasing -funroll-loops -g0"
 cc() { local out="$1"; shift
-  clang++ -std=c++17 -O1 -w -DFREEARC_UNIX -DFREEARC_INTEL_BYTE_ORDER -DFREEARC_64BIT \
+  # shellcheck disable=SC2086  # the flag list is a word list on purpose
+  clang++ -std=c++17 $PPMD_MAKEFILE_FLAGS -w \
+    -DFREEARC_UNIX -DFREEARC_INTEL_BYTE_ORDER -DFREEARC_64BIT \
     -I"$CREF" -I"$CREF/Compression" \
     "$CREF/rust/difftest/ppmd_ref.cpp" "$CREF/rust/difftest/ppmd_ccodec.cpp" "$@" -o "$out"; }
 cc "$W/c"                    || { echo "C driver failed to build"    >&2; exit 1; }
