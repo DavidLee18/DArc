@@ -946,6 +946,13 @@ jobs:
         rust/difftest/tornado-check.sh
         rust/difftest/tornado-encode-check.sh
         rust/difftest/grzip-check.sh
+        # grzip-check.sh covers the DECODER and the multi-block stream. This one
+        # covers the six ENCODER stages individually -- ST4, MTF-Ari, BWT (fast
+        # and strong), WFC-Ari and Rec -- which nothing else reaches, and it had
+        # never been invoked here at all: every difftest is listed by name and
+        # this name was missing, so the file passed locally and ran nowhere.
+        # With GRZip's C now deleted these two are its only oracle.
+        rust/difftest/grzip-stage-check.sh
         rust/difftest/dispack-check.sh
         # The other direction: DisPack's ENCODER must be byte-exact too, since
         # DisPack is one of DArc's own formats. Filtered output that merely
