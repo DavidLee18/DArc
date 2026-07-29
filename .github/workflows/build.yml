@@ -897,7 +897,7 @@ jobs:
       run: |
         sudo apt-get update
         sudo apt-get install -y liblua5.1-dev libncurses-dev libcurl4-openssl-dev cpphs
-    - name: Per-codec differential tests (REP, TTA, MM, LZP, LZ4-HC)
+    - name: Per-codec differential tests (REP, TTA, MM, LZP, Dict, LZ4-HC)
       run: |
         chmod +x rust/difftest/*.sh
         rust/difftest/rep-check.sh
@@ -907,6 +907,11 @@ jobs:
         # only remaining oracle for it -- and it had no check script at all
         # until the C was pruned (lzp_ref.cpp sat orphaned; run.sh covers Delta).
         rust/difftest/lzp-check.sh
+        # Dict was in exactly the same state LZP was, except the gap OUTLIVED
+        # the deletion: dict_ref.cpp and dict_phase1_ref.cpp sat orphaned, no
+        # check script existed, this workflow never named dict -- and the C was
+        # deleted anyway. This is now the only oracle for it.
+        rust/difftest/dict-check.sh
         # LZ4-HC is an ENCODER-side harness: it requires the Rust encoder to be
         # byte-identical to the C for every level DArc can select (1-9), and
         # decodes each block with the C decoder rather than lz4_flex.
