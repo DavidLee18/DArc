@@ -194,8 +194,11 @@ pub fn decompress(io: &Io, block_size: u32) -> c_int {
             if io.read(&mut raw) as usize != n {
                 return FREEARC_ERRCODE_IO;
             }
-            if io.write(&raw) < 0 {
-                return FREEARC_ERRCODE_IO;
+            // Propagate, do not substitute: a negative write is not
+            // necessarily an error. See the note on Io::write.
+            let w = io.write(&raw);
+            if w < 0 {
+                return w;
             }
             continue;
         }
@@ -213,8 +216,11 @@ pub fn decompress(io: &Io, block_size: u32) -> c_int {
         }
         match decode(&packed, block_size) {
             Ok(out) => {
-                if !out.is_empty() && io.write(&out) < 0 {
-                    return FREEARC_ERRCODE_IO;
+                if !out.is_empty() {
+                    let w = io.write(&out);
+                    if w < 0 {
+                        return w;
+                    }
                 }
             }
             Err(e) => return e,
