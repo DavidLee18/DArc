@@ -44,7 +44,15 @@ fail=0; tested=0
 # several codecs together, and a module missing any ONE of them fails the whole
 # chain. That is how 4x4, BSC, DisPack, LZ4 and Zstd turned out to be absent
 # from the module's link list.
-for m in 0 1 2 3 4 5 9 x tor lzma ppmd grzip bsc dispack lz4 zstd; do
+#
+# `dict` and `lzp` are named individually even though -m9 already chains Dict,
+# because -m9 only reaches it when the *corpus* is classified $text by
+# detect_datatype -- and the four files above are too small and too artificial
+# to be. So -m9 passed this test for as long as Dict was completely unreadable
+# here: unarc reported "archive data corrupted" for every real -m9 archive
+# containing a text file, and nothing in CI noticed. Name the codec, do not
+# trust a preset to reach it.
+for m in 0 1 2 3 4 5 9 x tor lzma ppmd grzip bsc dispack lz4 zstd dict lzp; do
   rm -f "$W/t.arc"; rm -rf "$W/out"; mkdir -p "$W/out"
   if ! ( cd "$W" && "$ARC" a --nodates -r -y -m$m t.arc in ) >"$W/c.log" 2>&1; then
     echo "  -m$m: the ARCHIVER failed to create it"; tail -2 "$W/c.log" | sed 's/^/     /'

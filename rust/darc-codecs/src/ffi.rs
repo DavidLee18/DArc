@@ -65,7 +65,26 @@ impl Io {
         self.call(b"read\0", buf.as_mut_ptr() as *mut c_void, clamp_len(buf.len()))
     }
 
-    /// Write `buf`. Returns the count written, or a negative error.
+    /// Write `buf`. Returns the count written, or a negative status.
+    ///
+    /// **A negative return is not necessarily an error, and callers must
+    /// propagate it rather than substitute one of their own.** Unarc's write
+    /// callback answers `FREEARC_ERRCODE_NO_MORE_DATA_REQUIRED` (-9,
+    /// Compression.h:28) as soon as every file it wanted out of the solid block
+    /// has been written -- it means "that was a success, now stop", and
+    /// `Unarc/unarc.cpp:449` accepts exactly that code alongside `>= 0`:
+    ///
+    /// ```text
+    /// CHECK (result>=0 || result==FREEARC_ERRCODE_NO_MORE_DATA_REQUIRED,
+    ///        "ERROR: archive data corrupted (decompression fails)");
+    /// ```
+    ///
+    /// A decoder that turned this into `FREEARC_ERRCODE_IO` reported perfectly
+    /// good archives as corrupt: `dict` and `lzp` did, which made every archive
+    /// whose `$text` group used Dict -- i.e. anything written with `-m9` --
+    /// unreadable by the standalone extractor and every SFX module, while the
+    /// archiver read it back fine. Substituting also loses genuine codes, so
+    /// `-5` (out of memory) would have been reported as an I/O failure too.
     pub fn write(&self, buf: &[u8]) -> c_int {
         if buf.is_empty() {
             return 0;
