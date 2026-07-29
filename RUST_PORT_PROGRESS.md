@@ -55,12 +55,12 @@ true today -- see the GRZip row.
 | GRZip | `grzip/` (both directions) | yes (encode + decode) | **YES — 1,994 encoder lines, then 2,105 more; only the method object and parser are left** |
 | LZ4 | `lz4` (`lz4_flex`) + `lz4hc` (own HC port) | yes (decode + both encoders) | **YES — 6,319 lines deleted** |
 | LZP | `lzp` | yes (both directions) | **YES — 259 lines deleted** |
-| MM | `mm`, `mmdet` (both directions) | yes (encode + decode) | partly — both entry points gone; `mm.cpp` is prunable, `mmdet.cpp` is NOT (the Haskell FFI calls it, see below) |
+| MM | `mm`, `mmdet` (both directions) | yes (encode + decode) | **YES — `mm.cpp` deleted; only `mmdet.cpp` remains, and it is NOT dead (the Haskell FFI calls it, see below)** |
 | PPMd | `ppmd/` (both directions) | yes (encode + decode) | **YES — 1,146 lines, the whole engine** |
 | REP | `rep` | yes (both directions, byte-exact) | **YES** |
 | SREP | `srep` (decode only) | external binary, no `DARC_RUST` wiring | no — see §14 before porting the encoder |
 | Tornado | `tornado` (both directions) | yes (encode + decode, all 9 instantiations) | **YES — the whole C codec is gone, 3,183 lines** |
-| TTA | `tta` | yes (both directions) | partly — both entry points gone; `tta.cpp`, `entropy.cpp` and `filters.cpp` are prunable (see below) |
+| TTA | `tta` | yes (both directions) | **YES — `tta.cpp`, `entropy.cpp` and `filters.cpp` deleted, 1,190 lines** |
 | zstd | `zstd` (`zstd-safe` binding) | yes | **YES — 2.2 MB deleted** |
 | Encryption | `darc-crypto` | yes | no |
 
@@ -94,11 +94,12 @@ the reason. Two were found false by reading the tree instead of the comment:
   been deleted. Both are gone now (2,105 lines), and all 13 `-mgrzip` parameter
   combinations still extract through Unarc.
 - **`Compression/MM/`**: `mm.cpp`, `tta.cpp`, `entropy.cpp` and `filters.cpp`
-  are each down to support code for entry points that are now Rust, and their
-  comments say so -- the encode halves "stay ... cost only a few unused bytes".
-  `C_MM.cpp` and `C_TTA.cpp` call nothing from them but `mm_compress`,
-  `mm_decompress`, `tta_compress` and `tta_decompress`, all four of which the
-  Rust crate supplies. Roughly 1,500 lines.
+  were support code for entry points that are now Rust, and their own comments
+  said so -- the encode halves "stay ... cost only a few unused bytes".
+  `C_MM.cpp` and `C_TTA.cpp` called nothing from them but `mm_compress`,
+  `mm_decompress`, `tta_compress` and `tta_decompress`, all four supplied by the
+  Rust crate. Gone, 1,627 lines, plus `ttaenc.h` trimmed to the two entry points
+  it still declares.
 
 **The check that settles it** is not reading the comment but asking who calls
 the symbol, with the codec's own directory excluded from the search -- a file
@@ -118,6 +119,17 @@ four are bound by the Haskell FFI at `ArhiveFileList.hs:588-598`, where they
 drive `$text`/`$exe`/`$compressed` grouping and MM autodetection. The file is
 load-bearing for solid-block layout. A stale comment can name the wrong reason
 for a conclusion that is still correct; enumerate the header, then search.
+
+**And then prove the test can fail.** After `mm.cpp` went, `mmdet.cpp`'s include
+moved into `C_MM.cpp`, and the evidence that this was done right is that `-m4`,
+`-m5` and `-m9` archives stayed byte-identical -- which is only evidence if
+those bytes depend on the detector at all. They might not have: `arc.groups`
+also groups by extension (`$wav` covers `*.wav`/`*.pcm`), so the grouping
+visible in a listing can be extension-driven. Forcing `detect_datatype` to
+always answer `"default"` for a non-NULL buffer moved the `-m9` archive by 1,422
+bytes, so the comparison is sensitive to it and the identity result means
+something. That check costs one rebuild and is the difference between a test and
+a formality.
 
 ### Branch state
 

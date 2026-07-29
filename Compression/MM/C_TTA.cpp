@@ -1,12 +1,14 @@
 extern "C" {
 #include "C_TTA.h"
-#include "mmdet.h"
 }
 
-#define TTA_LIBRARY
-#include "entropy.cpp"
-#include "filters.cpp"
-#include "tta.cpp"
+// tta.cpp, entropy.cpp and filters.cpp are gone: tta_compress and
+// tta_decompress come from rust/darc-codecs/src/tta.rs, and those three files
+// were their bodies -- the TTA entropy coder, the adaptive predictors, and the
+// WAV reader/writer around them.
+//
+// mmdet.h went with them. This file detects nothing; the detector is still
+// compiled, into C_MM.o, where the Haskell FFI reaches it.
 
 
 /*-------------------------------------------------*/

@@ -1,8 +1,29 @@
 extern "C" {
 #include "C_MM.h"
 }
-#define MM_LIBRARY
-#include "mm.cpp"
+
+// mm.cpp is gone. Both mm_compress and mm_decompress come from
+// rust/darc-codecs/src/mm.rs, and what remained of that file was the diff/undiff
+// helpers they used plus a standalone driver.
+//
+// What it also did, and what still has to happen here, is pull in the detector.
+// mmdet.cpp is NOT dead code, though it looks it: its own comment defends it by
+// a tta.cpp call to autodetect_wav_header/autodetect_by_entropy that no longer
+// exists, so searching for those two names finds nothing. But mmdet.h exports
+// four more -- detect_datatype, detect_mm, detect_mm_header, detect_mm_bytes --
+// and all four are bound by the Haskell FFI at ArhiveFileList.hs:588-598, where
+// they decide $text/$exe/$compressed grouping and MM autodetection. That is
+// solid-block layout, so this include is load-bearing for what archives look
+// like, not just for what compresses.
+//
+// Both directives are carried over from mm.cpp verbatim:
+//   * MMD_LIBRARY suppresses mmdet.cpp's own standalone main (mmdet.cpp:913).
+//   * the FREEARC_DECOMPRESS_ONLY guard keeps the detector out of Unarc, which
+//     never decides how to compress anything and so never calls it.
+#define MMD_LIBRARY
+#ifndef FREEARC_DECOMPRESS_ONLY
+#include "mmdet.cpp"
+#endif
 
 
 /*-------------------------------------------------*/
