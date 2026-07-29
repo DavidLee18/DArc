@@ -92,22 +92,27 @@ dropins=$(nm -g "$LIB" 2>/dev/null | grep -c ' T _\{0,1\}tor_decompress$')
 # so a codec that is not linked is simply not a valid inner method.
 WRAPPERS="4x4/C_4x4.cpp Tornado/C_Tornado.cpp REP/C_REP.cpp LZP/C_LZP.cpp
           Dict/C_Dict.cpp Delta/C_Delta.cpp CompressionLibrary.cpp Common.cpp"
-# $lib is a SEPARATE parameter placed after every source: GNU ld resolves an
-# archive only against undefineds it has already seen, so a staticlib listed
-# first contributes nothing (links on macOS, fails on Linux).
-build() { # build OUT TREE [lib...]
-  local out="$1" tree="$2"; shift 2
+# $lib is its OWN positional parameter and is appended AFTER every source, never
+# folded into the flag list. GNU ld resolves an archive only against undefineds
+# it has already seen, so a staticlib listed before the sources contributes
+# nothing: it links on macOS and fails on Linux with "undefined reference to
+# tor_decompress" and friends. The first version of this function passed the lib
+# through "$@" ahead of the sources and did exactly that -- green locally, red on
+# the first CI run.
+build() { # build OUT TREE LIB [flags...]
+  local out="$1" tree="$2" lib="$3"; shift 3
   local src=""; for w in $WRAPPERS; do src="$src $tree/Compression/$w"; done
   # shellcheck disable=SC2086  # flag and source lists are word lists on purpose
   clang++ -std=c++17 $CFLAGS_C -w -DFREEARC_UNIX -DFREEARC_INTEL_BYTE_ORDER -DFREEARC_64BIT \
     -I"$tree" -I"$tree/Compression" "$@" \
-    "$ROOT/rust/difftest/4x4_ref.cpp" $src -o "$out"; }
+    "$ROOT/rust/difftest/4x4_ref.cpp" $src \
+    ${lib:+"$lib"} -o "$out"; }
 
 # C side: the pinned tree, all C, no staticlib.
-build "$W/c"  "$CREF"                            || { echo "C reference build failed" >&2; exit 1; }
+build "$W/c"  "$CREF" ""                         || { echo "C reference build failed" >&2; exit 1; }
 # Rust side: the WORKING TREE's wrappers -- which are the thin forwarders the
 # port left behind -- over the Rust staticlib.
-build "$W/rs" "$ROOT" -DDARC_RUST "$LIB"         || { echo "Rust-substituted build failed" >&2; exit 1; }
+build "$W/rs" "$ROOT" "$LIB" -DDARC_RUST         || { echo "Rust-substituted build failed" >&2; exit 1; }
 [ -x "$W/c" ] && [ -x "$W/rs" ] || { echo "a driver is missing after a clean build" >&2; exit 1; }
 
 # The assertion that keeps this honest. Rust embeds source paths for panic

@@ -90,13 +90,20 @@ pub trait MatchFinder {
     /// Record the positions covered by a match just emitted.
     fn update_hash(&mut self, buf: &[u8], p: usize, len: u32, step: u32);
 
-    /// Insert the single position `p`. Only the finders that `CombineMF` wraps
-    /// define this in the C; the default panics in debug rather than silently
-    /// skipping an insertion, which would change the parse without failing.
-    fn update_hash1(&mut self, buf: &[u8], p: usize) {
-        let _ = (buf, p);
-        debug_assert!(false, "update_hash1 called on a finder that does not define it");
-    }
+    /// Insert the single position `p`.
+    ///
+    /// REQUIRED, deliberately. This used to carry a default body whose only
+    /// content was `debug_assert!(false, ...)`, on the reasoning that only the
+    /// finders `CombineMF` wraps define it in the C. That default cost real
+    /// correctness: `Hash3` defined the method inherently but never as a trait
+    /// method, `CombineMF` holds its auxiliary finder as `Box<dyn MatchFinder>`,
+    /// so the call landed on the default -- and `debug_assert!` compiles out in
+    /// release, making it a silent no-op. Tornado presets 7-11 then diverged
+    /// from the C. With no default, that omission is a compile error.
+    ///
+    /// Implementors that the C leaves without this method use `unreachable!()`,
+    /// which unlike `debug_assert!` still panics in release.
+    fn update_hash1(&mut self, buf: &[u8], p: usize);
 
     /// Reset every slot; called when a non-sliding buffer is refilled.
     ///
@@ -110,7 +117,13 @@ pub trait MatchFinder {
     fn shift(&mut self, shift: usize);
 
     /// Drop any match a lazy wrapper is holding.
-    fn invalidate_match(&mut self) {}
+    ///
+    /// REQUIRED for the same reason as `update_hash1`: an empty default silently
+    /// does nothing for a finder that needed to forward. The C's
+    /// `BaseMatchFinder` really does define this empty (MatchFinder.cpp:105), so
+    /// leaves write an explicit empty body -- the point is that it is written,
+    /// not inherited by accident.
+    fn invalidate_match(&mut self);
 
     fn error(&self) -> Option<c_int>;
 }
@@ -275,6 +288,21 @@ impl MatchFinder1 {
 }
 
 impl MatchFinder for MatchFinder1 {
+
+    /// The C's `MatchFinder1` has no `update_hash1` (only MatchFinderN,
+    /// ExactMatchFinder, CachingMatchFinder, CycledCachingMatchFinder, Hash3 and
+    /// CombineMF define one), so a call here is a porting error rather than a
+    /// runtime case. `unreachable!` and not `debug_assert!`: it must fail in
+    /// release too, which is the mistake this trait used to make.
+    fn update_hash1(&mut self, _buf: &[u8], _p: usize) {
+        unreachable!("MatchFinder1::update_hash1 -- the C defines no such method");
+    }
+
+    /// `BaseMatchFinder::invalidate_match` is empty in the C
+    /// (MatchFinder.cpp:105) and this finder does not override it. Written out
+    /// rather than inherited from a trait default, so that a finder which SHOULD
+    /// forward cannot get this behaviour by accident.
+    fn invalidate_match(&mut self) {}
     fn min_length(&self) -> u32 {
         4
     }
@@ -326,6 +354,21 @@ impl MatchFinder2 {
 }
 
 impl MatchFinder for MatchFinder2 {
+
+    /// The C's `MatchFinder2` has no `update_hash1` (only MatchFinderN,
+    /// ExactMatchFinder, CachingMatchFinder, CycledCachingMatchFinder, Hash3 and
+    /// CombineMF define one), so a call here is a porting error rather than a
+    /// runtime case. `unreachable!` and not `debug_assert!`: it must fail in
+    /// release too, which is the mistake this trait used to make.
+    fn update_hash1(&mut self, _buf: &[u8], _p: usize) {
+        unreachable!("MatchFinder2::update_hash1 -- the C defines no such method");
+    }
+
+    /// `BaseMatchFinder::invalidate_match` is empty in the C
+    /// (MatchFinder.cpp:105) and this finder does not override it. Written out
+    /// rather than inherited from a trait default, so that a finder which SHOULD
+    /// forward cannot get this behaviour by accident.
+    fn invalidate_match(&mut self) {}
     fn min_length(&self) -> u32 {
         4
     }
@@ -418,6 +461,20 @@ impl MatchFinderN {
 }
 
 impl MatchFinder for MatchFinderN {
+
+    /// Forwards to the inherent body, which is the port of the C's
+    /// MatchFinder.cpp:284. It was previously inherent-ONLY -- the same shape as
+    /// the Hash3 bug -- so a `dyn` call would have reached the old trait default
+    /// and silently done nothing.
+    fn update_hash1(&mut self, buf: &[u8], p: usize) {
+        MatchFinderN::update_hash1(self, buf, p)
+    }
+
+    /// `BaseMatchFinder::invalidate_match` is empty in the C
+    /// (MatchFinder.cpp:105) and this finder does not override it. Written out
+    /// rather than inherited from a trait default, so that a finder which SHOULD
+    /// forward cannot get this behaviour by accident.
+    fn invalidate_match(&mut self) {}
     fn min_length(&self) -> u32 {
         4
     }
@@ -596,6 +653,25 @@ impl CachingMatchFinder {
 }
 
 impl MatchFinder for CachingMatchFinder {
+
+    /// The C defines this at MatchFinder.cpp:462 -- it shifts the row's
+    /// (ptr, key) PAIRS down by two and writes `fromPtr(p)`/`key(p)` at the
+    /// head -- but nothing in the port ever calls it: only `CombineMF` does, and
+    /// its children are CycledCachingMatchFinder and Hash3.
+    ///
+    /// Deliberately NOT ported speculatively. An untested body for a path
+    /// nothing exercises would look authoritative and could be subtly wrong;
+    /// this panics loudly instead, and the line reference above is what to port
+    /// if it ever becomes reachable.
+    fn update_hash1(&mut self, _buf: &[u8], _p: usize) {
+        unreachable!("CachingMatchFinder::update_hash1 -- port MatchFinder.cpp:462 if this is reached");
+    }
+
+    /// `BaseMatchFinder::invalidate_match` is empty in the C
+    /// (MatchFinder.cpp:105) and this finder does not override it. Written out
+    /// rather than inherited from a trait default, so that a finder which SHOULD
+    /// forward cannot get this behaviour by accident.
+    fn invalidate_match(&mut self) {}
     fn min_length(&self) -> u32 {
         4
     }
@@ -844,6 +920,14 @@ impl<M: MatchFinder> LazyMatching<M> {
 }
 
 impl<M: MatchFinder> MatchFinder for LazyMatching<M> {
+
+    /// The C's `LazyMatching` has no `update_hash1` (MatchFinder.cpp:740-760
+    /// defines find_matchlen, update_hash and invalidate_match only), so calling
+    /// it would not compile there. Forwarding to the wrapped finder would be
+    /// harmless but would invent behaviour the C does not have.
+    fn update_hash1(&mut self, _buf: &[u8], _p: usize) {
+        unreachable!("LazyMatching::update_hash1 -- the C defines no such method");
+    }
     fn min_length(&self) -> u32 {
         self.mf.min_length()
     }
@@ -1101,6 +1185,12 @@ impl ExactMatchFinder {
 }
 
 impl MatchFinder for ExactMatchFinder {
+
+    /// `BaseMatchFinder::invalidate_match` is empty in the C
+    /// (MatchFinder.cpp:105) and this finder does not override it. Written out
+    /// rather than inherited from a trait default, so that a finder which SHOULD
+    /// forward cannot get this behaviour by accident.
+    fn invalidate_match(&mut self) {}
     fn min_length(&self) -> u32 {
         4
     }
@@ -1210,6 +1300,12 @@ impl CycledCachingMatchFinder {
 }
 
 impl MatchFinder for CycledCachingMatchFinder {
+
+    /// `BaseMatchFinder::invalidate_match` is empty in the C
+    /// (MatchFinder.cpp:105) and this finder does not override it. Written out
+    /// rather than inherited from a trait default, so that a finder which SHOULD
+    /// forward cannot get this behaviour by accident.
+    fn invalidate_match(&mut self) {}
     /// `N` -- the C overrides this at MatchFinder.cpp:631 (`{return N;}`),
     /// inside a struct body that runs 507-632. Reading only the first ~90 lines
     /// of that body suggests it inherits BaseMatchFinder's 4; it does not, and
