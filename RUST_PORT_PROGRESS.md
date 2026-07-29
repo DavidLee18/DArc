@@ -23,28 +23,44 @@ and delete the C and Haskell that the Rust replaces.
 
 ### Wired ≠ pruned
 
-Keep these separate when reporting progress. Four deletions have landed --
-zstd's `libzstd` (52,856 lines), Delta/Dict/REP (2,912), LZ4's `lz4.c`/
-`lz4hc.c` (6,319), LZP (259) and DisPack (1,018) -- for a running total of
-**63,364 lines of C removed**.
-Those four codecs are Rust-only. Everything
-else is still present: every other `#ifndef DARC_RUST` block and vendored tree
-remains, because `Unarc/` still builds them.
+Keep these separate when reporting progress.
+
+Don't hand-maintain a running total here -- the one that used to sit in this
+paragraph drifted wrong within two PRs, because each deletion updated its own
+row and not the sum. Measure it:
+
+```bash
+for rev in 5c2c6ce HEAD; do
+  git ls-tree -r --name-only $rev -- Compression/ | rg '\.(c|cpp|h|hpp)$' \
+    | while read -r f; do git show "$rev:$f" | wc -l; done | awk -v r=$rev '{s+=$1} END {print r, s}'
+done
+```
+
+`5c2c6ce` is the pinned C-reference SHA, the last revision holding the full C
+codec set, so the difference is what the port has removed since. At `0159485`
+that was 104,052 → 65,061, i.e. **38,991 lines**.
+
+The old claim that everything unpruned "is still present because `Unarc/` still
+builds them" is no longer a reason for anything: `Unarc/makefile` links
+`libdarc_codecs.a` built with the `dropin` feature, so Unarc gets its decoders
+from Rust like the archiver does. Anything still here needs a reason that is
+true today -- see the GRZip row.
 
 | codec | Rust module | wired under `DARC_RUST` | C pruned |
 |---|---|---|---|
-| BSC | `bsc/` | yes | no |
+| BSC | `bsc/` | yes (both directions) | **YES — the vendored libbsc is gone, 26,700 lines** |
 | Delta | `delta` | yes (both directions) | **YES** |
 | Dict | `dict`, `dict_encode` | yes (both directions) | **YES** |
 | DisPack | `dispack` (both directions) | yes (encode + decode) | **YES — 1,018 lines deleted** |
-| GRZip | `grzip/` (both directions) | yes (encode + decode) | partly — 1,994 encoder lines deleted; decoders stay for Unarc |
+| GRZip | `grzip/` (both directions) | yes (encode + decode) | **YES — 1,994 encoder lines, then 2,105 more; only the method object and parser are left** |
 | LZ4 | `lz4` (`lz4_flex`) + `lz4hc` (own HC port) | yes (decode + both encoders) | **YES — 6,319 lines deleted** |
 | LZP | `lzp` | yes (both directions) | **YES — 259 lines deleted** |
-| MM | `mm`, `mmdet` (both directions) | yes (encode + decode) | partly — `mm_compress` excluded; `mmdet.cpp` stays for TTA |
+| MM | `mm`, `mmdet` (both directions) | yes (encode + decode) | partly — both entry points gone; `mm.cpp` is prunable, `mmdet.cpp` is NOT (the Haskell FFI calls it, see below) |
+| PPMd | `ppmd/` (both directions) | yes (encode + decode) | **YES — 1,146 lines, the whole engine** |
 | REP | `rep` | yes (both directions, byte-exact) | **YES** |
 | SREP | `srep` (decode only) | external binary, no `DARC_RUST` wiring | no — see §14 before porting the encoder |
 | Tornado | `tornado` (both directions) | yes (encode + decode, all 9 instantiations) | **YES — the whole C codec is gone, 3,183 lines** |
-| TTA | `tta` | yes | no |
+| TTA | `tta` | yes (both directions) | partly — both entry points gone; `tta.cpp`, `entropy.cpp` and `filters.cpp` are prunable (see below) |
 | zstd | `zstd` (`zstd-safe` binding) | yes | **YES — 2.2 MB deleted** |
 | Encryption | `darc-crypto` | yes | no |
 
@@ -65,12 +81,54 @@ decoder, and DArc's own HC port, byte-identical to the C for levels 1-9.
 | `compile-mhs-win64` | windows-amd64, windows-arm64 | yes, both green |
 | `compile-ghc`, `compile-ghc-win64` | *removed* | deleted; the Haskell layer goes to Rust |
 
+### Dead C that a stale comment is keeping alive
+
+A codec whose entry points are Rust does not automatically shrink: the support
+code around them stays compiled, and the comment explaining why tends to outlive
+the reason. Two were found false by reading the tree instead of the comment:
+
+- **GRZip's decoder** was kept because Unarc "does not link the Rust crate".
+  `Unarc/makefile` links `libdarc_codecs.a` with the `dropin` feature, which is
+  exactly what exports `grzip_decompress`. Its worker pool was kept "for the
+  encoder, which still uses them" -- in the same file whose encoder had already
+  been deleted. Both are gone now (2,105 lines), and all 13 `-mgrzip` parameter
+  combinations still extract through Unarc.
+- **`Compression/MM/`**: `mm.cpp`, `tta.cpp`, `entropy.cpp` and `filters.cpp`
+  are each down to support code for entry points that are now Rust, and their
+  comments say so -- the encode halves "stay ... cost only a few unused bytes".
+  `C_MM.cpp` and `C_TTA.cpp` call nothing from them but `mm_compress`,
+  `mm_decompress`, `tta_compress` and `tta_decompress`, all four of which the
+  Rust crate supplies. Roughly 1,500 lines.
+
+**The check that settles it** is not reading the comment but asking who calls
+the symbol, with the codec's own directory excluded from the search -- a file
+whose only callers are itself and its header is dead:
+
+```bash
+rg -n --glob '!Compression/<Codec>/**' --glob '!rust/**' '\b<symbol>\b'
+```
+
+**Run it over the file's whole exported surface, not over the symbols the
+comment happens to name.** `mmdet.cpp` looked dead by exactly this check and is
+not: its comment justifies it by a `tta.cpp` call to
+`autodetect_wav_header`/`autodetect_by_entropy` that no longer exists, and
+searching for those two names finds nothing. But `mmdet.h` exports four more --
+`detect_datatype`, `detect_mm`, `detect_mm_header`, `detect_mm_bytes` -- and all
+four are bound by the Haskell FFI at `ArhiveFileList.hs:588-598`, where they
+drive `$text`/`$exe`/`$compressed` grouping and MM autodetection. The file is
+load-bearing for solid-block layout. A stale comment can name the wrong reason
+for a conclusion that is still correct; enumerate the header, then search.
+
 ### Branch state
 
-`main` = `e753591` (PR #74 merged). Recent landings, each post-merge CI green
-12/12: #71 Delta/Dict/REP deleted, #72 LZ4-HC ported and `Compression/LZ4`'s C
+`main` = `0159485` (PR #96 merged), post-merge CI green. Recent landings:
+#86-#92 the BSC encoder ported stage by stage, #93 the vendored libbsc deleted,
+#94 PPMd ported, #95 every difftest oracle rebuilt with its codec makefile's
+flags, #96 `-mppmd` routed through Rust and the C engine deleted.
+
+Earlier: #71 Delta/Dict/REP deleted, #72 LZ4-HC ported and `Compression/LZ4`'s C
 deleted, #73 the `lz4opt` optimal parser (LZ4 now byte-identical to the C at all
-twelve levels), #74 the SREP heap overflow fixed.
+twelve levels), #74 the SREP heap overflow fixed, #83 Tornado.
 
 Prior landmarks: `588522d` (PR #66: LZ4 + zstd wired, Rust codecs
 cross-compiling for both Windows targets, every action SHA-pinned, Rust
