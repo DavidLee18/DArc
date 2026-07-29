@@ -1192,6 +1192,10 @@ impl CycledCachingMatchFinder {
 }
 
 impl MatchFinder for CycledCachingMatchFinder {
+    /// `N` -- the C overrides this at MatchFinder.cpp:631 (`{return N;}`),
+    /// inside a struct body that runs 507-632. Reading only the first ~90 lines
+    /// of that body suggests it inherits BaseMatchFinder's 4; it does not, and
+    /// forcing 4 here takes the sweep from 10 differing to 173.
     fn min_length(&self) -> u32 {
         self.n as u32
     }
