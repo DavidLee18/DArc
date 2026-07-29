@@ -433,6 +433,11 @@ fn filters_decompress(data: &mut [i64], level: usize, byte_size: usize) {
             2 => *p += predictor1(last, 5),
             3 => *p += predictor1(last, 5),
             4 => *p += last,
+            // Verified against the pinned C: `switch (byte_size)` has cases
+            // 1-4 and NO default (MM/tta.cpp:133, :183), so a value outside
+            // 1..=4 passes through unchanged there too. Documented rather than
+            // turned into `unreachable!()` because the fall-through is the C's
+            // behaviour, not an impossibility.
             _ => {}
         }
         last = *p;
@@ -501,6 +506,11 @@ fn write_wave(
                     out[base + 2] = (u >> 16) as u8;
                 }
                 4 => out[base..base + 4].copy_from_slice(&(v as i32).to_le_bytes()),
+                // Verified against the pinned C: `switch (byte_size)` has cases
+                // 1-4 and NO default (MM/tta.cpp:133, :183), so a value outside
+                // 1..=4 passes through unchanged there too. Documented rather than
+                // turned into `unreachable!()` because the fall-through is the C's
+                // behaviour, not an impossibility.
                 _ => {}
             }
         }
@@ -904,6 +914,11 @@ fn filters_compress(data: &mut [i64], level: usize, byte_size: usize) {
             1 => *v = v.wrapping_sub(predictor1(last, 4)),
             2 | 3 => *v = v.wrapping_sub(predictor1(last, 5)),
             4 => *v = v.wrapping_sub(last),
+            // Verified against the pinned C: `switch (byte_size)` has cases
+            // 1-4 and NO default (MM/tta.cpp:133, :183), so a value outside
+            // 1..=4 passes through unchanged there too. Documented rather than
+            // turned into `unreachable!()` because the fall-through is the C's
+            // behaviour, not an impossibility.
             _ => {}
         }
         last = tmp;
@@ -1029,6 +1044,11 @@ fn read_wave(
                 ]) as i64;
             }
         }
+        // Verified against the pinned C: `switch (byte_size)` has cases
+        // 1-4 and NO default (MM/tta.cpp:133, :183), so a value outside
+        // 1..=4 passes through unchanged there too. Documented rather than
+        // turned into `unreachable!()` because the fall-through is the C's
+        // behaviour, not an impossibility.
         _ => {}
     }
     Ok((bytes_read, buffer))

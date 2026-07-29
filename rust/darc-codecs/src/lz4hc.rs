@@ -1051,9 +1051,15 @@ pub fn compress_hc(src: &[u8], dst: &mut [u8], level: i32) -> usize {
     let mut out = Out { buf: dst, pos: 0 };
     let input_size = src.len() as i32;
     let strategy = level_params(level);
+    // Exhaustive on purpose: a wildcard here would silently give a new strategy
+    // `max_nb_attempts = 0`, and `pattern_analysis` below is derived from it, so
+    // the parse would change without any error. clippy::wildcard_enum_match_arm
+    // is denied at the crate root to keep it that way.
     let max_nb_attempts = match strategy {
         Strategy::HashChain(n) => n,
-        _ => 0,
+        // The mid and optimal parsers do not use a hash-chain attempt budget;
+        // lz4hc.c reaches their loops without consulting nbSearches this way.
+        Strategy::Mid | Strategy::Optimal(..) => 0,
     };
     // `patternAnalysis` (lz4hc.c:1133) is tied to the search depth, not the
     // level number: "levels 9+". (The optimal parser hardcodes it on instead.)

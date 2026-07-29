@@ -329,7 +329,11 @@ impl Encoder {
         for b in &self.buf {
             out.extend_from_slice(b);
         }
-        debug_assert_eq!(out.len(), total);
+        // assert_eq!, not debug_assert_eq!: this runs once per block, so it is
+        // affordable in release, and a wrong output length means a malformed
+        // stream. The difftests build --release, where a debug_assert would not
+        // have been checked at all.
+        assert_eq!(out.len(), total, "DisPack encode produced the wrong length");
         out
     }
 }
