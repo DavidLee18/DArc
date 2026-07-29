@@ -435,15 +435,40 @@ Two things this port established that generalise:
   whose end lands on that husk loops for ever. The port breaks out, which cannot
   change any output the C can produce.
 
-### 10. Decide explicitly whether to port 4x4 — recommendation: no
+### 10. Decide explicitly whether to port 4x4 — recommendation: no, but it is NOT dead code
 
 Threading meta-codec; its decode delegates to the library dispatcher
 `Decompress()` per block, so the only portable logic is block framing
 (`C_4x4.cpp:436`, call at `:237`). Its value is parallelism, which a decode-first
-port drops. There is **no fingerprint case** (the suite's `-m4x` is an unrelated
-exe preset, not this codec). A Rust decode would be an FFI shim calling C
-`Decompress`, which under `DARC_RUST` dispatches back to Rust drop-ins
-(Rust→C→Rust). Record the decision so it is not re-litigated.
+port drops. A Rust decode would be an FFI shim calling C `Decompress`, which
+under `DARC_RUST` dispatches back to Rust drop-ins (Rust→C→Rust). The decision
+stands: do not port it.
+
+**Do not read that as "4x4 is unused".** An earlier version of this entry said
+there is "no fingerprint case", which is true of the *test suite* — the `-m4x`
+there is an unrelated exe preset — and was repeatedly misread as "nothing uses
+this codec". It is on the DEFAULT path:
+
+```
+Compression.hs:474-481   3binary = 4x4:b8m:lzma:8m:h64m:fast:mc8
+                         ...
+                         9binary = 4x4:b254m:lzma:254m:max
+Compression.hs:468-469   1xb = 4x4:tor:3     2xb = 4x4:tor:6
+```
+
+So `-m3` through `-m9` route the `$binary` group — usually the largest files in
+an archive — through 4x4. Its C is load-bearing and must not be deleted as part
+of any "prune what the port replaced" sweep.
+
+Because it is not ported, `4x4-check.sh` asks a different question from every
+other harness: 4x4's stream is its own framing wrapped around whatever the
+dispatcher resolves the inner method to, and those inner codecs are now Rust.
+The harness therefore builds the SAME pinned C driver twice — once over pinned C
+codecs, once with `-DDARC_RUST` over the Rust staticlib — and requires identical
+streams. It needs the `dropin` cargo feature, unlike the others, because it
+reaches Rust through the C dispatcher rather than calling `darc_rs_*` directly.
+`lzma` is deliberately excluded as an inner method: it has no Rust port, so that
+comparison would compare a build against itself.
 
 ### 11. Port the Haskell application layer (17,843 lines, 41 files)
 

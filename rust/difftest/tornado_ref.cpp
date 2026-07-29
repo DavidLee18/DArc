@@ -59,7 +59,7 @@ int main (int argc, char **argv) {
   // port. Compression is a separate mode rather than a flag because the
   // encoder covers only some presets so far and must be able to refuse.
   if (argc<2 || (argv[1][0]!='c'&&argv[1][0]!='d')) {
-    fprintf(stderr,"usage: %s c PRESET [NOTABLES] | d\n",argv[0]); return 2; }
+    fprintf(stderr,"usage: %s c PRESET [NOTABLES] [ALL_AT_ONCE] | d\n",argv[0]); return 2; }
   size_t cap=1<<20, len=0; unsigned char *in=(unsigned char*)malloc(cap); if(!in) return 3;
   for(;;){ if(len==cap){cap*=2; unsigned char*g=(unsigned char*)realloc(in,cap); if(!g){free(in);return 3;} in=g;}
     size_t n=fread(in+len,1,cap-len,stdin); if(n==0)break; len+=n; }
@@ -68,6 +68,12 @@ int main (int argc, char **argv) {
   if (argv[1][0]=='c') {
     int preset = argc>2? atoi(argv[2]) : 4;
     int notables = argc>3? atoi(argv[3]) : 0;
+    // 4th arg sets `compress_all_at_once`, which BOTH encoders read (the C
+    // inside tor_compress_chunk, the Rust via the value tornado_ccodec.cpp
+    // passes). It defaults to 0 and nothing here used to set it, so preset 9 in
+    // all-at-once mode -- the mode 4x4 forces, and the only caller that does --
+    // was never compared. That is where the port diverges.
+    compress_all_at_once = argc>4? atoi(argv[4]) : 0;
 #ifdef USE_RUST
     rc = rust_tor_compress_preset (preset, notables, io_callback, &b);
 #else
