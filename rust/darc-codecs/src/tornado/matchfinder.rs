@@ -980,6 +980,24 @@ impl<M: MatchFinder> Hash3<M> {
 }
 
 impl<M: MatchFinder> MatchFinder for Hash3<M> {
+    /// Forwards to the inherent `Hash3::update_hash1`. Without this the trait's
+    /// DEFAULT body is what `CombineMF` reaches, because its auxiliary finder is
+    /// a `Box<dyn MatchFinder>` -- and that default is a `debug_assert!` which
+    /// compiles out in release, i.e. a silent no-op.
+    ///
+    /// That was a real divergence, not a theoretical one. `CombineMF` calls
+    /// `mf2.update_hash1(p)` on its early exit (`len1 > mf1.MINLEN`), which is
+    /// how the C seeds the auxiliary 2/3-byte tables at positions it skips. The
+    /// port made 3397 of those insertions where the C made 4494; the first
+    /// missed one was at p=0x268, and it surfaced ~28 KB later as a 3-byte match
+    /// the C found and the port did not. Presets 7-11 are affected because they
+    /// are the only ones that pair this finder with `CombineMF`.
+    ///
+    /// The debug_assert would have caught it -- the difftests build --release.
+    fn update_hash1(&mut self, buf: &[u8], p: usize) {
+        Hash3::update_hash1(self, buf, p)
+    }
+
     /// Two, not the wrapped finder's four.
     fn min_length(&self) -> u32 {
         2

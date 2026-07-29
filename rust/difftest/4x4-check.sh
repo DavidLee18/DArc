@@ -54,23 +54,15 @@
 #     drop-in. `lzma` is the other one the presets use, but it has no Rust port
 #     at all, so that comparison would compare a build against itself while
 #     dragging the whole 7-Zip SDK into the link.
-# ## KNOWN FAILING CASE -- do not wire into CI until it is fixed
+# ## The bug this harness found, now fixed
 #
-# This harness currently FAILS on `4x4:b256k:tor:9` and `4x4:b1m:tor:9`, and
-# that is a real finding, not a harness defect. Holding 4x4's framing and the
-# dispatcher identical and varying ONLY Tornado (pinned C engine vs the Rust
-# port) still diverges: 616270 vs 616271 bytes at 256k, 607081 vs 607077 at 1m,
-# identical at 64k and for tor:3/tor:6. Minimal repro ~141 KB of input, payloads
-# byte-identical for 30086 bytes and then differing.
-#
-# Cause: Tornado's port is byte-identical at `compress_all_at_once = 0` -- the
-# default, and the only value tornado-encode-check.sh ever tests, because
-# tornado_ccodec.cpp passes the live global and nothing sets it. 4x4 forces it
-# to 1 (C_4x4.cpp:559-566) and is the only caller that does. So preset 9 in
-# all-at-once mode was never covered.
-#
-# No shipped preset reaches it (1xb/2xb are tor:3/tor:6), so this is not urgent,
-# but Tornado is one of DArc's own formats and byte-exactness is the stated bar.
+# It failed on `4x4:b*:tor:9` when first written, and that turned out to be a
+# real divergence in the Tornado port rather than a defect here: `Hash3` defined
+# `update_hash1` only in its inherent impl, so `CombineMF` -- which holds its
+# auxiliary finder as `Box<dyn MatchFinder>` -- reached the trait's default
+# body, a `debug_assert!` that compiles out in release. Presets 7-11 are the
+# only ones pairing that finder with `CombineMF`. Fixed in matchfinder.rs; this
+# harness and tornado-encode-check.sh both cover it now.
 set -uo pipefail
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 . "$ROOT/rust/difftest/c-reference.sh"

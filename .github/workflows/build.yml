@@ -953,6 +953,16 @@ jobs:
         # this name was missing, so the file passed locally and ran nowhere.
         # With GRZip's C now deleted these two are its only oracle.
         rust/difftest/grzip-stage-check.sh
+        # 4x4 is NOT ported and will not be; this asks the other question --
+        # whether substituting Rust codecs UNDER 4x4's framing changes the
+        # stream. It matters because 3binary..9binary are `4x4:bNm:lzma:...`
+        # (Compression.hs:474-481), so -m3..-m9 route $binary through it.
+        #
+        # It must not share a step with the tornado harnesses: it builds the
+        # staticlib WITH --features dropin and they need it WITHOUT (the pinned
+        # tornado_ccodec.cpp defines tor_decompress and would collide). Cargo
+        # re-resolves per run, so sequential is fine; concurrent is not.
+        rust/difftest/4x4-check.sh
         rust/difftest/dispack-check.sh
         # The other direction: DisPack's ENCODER must be byte-exact too, since
         # DisPack is one of DArc's own formats. Filtered output that merely
