@@ -917,6 +917,39 @@ jobs:
         # decodes each block with the C decoder rather than lz4_flex.
         rust/difftest/lz4hc-check.sh
 
+  # Debug profile, on purpose. Every other codec job builds --release, where
+  # `debug_assert!` compiles to nothing -- so the crate's 19 assertions are dead
+  # in the only configuration otherwise tested. The Tornado presets 7-11
+  # divergence was exactly that: a guard firing into the void. Removing the fix
+  # makes this job report 80 panics naming the cause; the release harnesses
+  # needed differential tracing to find the same thing.
+  rust-codecs-debug-assert:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      with:
+        lfs: false
+    - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+    - name: Cache LLVM
+      id: cache-llvm
+      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+      with:
+        path: ./llvm
+        key: llvm-21.1.8-${{ runner.os }}-${{ runner.arch }}
+    - name: Install LLVM and Clang
+      uses: KyleMayes/install-llvm-action@ebc0426251bc40c7cd31162802432c68818ab8f0 # v2
+      with:
+        version: "21.1.8"
+        cached: ${{ steps.cache-llvm.outputs.cache-hit }}
+    - name: Install packages
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y liblua5.1-dev libncurses-dev libcurl4-openssl-dev cpphs
+    - name: Codecs under debug assertions
+      run: |
+        chmod +x rust/difftest/*.sh
+        rust/difftest/debug-assert-check.sh
+
   rust-codecs-b:
     runs-on: ubuntu-latest
     steps:
