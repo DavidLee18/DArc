@@ -1,6 +1,14 @@
-Changes:
+DArc's changes to GRZipII/libGRZip (Grebnov Ilya, 2002-2004):
 
 1. Added an early check in LZP_Encode
 2. Removed CRC computation/checking
 3. Changed the encoding of Mode to widen the range of MinMatchLen/HashSize in LZP
 
+These describe the vendored C, which no longer lives here: the codec is
+rust/darc-codecs/src/grzip/ and all three changes are carried into it. The list
+is kept because it is the only record of how DArc's GRZip stream differs from
+stock libGRZip -- the two are not interchangeable, so anyone comparing the port
+against an upstream libGRZip needs to know which one it is meant to match.
+
+The C is still reachable at the revision rust/difftest/c-reference.sh pins,
+which is where grzip-check.sh builds its oracle from.

@@ -1,10 +1,15 @@
 #!/usr/bin/env bash
 # Differential-test the GRZip decoder port against the C original.
 #
-# GRZip is ported decode-first, so the C compressor is the only encoder. This
-# works at the BLOCK level rather than the stream level: grzip_decompress (the
-# multithreaded stream wrapper) is not ported yet, but GRZip_DecompressBlock is,
-# and it is where every ported stage actually runs.
+# This works at the BLOCK level rather than the stream level, because
+# GRZip_DecompressBlock is where every ported stage actually runs; the stream
+# wrapper around it only splits and reassembles blocks, and grzip-stage-check.sh
+# covers that seam.
+#
+# The header used to say the stream wrapper was "not ported yet" and that the C
+# compressor was the only encoder. Both directions have since been ported and
+# the C for both is now deleted -- and that stale sentence is part of why the C
+# survived as long as it did, so it is worth keeping this one current.
 #
 # The mode word selects the pipeline: bit1 picks ST4 over BWT, bit2 picks the
 # MTF arithmetic coder over WFC, and the upper bits carry LZP parameters. All

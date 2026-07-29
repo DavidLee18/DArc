@@ -1,6 +1,6 @@
 /*-------------------------------------------------*/
 /* GRZipII/libGRZip compressor          libGRZip.c */
-/* libGRZip Compression(Decompression) Functions   */
+/* Archiver-side glue for the GRZip method         */
 /*-------------------------------------------------*/
 
 /*--
@@ -29,303 +29,38 @@
   George Plechanov, Michael Schindler, Robert Sedgewick,
   Julian Seward, David Wheeler, Vadim Yoockin.
 
-  Normal compression mode:
-    Compression     memory use : [7-9]*BlockLen  + 1Mb
-    Decompression   memory use : 5*BlockLen      + 1Mb
-  Fast compression mode:
-    Compression     memory use : 5*BlockLen      + 1Mb
-    Decompression   memory use : 5.125*BlockLen  + 1Mb
-
   For more information on these sources, see the manual.
 --*/
 
-#include <math.h>
-#include <stdlib.h>
-#include <string.h>
+// None of GRZip's algorithm is left in C. Both entry points come from
+// rust/darc-codecs/src/grzip/, which exports grzip_compress and
+// grzip_decompress under those exact names; what remains here is the
+// archiver's glue -- the GRZIP_METHOD parameter object and the parser for the
+// method string.
+//
+// The encoder went in an earlier pass, taking GRZip_StoreBlock,
+// GRZip_CompressBlock, GRZip_GetAdaptiveBlockSize and the GRZipMTCompressor
+// pool with it. This pass removes the decoder that outlived it --
+// GRZip_DecompressBlock, GRZip_CheckBlockSign, GRZipDecompressionThread,
+// GRZipMTDecompressor -- and with them the six vendored transform files they
+// were the only callers of: LZP.c, BWT.c, ST4.c, MTF_Ari.c, WFC_Ari.c and
+// Rec_Flt.c, plus WFC_MTF.h and libGRZip.h.
+//
+// Two comments kept that code alive and both had stopped being true. The
+// decoder's said Unarc "does not link the Rust crate", so the standalone
+// extractor still needed a C one: Unarc/makefile builds libdarc_codecs.a with
+// the `dropin` feature and links it, and `dropin` is precisely what exports
+// grzip_decompress. The worker pool's said it stayed "for the encoder, which
+// still uses them", written in the same edit that deleted that encoder.
+//
+// Byte-identity in both directions is established by
+// rust/difftest/grzip-check.sh, which builds its oracle from a pinned revision
+// of the C rather than from this tree -- so removing the working-tree copy
+// does not weaken the test that justifies removing it.
 
 extern "C" {
 #include "C_GRZip.h"
 }
-#include "../MultiThreading.h"
-#include "libGRZip.h"
-#include "LZP.c"
-#include "BWT.c"
-#include "ST4.c"
-#include "MTF_Ari.c"
-#include "WFC_Ari.c"
-#include "Rec_Flt.c"
-
-const sint32 RESERVED = 0;  // unused bytes in the header are filled with this value
-
-#ifndef FREEARC_DECOMPRESS_ONLY
-
-#endif  // !defined (FREEARC_DECOMPRESS_ONLY)
-
-sint32 GRZip_CheckBlockSign(uint8 * Input,sint32 Size)
-{
-  if (Size<28) return (GRZ_UNEXPECTED_EOF);
-  if ((*(sint32 *)(Input+24))!=RESERVED)
-    return (GRZ_CRC_ERROR);
-  return (GRZ_NO_ERROR);
-}
-
-// The GRZip ENCODER is Rust now: rust/darc-codecs/src/grzip/. Removed from here
-// were GRZip_StoreBlock, GRZip_CompressBlock, GRZip_GetAdaptiveBlockSize, the
-// GRZipMTCompressor worker pool and grzip_compress.
-//
-// The port is single-threaded where that pool was, which is NOT a difference in
-// output: blocks are independent and the writer emits them in order, so the
-// stream is a plain concatenation either way.
-//
-// The DECODER stays. Unarc builds this file with -DFREEARC_DECOMPRESS_ONLY and
-// does not link the Rust crate, so the standalone extractor and the SFX modules
-// still need GRZip_DecompressBlock, GRZip_CheckBlockSign and grzip_decompress.
-// GRZIP_METHOD's own members stay too -- they are the archiver's glue, and now
-// reach the port through the grzip_compress/grzip_decompress symbols.
-//
-// Verified byte-identical across the stage matrix, ten block-level mode words
-// and the multi-block stream; the archiver's grzip fingerprint is unchanged.
-
-sint32 GRZip_DecompressBlock(uint8 * Input,sint32 Size,uint8 * Output)
-{
-  if (Size<28) return (GRZ_UNEXPECTED_EOF);
-  if ((*(sint32 *)(Input+24))!=RESERVED)
-    return (GRZ_CRC_ERROR);
-  if ((*(sint32 *)(Input+16))+28>Size) return (GRZ_UNEXPECTED_EOF);
-  if ((*(sint32 *)(Input+20))!=RESERVED)
-    return (GRZ_CRC_ERROR);
-  // The remaining header words are sizes fed straight to BigAlloc and used as
-  // decode bounds below, but nothing checked them: a negative or absurd value
-  // produced a wild allocation and unbounded decode. A block can never exceed
-  // GRZ_MaxBlockSize by construction, so reject anything outside that.
-  if ((*(sint32 *)(Input))   <0 || (*(sint32 *)(Input))   >GRZ_MaxBlockSize) return (GRZ_CRC_ERROR);
-  if ((*(sint32 *)(Input+8)) <0 || (*(sint32 *)(Input+8)) >GRZ_MaxBlockSize) return (GRZ_CRC_ERROR);
-  if ((*(sint32 *)(Input+16))<0) return (GRZ_CRC_ERROR);
-  sint32 Mode=*(sint32 *)(Input+4);
-  sint32 Result=*(sint32 *)(Input+16);
-  if (Mode==-1)
-  {
-    Mode=*(sint32 *)(Input+8);
-    if (Mode==0)
-    {
-      memcpy(Output,Input+28,Result);
-      return (Result);
-    }
-    Result=GRZip_LZP_Decode(Input+28,Result,Output,Get_LZP_MinMatchLen(Mode),Get_LZP_HT_Size(Mode),*(sint32 *)(Input));
-    return (Result);
-  }
-
-  if (Mode==-2)
-  {
-    sint32 RecMode=*(sint32 *)(Input+8);
-              Size=*(sint32 *)(Input);
-
-    uint8 * Buffer=(uint8 *)BigAlloc(Size+1024);
-    if (Buffer==NULL) return(GRZ_NOT_ENOUGH_MEMORY);
-
-    uint8 * Tmp=(Input+28);
-    sint32  OutputPos=0;
-
-    if ((RecMode&1)==1)
-    {
-      Result=GRZip_DecompressBlock(Tmp,(*(sint32 *)(Tmp+16))+28,Buffer+OutputPos);
-      if (Result<0) {BigFree(Buffer);return Result;};
-      OutputPos+=Result;
-      Tmp=Tmp+(*(sint32 *)(Tmp+16))+28;
-      Result=GRZip_DecompressBlock(Tmp,(*(sint32 *)(Tmp+16))+28,Buffer+OutputPos);
-      if (Result<0) {BigFree(Buffer);return Result;};
-    }
-    if ((RecMode&1)==0)
-    {
-      Result=GRZip_DecompressBlock(Tmp,(*(sint32 *)(Tmp+16))+28,Buffer+OutputPos);
-      if (Result<0) {BigFree(Buffer);return Result;};
-      OutputPos+=Result;
-      Tmp=Tmp+(*(sint32 *)(Tmp+16))+28;
-      Result=GRZip_DecompressBlock(Tmp,(*(sint32 *)(Tmp+16))+28,Buffer+OutputPos);
-      if (Result<0) {BigFree(Buffer);return Result;};
-      OutputPos+=Result;
-      Tmp=Tmp+(*(sint32 *)(Tmp+16))+28;
-      Result=GRZip_DecompressBlock(Tmp,(*(sint32 *)(Tmp+16))+28,Buffer+OutputPos);
-      if (Result<0) {BigFree(Buffer);return Result;};
-      OutputPos+=Result;
-      Tmp=Tmp+(*(sint32 *)(Tmp+16))+28;
-      Result=GRZip_DecompressBlock(Tmp,(*(sint32 *)(Tmp+16))+28,Buffer+OutputPos);
-      if (Result<0) {BigFree(Buffer);return Result;};
-    }
-    GRZip_Rec_Decode(Buffer,Size,Output,RecMode);
-    BigFree(Buffer);
-    return (Size);
-  }
-
-  uint8 * LZPBuffer=(uint8 *)BigAlloc(*(sint32 *)(Input+8)+1024);
-  if (LZPBuffer==NULL) return(GRZ_NOT_ENOUGH_MEMORY);
-
-  sint32 TSize;
-
-  // The compressor rounds the block up to a multiple of 8 before the BWT/ST4 and
-  // arithmetic stages ("Size=(Size+7)&(~7)") but stores the *unrounded* length
-  // in Input+8, so the arithmetic decoder legitimately produces up to 7 bytes
-  // more than that. Bound it against the rounded length -- LZPBuffer is
-  // allocated with 1024 bytes of slack, so this stays well inside it, and WFC
-  // also uses this value to size its internal WFCBuf (which was previously
-  // allocated 7 bytes short for the same reason).
-  sint32 AriOutSize=((*(sint32 *)(Input+8))+7)&(~7);
-
-  // Both decoders now also receive the compressed length (Input+16, already
-  // validated to fit inside the block) so they can bound their input.
-  if (Mode&GRZ_Compression_MTF)
-    TSize=GRZip_MTF_Ari_Decode(Input+28,(*(sint32 *)(Input+16)),LZPBuffer,AriOutSize);
-  else
-    TSize=GRZip_WFC_Ari_Decode(Input+28,AriOutSize,LZPBuffer,(*(sint32 *)(Input+16)));
-
-  if (TSize<0) {BigFree(LZPBuffer);return (TSize);}   // decoder rejected the block
-
-  if (Result==GRZ_NOT_ENOUGH_MEMORY)
-  {
-    BigFree(LZPBuffer);
-    return(GRZ_NOT_ENOUGH_MEMORY);
-  };
-
-  Result=*(sint32 *)(Input+12);
-
-  if (Mode&GRZ_Compression_ST4)
-    Result=GRZip_ST4_Decode(LZPBuffer,TSize,Result);
-  else
-    Result=GRZip_BWT_Decode(LZPBuffer,TSize,Result);
-
-  // The inverse transform can now reject a block (bad FBP), and only
-  // NOT_ENOUGH_MEMORY was being checked -- any other negative code fell through
-  // and was later used as a length.
-  if (Result<0)
-  {
-    BigFree(LZPBuffer);
-    return(Result);
-  };
-
-  TSize=*(sint32 *)(Input+8);
-
-  if (LZP_Enabled(Mode))
-  {
-    sint32 Result=GRZip_LZP_Decode(LZPBuffer,TSize,Output,Get_LZP_MinMatchLen(Mode),Get_LZP_HT_Size(Mode),*(sint32 *)(Input));
-    if (Result==GRZ_NOT_ENOUGH_MEMORY)
-    {
-      BigFree(LZPBuffer);
-      return(GRZ_NOT_ENOUGH_MEMORY);
-    };
-  }
-  else
-    memcpy(Output,LZPBuffer,TSize);
-
-  BigFree(LZPBuffer);
-  return (*(sint32 *)Input);
-}
-
-#ifndef FREEARC_DECOMPRESS_ONLY
-
-#define ABS_MaxByte      256
-#define ABS_MinBlockSize 24*1024
-
-#undef ABS_MaxByte
-#undef ABS_MinBlockSize
-
-
-/*-------------------------------------------------*/
-/* Multithreaded grzip_compress/grzip_decompress   */
-/*-------------------------------------------------*/
-struct GRZipMTCompressor;
-
-// Single GRZip compression thread
-;
-
-// Multi-threaded GRZip compressor
-;
-
-// DARC_RUST=1 selects the Rust port of the encoder (rust/darc-codecs/grzip).
-// Excluded rather than redeclared, as with the decoder below: both are
-// C-linkage and GNU ld would report a multiple definition.
-//
-// The port is single-threaded where this is a worker pool, and that is not a
-// difference in output: blocks are independent and the writer emits them in
-// order, so the stream is a plain concatenation either way. Everything the
-// pool exists for is throughput.
-//
-// Verified byte-identical to the C across ten mode words at block level and
-// over the multi-block stream; see rust/difftest/grzip-check.sh, which now
-// compares the produced STREAM rather than only round-tripping.
-
-#endif  // !defined (FREEARC_DECOMPRESS_ONLY)
-
-
-// Single GRZip decompression thread
-struct GRZipDecompressionThread : WorkerThread
-{
-    int process()
-    {
-        int res = GRZip_DecompressBlock ((uint8*)InBuf, InSize+28, (uint8*)OutBuf);
-        return (res == GRZ_NOT_ENOUGH_MEMORY? FREEARC_ERRCODE_NOT_ENOUGH_MEMORY :
-                res <  0?                     FREEARC_ERRCODE_GENERAL :
-                                              res);
-    }
-    int after_write()                //// done() too
-    {
-        BigFree(OutBuf);  OutBuf = NULL;
-        BigFree(InBuf);   InBuf = NULL;
-        return 0;
-    }
-};
-
-// Multi-threaded GRZip decompressor
-struct GRZipMTDecompressor : MTCompressor<GRZipDecompressionThread>
-{
-    GRZipMTDecompressor (CALLBACK_FUNC *callback, void *auxdata)
-    {
-        this->callback  = callback;
-        this->auxdata   = auxdata;
-    }
-
-    int main_cycle()
-    {
-        uint8 BlockSign[28];
-        while (1)
-        {
-            sint32 NumRead=callback("read",BlockSign,28,auxdata);
-            if (NumRead==0)                                          return FREEARC_OK;    // End of data
-            if (NumRead!=28)                                         return NumRead<0? NumRead:FREEARC_ERRCODE_BAD_COMPRESSED_DATA;
-            if (GRZip_CheckBlockSign(BlockSign,28)!=GRZ_NO_ERROR)    return FREEARC_ERRCODE_BAD_COMPRESSED_DATA;
-
-            GRZipDecompressionThread *job = FreeJobs.Get();            // Acquire next compression job
-            job->InBuf = (char*) BigAlloc (*(sint32*)(BlockSign+16) + 1024);
-            if (job->InBuf==NULL)                                    return FREEARC_ERRCODE_NOT_ENOUGH_MEMORY;
-            memcpy(job->InBuf,BlockSign,28);
-            job->OutBuf = (char*) BigAlloc (*(sint32*)job->InBuf + 1024);
-            if (job->OutBuf==NULL)                                   return FREEARC_ERRCODE_NOT_ENOUGH_MEMORY;
-            job->InSize = callback("read",job->InBuf+28,*(sint32 *)(job->InBuf+16),auxdata);
-            if (job->InSize != *(sint32 *)(job->InBuf+16))           return job->InSize<0? job->InSize : FREEARC_ERRCODE_BAD_COMPRESSED_DATA;
-            WriterJobs.Put(job);
-            job->StartOperation.Signal();
-        }
-    }
-};
-
-
-// DARC_RUST=1 selects the Rust port of the decoder (rust/darc-codecs).
-//
-// grzip_decompress is declared in C_GRZip.h, which this file includes inside an
-// extern "C" block, so this definition inherits C linkage and shares a symbol
-// with the Rust export. Excluded rather than redeclared: with both present the
-// linker resolves from this object and never pulls the Rust one -- and, both
-// being C-linkage, GNU ld reports a multiple definition. The same is true of
-// the other codecs (C_Dict.cpp, C_LZP.cpp, rep.cpp, tta.cpp, mm.cpp,
-// Tornado.cpp).
-//
-// The Rust decoder is serial where GRZipMTDecompressor uses a worker pool. That
-// is a throughput difference, not a format one: a GRZip stream is a bare
-// sequence of blocks and the bytes written are the same blocks in the same
-// order. GRZipDecompressionThread and the pool stay compiled for the encoder,
-// which still uses them.
-//
-// Verified byte-identical to the C decoder across all four transform/coder
-// combinations; see rust/difftest/grzip-check.sh.
 
 
 /*-------------------------------------------------*/

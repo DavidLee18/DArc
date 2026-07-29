@@ -1,5 +1,14 @@
 #include "../Compression.h"
-#include "libGRZip.h"
+
+// Was libGRZip.h:54. That header held the transforms' error codes, mode-bit
+// encoding and inline hints, all of which went with the transforms themselves;
+// this is the only definition from it the archiver still uses, so it moves here
+// rather than keeping an 86-line header alive for one line.
+//
+// It bounds what SetBlockSize will accept, so it has to agree with the port's
+// own copy in rust/darc-codecs/src/grzip/ -- a larger value here would ask the
+// encoder for a block its format cannot address.
+#define GRZ_MaxBlockSize             (8*1024*1024-512)
 
 int __cdecl grzip_compress   (int Method,
                       int BlockSize,

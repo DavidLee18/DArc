@@ -10,5 +10,10 @@ OPT_FLAGS   = -O2 \
 DEBUG_FLAGS = -g0
 CFLAGS = $(CODE_FLAGS) $(OPT_FLAGS) $(DEBUG_FLAGS) $(DEFINES)
 
-$(TEMPDIR)/C_GRZip.o: C_GRZip.cpp C_GRZip.h LZP.c libGRZip.h Rec_Flt.c makefile ../MultiThreading.h
+# OPT_FLAGS above no longer decides any GRZip byte: this file compiles the
+# method object and the parser, and the codec itself is Rust. The flag list
+# rust/difftest/c-reference.sh uses to build the GRZip oracle must therefore
+# match the makefile at the PINNED revision, not this one -- changing the flags
+# here will not move the oracle, and must not be assumed to.
+$(TEMPDIR)/C_GRZip.o: C_GRZip.cpp C_GRZip.h makefile
 	$(GCC) -c $(CFLAGS) -o $*.o $<
