@@ -42,6 +42,14 @@
 #   * Hence the marker assertion below. `strings` for darc-codecs panic
 #     locations is the same trick the unarc-sfx CI job uses, and it is the only
 #     cheap proof that the substitution actually happened.
+#   * It rebuilds the staticlib WITH `--features darc-codecs/dropin`, and that
+#     is incompatible with tornado-encode-check.sh / tornado-check.sh, whose
+#     pinned tornado_ccodec.cpp defines tor_decompress itself and so collides
+#     with the drop-in export ("duplicate symbol '_tor_decompress'"). Each
+#     harness rebuilds before running, so cargo re-resolves the features and
+#     they are fine SEQUENTIALLY -- but they must never run CONCURRENTLY
+#     against the shared rust/target, and they must not be put in a CI step
+#     that could interleave them.
 #   * The inner methods are restricted to codecs that actually HAVE a Rust
 #     drop-in. `lzma` is the other one the presets use, but it has no Rust port
 #     at all, so that comparison would compare a build against itself while

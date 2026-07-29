@@ -25,6 +25,12 @@ CFLAGS_C="$(darc_codec_cflags Tornado)" || exit 1
 W="${TMPDIR:-/tmp}/tornado-encode-check.$$"; mkdir -p "$W"
 trap 'rm -rf "$W"' EXIT
 
+# WITHOUT the `dropin` feature, and that is load-bearing: the pinned
+# tornado_ccodec.cpp defines tor_decompress itself, so a staticlib carrying the
+# drop-in export collides with it ("duplicate symbol '_tor_decompress'").
+# 4x4-check.sh needs the opposite. Cargo re-resolves on each run so the two are
+# fine sequentially, but they must never run concurrently against the shared
+# rust/target -- doing so produced empty output and stalled runs.
 ( cd "$ROOT/rust" && cargo build --release -p darc-codecs ) >/dev/null 2>&1 \
   || { echo "cargo build failed" >&2; exit 1; }
 LIB="$ROOT/rust/target/release/libdarc_codecs.a"
@@ -58,6 +64,13 @@ w("repeats",   (b"ABCDEFGHIJKLMNOP"*64 + prng(1,256))*400)
 w("noise",     prng(7, 900000))
 w("zeros",     b"\x00"*700000)
 w("mixed",     b"".join((prng(i,1000) + b"pattern"*200) for i in range(300)))
+# Short unique prefix + noise, repeated. This shape diverges at preset 9 and at
+# nothing else, and no other input here reproduces it -- the sweep was green on
+# preset 9 until this was added. Found via 4x4-check.sh, whose corpus happened
+# to contain it; the failure is NOT specific to all-at-once mode (it shows at
+# both settings), it is specific to this data against preset 9's match finder
+# (hashsize 2048mb, row 256, auxhash 512kb/4).
+w("chunky",    b"".join((b"chunk-%d-" % i) + prng(i, 300) for i in range(2000)))
 w("table4",    b"".join(struct.pack("<I", i*7+3) for i in range(200000)))
 # Distances placed either side of the 48 KB / 192 KB / 1 MB acceptance limits
 # in accept_match(), which is where a short match is rejected outright.
@@ -83,16 +96,25 @@ total=0; ran=0; skipped=0
 # one instantiation; 10 (caching 6) and 11 (caching 7) are two more. All three
 # are listed because the cycled finder's N differs between them, and covering
 # 7/9/11 alone would leave N==6 untested while looking complete.
-for case in "0 0" "1 0" "2 0" "3 0" "3 1" "4 0" "4 1" "5 0" "5 1" "6 0" "6 1" "7 0" "8 0" "9 0" "10 0" "11 0"; do
-  set -- $case; preset=$1; notables=$2
-  label="preset $preset"; [ "$notables" = 1 ] && label="$label -t0"
+# The third field is `compress_all_at_once`. It defaults to 0 and this sweep
+# used to test only that: tornado_ccodec.cpp passes the live global and nothing
+# set it. But C_4x4.cpp forces it to 1 around both directions (:559-566), so
+# every -m3..-m9 archive compresses its $binary group in all-at-once mode --
+# and that mode was compared by nothing. Adding it here is what found the
+# preset-9 divergence; leaving the axis out is what hid it.
+for case in "0 0 0" "1 0 0" "2 0 0" "3 0 0" "3 1 0" "4 0 0" "4 1 0" "5 0 0" "5 1 0" \
+            "6 0 0" "6 1 0" "7 0 0" "8 0 0" "9 0 0" "10 0 0" "11 0 0" \
+            "0 0 1" "1 0 1" "2 0 1" "3 0 1" "4 0 1" "5 0 1" "6 0 1" "7 0 1" \
+            "8 0 1" "9 0 1" "10 0 1" "11 0 1"; do
+  set -- $case; preset=$1; notables=$2; aao=$3
+  label="preset $preset"; [ "$notables" = 1 ] && label="$label -t0"; [ "$aao" = 1 ] && label="$label aao"
   fail=0; n=0; skip=""
   for f in "$W"/in/*; do
     name=$(basename "$f")
-    if ! "$W/c" c "$preset" "$notables" < "$f" >| "$W/sc" 2>/dev/null; then
+    if ! "$W/c" c "$preset" "$notables" "$aao" < "$f" >| "$W/sc" 2>/dev/null; then
       echo "  [$label] $name: C-compress FAILED"; fail=$((fail+1)); continue
     fi
-    if ! "$W/rs" c "$preset" "$notables" < "$f" >| "$W/sr" 2>"$W/err"; then
+    if ! "$W/rs" c "$preset" "$notables" "$aao" < "$f" >| "$W/sr" 2>"$W/err"; then
       skip="rust refused ($(tr -d '\n' < "$W/err" | tail -c 40))"
       break
     fi
@@ -106,7 +128,7 @@ for case in "0 0" "1 0" "2 0" "3 0" "3 1" "4 0" "4 1" "5 0" "5 1" "6 0" "6 1" "7
     echo "  [$label] SKIPPED -- $skip"
     skipped=$((skipped+1))
   else
-    coder=$("$W/c" c "$preset" "$notables" < "$W/in/text" 2>/dev/null | head -c1 | od -An -tu1 | tr -d ' ')
+    coder=$("$W/c" c "$preset" "$notables" "$aao" < "$W/in/text" 2>/dev/null | head -c1 | od -An -tu1 | tr -d ' ')
     echo "  [$label, coder $coder] $n inputs, $fail differing"
     ran=$((ran+1)); total=$((total+fail))
   fi
