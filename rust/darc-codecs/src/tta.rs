@@ -408,10 +408,64 @@ impl Filter {
 
 /// `filters_decompress`: three cascaded filters (highest stage first on decode)
 /// then the fixed order-1 predictor undone.
-fn filters_decompress(data: &mut [i64], level: usize, byte_size: usize) {
-    let f1 = FLT_SET[0][level - 1][byte_size - 1];
-    let f2 = FLT_SET[1][level - 1][byte_size - 1];
-    let f3 = FLT_SET[2][level - 1][byte_size - 1];
+/// Bytes per sample word: TTA supports 1-3 byte integers and 4-byte floats, and
+/// nothing else.
+///
+/// Exhaustive four variants with **no** `Option` at the use sites, unlike MM's
+/// `WordBytes`. The difference is where the value comes from: MM's width is an
+/// unvalidated header byte, so an unfiltered width is ordinary input. TTA rejects
+/// anything outside 1..=4 *before* the filtered path -- decoding at `:545-549`
+/// and `:568`, encoding at `:1141-1143`, which falls back to the stored path --
+/// and `FLT_SET[..][byte_size - 1]` would index out of bounds anyway. So the
+/// conversion happens at those guards, where an invalid width already has a real
+/// handler, and the filters downstream cannot be handed one.
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+enum SampleBytes {
+    /// 8-bit integer samples.
+    One,
+    /// 16-bit integer.
+    Two,
+    /// 24-bit integer.
+    Three,
+    /// 32-bit float. TTA refuses 32-bit *integers*, so this variant is float-only.
+    Four,
+}
+
+impl SampleBytes {
+    /// `None` for a width TTA does not support. Callers turn that into `Err(BAD)`
+    /// when decoding, or into the stored path when encoding.
+    fn from_byte_size(n: usize) -> Option<SampleBytes> {
+        match n {
+            1 => Some(SampleBytes::One),
+            2 => Some(SampleBytes::Two),
+            3 => Some(SampleBytes::Three),
+            4 => Some(SampleBytes::Four),
+            _ => None,
+        }
+    }
+
+    /// The width in bytes, 1..=4. The single source of truth for the byte
+    /// arithmetic that used to read a separate `byte_size` parameter.
+    fn width(self) -> usize {
+        match self {
+            SampleBytes::One => 1,
+            SampleBytes::Two => 2,
+            SampleBytes::Three => 3,
+            SampleBytes::Four => 4,
+        }
+    }
+
+    /// Index into `FLT_SET`'s innermost dimension, which the C spells
+    /// `byte_size - 1`.
+    fn flt_index(self) -> usize {
+        self.width() - 1
+    }
+}
+
+fn filters_decompress(data: &mut [i64], level: usize, bytes: SampleBytes) {
+    let f1 = FLT_SET[0][level - 1][bytes.flt_index()];
+    let f2 = FLT_SET[1][level - 1][bytes.flt_index()];
+    let f3 = FLT_SET[2][level - 1][bytes.flt_index()];
     let mut fst1 = Filter::new(f1[0], f1[1], f1[2]);
     let mut fst2 = Filter::new(f2[0], f2[1], f2[2]);
     let mut fst3 = Filter::new(f3[0], f3[1], f3[2]);
@@ -428,17 +482,15 @@ fn filters_decompress(data: &mut [i64], level: usize, byte_size: usize) {
             fst1.decompress(p);
         }
 
-        match byte_size {
-            1 => *p += predictor1(last, 4),
-            2 => *p += predictor1(last, 5),
-            3 => *p += predictor1(last, 5),
-            4 => *p += last,
-            // Verified against the pinned C: `switch (byte_size)` has cases
-            // 1-4 and NO default (MM/tta.cpp:133, :183), so a value outside
-            // 1..=4 passes through unchanged there too. Documented rather than
-            // turned into `unreachable!()` because the fall-through is the C's
-            // behaviour, not an impossibility.
-            _ => {}
+        // `filters.cpp:297`: cases 1-4 and no default, so this is total in the C
+        // too. Not `tta.cpp:133/:183` -- those are the read/write interleave
+        // switches, a different pair; the predictors live in filters.cpp, which
+        // #98 deleted, so they are cited from the pinned reference.
+        match bytes {
+            SampleBytes::One => *p += predictor1(last, 4),
+            SampleBytes::Two => *p += predictor1(last, 5),
+            SampleBytes::Three => *p += predictor1(last, 5),
+            SampleBytes::Four => *p += last,
         }
         last = *p;
     }
@@ -486,32 +538,33 @@ fn combine_float(frame_len: usize, num_chan: usize, buffer: &mut [Vec<i64>]) {
 /// little-endian words and emit them.
 fn write_wave(
     io: &Io,
-    byte_size: usize,
+    bytes: SampleBytes,
     num_chan: usize,
     frame_len: usize,
     buffer: &[Vec<i64>],
 ) -> Result<(), c_int> {
-    let mut out = vec![0u8; frame_len * num_chan * byte_size];
+    let mut out = vec![0u8; frame_len * num_chan * bytes.width()];
     for i in 0..frame_len {
         for n in 0..num_chan {
             let v = buffer[n][i];
-            let base = (i * num_chan + n) * byte_size;
-            match byte_size {
-                1 => out[base] = (v + 0x80) as u8,
-                2 => out[base..base + 2].copy_from_slice(&(v as i16).to_le_bytes()),
-                3 => {
+            let base = (i * num_chan + n) * bytes.width();
+            // Exhaustive: no arm for a width TTA rejected upstream. The C's
+            // `switch` (tta.cpp:183) has cases 1-4 and no default for the same
+            // reason -- those are the only widths that reach it.
+            match bytes {
+                SampleBytes::One => out[base] = (v + 0x80) as u8,
+                SampleBytes::Two => {
+                    out[base..base + 2].copy_from_slice(&(v as i16).to_le_bytes())
+                }
+                SampleBytes::Three => {
                     let u = v as u32;
                     out[base] = u as u8;
                     out[base + 1] = (u >> 8) as u8;
                     out[base + 2] = (u >> 16) as u8;
                 }
-                4 => out[base..base + 4].copy_from_slice(&(v as i32).to_le_bytes()),
-                // Verified against the pinned C: `switch (byte_size)` has cases
-                // 1-4 and NO default (MM/tta.cpp:133, :183), so a value outside
-                // 1..=4 passes through unchanged there too. Documented rather than
-                // turned into `unreachable!()` because the fall-through is the C's
-                // behaviour, not an impossibility.
-                _ => {}
+                SampleBytes::Four => {
+                    out[base..base + 4].copy_from_slice(&(v as i32).to_le_bytes())
+                }
             }
         }
     }
@@ -568,7 +621,13 @@ fn run(io: &Io) -> Result<(), c_int> {
     if num_chan == 0 || byte_size == 0 {
         return Err(BAD);
     }
-    let sample_set = num_chan * byte_size; // bytes per (all-channels) sample
+    // Classify HERE, at the guard, rather than at each filter: this is the one
+    // place an unsupported width has a real answer (reject the stream). The
+    // checks above already narrow it to 1..=4, so this cannot fail today -- but
+    // expressing it as a conversion means the filters downstream cannot be
+    // handed a width at all, instead of being trusted not to receive one.
+    let bytes = SampleBytes::from_byte_size(byte_size).ok_or(BAD)?;
+    let sample_set = num_chan * bytes.width(); // bytes per (all-channels) sample
 
     // Copy the verbatim original-data header.
     let offset = read_u32(io)? as usize;
@@ -617,7 +676,7 @@ fn run(io: &Io) -> Result<(), c_int> {
             let mut br = BitReader::new(&packed);
             for row in buffer.iter_mut() {
                 decode_frame(&mut br, row);
-                filters_decompress(row, level, byte_size);
+                filters_decompress(row, level, bytes);
             }
         } else {
             // raw_data == 1: the predictor residuals were dumped as raw `long`
@@ -631,7 +690,7 @@ fn run(io: &Io) -> Result<(), c_int> {
                 for (slot, chunk) in row.iter_mut().zip(raw.chunks_exact(8)) {
                     *slot = i64::from_le_bytes(chunk.try_into().unwrap());
                 }
-                filters_decompress(row, level, byte_size);
+                filters_decompress(row, level, bytes);
             }
         }
 
@@ -642,7 +701,7 @@ fn run(io: &Io) -> Result<(), c_int> {
         }
 
         if frame_len != 0 {
-            write_wave(io, byte_size, num_chan, frame_len, &buffer)?;
+            write_wave(io, bytes, num_chan, frame_len, &buffer)?;
         }
 
         // Trailing bytes that do not fill a whole sample-set, copied verbatim.
@@ -899,10 +958,10 @@ impl Filter {
 
 /// `filters_compress` (filters.cpp:243): the fixed order-1 predictor first, then
 /// the three adaptive stages in ASCENDING order -- decode runs them descending.
-fn filters_compress(data: &mut [i64], level: usize, byte_size: usize) {
-    let f1 = FLT_SET[0][level - 1][byte_size - 1];
-    let f2 = FLT_SET[1][level - 1][byte_size - 1];
-    let f3 = FLT_SET[2][level - 1][byte_size - 1];
+fn filters_compress(data: &mut [i64], level: usize, bytes: SampleBytes) {
+    let f1 = FLT_SET[0][level - 1][bytes.flt_index()];
+    let f2 = FLT_SET[1][level - 1][bytes.flt_index()];
+    let f3 = FLT_SET[2][level - 1][bytes.flt_index()];
     let mut fst1 = Filter::new(f1[0], f1[1], f1[2]);
     let mut fst2 = Filter::new(f2[0], f2[1], f2[2]);
     let mut fst3 = Filter::new(f3[0], f3[1], f3[2]);
@@ -910,16 +969,12 @@ fn filters_compress(data: &mut [i64], level: usize, byte_size: usize) {
     let mut last: i64 = 0;
     for v in data.iter_mut() {
         let tmp = *v;
-        match byte_size {
-            1 => *v = v.wrapping_sub(predictor1(last, 4)),
-            2 | 3 => *v = v.wrapping_sub(predictor1(last, 5)),
-            4 => *v = v.wrapping_sub(last),
-            // Verified against the pinned C: `switch (byte_size)` has cases
-            // 1-4 and NO default (MM/tta.cpp:133, :183), so a value outside
-            // 1..=4 passes through unchanged there too. Documented rather than
-            // turned into `unreachable!()` because the fall-through is the C's
-            // behaviour, not an impossibility.
-            _ => {}
+        // `filters.cpp:260`, the mirror of the decoder's `:297`: cases 1-4, no
+        // default.
+        match bytes {
+            SampleBytes::One => *v = v.wrapping_sub(predictor1(last, 4)),
+            SampleBytes::Two | SampleBytes::Three => *v = v.wrapping_sub(predictor1(last, 5)),
+            SampleBytes::Four => *v = v.wrapping_sub(last),
         }
         last = tmp;
 
@@ -984,11 +1039,11 @@ fn read_wave(
     data: &mut [i64],
     rest: &mut Vec<u8>,
     prev: &[u8],
-    byte_size: usize,
+    bytes: SampleBytes,
     num_chan: usize,
     len: usize,
 ) -> Result<(usize, Vec<u8>), c_int> {
-    let sample = num_chan * byte_size;
+    let sample = num_chan * bytes.width();
     let wanted = len * sample;
     let mut buffer = vec![0u8; (len + 2) * sample];
 
@@ -1014,18 +1069,20 @@ fn read_wave(
     rest.extend_from_slice(&buffer[bytes_read - rest_bytes..bytes_read]);
 
     let elements = (bytes_read / sample) * num_chan;
-    match byte_size {
-        1 => {
+    // Exhaustive: the C's `switch` (tta.cpp:133) has cases 1-4 and no default,
+    // because a width outside that range never reaches here.
+    match bytes {
+        SampleBytes::One => {
             for i in 0..elements {
                 data[i] = buffer[i] as i64 - 0x80;
             }
         }
-        2 => {
+        SampleBytes::Two => {
             for i in 0..elements {
                 data[i] = i16::from_le_bytes([buffer[2 * i], buffer[2 * i + 1]]) as i64;
             }
         }
-        3 => {
+        SampleBytes::Three => {
             // Three bytes sign-extended through 32 bits. C dereferenced a `long`
             // here once, which on LP64 read five bytes past each sample.
             for i in 0..elements {
@@ -1034,7 +1091,7 @@ fn read_wave(
                 data[i] = (((t << 8) as i32) >> 8) as i64;
             }
         }
-        4 => {
+        SampleBytes::Four => {
             for i in 0..elements {
                 data[i] = i32::from_le_bytes([
                     buffer[4 * i],
@@ -1044,12 +1101,6 @@ fn read_wave(
                 ]) as i64;
             }
         }
-        // Verified against the pinned C: `switch (byte_size)` has cases
-        // 1-4 and NO default (MM/tta.cpp:133, :183), so a value outside
-        // 1..=4 passes through unchanged there too. Documented rather than
-        // turned into `unreachable!()` because the fall-through is the C's
-        // behaviour, not an impossibility.
-        _ => {}
     }
     Ok((bytes_read, buffer))
 }
@@ -1143,6 +1194,13 @@ fn encode(
     if detected && ((is_float && byte_size != 4) || (!is_float && byte_size >= 4)) {
         detected = false;
     }
+    // A width TTA has no filter for falls back to storing, exactly like an
+    // undetected stream. Folded into the same guard so there is one place that
+    // decides, and note this also covers byte_size 0, which the checks above do
+    // not reject for integers.
+    if detected && SampleBytes::from_byte_size(byte_size).is_none() {
+        detected = false;
+    }
 
     if !detected {
         // Header of 0, then the input verbatim.
@@ -1162,6 +1220,12 @@ fn encode(
             prev.truncate(n as usize);
         }
     }
+
+    // Past the early return, so the width is one TTA filters. `ok_or` rather than
+    // an unwrap or an `unreachable!()`: it is a real error path, so a future
+    // reordering of the guards above fails loudly instead of panicking across the
+    // FFI boundary.
+    let bytes = SampleBytes::from_byte_size(byte_size).ok_or(BAD)?;
 
     let num_chan = num_chan as usize;
     io.write_all(&[
@@ -1194,11 +1258,11 @@ fn encode(
             &mut data,
             &mut rest,
             &prev[prev_pos.min(prev.len())..],
-            byte_size,
+            bytes,
             num_chan,
             FRAME_SIZE,
         )?;
-        let sample = num_chan * byte_size;
+        let sample = num_chan * bytes.width();
         let frame_len = bytes_read / sample;
 
         if bytes_read >= prev.len() - prev_pos.min(prev.len()) {
@@ -1221,7 +1285,7 @@ fn encode(
 
         let mut bw = BitWriter::new();
         for row in buffer.iter_mut().take(rows) {
-            filters_compress(&mut row[..frame_len], level as usize, byte_size);
+            filters_compress(&mut row[..frame_len], level as usize, bytes);
 
             if raw_data == 0 {
                 encode_frame(&mut bw, &row[..frame_len]);
