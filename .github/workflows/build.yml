@@ -954,6 +954,12 @@ jobs:
         # byte-identical to the C for every level DArc can select (1-9), and
         # decodes each block with the C decoder rather than lz4_flex.
         rust/difftest/lz4hc-check.sh
+        # BCJ's x86 branch filter, which C_BCJ.cpp now routes to Rust. The corpus
+        # deliberately includes real x86 binaries: random data almost never contains
+        # the E8/E9 opcodes the filter acts on, so a random-only corpus passes with
+        # the filter stubbed out. It also sweeps chunk sizes, because the filter
+        # carries state across calls and that is where it breaks.
+        rust/difftest/bcj-check.sh
         # rust/darc-lzma is not called from C_LZMA.cpp yet -- it implements BT4
         # alone of the five match finders that wrapper accepts. It IS byte-identical
         # to DArc's C over the corpus (100/100), streaming both ways, which is the

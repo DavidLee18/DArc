@@ -61,6 +61,7 @@
 //! failed stdin read is the right behaviour.
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used))]
 
+pub mod bcj;
 pub mod bsc;
 pub mod delta;
 pub mod dict;
