@@ -1303,7 +1303,7 @@ pub unsafe extern "C" fn darc_rs_grzip_rec_encode(
     let out = core::slice::from_raw_parts_mut(output, n);
     let mode = grzip::rec::test(inp, n);
     if mode != 0 {
-        grzip::rec::encode(inp, n, out, mode);
+        grzip::rec::encode(inp, n, out, grzip::rec::RecMode::from_stream(mode));
     }
     mode
 }

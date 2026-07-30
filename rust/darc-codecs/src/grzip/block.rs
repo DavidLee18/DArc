@@ -112,9 +112,12 @@ fn decompress_block_at(input: &[u8], out: &mut [u8], depth: u32) -> Result<usize
     if mode == -2 {
         // Recursive: `RecMode` decides 2 or 4 sub-blocks laid end to end, each
         // a complete block with its own header.
-        let rec_mode = mid_size;
+        // From the stream, so it may be anything; `RecMode` carries the raw
+        // value and still yields a part count for an unknown mode, because the C
+        // derives that from the low bit alone.
+        let rec_mode = rec::RecMode::from_stream(mid_size);
         let size = raw_size as usize;
-        let parts = if rec_mode & 1 == 1 { 2 } else { 4 };
+        let parts = rec_mode.parts();
         let mut buf = vec![0u8; size + 1024];
         let mut at = 0usize; // offset within `body`
         let mut written = 0usize;
@@ -272,14 +275,15 @@ pub fn compress_block(input: &[u8], size: usize, out: &mut [u8], mode: i32) -> R
 
     // Record filter: de-interleave, then compress each part independently.
     if size > 1024 && (mode & DISABLE_DELTA_FLT) == 0 {
-        let rec_mode = super::rec::test(input, size);
-        if rec_mode != 0 {
+        let rec_test = super::rec::test(input, size);
+        if rec_test != 0 {
+            let rec_mode = super::rec::RecMode::from_stream(rec_test);
             let mut buffer = vec![0u8; size + 1024];
             super::rec::encode(input, size, &mut buffer, rec_mode);
             let sub_mode = mode + DISABLE_DELTA_FLT;
-            // Modes 1 and 3 split in two, 2 and 4 in four -- the low bit says
-            // which, matching the record width the filter chose.
-            let parts: Vec<(usize, usize)> = if rec_mode & 1 == 1 {
+            // Modes 1 and 3 split in two, 2 and 4 in four, matching the record
+            // width the filter chose.
+            let parts: Vec<(usize, usize)> = if rec_mode.parts() == 2 {
                 let half = size >> 1;
                 vec![(0, half), (half, size - half)]
             } else {
@@ -308,7 +312,9 @@ pub fn compress_block(input: &[u8], size: usize, out: &mut [u8], mode: i32) -> R
             }
             if ok && new_size < size {
                 put_word(out, 4, -2);
-                put_word(out, 8, rec_mode);
+                // The raw number, not the enum: this byte IS the archive
+                // format, and the decoder re-classifies it on the way back in.
+                put_word(out, 8, rec_test);
                 put_word(out, 16, new_size as i32);
                 put_word(out, 20, 0);
                 put_word(out, 24, 0);

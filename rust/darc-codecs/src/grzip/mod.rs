@@ -73,13 +73,13 @@ mod tests {
         let size = 8;
         let input = [1u8, 3, 5, 7, 2, 4, 6, 8];
         let mut out = vec![0u8; size];
-        rec::decode(&input, size, &mut out, 1);
+        rec::decode(&input, size, &mut out, rec::RecMode::Interleave2);
         assert_eq!(out, vec![1, 2, 3, 4, 5, 6, 7, 8]);
 
         // Mode 2: four planes.
         let input = [1u8, 5, 2, 6, 3, 7, 4, 8];
         let mut out = vec![0u8; size];
-        rec::decode(&input, size, &mut out, 2);
+        rec::decode(&input, size, &mut out, rec::RecMode::Interleave4);
         assert_eq!(out, vec![1, 2, 3, 4, 5, 6, 7, 8]);
     }
 
@@ -92,7 +92,7 @@ mod tests {
         let size = 4;
         let input = [0u8, 0, 4, 0]; // deltas 0x0004 -> 2, and 0x0000 -> 0
         let mut out = vec![0u8; size];
-        rec::decode(&input, size, &mut out, 3);
+        rec::decode(&input, size, &mut out, rec::RecMode::Delta16);
         // first record 2, second 2+0
         assert_eq!(u16::from_le_bytes([out[0], out[1]]), 2);
         assert_eq!(u16::from_le_bytes([out[2], out[3]]), 2);
@@ -101,8 +101,8 @@ mod tests {
     #[test]
     fn oversized_or_empty_input_is_ignored_not_panicking() {
         let mut out = vec![0u8; 4];
-        rec::decode(&[], 0, &mut out, 3);
-        rec::decode(&[1, 2], 99, &mut out, 4); // size beyond the buffers
-        rec::decode(&[1, 2, 3, 4], 4, &mut out, 77); // unknown mode
+        rec::decode(&[], 0, &mut out, rec::RecMode::Delta16);
+        rec::decode(&[1, 2], 99, &mut out, rec::RecMode::Delta32); // size beyond the buffers
+        rec::decode(&[1, 2, 3, 4], 4, &mut out, rec::RecMode::from_stream(77)); // unknown mode
     }
 }

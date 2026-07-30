@@ -19,13 +19,75 @@
 //! Every mode reads exactly `Size` bytes and writes exactly `Size`, so the
 //! caller's buffers bound everything; the slicing here is checked regardless.
 
+/// `GRZip_Rec_Decode`/`_Encode`'s `Mode`: how a recursive block's sub-blocks
+/// were de-interleaved.
+///
+/// Modelled as a type rather than a bare `i32` so both directions must handle
+/// every case (RUST_PORT_PROGRESS.md section 10b item 4). Unlike DisPack's flag
+/// nibble, this one has a genuine `Unknown`: the C is four independent
+/// `if (Mode==n)` tests with no `else` (Rec_Flt.c:211/:234/:262/:269), and on the
+/// decode side `Mode` is read from the compressed stream -- so a corrupt or
+/// crafted archive can carry any value, and the C's response is to leave the
+/// output untouched. An exhaustive four-variant enum would have turned that into
+/// a panic across the FFI boundary.
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub enum RecMode {
+    /// Mode 1 -- 2-way byte de-interleave.
+    Interleave2,
+    /// Mode 2 -- 4-way byte de-interleave.
+    Interleave4,
+    /// Mode 3 -- 16-bit delta records.
+    Delta16,
+    /// Mode 4 -- 32-bit delta records.
+    Delta32,
+    /// Not one of the four. Carries the raw value because the sub-block *count*
+    /// is derived from its low bit independently of the transform -- see
+    /// [`RecMode::parts`].
+    Unknown(i32),
+}
+
+impl RecMode {
+    /// Classify a mode that came from the compressed stream, or from
+    /// [`test`] on the encode side.
+    pub fn from_stream(mode: i32) -> RecMode {
+        match mode {
+            1 => RecMode::Interleave2,
+            2 => RecMode::Interleave4,
+            3 => RecMode::Delta16,
+            4 => RecMode::Delta32,
+            other => RecMode::Unknown(other),
+        }
+    }
+
+    /// How many sub-blocks the recursive block was split into: 2 for modes 1 and
+    /// 3, 4 for modes 2 and 4.
+    ///
+    /// The C derives this from the low bit alone (`Mode & 1`), so an unknown mode
+    /// still yields a count -- the same byte read two different ways. Preserved
+    /// exactly, because the block walk must consume the same number of
+    /// sub-blocks the C would even when the transform then does nothing.
+    pub fn parts(self) -> usize {
+        match self {
+            RecMode::Interleave2 | RecMode::Delta16 => 2,
+            RecMode::Interleave4 | RecMode::Delta32 => 4,
+            RecMode::Unknown(m) => {
+                if m & 1 == 1 {
+                    2
+                } else {
+                    4
+                }
+            }
+        }
+    }
+}
+
 /// `GRZip_Rec_Decode`. `size` is both the input and output length.
-pub fn decode(input: &[u8], size: usize, out: &mut [u8], mode: i32) {
+pub fn decode(input: &[u8], size: usize, out: &mut [u8], mode: RecMode) {
     if size == 0 || input.len() < size || out.len() < size {
         return;
     }
     match mode {
-        3 => {
+        RecMode::Delta16 => {
             // 16-bit delta records. The low byte of each comes from the first
             // half of the input, the high byte from `NumRecords` bytes later.
             let n = size >> 1;
@@ -47,7 +109,7 @@ pub fn decode(input: &[u8], size: usize, out: &mut [u8], mode: i32) {
                 p += 1;
             }
         }
-        4 => {
+        RecMode::Delta32 => {
             // 32-bit delta records, assembled most-significant byte first from
             // four equally spaced planes.
             let n = size >> 2;
@@ -71,7 +133,7 @@ pub fn decode(input: &[u8], size: usize, out: &mut [u8], mode: i32) {
                 p += 1;
             }
         }
-        1 => {
+        RecMode::Interleave2 => {
             let mut p = 0;
             for step in 0..2 {
                 let mut i = step;
@@ -82,7 +144,7 @@ pub fn decode(input: &[u8], size: usize, out: &mut [u8], mode: i32) {
                 }
             }
         }
-        2 => {
+        RecMode::Interleave4 => {
             let mut p = 0;
             for step in 0..4 {
                 let mut i = step;
@@ -93,17 +155,16 @@ pub fn decode(input: &[u8], size: usize, out: &mut [u8], mode: i32) {
                 }
             }
         }
-        // Verified against the pinned C and deliberately NOT `unreachable!()`.
-        // `GRZip_Rec_Decode` is four independent `if (Mode==n)` statements --
-        // 3, 4, 1, 2 at Rec_Flt.c:211, :234, :262, :269 -- with no `else` and no
-        // `default`. Any other mode leaves the output buffer untouched.
+        // Deliberately a no-op, not `unreachable!()`. `GRZip_Rec_Decode` is four
+        // independent `if (Mode==n)` statements -- 3, 4, 1, 2 at Rec_Flt.c:211,
+        // :234, :262, :269 -- with no `else` and no `default`, so any other mode
+        // leaves the output untouched.
         //
-        // That matters because on the decode side `mode` is read from the
-        // compressed stream, so a corrupt or crafted archive can carry any
-        // value. The C tolerates it silently; a panic here would abort across
-        // the FFI boundary on input the C merely shrugs at, which is worse than
-        // the fall-through. So this is a no-op on purpose, matching the C.
-        _ => {}
+        // `mode` here came from the compressed stream, so a corrupt or crafted
+        // archive can carry any value. The C tolerates it silently; a panic
+        // would abort across the FFI boundary on input the C merely shrugs at.
+        // The enum makes this arm mandatory instead of implicit.
+        RecMode::Unknown(_) => {}
     }
 }
 
@@ -252,12 +313,12 @@ pub fn test(input: &[u8], size: usize) -> i32 {
 /// Modes 3 and 4 write the delta's bytes into separate planes, and the plane
 /// order is not the obvious one: mode 4 emits byte3 first, then bytes 0, 1, 2,
 /// because the C shifts `Delta` twice before storing the top byte at offset 0.
-pub fn encode(input: &[u8], size: usize, out: &mut [u8], mode: i32) {
+pub fn encode(input: &[u8], size: usize, out: &mut [u8], mode: RecMode) {
     if size == 0 || input.len() < size || out.len() < size {
         return;
     }
     match mode {
-        3 => {
+        RecMode::Delta16 => {
             let n = size >> 1;
             let mut pred: u16 = 0;
             for i in 0..n {
@@ -279,7 +340,7 @@ pub fn encode(input: &[u8], size: usize, out: &mut [u8], mode: i32) {
                 o += 1;
             }
         }
-        4 => {
+        RecMode::Delta32 => {
             let n = size >> 2;
             let (p1, p2, p3) = (n, 2 * n, 3 * n);
             let mut pred: u32 = 0;
@@ -310,7 +371,7 @@ pub fn encode(input: &[u8], size: usize, out: &mut [u8], mode: i32) {
                 o += 1;
             }
         }
-        1 => {
+        RecMode::Interleave2 => {
             let mut o = 0;
             for step in 0..2 {
                 let mut i = step;
@@ -321,7 +382,7 @@ pub fn encode(input: &[u8], size: usize, out: &mut [u8], mode: i32) {
                 }
             }
         }
-        2 => {
+        RecMode::Interleave4 => {
             let mut o = 0;
             for step in 0..4 {
                 let mut i = step;
@@ -332,13 +393,13 @@ pub fn encode(input: &[u8], size: usize, out: &mut [u8], mode: i32) {
                 }
             }
         }
-        // Same as `decode` above: `GRZip_Rec_Encode` is four independent
-        // `if (Mode==n)` tests (Rec_Flt.c:140, :162, :188, :195) with no `else`
-        // and no `default`, so an out-of-range mode writes nothing. Here the
-        // mode comes from `test()` rather than from a stream, so it is in range
-        // in practice -- but keeping the two directions symmetrical is worth
-        // more than a guard that would only ever fire on a caller bug.
-        _ => {}
+        // Same as `decode`: `GRZip_Rec_Encode` is four independent `if (Mode==n)`
+        // tests (Rec_Flt.c:140, :162, :188, :195) with no `else`, so an
+        // out-of-range mode writes nothing. Here the mode comes from [`test`]
+        // rather than from a stream, so it is in range in practice -- but
+        // symmetry between the directions is worth more than a guard that could
+        // only ever fire on a caller bug.
+        RecMode::Unknown(_) => {}
     }
 }
 
@@ -360,9 +421,45 @@ mod rec_tests {
     }
 
     /// Modes 1 and 2 are pure de-interleaves and must invert exactly.
+    /// The `Unknown` arm of [`RecMode::parts`] cannot be reached from any valid
+    /// archive, so no differential harness covers it -- a sabotage probe that
+    /// replaced the whole arm with `=> 4` went undetected by grzip-check. It is
+    /// still load-bearing: the block walk consumes `parts()` sub-blocks before
+    /// the transform declines to run, so a wrong count here would misparse a
+    /// corrupt archive instead of yielding the C's untouched buffer.
+    #[test]
+    fn unknown_mode_part_count_follows_the_low_bit() {
+        // The C computes `Mode & 1` regardless of whether Mode means anything.
+        for m in [5, 7, 77, -1, 0x7fff_ffff] {
+            assert_eq!(RecMode::from_stream(m).parts(), 2, "odd mode {m}");
+        }
+        for m in [0, 6, 78, -2, 0x7fff_fffe] {
+            assert_eq!(RecMode::from_stream(m).parts(), 4, "even mode {m}");
+        }
+        // And the four known modes keep the widths their transforms imply.
+        assert_eq!(RecMode::from_stream(1).parts(), 2);
+        assert_eq!(RecMode::from_stream(3).parts(), 2);
+        assert_eq!(RecMode::from_stream(2).parts(), 4);
+        assert_eq!(RecMode::from_stream(4).parts(), 4);
+    }
+
+    /// An unknown mode must leave the output exactly as it was: that is what the
+    /// C's four `if`s with no `else` do, and it is what keeps a crafted archive
+    /// from panicking across the FFI boundary.
+    #[test]
+    fn unknown_mode_writes_nothing() {
+        let input: Vec<u8> = (0..64u8).collect();
+        let mut out = vec![0xabu8; 64];
+        decode(&input, 64, &mut out, RecMode::from_stream(77));
+        assert!(out.iter().all(|&b| b == 0xab), "decode touched the buffer");
+        let mut out2 = vec![0xcdu8; 64];
+        encode(&input, 64, &mut out2, RecMode::from_stream(-9));
+        assert!(out2.iter().all(|&b| b == 0xcd), "encode touched the buffer");
+    }
+
     #[test]
     fn deinterleave_modes_round_trip() {
-        for (mode, width) in [(1, 2usize), (2, 4usize)] {
+        for (mode, width) in [(RecMode::Interleave2, 2usize), (RecMode::Interleave4, 4usize)] {
             for extra in 0..width {
                 let size = width * 50 + extra;
                 let orig: Vec<u8> = (0..size).map(|i| (i * 31 + 7) as u8).collect();
@@ -370,7 +467,7 @@ mod rec_tests {
                 encode(&orig, size, &mut enc, mode);
                 let mut dec = vec![0u8; size];
                 decode(&enc, size, &mut dec, mode);
-                assert_eq!(dec, orig, "mode={mode} extra={extra}");
+                assert_eq!(dec, orig, "mode={mode:?} extra={extra}");
             }
         }
     }
