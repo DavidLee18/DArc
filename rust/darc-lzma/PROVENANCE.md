@@ -1,83 +1,80 @@
-# darc-lzma — provenance and the gap to DArc's LZMA
+# darc-lzma — provenance and the measured gap to DArc's LZMA
 
 Fork of **`lzma-sdk-rs` 0.2301.1** (BSD-3-Clause,
-<https://github.com/danifunker/lzma-sdk-rs>), vendored at 3,011 lines of Rust.
+<https://github.com/danifunker/lzma-sdk-rs>), 3,011 lines of Rust.
 `Cargo.toml.upstream` and `LICENSE.upstream` are the crate's own files, kept
 verbatim so upstream diffs stay readable.
 
-## Why vendored and not depended on
+## The gap is far smaller than the readme suggests — measured
 
-DArc's LZMA is **not stock LZMA**. `Compression/LZMA/readme` is titled *"List of
-changes made"* and lists ten, several of which alter encoder output or the stream
-layout:
+`rust/difftest/lzma-gap-check.sh` compresses a corpus with DArc's own
+`lzma_compress` and with this crate's encoder, at eight parameter sets × 11
+inputs = 88 comparisons. Result:
 
-| # | change | consequence |
-|---|---|---|
-| 1 | parameter interfaces **and how parameters are written into the compressed stream** replaced with `SetupProperties()` | stream property encoding differs from stock |
-| 4 | range-coder buffer 1 MB → 64 KB | |
-| 5 | decompression writes every 256 KB (`LZ_CHUNKS`, `_flushPos`) | |
-| 6 | `BinTreeMain.h` hash size and allocation (`CalcHashSize`) | match finder geometry |
-| 7 | `kDicLogSizeMaxCompress = 31`, `HASH_TABLE`, `hashSize` | |
-| 8 | `compress_all_at_once` | |
-| 9 | `maxDist[] = {0, 0, 128, 2048, 64<<10, 2<<20, 12<<20}` | **parse decisions** |
-| 10 | `len + 1 >= lenMain ...` | **parse decisions** |
+| input | first divergence | of | verdict |
+|---|---|---|---|
+| noise 40 KB | byte 40546 | 40550 (**99.99%**) | payload identical |
+| text 31 KB | byte 107 | 111 (96.4%) | payload identical |
+| zeros 40 KB | byte 66 | 70 (94.3%) | payload identical |
 
-Items 9 and 10 change which matches the optimal parser picks, so DArc's encoder
-emits different bytes than stock 7-Zip for the same input and parameters. A
-crates.io dependency cannot express that; a fork can.
+**Every divergence is in the last 4–6 bytes**, and the C output is consistently
++5..+7 bytes longer across all 88 comparisons — one end-of-payload marker. DArc
+sets `props.writeEndMark = 1` ("FreeArc streams with EOPM"); this crate emits
+none, and the marker also changes the range-coder flush, so the tail differs
+rather than merely being appended.
 
-## What upstream already gives us
+**Conclusion: DArc's LZMA encoder produces the same parse as stock 7-Zip.** The
+optimal parser does not need re-deriving.
 
-Genuinely strong, and verified the same way DArc verifies its own ports —
-differentially against the C, not by round-tripping. From its ROADMAP, all
-`[x] done & verified`:
+## Why the readme misled me, and it misled me four times
 
-* **L0** range coder, byte-exact including the empty-stream flush anchor
-* **L1** `LzmaDec` port, verified against real C streams; full encoder symbol layer
-* **L2** BT4 match finder, match lists byte-identical to `Bt4_MatchFinder_GetMatches`
-* **L3** price models + `GetOptimum` DP + `Backward`, **byte-exact vs
-  `LzmaEnc_MemEncode`**
-* **L4** byte-exact across a corpus (empty/1/2-byte, zeros, 0xFF runs, text)
+`Compression/LZMA/readme` is titled "List of changes made" and lists ten
+divergences, several of which would change parse decisions (`maxDist[]`,
+`len + 1 >= lenMain`). I read it as describing the live encoder. It does not.
 
-## The gap to what DArc needs
+Seven of its eight identifiers — `BinTreeMain`, `CalcHashSize`,
+`kDicLogSizeMaxCompress`, `maxDist`, `lenMain`, `LZ_CHUNKS`, `_flushPos` — live in
+`Compression/LZMA/7zip/`, the **old C++ SDK**. `Compression/LZMA/makefile`
+references `7zip/` **zero times**. It is not compiled. The live encoder is
+`7z24/`, the modern C SDK, essentially stock.
 
-Ordered by how much each blocks a drop-in replacement:
+So the readme documents a predecessor that is still in the tree but out of the
+build. `7zip/` is 5,552 lines and a deletion candidate on the same footing as
+LibTomCrypt was — but see `libtomcrypt-is-held-by-the-oracle` for why a makefile
+grep is not sufficient proof of deadness.
 
-1. **No streaming.** Upstream states plainly: *"In-memory buffer (full input; CHD
-   data fits one cyclic buffer, no streaming)"*. DArc's LZMA is callback-driven —
-   `CbIn_Read`/`CbOut_Write` in `C_LZMA.cpp` adapt DArc's `CALLBACK_FUNC` to the
-   SDK's `ISeqInStream`/`ISeqOutStream`, and archives are far larger than memory.
-   This is architectural, not a feature flag.
-2. **One match finder of five.** Upstream has BT4. `C_LZMA.cpp`'s
-   `kMatchFinderIDs` accepts **BT2, BT3, BT4, HC4, HT4**.
-3. **DArc's ten divergences**, above. None of upstream's source mentions
-   `maxDist`, `kDicLogSizeMaxCompress` or `lenMain`, so they cannot be applied as
-   patches — they must be re-derived in upstream's idiom.
-4. **Version skew.** Upstream ports SDK **23.01**; `Compression/7z/C_7z.c` names
-   **26.00** for the reader, and the compression tree is a fork of an older SDK
-   again. Encoder output can differ between SDK versions independently of DArc's
-   own changes.
-5. **LZMA2 and BCJ.** `C_LZMA2.cpp` (322 lines) and `C_BCJ.cpp` (67) have no
+## What is actually left to do
+
+Ordered by what blocks a drop-in replacement:
+
+1. **`writeEndMark`.** The only thing between this crate and byte-identity.
+   Small, well-specified, and immediately verifiable: the measurement above should
+   go to 88/88 identical.
+2. **Streaming.** Upstream is in-memory by design ("full input, no streaming").
+   DArc's LZMA is callback-driven — `CbIn_Read`/`CbOut_Write` adapt
+   `CALLBACK_FUNC` to `ISeqInStream`/`ISeqOutStream` — and archives exceed memory.
+   This is the largest remaining piece.
+3. **Four match finders.** Upstream has BT4; `C_LZMA.cpp`'s `kMatchFinderIDs`
+   accepts BT2, BT3, BT4, HC4, HT4.
+4. **LZMA2 and BCJ.** `C_LZMA2.cpp` (322 lines) and `C_BCJ.cpp` (67) have no
    upstream counterpart.
+5. **Multi-threaded match finder.** DArc sets
+   `numThreads = GetCompressionThreads() > 1 ? 2 : 1`; the harness forces 1 to
+   isolate that axis. Whether the mt path emits different bytes is unmeasured.
 
-## Consequence for sequencing
+## Two harness traps worth keeping
 
-This is not a patch job. It is a port on the scale of Tornado or BSC — each of
-which took several PRs with a full differential oracle — on the codec that is both
-DArc's **default method** and its **archive-catalog compressor**, i.e. the highest
-blast radius in the repo.
-
-The first step is therefore a **measurement, not code**: build a difftest that
-compresses a corpus with DArc's pinned C LZMA and with this fork's stock encoder,
-and report where they diverge. That says whether DArc's ten changes perturb every
-stream or only some parameter combinations, which decides whether the fork is
-tractable incrementally or needs the whole parser re-derived first.
-
-Until that measurement exists, no estimate here is worth quoting.
+* **`mc = 0` is DArc's "auto" sentinel**, resolved by the SDK
+  (`LzmaEnc.c:99`: `mc = (16 + (fb >> 1)) >> (btMode ? 0 : 1)`). This crate takes
+  `mc` literally, so 0 makes `cut_value` 0 and the BT4 tree walk underflows. Before
+  that was fixed, **47 of 88 comparisons never ran** — a divergence rate computed
+  from half a corpus.
+* **BSD `cmp` says "char N", GNU says "byte N".** The offset parse assumed GNU, so
+  the first runs printed `?` for the number that turned out to be the entire
+  finding.
 
 ## Status
 
-Vendored, wired as a workspace member, builds, and upstream's own 17 tests pass
-under DArc's toolchain (1.97.1) with `--features decode`. Nothing is wired into
-the archiver; `Compression/LZMA` is untouched and remains the implementation in
-use.
+Vendored, wired as a workspace member, builds, upstream's 17 tests pass under
+DArc's toolchain with `--features decode`. Nothing is wired into the archiver;
+`Compression/LZMA` is untouched and remains the implementation in use.

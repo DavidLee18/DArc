@@ -107,10 +107,26 @@ darc_codec_cflags() {
     PPMD)                    echo "-O1 -fomit-frame-pointer -fno-strict-aliasing -funroll-loops" ;;
     GRZip)                   echo "-O2 -fomit-frame-pointer -fno-strict-aliasing -funroll-loops" ;;
     4x4|Dict)                echo "-O3 -fomit-frame-pointer -fno-strict-aliasing" ;;
+    # LZMA is the one codec with TWO flag sets. This is the C++ wrapper set
+    # (C_LZMA.cpp and friends). The vendored SDK under 7z24/ is compiled with
+    # `C7Z_CFLAGS = -std=c11 -O2 -DNDEBUG -D_REENTRANT` and NOTABLY WITHOUT
+    # -fno-strict-aliasing -- see darc_lzma_sdk_cflags below. Do not merge them:
+    # PPMd is the standing proof that an alias-analysis difference can change
+    # compressed bytes.
+    LZMA)                    echo "-O2 -fomit-frame-pointer -fno-strict-aliasing -funroll-loops" ;;
     BSC|Delta|DisPack|LZ4|LZP|MM|REP|Tornado|_Encryption)
                              echo "-O3 -fomit-frame-pointer -fno-strict-aliasing -funroll-loops" ;;
     *) echo "darc_codec_cflags: no flag set recorded for '$1' -- read it from" >&2
        echo "Compression/$1/makefile and add it here rather than guessing" >&2
        return 1 ;;
   esac
+}
+
+
+# The flags Compression/LZMA/makefile uses for the vendored 7-Zip SDK sources
+# (`C7Z_CFLAGS`), which differ from the wrapper's: C11, NDEBUG, _REENTRANT, and
+# no -fno-strict-aliasing. Kept separate so a harness cannot accidentally build
+# the SDK the way DArc builds the wrapper.
+darc_lzma_sdk_cflags() {
+  echo "-std=c11 -O2 -DNDEBUG -D_REENTRANT"
 }
