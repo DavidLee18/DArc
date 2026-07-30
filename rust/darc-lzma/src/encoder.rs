@@ -23,6 +23,7 @@ use crate::state::{
     NUM_ALIGN_BITS, NUM_FULL_DISTANCES, NUM_POS_SLOT_BITS, NUM_STATES, PROB_INIT_VALUE,
     REP_NEXT_STATES, SHORT_REP_NEXT_STATES, START_POS_MODEL_INDEX,
 };
+use crate::stream::{InStream, OutStream, SliceIn, StreamError, VecOut};
 
 const NUM_LIT_STATES: u32 = 7;
 const NUM_POS_STATES_MAX: usize = 16;
@@ -153,11 +154,10 @@ fn price_pure_rep(
 }
 
 struct Encoder<'a> {
-    rc: RangeEncoder,
+    rc: RangeEncoder<'a>,
     probs: EncProbs,
     prices: Prices,
     mf: MatchFinder<'a>,
-    input: &'a [u8],
     opt: Vec<Optimal>,
     matches: Vec<u32>,
     mf_buf: Vec<Match>,
@@ -180,7 +180,11 @@ struct Encoder<'a> {
 }
 
 impl<'a> Encoder<'a> {
-    fn new(input: &'a [u8], props: &LzmaProps) -> Self {
+    fn new(
+        source: &'a mut dyn InStream,
+        sink: &'a mut dyn OutStream,
+        props: &LzmaProps,
+    ) -> Self {
         let dist_table_size = {
             let mut i = (END_POS_MODEL_INDEX / 2) as usize;
             while i < 32 {
@@ -192,11 +196,10 @@ impl<'a> Encoder<'a> {
             (i * 2) as u32
         };
         Encoder {
-            rc: RangeEncoder::new(),
+            rc: RangeEncoder::new(sink),
             probs: EncProbs::new(props.lc as u32, props.lp as u32),
             prices: Prices::new(dist_table_size, props.fb),
-            mf: MatchFinder::new(input, props),
-            input,
+            mf: MatchFinder::new(source, props),
             opt: vec![Optimal::default(); NUM_OPTS],
             matches: Vec::with_capacity(MATCH_LEN_MAX as usize * 2 + 2),
             mf_buf: Vec::with_capacity(MATCH_LEN_MAX as usize),
@@ -218,6 +221,38 @@ impl<'a> Encoder<'a> {
         }
     }
 
+    /// `GetPointerToCurrentPos(..) - 1` as a window index — the position the match
+    /// finder most recently *processed*, which is the one `GetOptimum` is deciding
+    /// about (`LzmaEnc.c:1252`, `:1578`, and the `p1` in `ReadMatchDistances`
+    /// at `:1113`).
+    ///
+    /// Distinct from [`Encoder::emit_index`] and not interchangeable with it: inside
+    /// the DP loop `additional_offset` grows by one per iteration alongside
+    /// `position`, so only the constant `- 1` tracks the position being scored.
+    /// The C writes the two forms literally, one per call site, and so does this.
+    #[inline]
+    fn parse_index(&self) -> usize {
+        self.mf.cur_index() - 1
+    }
+
+    /// `GetPointerToCurrentPos(..) - additionalOffset` as a window index
+    /// (`LzmaEnc.c:2414`, `:2465`, `:2949`) — where the byte the *symbol coder* is
+    /// about to emit lives, `additional_offset` bytes behind the finder's lookahead.
+    ///
+    /// Both indices must be recomputed after anything that advances the match
+    /// finder: the window slides and a stale index points at the wrong byte. See
+    /// the module docs on [`crate::matchfinder`].
+    #[inline]
+    fn emit_index(&self) -> usize {
+        self.mf.cur_index() - self.additional_offset as usize
+    }
+
+    /// The window. Never index it with a stream position.
+    #[inline]
+    fn win(&self) -> &[u8] {
+        self.mf.win()
+    }
+
     #[inline]
     fn lit_base(&self, pos: u32, prev: u32) -> usize {
         let lit_state = (((pos & self.lp_mask) << self.lc) + (prev >> (8 - self.lc))) as usize;
@@ -226,22 +261,34 @@ impl<'a> Encoder<'a> {
 
     // ---- symbol encoders (verified layer) ----
 
+    /// `pos` is the absolute stream position, used for `posState` and the literal
+    /// context; the *bytes* come from the window at [`Encoder::data_index`]. Keeping
+    /// the two apart is the whole point — they coincide only before the window
+    /// first slides.
     fn encode_literal(&mut self, pos: usize) {
         let ps = (pos as u32 & self.pb_mask) as usize;
         self.rc
             .encode_bit(&mut self.probs.is_match[self.state as usize][ps], 0);
-        let byte = u32::from(self.input[pos]);
-        let prev = if pos == 0 {
+        // Every byte is read before `table` takes a mutable borrow of `self.probs`:
+        // `win()` borrows all of `self`, so a read after that point would not
+        // compile. The C reads them up front for the same practical reason.
+        let data = self.emit_index();
+        let byte = u32::from(self.win()[data]);
+        let prev = if data == 0 {
             0
         } else {
-            u32::from(self.input[pos - 1])
+            u32::from(self.win()[data - 1])
+        };
+        let match_byte = if self.state < NUM_LIT_STATES {
+            0
+        } else {
+            u32::from(self.win()[data - self.reps[0] as usize])
         };
         let base = self.lit_base(pos as u32, prev);
         let table = &mut self.probs.literal[base..base + 0x300];
         if self.state < NUM_LIT_STATES {
             self.rc.encode_tree(table, 8, byte);
         } else {
-            let match_byte = u32::from(self.input[pos - self.reps[0] as usize]);
             let mut offs = 0x100u32;
             let mut sym = byte | 0x100;
             let mut mb = match_byte;
@@ -354,8 +401,12 @@ impl<'a> Encoder<'a> {
     fn read_match_distances(&mut self) -> u32 {
         self.additional_offset += 1;
         self.num_avail = self.mf.num_available();
-        let cur_idx = self.mf.pos_index();
         self.mf.get_matches(&mut self.mf_buf);
+        // AFTER get_matches, never before: get_matches advances the finder, which
+        // can slide the window and invalidate any index taken earlier. The C reads
+        // `p1 = GetPointerToCurrentPos(p) - 1` at this same point (LzmaEnc.c:1113),
+        // and `- 1` is exact here because get_matches advanced by exactly one.
+        let cur_idx = self.parse_index();
         self.matches.clear();
         for m in &self.mf_buf {
             self.matches.push(m.len);
@@ -373,7 +424,7 @@ impl<'a> Encoder<'a> {
         let num_avail = self.num_avail.min(MATCH_LEN_MAX) as usize;
         let back = self.matches[num_pairs as usize - 1] as usize + 1;
         let mut p2 = len as usize;
-        while p2 != num_avail && self.input[cur_idx + p2] == self.input[cur_idx + p2 - back] {
+        while p2 != num_avail && self.win()[cur_idx + p2] == self.win()[cur_idx + p2 - back] {
             p2 += 1;
         }
         p2 as u32
@@ -453,21 +504,50 @@ impl<'a> Encoder<'a> {
             .encode_tree_reverse(&mut self.probs.align, NUM_ALIGN_BITS, ALIGN_MASK);
     }
 
-    fn finish(mut self, now_pos: u32) -> Vec<u8> {
+    fn finish(mut self, now_pos: u32) -> Result<(), StreamError> {
         // `Flush` (LzmaEnc.c:2190) writes the marker BEFORE flushing the range
         // coder, which is why the marker changes the stream tail rather than
         // simply appending to it.
         if self.props_write_end_mark {
             self.write_end_marker(now_pos);
         }
-        self.rc.finish()
+        // An input-stream error outranks the output: a truncated read would
+        // otherwise be reported as a successfully written short stream.
+        let read_result = self.mf.result();
+        let write_result = self.rc.finish();
+        match read_result {
+            Err(e) => Err(e),
+            Ok(()) => write_result,
+        }
     }
 }
 
-/// Encode `input` to a raw LZMA stream, byte-identical to `LzmaEnc_MemEncode`.
-pub fn encode(input: &[u8], props: &LzmaProps) -> Vec<u8> {
-    let enc = Encoder::new(input, props);
+/// Encode `source` to `sink` as a raw LZMA stream, byte-identical to the C
+/// `LzmaEnc_Encode` for the same properties.
+///
+/// Memory is O(dictionary), not O(input): the match finder holds a sliding window
+/// and the range coder stages 64 KiB at a time.
+pub fn encode_stream(
+    source: &mut dyn InStream,
+    sink: &mut dyn OutStream,
+    props: &LzmaProps,
+) -> Result<(), StreamError> {
+    let enc = Encoder::new(source, sink, props);
     enc.run()
+}
+
+/// Encode `input` to a raw LZMA stream, byte-identical to `LzmaEnc_MemEncode`.
+///
+/// The in-memory convenience wrapper over [`encode_stream`]; prefer that for
+/// anything block-sized. The `Result` is here because the encoder is genuinely
+/// fallible in general — with [`SliceIn`] and [`VecOut`] it cannot fail, but
+/// hard-coding that into the return type would make the streaming path's errors
+/// look optional.
+pub fn encode(input: &[u8], props: &LzmaProps) -> Result<Vec<u8>, StreamError> {
+    let mut source = SliceIn::new(input);
+    let mut sink = VecOut::default();
+    encode_stream(&mut source, &mut sink, props)?;
+    Ok(sink.data)
 }
 
 include!("optimum_dp.rs");
@@ -479,7 +559,10 @@ mod tests {
 
     fn roundtrip(input: &[u8]) {
         let props = LzmaProps::for_level(8, (input.len() as u32).max(1));
-        let stream = encode(input, &props);
+        let stream = match encode(input, &props) {
+            Ok(s) => s,
+            Err(e) => panic!("in-memory encode cannot fail, but returned {e:?}"),
+        };
         assert_eq!(stream.first().copied(), Some(0), "stream starts with 0x00");
         let decoded = decode_raw(&stream, &props.decoder_props(), input.len());
         assert_eq!(

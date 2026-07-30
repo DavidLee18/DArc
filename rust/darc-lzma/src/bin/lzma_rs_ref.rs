@@ -1,13 +1,50 @@
-//! Drive darc-lzma's stock-SDK encoder over stdin -> stdout, for comparison
-//! against the pinned C in `rust/difftest/lzma_ref.cpp`.
+//! Drive darc-lzma's encoder over stdin -> stdout, for comparison against the
+//! pinned C in `rust/difftest/lzma_ref.cpp`.
 //!
 //! Deliberately minimal: it takes the same parameters the C driver takes, so the
 //! measurement compares encoders and not two different parameter interpretations.
 //! `matchFinder` and `algorithm` are accepted and *checked* rather than used --
 //! this crate implements BT4 with the optimal parser only, and silently ignoring a
 //! request for BT2 or the fast parser would make the comparison meaningless.
+//!
+//! It goes through `encode_stream` rather than `encode`, so the differential test
+//! exercises the same streaming path DArc's codec entry point uses -- including the
+//! short reads a pipe produces, which the in-memory wrapper never generates.
 
 use std::io::{Read, Write};
+
+use darc_lzma::{InStream, LzmaProps, OutStream, StreamError};
+
+/// stdin as an `InStream`. `Ok(0)` means end of stream, so a `read` returning 0
+/// from a non-empty pipe would truncate -- `Read::read` only does that at EOF.
+struct StdinIn(std::io::Stdin);
+
+impl InStream for StdinIn {
+    fn read(&mut self, buf: &mut [u8]) -> Result<usize, StreamError> {
+        match self.0.read(buf) {
+            Ok(n) => Ok(n),
+            Err(e) => {
+                eprintln!("reading stdin: {e}");
+                Err(StreamError(1))
+            }
+        }
+    }
+}
+
+/// stdout as an `OutStream`.
+struct StdoutOut(std::io::Stdout);
+
+impl OutStream for StdoutOut {
+    fn write(&mut self, data: &[u8]) -> Result<(), StreamError> {
+        match self.0.write_all(data) {
+            Ok(()) => Ok(()),
+            Err(e) => {
+                eprintln!("writing stdout: {e}");
+                Err(StreamError(2))
+            }
+        }
+    }
+}
 
 fn main() {
     let a: Vec<String> = std::env::args().skip(1).collect();
@@ -21,7 +58,14 @@ fn main() {
             std::process::exit(2)
         })
     };
-    let (dict_size, lc, lp, pb, fb, mc) = (num(0), num(1) as u8, num(2) as u8, num(3) as u8, num(4), num(5));
+    let (dict_size, lc, lp, pb, fb, mc) = (
+        num(0),
+        num(1) as u8,
+        num(2) as u8,
+        num(3) as u8,
+        num(4),
+        num(5),
+    );
     let mf = num(6);
     let algorithm = num(7);
 
@@ -33,15 +77,6 @@ fn main() {
     if algorithm != 1 {
         eprintln!("darc-lzma implements the optimal parser only (algorithm=1); got {algorithm}");
         std::process::exit(3);
-    }
-
-    let mut input = Vec::new();
-    match std::io::stdin().read_to_end(&mut input) {
-        Ok(_) => {}
-        Err(e) => {
-            eprintln!("reading stdin: {e}");
-            std::process::exit(1);
-        }
     }
 
     // DArc passes mc = 0 meaning "auto" and lets the SDK derive it; this crate
@@ -57,12 +92,27 @@ fn main() {
 
     // DArc always sets writeEndMark: C_LZMA.cpp says "FreeArc streams with EOPM
     // (unknown size)". Matching it is the point of this driver.
-    let props = darc_lzma::LzmaProps { lc, lp, pb, dict_size, fb, mc, write_end_mark: true };
-    let out = darc_lzma::encode(&input, &props);
-    match std::io::stdout().write_all(&out) {
+    let props = LzmaProps {
+        lc,
+        lp,
+        pb,
+        dict_size,
+        fb,
+        mc,
+        write_end_mark: true,
+    };
+
+    let mut source = StdinIn(std::io::stdin());
+    let mut sink = StdoutOut(std::io::stdout());
+    match darc_lzma::encode_stream(&mut source, &mut sink, &props) {
+        Ok(()) => {}
+        // The stream implementations above already reported the cause.
+        Err(StreamError(_)) => std::process::exit(1),
+    }
+    match std::io::stdout().flush() {
         Ok(()) => {}
         Err(e) => {
-            eprintln!("writing stdout: {e}");
+            eprintln!("flushing stdout: {e}");
             std::process::exit(1);
         }
     }

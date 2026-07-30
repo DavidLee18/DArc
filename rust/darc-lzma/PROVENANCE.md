@@ -8,8 +8,16 @@ verbatim so upstream diffs stay readable.
 ## The gap is far smaller than the readme suggests — measured
 
 `rust/difftest/lzma-gap-check.sh` compresses a corpus with DArc's own
-`lzma_compress` and with this crate's encoder, at eight parameter sets × 11
-inputs = 88 comparisons. Result:
+`lzma_compress` and with this crate's encoder. It is now a **gate**, not a
+measurement: it exits nonzero on any divergence, and separately on *zero
+sliding-window comparisons*. That second check earns its place — every input in the
+original corpus was smaller than the smallest dictionary, so the window never slid
+and those 88 comparisons could not tell a working window from a broken one. Three
+added parameter sets pair small dictionaries with multi-megabyte inputs; dropping the
+alignment remainder from `MoveBlock`'s `keepBefore` diverges 11 of those and **none**
+of the original 88.
+
+The original measurement, at eight parameter sets × 11 inputs = 88 comparisons:
 
 | input | first divergence | of | verdict |
 |---|---|---|---|
@@ -54,10 +62,27 @@ Ordered by what blocks a drop-in replacement:
    called from `finish` before the range-coder flush, as `Flush` (`:2190`) does.
    **`lzma-gap-check.sh` now reports 88/88 byte-identical** — the encoder matches
    DArc's C exactly at every parameter set and input in the corpus.
-2. **Streaming.** Upstream is in-memory by design ("full input, no streaming").
-   DArc's LZMA is callback-driven — `CbIn_Read`/`CbOut_Write` adapt
-   `CALLBACK_FUNC` to `ISeqInStream`/`ISeqOutStream` — and archives exceed memory.
-   This is the largest remaining piece.
+2. ~~**Streaming.**~~ **DONE.** The match finder is a sliding window over an
+   `InStream` — a port of `CLzInWindow` plus `ReadBlock` / `MoveBlock` / `NeedMove` /
+   `CheckLimits` / `SetLimits` / `Normalize3` — and the range coder stages 64 KiB to
+   an `OutStream`. Memory is O(dictionary) as in the C, so `encode_stream` takes a
+   solid block of any size; `encode` remains as the in-memory wrapper.
+
+   Two things are worth carrying forward from doing it:
+
+   * **The window means the encoder cannot address bytes by stream position.** Two
+     index forms exist and they are *not* interchangeable:
+     `GetPointerToCurrentPos() - 1`, which is the position `GetOptimum` is scoring,
+     and `- additionalOffset`, which is the byte the symbol coder is about to emit.
+     Inside the DP loop `additionalOffset` grows once per iteration alongside
+     `position`, so using the `additionalOffset` form there is off by `cur` — and the
+     parse then claims matches longer than the data supports, which decodes to
+     plausible-looking garbage rather than failing. The C writes both forms
+     literally, one per call site; so does this port, as `parse_index` and
+     `emit_index`.
+   * **An index captured before an advance is stale after it.** `MoveBlock` memmoves
+     the window, so `ReadMatchDistances` must read its pointer *after* `GetMatches`,
+     which is exactly where the C reads it (`LzmaEnc.c:1113`).
 3. **Four match finders.** Upstream has BT4; `C_LZMA.cpp`'s `kMatchFinderIDs`
    accepts BT2, BT3, BT4, HC4, HT4.
 4. **LZMA2 and BCJ.** `C_LZMA2.cpp` (322 lines) and `C_BCJ.cpp` (67) have no
@@ -79,6 +104,12 @@ Ordered by what blocks a drop-in replacement:
 
 ## Status
 
-Vendored, wired as a workspace member, builds, upstream's 17 tests pass under
-DArc's toolchain with `--features decode`. Nothing is wired into the archiver;
+Vendored, wired as a workspace member, builds, tests pass under DArc's toolchain
+with `--features decode`. `rust/difftest/lzma-gap-check.sh` reports **100/100
+byte-identical, 12 of them with a sliding window**.
+
+`rust/darc-codecs/src/lzma.rs` exposes `darc_lzma_compress` with `lzma_compress`'s
+argument order, streaming both ways through the `CALLBACK_FUNC`. It is **not yet
+called from `C_LZMA.cpp`**: BT2, BT3, HC4 and HT4 remain unimplemented, so switching
+the wrapper over needs either those four or a documented fallback.
 `Compression/LZMA` is untouched and remains the implementation in use.

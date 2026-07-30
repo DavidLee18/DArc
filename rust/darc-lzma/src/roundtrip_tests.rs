@@ -63,7 +63,10 @@ fn round_trip_corpus() {
     for (name, input) in corpus() {
         let reduce = (input.len() as u32).max(1);
         let props = LzmaProps::for_level(8, reduce);
-        let stream = encode(&input, &props);
+        let stream = match encode(&input, &props) {
+            Ok(s) => s,
+            Err(e) => panic!("[{name}] in-memory encode cannot fail, but returned {e:?}"),
+        };
         // Every LZMA range-coder stream begins with the initial 0x00 cache byte.
         assert_eq!(
             stream.first(),
@@ -86,7 +89,10 @@ fn round_trip_chd_hunk_sizes() {
     for &hunk in &[4096u32, 19584, 65536] {
         let input = prng(hunk as usize, hunk);
         let props = LzmaProps::chd_for_hunk(hunk);
-        let stream = encode(&input, &props);
+        let stream = match encode(&input, &props) {
+            Ok(s) => s,
+            Err(e) => panic!("hunk {hunk}: in-memory encode cannot fail, but returned {e:?}"),
+        };
         let decoded = decode_raw(&stream, &props.decoder_props(), input.len());
         assert_eq!(decoded, input, "hunk {hunk} round-trip mismatch");
     }

@@ -94,6 +94,31 @@ w("nearby",  b"".join(prng(i % 5, 500) for i in range(60)))   # repeats at short
 w("distant", prng(1, 30000) + prng(2, 30000) + prng(1, 30000)) # repeat past 64 KB
 for n in (1, 2, 17, 4096):
     w(f"n_{n}", prng(5, n))
+
+# ---- inputs that force the sliding window ------------------------------------
+# Everything above is at most ~40 KB, which is smaller than the smallest dict
+# below: the window never slides for any of it, so it cannot tell a correct
+# window from a broken one. These are deliberately many times the dict size, and
+# are used only with the STREAM_CASES dictionaries.
+def prng4(seed, n):
+    # 4 bytes per step so multi-megabyte corpora stay cheap to generate.
+    s = seed & 0xffffffff; o = bytearray()
+    while len(o) < n:
+        s = (s * 1103515245 + 12345) & 0xffffffff
+        o += s.to_bytes(4, "little")
+    return bytes(o[:n])
+sd = f"{d}/stream"; os.makedirs(sd, exist_ok=True)
+ws = lambda n, b: open(f"{sd}/{n}", "wb").write(b)
+# Incompressible: worst case for the window, every position searched.
+ws("big_noise", prng4(11, 3_000_000))
+# Long-range repeats *beyond* the dictionary, so matches fall out of the window
+# as it slides -- the case where an off-by-one in MoveBlock changes the parse.
+blk = prng4(12, 250_000)
+ws("big_far_repeat", blk + prng4(13, 600_000) + blk + prng4(14, 600_000) + blk)
+# Highly compressible, so the parse takes long matches across slide boundaries.
+ws("big_text", b"the quick brown fox jumps over the lazy dog. " * 60_000)
+# Runs whose lengths straddle the fast-bytes cap.
+ws("big_runs", b"".join(bytes([i % 251]) * (1 + (i * 13) % 900) for i in range(6000)))
 PY
 
 # ---- compare ------------------------------------------------------------------
@@ -110,12 +135,60 @@ CASES=(
   "1048576 3 0 2 273 0"
 )
 
+# Small dictionaries against multi-megabyte inputs: the window must slide many
+# times per run. 1 MB / 3 MB is ~45 slides; 64 KB / 3 MB is ~700. Without these
+# the whole streaming path is unexercised and this script reports 88/88 whether
+# the window works or not.
+STREAM_CASES=(
+  "65536   3 0 2 32 0"
+  "65536   3 0 2 273 0"
+  "1048576 3 0 2 64 0"
+)
+
 same=0; eopm=0; diverged=0; failed=0; total=0
+slid=0
 declare -a DIVERGE_DETAIL=()
+compare_one () { # $1..$6 = params, $7 = input file, $8 = "stream" to count as slid
+  local f="$7" bn; bn=$(basename "$f"); total=$((total+1))
+  if ! "$W/c" "$1" "$2" "$3" "$4" "$5" "$6" 2 1 < "$f" >| "$W/oc" 2>/dev/null; then
+    failed=$((failed+1)); return
+  fi
+  if ! "$RS" "$1" "$2" "$3" "$4" "$5" "$6" 2 1 < "$f" >| "$W/or" 2>/dev/null; then
+    failed=$((failed+1)); return
+  fi
+  [ "${8:-}" = stream ] && slid=$((slid+1))
+  local cs rs off pct
+  cs=$(wc -c < "$W/oc" | tr -d ' '); rs=$(wc -c < "$W/or" | tr -d ' ')
+  if cmp -s "$W/oc" "$W/or"; then
+    same=$((same+1))
+  elif [ "$cs" -gt "$rs" ] && head -c "$rs" "$W/oc" | cmp -s - "$W/or"; then
+    # C is the Rust stream plus trailing bytes: a missing EOPM. The parse agreed,
+    # but the driver asks for the marker, so this is a defect and not agreement.
+    eopm=$((eopm+1))
+  else
+    diverged=$((diverged+1))
+    # BSD cmp says "differ: char N, line M"; GNU says "differ: byte N, line M".
+    # `sed -E`, not BRE: `\(a\|b\)` alternation is a GNU extension and matches
+    # nothing under BSD sed, which is how this offset silently printed as "?".
+    off=$(cmp "$W/oc" "$W/or" 2>/dev/null | sed -n -E 's/.*(char|byte) ([0-9]+).*/\2/p' | head -1)
+    pct=$(python3 -c "print(f'{100*int('${off:-0}')/max(int('$rs'),1):.1f}')" 2>/dev/null || echo "?")
+    [ "${#DIVERGE_DETAIL[@]}" -lt 8 ] && DIVERGE_DETAIL+=("  [$1 lc$2 lp$3 pb$4 fb$5 mc$6] $bn: first differs at byte ${off:-?} of $rs ($pct% in), C=$cs")
+  fi
+}
+
+for case in "${STREAM_CASES[@]}"; do
+  # shellcheck disable=SC2086
+  set -- $case
+  for f in "$W"/in/stream/*; do
+    compare_one "$1" "$2" "$3" "$4" "$5" "$6" "$f" stream
+  done
+done
+
 for case in "${CASES[@]}"; do
   # shellcheck disable=SC2086
   set -- $case
   for f in "$W"/in/*; do
+    [ -f "$f" ] || continue
     bn=$(basename "$f"); total=$((total+1))
     if ! "$W/c" "$1" "$2" "$3" "$4" "$5" "$6" 2 1 < "$f" >| "$W/oc" 2>/dev/null; then
       failed=$((failed+1)); continue
@@ -140,16 +213,29 @@ for case in "${CASES[@]}"; do
   done
 done
 
-echo "lzma gap: $total comparisons"
-echo "  byte-identical                       $same"
-echo "  identical + trailing EOPM (parse OK) $eopm"
-echo "  DIVERGED                             $diverged"
-echo "  driver failures                      $failed"
+echo "lzma: $total comparisons ($slid of them with a sliding window)"
+echo "  byte-identical                        $same"
+echo "  Rust missing the end marker           $eopm"
+echo "  DIVERGED                              $diverged"
+echo "  driver failures                       $failed"
 if [ "${#DIVERGE_DETAIL[@]}" -gt 0 ]; then
   echo "first divergences:"
   printf '%s\n' "${DIVERGE_DETAIL[@]}"
 fi
 
-# This script's job is to REPORT, so it exits 0 whenever it measured something.
-# A nonzero exit means the harness itself could not run.
-[ "$total" -gt 0 ] && [ "$failed" -lt "$total" ] || { echo "nothing was measured" >&2; exit 1; }
+# This started as a measurement and is now a GATE: darc-lzma claims byte-identity
+# with DArc's C, so anything other than "all identical" is a regression.
+#
+# `slid` is checked separately and on purpose. Every input in the base corpus is
+# smaller than the smallest dictionary, so the window never slides for any of it
+# and the base cases cannot distinguish a working window from a broken one. If the
+# large-input cases silently stop running, the remaining comparisons would still
+# report a clean sweep -- so the absence of streaming coverage has to fail loudly
+# rather than pass quietly.
+rc=0
+[ "$total" -gt 0 ]  || { echo "nothing was measured" >&2; rc=1; }
+[ "$slid" -gt 0 ]   || { echo "no sliding-window comparison ran: streaming is unverified" >&2; rc=1; }
+[ "$failed" -eq 0 ] || { echo "$failed driver invocation(s) failed" >&2; rc=1; }
+[ "$eopm" -eq 0 ]   || { echo "$eopm stream(s) lost the end marker" >&2; rc=1; }
+[ "$diverged" -eq 0 ] || { echo "$diverged stream(s) diverged from the pinned C" >&2; rc=1; }
+exit $rc

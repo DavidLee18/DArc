@@ -24,20 +24,24 @@ impl<'a> Encoder<'a> {
             num_avail = MATCH_LEN_MAX;
         }
 
-        let data = position as usize;
+        // The window index of `position`, not `position` itself. `additional_offset`
+        // is 1 here, so this is the C's `data = GetPointerToCurrentPos(..) - 1`
+        // (LzmaEnc.c:1252) -- and it must be read after the `read_match_distances`
+        // above, which may have slid the window.
+        let data = self.parse_index();
         let mut reps = [0u32; 4];
         let mut rep_lens = [0u32; 4];
         let mut rep_max_index = 0usize;
         for i in 0..NUM_REPS {
             reps[i] = self.reps[i];
             let r = reps[i] as usize;
-            if self.input[data] != self.input[data - r] || self.input[data + 1] != self.input[data + 1 - r]
+            if self.win()[data] != self.win()[data - r] || self.win()[data + 1] != self.win()[data + 1 - r]
             {
                 rep_lens[i] = 0;
                 continue;
             }
             let mut len = 2usize;
-            while (len as u32) < num_avail && self.input[data + len] == self.input[data + len - r] {
+            while (len as u32) < num_avail && self.win()[data + len] == self.win()[data + len - r] {
                 len += 1;
             }
             rep_lens[i] = len as u32;
@@ -62,8 +66,8 @@ impl<'a> Encoder<'a> {
             return main_len;
         }
 
-        let cur_byte = self.input[data] as u32;
-        let match_byte = self.input[data - reps[0] as usize] as u32;
+        let cur_byte = self.win()[data] as u32;
+        let match_byte = self.win()[data - reps[0] as usize] as u32;
 
         let mut last = rep_lens[rep_max_index];
         if last <= main_len {
@@ -79,7 +83,7 @@ impl<'a> Encoder<'a> {
         let state = self.state as usize;
 
         {
-            let prev = self.input[data - 1] as u32;
+            let prev = self.win()[data - 1] as u32;
             let base = self.lit_base(position, prev);
             let lit = if !is_lit_state(self.state) {
                 lit_matched_get_price(&self.probs.literal[base..base + 0x300], cur_byte, match_byte, &self.prices.pp)
@@ -274,9 +278,13 @@ impl<'a> Encoder<'a> {
             self.opt[cur].state = state;
             self.opt[cur].reps = reps;
 
-            let data = position as usize;
-            let cur_byte = self.input[data] as u32;
-            let match_byte = self.input[data - reps[0] as usize] as u32;
+            // Recomputed per iteration, after this iteration's
+            // `read_match_distances`: the C does the same at LzmaEnc.c:1578, and a
+            // value carried over from the previous iteration would point into the
+            // pre-slide window.
+            let data = self.parse_index();
+            let cur_byte = self.win()[data] as u32;
+            let match_byte = self.win()[data - reps[0] as usize] as u32;
             let pos_state = (position & self.pb_mask) as usize;
             let s = state as usize;
 
@@ -289,7 +297,7 @@ impl<'a> Encoder<'a> {
             if (next_price < INFINITY_PRICE && match_byte == cur_byte) || lit_price > next_price {
                 lit_price = 0;
             } else {
-                let prev_b = self.input[data - 1] as u32;
+                let prev_b = self.win()[data - 1] as u32;
                 let base = self.lit_base(position, prev_b);
                 let add = if !is_lit_state(state) {
                     lit_matched_get_price(&self.probs.literal[base..base + 0x300], cur_byte, match_byte, &self.prices.pp)
@@ -341,13 +349,13 @@ impl<'a> Encoder<'a> {
             // ---- LIT : REP_0 ----
             if !next_is_lit && lit_price != 0 && match_byte != cur_byte && num_avail_full > 2 {
                 let data2 = data - reps[0] as usize;
-                if self.input[data + 1] == self.input[data2 + 1] && self.input[data + 2] == self.input[data2 + 2] {
+                if self.win()[data + 1] == self.win()[data2 + 1] && self.win()[data + 2] == self.win()[data2 + 2] {
                     let mut limit = (self.num_fast_bytes + 1) as usize;
                     if limit > num_avail_full as usize {
                         limit = num_avail_full as usize;
                     }
                     let mut l = 3usize;
-                    while l < limit && self.input[data + l] == self.input[data2 + l] {
+                    while l < limit && self.win()[data + l] == self.win()[data2 + l] {
                         l += 1;
                     }
                     let state2 = LITERAL_NEXT_STATES[state as usize] as usize;
@@ -374,11 +382,11 @@ impl<'a> Encoder<'a> {
             // ---- REP ----
             for rep_index in 0..NUM_REPS {
                 let r = reps[rep_index] as usize;
-                if self.input[data] != self.input[data - r] || self.input[data + 1] != self.input[data + 1 - r] {
+                if self.win()[data] != self.win()[data - r] || self.win()[data + 1] != self.win()[data + 1 - r] {
                     continue;
                 }
                 let mut len_v = 2usize;
-                while (len_v as u32) < num_avail && self.input[data + len_v] == self.input[data + len_v - r] {
+                while (len_v as u32) < num_avail && self.win()[data + len_v] == self.win()[data + len_v - r] {
                     len_v += 1;
                 }
                 let offset = cur + len_v;
@@ -413,25 +421,25 @@ impl<'a> Encoder<'a> {
                 let mut len2b = len_v + 3;
                 let data2 = data - r;
                 if len2b <= limit
-                    && self.input[data + len2b - 2] == self.input[data2 + len2b - 2]
-                    && self.input[data + len2b - 1] == self.input[data2 + len2b - 1]
+                    && self.win()[data + len2b - 2] == self.win()[data2 + len2b - 2]
+                    && self.win()[data + len2b - 1] == self.win()[data2 + len2b - 1]
                 {
                     let state2 = REP_NEXT_STATES[s] as usize;
                     let pos_state2 = ((position + len_v as u32) & self.pb_mask) as usize;
-                    let base = self.lit_base(position + len_v as u32, self.input[data + len_v - 1] as u32);
+                    let base = self.lit_base(position + len_v as u32, self.win()[data + len_v - 1] as u32);
                     let mut price_b = price
                         + self.prices.rep_len_enc.price(pos_state, len_v as u32)
                         + self.prices.pp.price_0(self.probs.is_match[state2][pos_state2])
                         + lit_matched_get_price(
                             &self.probs.literal[base..base + 0x300],
-                            self.input[data + len_v] as u32,
-                            self.input[data2 + len_v] as u32,
+                            self.win()[data + len_v] as u32,
+                            self.win()[data2 + len_v] as u32,
                             &self.prices.pp,
                         );
                     let state2 = STATE_LIT_AFTER_REP as usize;
                     let pos_state2 = ((pos_state2 as u32 + 1) & self.pb_mask) as usize;
                     price_b += price_rep_0(&self.probs, &self.prices.pp, state2, pos_state2);
-                    while len2b < limit && self.input[data + len2b] == self.input[data2 + len2b] {
+                    while len2b < limit && self.win()[data + len2b] == self.win()[data2 + len2b] {
                         len2b += 1;
                     }
                     len2b -= len_v;
@@ -501,21 +509,21 @@ impl<'a> Encoder<'a> {
                         }
                         let mut len2 = mlen as usize + 3;
                         if len2 <= limit
-                            && self.input[data + len2 - 2] == self.input[data2 + len2 - 2]
-                            && self.input[data + len2 - 1] == self.input[data2 + len2 - 1]
+                            && self.win()[data + len2 - 2] == self.win()[data2 + len2 - 2]
+                            && self.win()[data + len2 - 1] == self.win()[data2 + len2 - 1]
                         {
-                            while len2 < limit && self.input[data + len2] == self.input[data2 + len2] {
+                            while len2 < limit && self.win()[data + len2] == self.win()[data2 + len2] {
                                 len2 += 1;
                             }
                             len2 -= mlen as usize;
                             let state2 = MATCH_NEXT_STATES[s] as usize;
                             let pos_state2 = ((position + mlen) & self.pb_mask) as usize;
-                            let base = self.lit_base(position + mlen, self.input[data + mlen as usize - 1] as u32);
+                            let base = self.lit_base(position + mlen, self.win()[data + mlen as usize - 1] as u32);
                             let mut price_m = price + self.prices.pp.price_0(self.probs.is_match[state2][pos_state2]);
                             price_m += lit_matched_get_price(
                                 &self.probs.literal[base..base + 0x300],
-                                self.input[data + mlen as usize] as u32,
-                                self.input[data2 + mlen as usize] as u32,
+                                self.win()[data + mlen as usize] as u32,
+                                self.win()[data2 + mlen as usize] as u32,
                                 &self.prices.pp,
                             );
                             let state2 = STATE_LIT_AFTER_MATCH as usize;
@@ -557,7 +565,7 @@ impl<'a> Encoder<'a> {
         self.backward(cur)
     }
 
-    fn run(mut self) -> Vec<u8> {
+    fn run(mut self) -> Result<(), StreamError> {
         let num_pos_states = 1usize << self.pb;
 
         // LzmaEnc_InitPrices
@@ -590,10 +598,13 @@ impl<'a> Encoder<'a> {
             return self.finish(0);
         }
 
-        // First byte: always a literal (LzmaEnc.c:2405).
+        // First byte: always a literal (LzmaEnc.c:2405). The C reads it as
+        // `*(GetPointerToCurrentPos(..) - additionalOffset)` (LzmaEnc.c:2414) rather
+        // than as byte 0 of the input: window index 0 and stream position 0 happen
+        // to coincide here, but only because nothing has slid yet.
         self.read_match_distances();
         self.rc.encode_bit(&mut self.probs.is_match[0][0], 0);
-        let first = self.input[0] as u32;
+        let first = self.win()[self.emit_index()] as u32;
         {
             let table = &mut self.probs.literal[0..0x300];
             self.rc.encode_tree(table, 8, first);

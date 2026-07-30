@@ -11,6 +11,14 @@
 /// (`kReduceMin`, `LzmaEnc.c:84`).
 const K_REDUCE_MIN: u32 = 1 << 12; // 4096
 
+/// `kLzmaMaxHistorySize` (`LzmaEnc.c:545`) — the ceiling `LzmaEnc_SetProps` clamps
+/// `dictSize` to before the match finder ever sees it.
+///
+/// It is load-bearing here, not decoration: the window geometry in
+/// [`crate::matchfinder`] is total only over the clamped domain, and
+/// `LzmaEnc_WriteProperties` encodes the clamped value.
+pub(crate) const K_MAX_HISTORY_SIZE: u32 = 15 << 28;
+
 /// Normalized LZMA encoder properties for the optimal-parser / BT4 path.
 ///
 /// Construct via [`LzmaProps::for_level`] or [`LzmaProps::chd_for_hunk`]; both
@@ -105,6 +113,16 @@ impl LzmaProps {
         Self::for_level(8, hunk_bytes)
     }
 
+    /// The dictionary size the encoder actually runs with: `dict_size` clamped to
+    /// `kLzmaMaxHistorySize` as `LzmaEnc_SetProps` does (`LzmaEnc.c:545`).
+    ///
+    /// Everything downstream — the cyclic buffer, the window geometry, the encoded
+    /// property bytes — must use *this*, not the raw field, or a caller asking for
+    /// a 4 GiB dictionary gets a stream the C would not have produced.
+    pub fn history_size(&self) -> u32 {
+        self.dict_size.min(K_MAX_HISTORY_SIZE)
+    }
+
     /// The 5 decoder property bytes, identical to `LzmaEnc_WriteProperties`
     /// (`LzmaEnc.c:3037`).
     ///
@@ -117,7 +135,7 @@ impl LzmaProps {
         let mut out = [0u8; 5];
         out[0] = ((self.pb as u32 * 5 + self.lp as u32) * 9 + self.lc as u32) as u8;
 
-        let d = self.dict_size;
+        let d = self.history_size();
         let v = if d >= (1u32 << 21) {
             // Round up to the next 1 MiB (2^20) boundary, guarding overflow.
             let mask = (1u32 << 20) - 1;

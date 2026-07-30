@@ -205,7 +205,7 @@ lines under `Compression/` are dominated by code nobody intends to port -- LZMA 
 
 | lines | what | status |
 |---|---|---|
-| 25,391 | `LZMA` | 7-Zip SDK, kept pristine by decision -- and the default method |
+| 25,391 | `LZMA` | 7-Zip SDK, still the implementation in use -- but see below |
 | 13,789 | `7z` | 7-Zip SDK for `.7z` reading, kept |
 | 3,168 | `SREP` | external tool; section 14 before touching the encoder |
 | 2,329 | top level | `CompressionLibrary.cpp` and the dispatcher |
@@ -580,8 +580,33 @@ The harness therefore builds the SAME pinned C driver twice — once over pinned
 codecs, once with `-DDARC_RUST` over the Rust staticlib — and requires identical
 streams. It needs the `dropin` cargo feature, unlike the others, because it
 reaches Rust through the C dispatcher rather than calling `darc_rs_*` directly.
-`lzma` is deliberately excluded as an inner method: it has no Rust port, so that
-comparison would compare a build against itself.
+`lzma` is excluded as an inner method: `C_LZMA.cpp` still routes to the C SDK, so
+that comparison would compare a build against itself.
+
+### 10d. LZMA: a Rust encoder exists, and it is byte-identical
+
+`rust/darc-lzma` is a fork of `lzma-sdk-rs` (BSD-3-Clause), and
+`rust/difftest/lzma-gap-check.sh` reports **100/100 streams byte-identical** to
+DArc's own `lzma_compress`, 12 of those with a sliding window. So the line above
+("kept pristine by decision") is now a decision about *wiring*, not about
+feasibility.
+
+Two findings changed the shape of this work:
+
+* **`Compression/LZMA/readme` describes the wrong encoder.** Its ten "changes made"
+  name identifiers that live in `Compression/LZMA/7zip/`, which
+  `Compression/LZMA/makefile` references zero times. The live encoder is `7z24/`,
+  essentially stock — which is why the fork's parse matched with no re-derivation.
+  `7zip/` was deleted in #115.
+* **The only real difference was `writeEndMark`**, one flag DArc sets and upstream
+  had no field for. Adding it took the corpus from "diverges in the last 4-6 bytes"
+  to byte-identical.
+
+What blocks calling it from `C_LZMA.cpp`: BT2, BT3, HC4 and HT4 (the wrapper accepts
+five match finders; the fork implements BT4), plus LZMA2 and BCJ, which have their
+own wrappers. Streaming is done — `encode_stream` is O(dictionary), and
+`rust/darc-codecs/src/lzma.rs` adapts the `CALLBACK_FUNC` in both directions. See
+`rust/darc-lzma/PROVENANCE.md`.
 
 ### 10b. Make the silent-no-op bug class a COMPILER error -- DONE
 

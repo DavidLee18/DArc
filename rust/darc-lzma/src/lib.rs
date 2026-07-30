@@ -27,6 +27,7 @@ mod state;
 
 mod matchfinder;
 mod optimum;
+pub mod stream;
 
 mod encoder;
 
@@ -37,14 +38,33 @@ mod decoder;
 mod roundtrip_tests;
 
 pub use props::LzmaProps;
+pub use stream::{InStream, OutStream, SliceIn, StreamError, VecOut};
 
 /// Encode `input` into a raw LZMA stream that is byte-identical to
-/// `LzmaEnc_MemEncode(..., writeEndMark = 0, ...)` for the same `props`.
+/// `LzmaEnc_MemEncode` for the same `props`.
 ///
-/// The returned bytes carry **no** `.lzma` header and **no** end marker. Obtain
-/// the 5 decoder property bytes with [`decoder_props`].
-pub fn encode(input: &[u8], props: &LzmaProps) -> Vec<u8> {
+/// The returned bytes carry **no** `.lzma` header. Whether an end-of-payload
+/// marker is emitted is [`LzmaProps::write_end_mark`]; obtain the 5 decoder
+/// property bytes with [`decoder_props`].
+///
+/// This holds the whole input and the whole output in memory. For a solid block,
+/// use [`encode_stream`], whose cost is O(dictionary).
+pub fn encode(input: &[u8], props: &LzmaProps) -> Result<Vec<u8>, StreamError> {
     encoder::encode(input, props)
+}
+
+/// Encode from an [`InStream`] to an [`OutStream`], byte-identical to
+/// `LzmaEnc_Encode` for the same `props`.
+///
+/// This is the entry point DArc uses. The match finder holds a sliding window of
+/// `dict_size` plus slack rather than the whole input, and the range coder stages
+/// its output 64 KiB at a time, so neither side is bounded by the block size.
+pub fn encode_stream(
+    source: &mut dyn InStream,
+    sink: &mut dyn OutStream,
+    props: &LzmaProps,
+) -> Result<(), StreamError> {
+    encoder::encode_stream(source, sink, props)
 }
 
 /// The 5 decoder property bytes for `props`, identical to

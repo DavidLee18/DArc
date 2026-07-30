@@ -1,21 +1,16 @@
 //! The FFI surface that lets `Compression/LZMA/C_LZMA.cpp` route to
 //! [`darc_lzma`], mirroring what every other ported codec does.
 //!
-//! ## Why this is bounded rather than streaming, and why that is safe
+//! ## Streaming, not buffering
 //!
-//! `darc_lzma`'s encoder is **in-memory by design** (upstream: "full input, no
-//! streaming"), while DArc's `lzma_compress` is callback-driven and a solid block
-//! can exceed RAM. Pretending otherwise would trade a correctness bug for a
-//! memory one.
+//! This used to drain the callback into a `Vec` and refuse past 256 MB, because
+//! `darc_lzma`'s encoder was in-memory by design. It is not any more: the match
+//! finder holds a sliding window of `dict_size` plus slack, and the range coder
+//! stages 64 KiB of output at a time. So a solid block of any size goes straight
+//! through, with memory proportional to the dictionary exactly as in the C.
 //!
-//! So this entry point **refuses rather than degrades**: it buffers the callback
-//! input up to [`MAX_BUFFERED`] and returns `FREEARC_ERRCODE_NOT_IMPLEMENTED`
-//! beyond it, leaving the caller free to fall back to the C. A refusal is a
-//! signal the caller can act on; an OOM at 3 GB into an archive is not.
-//!
-//! That is what makes this wireable *today*: `C_LZMA.cpp` can try Rust and fall
-//! back, so the Rust path is exercised on real archives without being able to
-//! break the large ones. When streaming lands, the bound and the fallback go.
+//! The `read` and `write` callbacks are adapted to `darc_lzma`'s `InStream` /
+//! `OutStream` below — the same job `CbIn_Read` / `CbOut_Write` do on the C side.
 //!
 //! ## What is NOT covered
 //!
@@ -23,23 +18,50 @@
 //! * `algorithm` 0, the fast parser — refused.
 //! * LZMA2 and BCJ have their own wrappers and are untouched.
 //!
-//! Every refusal is explicit: this returns an error code rather than silently
-//! encoding something DArc did not ask for, which for a byte-exact codec would be
-//! an archive that no other build reproduces.
+//! Every refusal is explicit: this returns `FREEARC_ERRCODE_NOT_IMPLEMENTED`
+//! rather than silently encoding something DArc did not ask for, which for a
+//! byte-exact codec would be an archive no other build reproduces.
 
-use crate::ffi::{Io, FREEARC_ERRCODE_NOT_IMPLEMENTED, OK};
+use crate::ffi::{FREEARC_ERRCODE_NOT_IMPLEMENTED, Io, OK};
 use core::ffi::{c_int, c_void};
-
-/// The largest input this entry point will buffer: 256 MB.
-///
-/// Chosen to sit above DArc's default dictionary sizes while staying far below
-/// the point where buffering competes with the encoder's own allocation. It is a
-/// refusal threshold, not a tuning knob — raising it does not make the encoder
-/// stream.
-pub const MAX_BUFFERED: usize = 256 << 20;
+use darc_lzma::{InStream, OutStream, StreamError};
 
 /// `kBT4` in `C_LZMA.cpp`'s `enum { kBT2, kBT3, kBT4, kHC4, kHT4 }`.
 const K_BT4: c_int = 2;
+
+/// The callback's `read` side as an [`InStream`].
+///
+/// A negative return from the callback is an error code, not a byte count, and is
+/// passed through unchanged — `Dict` and `LZP` were both broken once by treating a
+/// negative return as failure when it was a stop signal, so the code the caller
+/// chose is the code the caller gets back.
+struct CallbackIn<'a> {
+    io: &'a Io,
+}
+
+impl InStream for CallbackIn<'_> {
+    fn read(&mut self, buf: &mut [u8]) -> Result<usize, StreamError> {
+        let n = self.io.read(buf);
+        if n < 0 {
+            return Err(StreamError(n));
+        }
+        Ok(n as usize)
+    }
+}
+
+/// The callback's `write` side as an [`OutStream`].
+struct CallbackOut<'a> {
+    io: &'a Io,
+}
+
+impl OutStream for CallbackOut<'_> {
+    fn write(&mut self, data: &[u8]) -> Result<(), StreamError> {
+        match self.io.write_all(data) {
+            Ok(()) => Ok(()),
+            Err(e) => Err(StreamError(e)),
+        }
+    }
+}
 
 /// Encode via `darc_lzma`, or refuse.
 ///
@@ -79,24 +101,6 @@ pub unsafe extern "C" fn darc_lzma_compress(
         None => return FREEARC_ERRCODE_NOT_IMPLEMENTED,
     };
 
-    // Drain the callback into memory, refusing past the bound rather than growing
-    // without limit.
-    let mut input: Vec<u8> = Vec::new();
-    let mut chunk = vec![0u8; 1 << 16];
-    loop {
-        let n = io.read(&mut chunk);
-        if n < 0 {
-            return n;
-        }
-        if n == 0 {
-            break;
-        }
-        if input.len() + n as usize > MAX_BUFFERED {
-            return FREEARC_ERRCODE_NOT_IMPLEMENTED;
-        }
-        input.extend_from_slice(&chunk[..n as usize]);
-    }
-
     // `mc == 0` is DArc's "auto" sentinel, resolved by the SDK at LzmaEnc.c:99 as
     // `(16 + (fb >> 1)) >> (btMode ? 0 : 1)`; btMode is 1 for BT4, so the shift is
     // 0. darc_lzma takes mc literally, and 0 would make the BT4 tree walk's
@@ -117,13 +121,15 @@ pub unsafe extern "C" fn darc_lzma_compress(
         mc,
         // DArc always sets it: "FreeArc streams with EOPM (unknown size)".
         // rust/difftest/lzma-gap-check.sh is what pins that this reproduces the
-        // C's bytes exactly, 88/88 over the corpus.
+        // C's bytes exactly, over a corpus that includes inputs many times the
+        // dictionary so the sliding window is actually exercised.
         write_end_mark: true,
     };
 
-    let out = darc_lzma::encode(&input, &props);
-    match io.write_all(&out) {
+    let mut source = CallbackIn { io: &io };
+    let mut sink = CallbackOut { io: &io };
+    match darc_lzma::encode_stream(&mut source, &mut sink, &props) {
         Ok(()) => OK,
-        Err(e) => e,
+        Err(StreamError(code)) => code,
     }
 }

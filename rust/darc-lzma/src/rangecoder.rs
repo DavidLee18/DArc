@@ -12,30 +12,62 @@
 //! - The output's first byte is always `0x00` (the initial `cache`), matching
 //!   `LzmaEnc_MemEncode`.
 //!
-//! Unlike the C code, output goes straight to a growable `Vec<u8>`; the 64 KiB
-//! `RC_BUF_SIZE` staging buffer and `RangeEnc_FlushStream` are I/O batching that
-//! does not affect the emitted bytes, so they are omitted.
+//! Output is staged in a 64 KiB buffer and pushed to an [`OutStream`], which is
+//! what `RC_BUF_SIZE` and `RangeEnc_FlushStream` do in the C. Staging is I/O
+//! batching and cannot change the emitted bytes — but it does bound memory, which
+//! is why this is no longer a plain growable `Vec`: a solid block's output is as
+//! large as the block.
 
 use crate::state::{BIT_MODEL_TOTAL, NUM_BIT_MODEL_TOTAL_BITS, NUM_MOVE_BITS, TOP_VALUE};
+use crate::stream::{OutStream, StreamError};
 
-/// LZMA range encoder writing to an in-memory buffer.
-pub struct RangeEncoder {
+/// `RC_BUF_SIZE` (`LzmaEnc.c`) — the staging buffer before a write to the sink.
+const RC_BUF_SIZE: usize = 1 << 16;
+
+/// LZMA range encoder writing through a staging buffer to an [`OutStream`].
+pub struct RangeEncoder<'a> {
     low: u64,
     range: u32,
     cache: u8,
     cache_size: u64,
     out: Vec<u8>,
+    sink: &'a mut dyn OutStream,
+    /// The first sink error, latched. Coding continues so the caller sees one
+    /// error rather than a cascade, exactly as `p->res` does in the C.
+    result: Result<(), StreamError>,
 }
 
-impl RangeEncoder {
+impl<'a> RangeEncoder<'a> {
     /// `RangeEnc_Init` (`LzmaEnc.c:660`).
-    pub fn new() -> Self {
+    pub fn new(sink: &'a mut dyn OutStream) -> Self {
         RangeEncoder {
             low: 0,
             range: 0xFFFF_FFFF,
             cache: 0,
             cache_size: 0,
-            out: Vec::new(),
+            out: Vec::with_capacity(RC_BUF_SIZE + 16),
+            sink,
+            result: Ok(()),
+        }
+    }
+
+    /// Push the staged bytes to the sink and reset the stage.
+    fn flush_stage(&mut self) {
+        if self.out.is_empty() {
+            return;
+        }
+        if self.result.is_ok() {
+            self.result = self.sink.write(&self.out);
+        }
+        self.out.clear();
+    }
+
+    /// Stage one byte, flushing when the stage fills.
+    #[inline]
+    fn emit(&mut self, byte: u8) {
+        self.out.push(byte);
+        if self.out.len() >= RC_BUF_SIZE {
+            self.flush_stage();
         }
     }
 
@@ -46,13 +78,12 @@ impl RangeEncoder {
         let high = (self.low >> 32) as u32;
         self.low = u64::from(low << 8);
         if low < 0xFF00_0000 || high != 0 {
-            self.out
-                .push((u32::from(self.cache).wrapping_add(high)) as u8);
+            self.emit((u32::from(self.cache).wrapping_add(high)) as u8);
             self.cache = (low >> 24) as u8;
             if self.cache_size != 0 {
                 let byte = (0xFFu32.wrapping_add(high)) as u8;
                 loop {
-                    self.out.push(byte);
+                    self.emit(byte);
                     self.cache_size -= 1;
                     if self.cache_size == 0 {
                         break;
@@ -133,41 +164,85 @@ impl RangeEncoder {
         }
     }
 
-    /// `RangeEnc_FlushData` (`LzmaEnc.c:717`): flush with exactly 5 `shift_low`
-    /// calls and return the completed stream.
-    pub fn finish(mut self) -> Vec<u8> {
+    /// `RangeEnc_FlushData` (`LzmaEnc.c:717`) followed by `RangeEnc_FlushStream`:
+    /// exactly 5 `shift_low` calls, then push everything staged.
+    pub fn finish(mut self) -> Result<(), StreamError> {
         for _ in 0..5 {
             self.shift_low();
         }
-        self.out
-    }
-}
-
-impl Default for RangeEncoder {
-    fn default() -> Self {
-        Self::new()
+        self.flush_stage();
+        self.result
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::stream::VecOut;
 
     #[test]
     fn empty_stream_flushes_to_five_zeros() {
         // A fresh encoder, flushed with no symbols, emits five 0x00 bytes: the
         // initial cache (0) propagated through 5 shift_low calls. This is the
         // canonical "first byte is always 0" property of LZMA streams.
-        let rc = RangeEncoder::new();
-        assert_eq!(rc.finish(), vec![0, 0, 0, 0, 0]);
+        let mut sink = VecOut::default();
+        let rc = RangeEncoder::new(&mut sink);
+        assert_eq!(rc.finish(), Ok(()));
+        assert_eq!(sink.data, vec![0, 0, 0, 0, 0]);
     }
 
     #[test]
     fn output_always_starts_with_zero_byte() {
-        let mut rc = RangeEncoder::new();
+        let mut sink = VecOut::default();
+        let mut rc = RangeEncoder::new(&mut sink);
         rc.encode_direct_bits(0b1011, 4);
-        let out = rc.finish();
-        assert_eq!(out[0], 0x00);
-        assert!(out.len() >= 5);
+        assert_eq!(rc.finish(), Ok(()));
+        assert_eq!(sink.data[0], 0x00);
+        assert!(sink.data.len() >= 5);
+    }
+
+    /// Staging must not change the bytes: the same symbols across the 64 KiB
+    /// boundary produce the same stream whether or not a flush lands mid-run.
+    #[test]
+    fn staging_boundary_does_not_alter_the_stream() {
+        let mut a = VecOut::default();
+        {
+            let mut rc = RangeEncoder::new(&mut a);
+            for i in 0..300_000u32 {
+                rc.encode_direct_bits(i & 0xFF, 8);
+            }
+            assert_eq!(rc.finish(), Ok(()));
+        }
+        assert!(
+            a.data.len() > RC_BUF_SIZE,
+            "output must cross the staging boundary or the test proves nothing"
+        );
+        // Byte 0 is still the initial cache, and the stream is a single run: any
+        // duplicated or dropped stage would change the length.
+        assert_eq!(a.data[0], 0x00);
+
+        let mut b = VecOut::default();
+        {
+            let mut rc = RangeEncoder::new(&mut b);
+            for i in 0..300_000u32 {
+                rc.encode_direct_bits(i & 0xFF, 8);
+            }
+            assert_eq!(rc.finish(), Ok(()));
+        }
+        assert_eq!(a.data, b.data);
+    }
+
+    /// A sink error is latched and surfaced, not swallowed.
+    #[test]
+    fn sink_errors_reach_the_caller() {
+        struct Failing;
+        impl OutStream for Failing {
+            fn write(&mut self, _: &[u8]) -> Result<(), StreamError> {
+                Err(StreamError(-7))
+            }
+        }
+        let mut sink = Failing;
+        let rc = RangeEncoder::new(&mut sink);
+        assert_eq!(rc.finish(), Err(StreamError(-7)));
     }
 }
