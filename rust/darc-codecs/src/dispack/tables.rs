@@ -81,6 +81,85 @@ pub const F_DR: u8 = 0xc; // dword relative jump target
 
 pub const F_ERR: u8 = 0xf; // invalid opcode
 
+// The nibble's two fields, as types. The opcode tables below stay `u8` on
+// purpose -- they must reproduce the C's byte-for-byte -- so the conversion
+// happens once, here, at the point of use.
+//
+// Why bother: `flags & F_TYPE` is a two-bit field, so it has exactly four
+// values, but the compiler cannot know that about a `u8`. Every match on it
+// therefore needs an arm for values that cannot occur, and #104 had to prove by
+// hand -- from a 40-year-old C header -- that three such arms were dead. As
+// enums the matches are exhaustive, the impossible arms disappear, and a new
+// variant becomes a compile error instead of something a catch-all absorbs.
+
+/// The low two bits: how the instruction's operands are encoded.
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub enum Mode {
+    /// `fNM` — no ModR/M byte.
+    NoModRm,
+    /// `fAM` — no ModR/M, and the operand is an address (jump or direct).
+    Address,
+    /// `fMR` — ModR/M present.
+    ModRm,
+    /// `fMEXTRA` — ModR/M present, opcode extension in the reg field.
+    ModRmExtra,
+}
+
+/// The high two bits when [`Mode`] is not [`Mode::Address`]: immediate size.
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub enum ImmSize {
+    /// `fNI` — no immediate operand. The common case.
+    None,
+    /// `fBI`
+    Byte,
+    /// `fWI`
+    Word,
+    /// `fDI` — dword, or word under a 0x66 operand-size prefix.
+    Dword,
+}
+
+/// The high two bits when [`Mode`] is [`Mode::Address`]: kind of address operand.
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub enum AddrType {
+    /// `fAD` — absolute address.
+    Absolute,
+    /// `fDA` — dword absolute jump target.
+    DwordAbsJump,
+    /// `fBR` — byte relative jump target.
+    ByteRel,
+    /// `fDR` — dword relative jump target.
+    DwordRel,
+}
+
+// Indexed lookups rather than `match`: the index is masked to 0..=3, so there is
+// no arm and no panic path to justify. A `match` on the `u8` would reintroduce
+// exactly the catch-all this exists to remove.
+const MODES: [Mode; 4] = [Mode::NoModRm, Mode::Address, Mode::ModRm, Mode::ModRmExtra];
+const IMM_SIZES: [ImmSize; 4] = [ImmSize::None, ImmSize::Byte, ImmSize::Word, ImmSize::Dword];
+const ADDR_TYPES: [AddrType; 4] = [
+    AddrType::Absolute,
+    AddrType::DwordAbsJump,
+    AddrType::ByteRel,
+    AddrType::DwordRel,
+];
+
+/// The encoding mode of a table nibble.
+pub fn mode_of(flags: u8) -> Mode {
+    MODES[(flags & F_MODE) as usize]
+}
+
+/// The immediate size of a table nibble. Meaningful only when [`mode_of`] is not
+/// [`Mode::Address`]; the same two bits mean [`AddrType`] there.
+pub fn imm_of(flags: u8) -> ImmSize {
+    IMM_SIZES[((flags & F_TYPE) >> 2) as usize]
+}
+
+/// The address-operand type of a table nibble. Meaningful only when [`mode_of`]
+/// is [`Mode::Address`].
+pub fn addr_of(flags: u8) -> AddrType {
+    ADDR_TYPES[((flags & F_TYPE) >> 2) as usize]
+}
+
 // The nibble combinations, so the tables below read like the C source.
 const MR_NI: u8 = F_MR | F_NI;
 const MR_BI: u8 = F_MR | F_BI;

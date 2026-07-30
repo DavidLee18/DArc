@@ -93,6 +93,16 @@ pub fn decode(input: &[u8], size: usize, out: &mut [u8], mode: i32) {
                 }
             }
         }
+        // Verified against the pinned C and deliberately NOT `unreachable!()`.
+        // `GRZip_Rec_Decode` is four independent `if (Mode==n)` statements --
+        // 3, 4, 1, 2 at Rec_Flt.c:211, :234, :262, :269 -- with no `else` and no
+        // `default`. Any other mode leaves the output buffer untouched.
+        //
+        // That matters because on the decode side `mode` is read from the
+        // compressed stream, so a corrupt or crafted archive can carry any
+        // value. The C tolerates it silently; a panic here would abort across
+        // the FFI boundary on input the C merely shrugs at, which is worse than
+        // the fall-through. So this is a no-op on purpose, matching the C.
         _ => {}
     }
 }
@@ -322,6 +332,12 @@ pub fn encode(input: &[u8], size: usize, out: &mut [u8], mode: i32) {
                 }
             }
         }
+        // Same as `decode` above: `GRZip_Rec_Encode` is four independent
+        // `if (Mode==n)` tests (Rec_Flt.c:140, :162, :188, :195) with no `else`
+        // and no `default`, so an out-of-range mode writes nothing. Here the
+        // mode comes from `test()` rather than from a stream, so it is in range
+        // in practice -- but keeping the two directions symmetrical is worth
+        // more than a guard that would only ever fire on a caller bug.
         _ => {}
     }
 }
