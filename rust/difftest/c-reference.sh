@@ -47,7 +47,16 @@ darc_c_reference() {
 
   # Rebuild the shim copy every time (cheap, and the shims are live source);
   # extract the pinned C only once.
-  if [ ! -d "$cref/Compression" ]; then
+  #
+  # The guard is a MARKER FILE, not the directory. It used to be `[ ! -d
+  # "$cref/Compression" ]`, and a partial extraction therefore persisted forever:
+  # a cache holding the subdirectories but none of Compression/LZMA/*.cpp survived
+  # every later run, and the harnesses failed with "file not found" for sources
+  # that exist perfectly well at the pinned revision. Worse than the failure is the
+  # near miss -- a partial cache silently changes what the oracle IS, and a harness
+  # comparing against a different C than it claims is a harness proving nothing.
+  # The marker is written last, so it exists only after tar has succeeded.
+  if [ ! -f "$cref/.extracted-ok" ]; then
     rm -rf "$cref"; mkdir -p "$cref"
     # CI checks out shallow (actions/checkout defaults to fetch-depth: 1), so
     # the pinned commit is usually absent. Fetch just that one commit rather
@@ -61,7 +70,16 @@ darc_c_reference() {
       return 1; }
     git -C "$root" archive "$sha" Compression | tar -x -C "$cref" || {
       echo "c-reference: could not extract Compression/ at $sha" >&2
+      rm -rf "$cref"
       return 1; }
+    # Cheap sanity check on the result before blessing it: one file that the
+    # pinned revision certainly has. Catches a truncated stream that tar still
+    # exited 0 on.
+    [ -f "$cref/Compression/LZMA/C_LZMA.cpp" ] || {
+      echo "c-reference: extraction at $sha looks incomplete" >&2
+      rm -rf "$cref"
+      return 1; }
+    : > "$cref/.extracted-ok"
   fi
 
   mkdir -p "$cref/rust/difftest"

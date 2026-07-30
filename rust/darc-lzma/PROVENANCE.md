@@ -131,6 +131,15 @@ Ordered by what blocks a drop-in replacement:
 Vendored, wired as a workspace member, builds, tests pass under DArc's toolchain
 with `--features decode`.
 
+**`Compression/LZMA/7z24` is gone too, as of the LZMA2 port.** What kept it alive
+after the engine was deleted was a comment of mine claiming the `.7z` container
+reader needed its `CpuArch.c` and `7zStream.c`. It does not: `Compression/7z/makefile`
+compiles its OWN `sdk/CpuArch.c`, `sdk/7zStream.c` and `sdk/Alloc.c` into `sz_*.o`
+and merges wrapper plus SDK into a single `C_7z.o` **with the symbols localized**, so
+that object has no undefined reference to any of them. The only undefined refs were
+in the intermediate objects the merge consumes. `Compression/LZMA` is now 2,667 lines
+— three wrappers and their headers.
+
 `rust/difftest/lzma-gap-check.sh` reports **222/222 byte-identical** — 24
 sliding-window, 5/5 match finders, 2/2 parsers — and gates on that coverage, not
 just on the diffs. `rust/darc-codecs/src/lzma.rs` exposes `darc_lzma_compress` with

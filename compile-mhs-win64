@@ -184,7 +184,6 @@ c_objs=(
   "$WINOUT/C_MM.o" "$WINOUT/C_TTA.o" "$WINOUT/C_Tornado.o"
   "$WINOUT/C_4x4.o" "$WINOUT/C_Delta.o" "$WINOUT/C_External.o"
   "$WINOUT/C_Encryption.o"
-  "$WINOUT/CpuArch.o" "$WINOUT/Alloc.o" "$WINOUT/7zStream.o"
   "$WINOUT/C_7z.o"
   "$WINOUT/sdk_7zArcIn.o" "$WINOUT/sdk_7zBuf.o" "$WINOUT/sdk_7zCrc.o"
   "$WINOUT/sdk_7zCrcOpt.o" "$WINOUT/sdk_7zDec.o" "$WINOUT/sdk_7zFile.o"
