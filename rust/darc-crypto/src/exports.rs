@@ -143,8 +143,12 @@ pub unsafe extern "C" fn darc_rs_pbkdf2_hmac_sha512(
     let pwd = std::slice::from_raw_parts(pwd, pwd_len as usize);
     let salt = std::slice::from_raw_parts(salt, salt_len as usize);
     let out = std::slice::from_raw_parts_mut(out, out_len as usize);
-    pbkdf2_hmac_sha512(pwd, salt, iterations as u32, out);
-    OK
+    match pbkdf2_hmac_sha512(pwd, salt, iterations as u32, out) {
+        Ok(()) => OK,
+        // Only reachable for an out_len the KDF refuses; the C caller sees an
+        // error code instead of a panic crossing the ABI.
+        Err(()) => FREEARC_ERRCODE_GENERAL,
+    }
 }
 
 /// Fill `buf` with cryptographically secure random bytes. Backs the fortuna_*

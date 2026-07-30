@@ -913,9 +913,16 @@ pub fn compress(io: &crate::ffi::Io, block_size: u32, min_compression: c_int, mi
                 return FREEARC_ERRCODE_IO;
             }
         } else {
-            let out = encoded.unwrap();
-            if io.write(&(out.len() as u32).to_le_bytes()) < 0 || io.write(&out) < 0 {
-                return FREEARC_ERRCODE_IO;
+            // `store` is true for `Err`, so this branch only runs on `Ok` -- but
+            // matched rather than unwrapped, so that relationship is stated
+            // instead of assumed.
+            match &encoded {
+                Ok(out) => {
+                    if io.write(&(out.len() as u32).to_le_bytes()) < 0 || io.write(out) < 0 {
+                        return FREEARC_ERRCODE_IO;
+                    }
+                }
+                Err(_) => return FREEARC_ERRCODE_GENERAL,
             }
         }
     }

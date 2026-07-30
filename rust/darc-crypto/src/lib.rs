@@ -24,6 +24,11 @@
 #![deny(clippy::todo, clippy::unimplemented, clippy::mem_forget)]
 #![deny(unused_must_use)]
 #![allow(clippy::single_match)]
+// Same policy as darc-codecs, and the same reason: these functions are reached
+// over the C ABI, where an unwind is undefined behaviour. Three sites opt out
+// individually with their justification attached; see them for why, and for the
+// better fix that would remove the need.
+#![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used))]
 
 pub mod cfb;
 pub mod ffi;
@@ -48,7 +53,15 @@ use sha2::Sha512;
 /// stored archive may name any count, and refusing to reproduce it would make
 /// that archive unreadable. Policy about acceptable counts belongs to the
 /// caller creating archives, not to the function reading them.
-pub fn pbkdf2_hmac_sha512(password: &[u8], salt: &[u8], iterations: u32, out: &mut [u8]) {
-    pbkdf2::pbkdf2::<Hmac<Sha512>>(password, salt, iterations, out)
-        .expect("HMAC-SHA512 accepts keys of any length, so this cannot fail");
+/// `Err(())` only for an output length the KDF rejects (zero, or absurdly large).
+/// Returned rather than asserted: the sole caller is an `extern "C"` export that
+/// already reports failure as an error code, and unwinding across that boundary
+/// is undefined behaviour.
+pub fn pbkdf2_hmac_sha512(
+    password: &[u8],
+    salt: &[u8],
+    iterations: u32,
+    out: &mut [u8],
+) -> Result<(), ()> {
+    pbkdf2::pbkdf2::<Hmac<Sha512>>(password, salt, iterations, out).map_err(|_| ())
 }

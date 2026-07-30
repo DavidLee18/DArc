@@ -91,6 +91,18 @@ where
     }
 }
 
+// Opts out of the crate-level `expect_used` deny. `Cfb::new` asserts
+// `iv.len() == block_size` before this is ever reached, and `keystream` is
+// allocated from that same length, so the conversion cannot fail.
+//
+// Note what the deny does and does not buy: it bans two SPELLINGS of panic, not
+// panicking. The `assert_eq!` in `Cfb::new` one screen up is still a panic, as
+// are slice indexing and arithmetic overflow throughout. The total fix here is to
+// type the buffer as `Array<u8, C::BlockSize>` in the struct instead of `Vec<u8>`,
+// which deletes the conversion rather than justifying it -- contained (both
+// structs are already generic over `C`) but a crypto refactor, so it is its own
+// change.
+#[allow(clippy::expect_used)]
 fn encrypt_in_place<C>(cipher: &C, block: &mut [u8])
 where
     C: BlockCipherEncrypt + BlockSizeUser,

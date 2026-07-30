@@ -78,6 +78,10 @@ where
                 }
                 self.started = true;
                 self.pad.copy_from_slice(&self.counter);
+                // Same opt-out and same reasoning as `cfb::encrypt_in_place`:
+                // `pad` is `vec![0u8; C::block_size()]`, so the conversion cannot
+                // fail, and the total fix is to type it as `Array<u8, C::BlockSize>`.
+                #[allow(clippy::expect_used)]
                 let block = <&mut Array<u8, C::BlockSize>>::try_from(&mut self.pad[..])
                     .expect("pad is allocated at exactly one block");
                 self.cipher.encrypt_block(block);

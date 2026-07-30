@@ -613,7 +613,11 @@ fn read64(src: &[u8], p: i32) -> Option<u64> {
         return None;
     }
     let p = p as usize;
-    src.get(p..p + 8).map(|b| u64::from_le_bytes(b.try_into().unwrap()))
+    // `get` already guarantees 8 bytes, but say so with `ok()` rather than an
+    // `unwrap` -- the None simply cannot arise, and no panic path is emitted.
+    src.get(p..p + 8)
+        .and_then(|b| b.try_into().ok())
+        .map(u64::from_le_bytes)
 }
 
 /// `LZ4MID_compressBlock` (`lz4hc.c:529`) -- the strategy the C selects for
