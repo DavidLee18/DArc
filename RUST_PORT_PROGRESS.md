@@ -135,7 +135,7 @@ a formality.
 
 ### Branch state
 
-`main` = `7a054bd` (PR #111 merged), post-merge CI green.
+`main` = `a71a717` (PR #114 merged), post-merge CI green.
 
 **Do not trust a hand-written SHA here for long.** This section was stale by
 fourteen PRs once, while the codec table above had been kept current -- which is
@@ -144,6 +144,12 @@ Check with `git log --oneline origin/main -1`.
 
 Recent landings, newest first:
 
+* **#114** the vendored LibTomCrypt deleted -- 47 files, 9,349 lines. See below;
+  what kept it alive was not what three earlier analyses claimed.
+* **#113** `unwrap`/`expect` denied in production paths, with three argued
+  exceptions and two documented non-goals.
+* **#112** Tornado's 78-line encode if-chain became an exhaustive `match`. The
+  claim in #111 that its order was load-bearing was measured and found wrong.
 * **#105, #106/#107, #109, #110, #111** item 4: mode bytes modelled as types, one
   codec per PR -- DisPack, GRZip, MM, TTA, Tornado. See section 10b.
 * **#108** no `if let` anywhere in the Rust workspace; totality enforced by
@@ -186,30 +192,31 @@ for rev in 5c2c6ce HEAD; do
 done
 ```
 
-| | pinned `5c2c6ce` | `7a054bd` | change |
+| | pinned `5c2c6ce` | `a71a717` | change |
 |---|---|---|---|
-| C/C++ under `Compression/` | 104,052 | 61,338 | **−42,714 (−41%)** |
-| C/C++ whole repo | 143,739 | 102,608 | −41,131 (−29%) |
+| C/C++ under `Compression/` | 104,052 | 51,553 | **−52,499 (−50%)** |
+| C/C++ whole repo | 143,739 | 93,259 | −50,480 (−35%) |
 | Haskell | 20,262 | 20,265 | **+3 (untouched)** |
-| Rust | 16,285 | 33,481 | +17,196 |
+| Rust | 16,285 | ~33,500 | +17,200 |
 
-**Read that carefully before calling the port "41% done".** The remaining 61,338
-lines under `Compression/` are dominated by code nobody intends to port:
+**Read that carefully before calling the port "50% done".** The remaining 51,553
+lines under `Compression/` are dominated by code nobody intends to port -- LZMA and
+7z alone are 39,180 of them, **76%**:
 
 | lines | what | status |
 |---|---|---|
 | 25,391 | `LZMA` | 7-Zip SDK, kept pristine by decision -- and the default method |
 | 13,789 | `7z` | 7-Zip SDK for `.7z` reading, kept |
-| 10,050 | `_Encryption` | vendored LibTomCrypt -- see below, it is NOT dead |
 | 3,168 | `SREP` | external tool; section 14 before touching the encoder |
 | 2,329 | top level | `CompressionLibrary.cpp` and the dispatcher |
 | 709 | `4x4` | not ported by decision (section 10), and NOT dead code |
 | ~4,000 | everything else | thin `C_*.cpp` wrappers for ported codecs, plus `mmdet.cpp` |
 
-LZMA + 7z alone are 39,180 lines -- **64% of what is left** -- and both stay. So
-the codec *engines* are essentially done; what remains in `Compression/` is
-vendored SDKs, external tools, and the thin entry-point layer that can only go
-when the Haskell side does.
+Both stay. So the codec *engines* are done, and after #114 there is very little
+prunable C left anywhere: what remains in `Compression/` is vendored SDKs, an
+external tool's glue, `4x4` (deliberately unported, and not dead), `mmdet.cpp`
+(Haskell FFI-bound), and the thin entry-point layer that can only go when the
+Haskell side does.
 
 **The honest summary: the codecs are done, the application layer has not been
 started.** 20,265 lines of Haskell are within 3 lines of where they were. By any
@@ -219,14 +226,36 @@ roughly zero percent. Outside `Compression/` the C/C++ is `HsLua` 16,338
 independent archive reader), `rust/` 3,887 (difftest drivers, deliberately C) and
 2,677 at the root (`Environment.cpp` and friends).
 
-**`_Encryption` looks prunable and is not.** `C_Encryption.cpp` routes entirely to
-`darc-crypto` under `DARC_RUST`, and the `#ifndef DARC_RUST` fallbacks are gone --
-so the 10,050 lines of LibTomCrypt read as dead. They are not: `fortuna_start` and
-`sha512_init` are still referenced from `Compression/EncryptionLib.hs`,
-`Compression/EncryptionFFI.h` and **`Compression/SREP/hashes.cpp`**. SREP's
-hashing is the real blocker; the Haskell FFI declarations need checking for
-whether they are live or vestigial. Do not delete on the strength of the routing
-alone -- see section 4's note about `mmdet.cpp`, which nearly went the same way.
+**`_Encryption` was pruned in #114, and getting there took three wrong answers.**
+Worth reading as a method failure, because each wrong answer was plausible:
+
+* *"SREP's hashing holds it."* `Compression/SREP/hashes.cpp` does `#include` five
+  LibTomCrypt `.c` files -- but **no makefile compiles it.** It is the mirrored
+  copy CLAUDE.md describes, and the real `srep/` build carries its own diverged
+  tree. Repointing it would have changed nothing that gets built.
+* *"~10,000 lines of live C."* `_Encryption/makefile` builds only
+  `C_Encryption.o`, and that file includes nothing but `C_Encryption.h`. The
+  LibTomCrypt sources never entered `arc`. The `-Iheaders` in that makefile and in
+  Unarc's was vestigial.
+* *"The Haskell FFI holds it."* `EncryptionLib.hs`/`EncryptionFFI.h` do name
+  `fortuna_start` and `sha512_init` -- but `C_Encryption.cpp` **defines those
+  itself** as shims onto `darc_rs_random_fill` (`:49-56`).
+
+What actually held it was the crypto difftest oracle, through **one line**:
+`crypto-check.sh` overlaid `headers/tomcrypt_macros.h` from the working tree onto
+the pinned reference. That header is a **fix, not a copy** -- `uint32_t` where the
+pinned one says `unsigned`, which is 64 bits on LP64 targets other than x86-64 and
+turns serpent's key-expansion rotate into garbage; its comment records the shipped
+linux-arm64 builds that were affected. It now lives in `rust/cryptref/` beside its
+only consumer.
+
+An intermediate plan to take that header *from the pinned tree instead* would have
+silently reduced a two-reference check to one. The harness's own
+`grep 'typedef uint32_t ulong32'` guard would have caught it -- **a guard that
+asserts what a fixture is FOR, not merely that it exists.**
+
+Every claim above cost one command to check and none of them were checked first.
+Same family as section 4's `mmdet.cpp` note.
 
 ### Scale, so effort goes where the code is
 
