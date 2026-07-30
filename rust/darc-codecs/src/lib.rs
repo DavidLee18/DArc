@@ -69,6 +69,7 @@ pub mod dispack;
 pub mod grzip;
 pub mod lz4;
 pub mod lz4hc;
+pub mod lzma;
 pub mod lzp;
 pub mod ppmd;
 pub mod mm;

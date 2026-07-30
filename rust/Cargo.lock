@@ -193,6 +193,7 @@ name = "darc-codecs"
 version = "0.1.0"
 dependencies = [
  "bindgen",
+ "darc-lzma",
  "lz4_flex",
  "md-5",
  "sha1",
