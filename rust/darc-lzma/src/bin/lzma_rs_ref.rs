@@ -80,10 +80,17 @@ fn main() {
             std::process::exit(3);
         }
     };
-    if algorithm != 1 {
-        eprintln!("darc-lzma implements the optimal parser only (algorithm=1); got {algorithm}");
-        std::process::exit(3);
-    }
+    // algorithm 0 is the fast parser, 1 the optimal one (LzmaEnc.c:568 --
+    // `fastMode = (algo == 0)`). Both are implemented; anything else is not a value
+    // C_LZMA.cpp can produce, so refuse rather than guess.
+    let fast_mode = match algorithm {
+        0 => true,
+        1 => false,
+        other => {
+            eprintln!("algorithm must be 0 (fast) or 1 (optimal); got {other}");
+            std::process::exit(3);
+        }
+    };
 
     // DArc passes mc = 0 meaning "auto" and lets the SDK derive it; this crate takes
     // mc literally, so 0 makes cut_value 0 and the search's cut counter underflows.
@@ -101,6 +108,7 @@ fn main() {
         fb,
         mc,
         mf,
+        fast_mode,
         write_end_mark: true,
     };
 

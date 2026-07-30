@@ -91,9 +91,14 @@ pub unsafe extern "C" fn darc_lzma_compress(
     // matchFinder id is refused rather than defaulted to BT4 the way the C does
     // (`C_LZMA.cpp:107`) -- silently encoding with a different finder than asked for
     // would produce an archive that no other build reproduces.
-    if algorithm != 1 {
-        return FREEARC_ERRCODE_NOT_IMPLEMENTED;
-    }
+    // `algorithm` selects the parser: 0 is the fast one, 1 the optimal one
+    // (`LzmaEnc.c:568`). Both are implemented. DArc reaches 0 through the method
+    // words `fast`/`fastest` (`C_LZMA.cpp:361`), which its own `3binary` preset uses.
+    let fast_mode = match algorithm {
+        0 => true,
+        1 => false,
+        _ => return FREEARC_ERRCODE_NOT_IMPLEMENTED,
+    };
     let mf = match MatchFinderKind::from_stream(match_finder) {
         Some(k) => k,
         None => return FREEARC_ERRCODE_NOT_IMPLEMENTED,
@@ -127,6 +132,7 @@ pub unsafe extern "C" fn darc_lzma_compress(
         fb,
         mc,
         mf,
+        fast_mode,
         // DArc always sets it: "FreeArc streams with EOPM (unknown size)".
         // rust/difftest/lzma-gap-check.sh is what pins that this reproduces the
         // C's bytes exactly, over a corpus that includes inputs many times the

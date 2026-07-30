@@ -39,10 +39,14 @@
 
 pub mod bt4;
 pub mod hash;
+pub mod hc;
 
-use hash::{CRC_SHIFT_1, FIX3_HASH_SIZE, FIX4_HASH_SIZE, HASH2_SIZE, HASH3_SIZE};
+use hash::{
+    CRC_SHIFT_1, CRC_SHIFT_2, FIX3_HASH_SIZE, FIX4_HASH_SIZE, FIX5_HASH_SIZE, HASH2_SIZE,
+    HASH3_SIZE,
+};
 
-use crate::props::LzmaProps;
+use crate::props::{LzmaProps, MatchFinderKind};
 use crate::state::MATCH_LEN_MAX;
 use crate::stream::{InStream, StreamError};
 
@@ -65,8 +69,13 @@ const K_BLOCK_SIZE_ALIGN: u32 = 1 << 16;
 /// **Zero**, which means `pos` reaches it only by wrapping 2^32. So normalization
 /// runs at 4 GiB of input and never below it — see [`MatchFinder::check_limits`].
 const K_MAX_VAL_FOR_NORMALIZE: u32 = 0;
-/// `p->numHashBytes` for BT4.
-const NUM_HASH_BYTES: u32 = 4;
+/// The smallest `p->numHashBytes` any supported finder uses, i.e. BT2's.
+///
+/// `keepSizeAfter` is floored at `numHashBytes` (`LzFind.c:387`); using the minimum
+/// is safe because `KEEP_ADD_BUFFER_AFTER` alone is 274, so the floor never binds
+/// for any finder. `check_limits` uses the *actual* per-finder value instead, since
+/// there the comparison is against available bytes and does decide behaviour.
+const NUM_HASH_BYTES_MIN: u32 = 2;
 /// `beforeSize = kNumOpts` (`LzmaEnc.c:2688`), the encoder's lookbehind slack on
 /// top of the dictionary. Equal to [`crate::optimum::NUM_OPTS`].
 const KEEP_ADD_BUFFER_BEFORE: u32 = crate::optimum::NUM_OPTS as u32;
@@ -74,8 +83,26 @@ const KEEP_ADD_BUFFER_BEFORE: u32 = crate::optimum::NUM_OPTS as u32;
 /// requests on top of `numFastBytes`.
 const KEEP_ADD_BUFFER_AFTER: u32 = MATCH_LEN_MAX + 1;
 
-/// `MatchFinder_GetHashMask` for `numHashBytes == 4`.
-fn get_hash_mask(history_size: u32) -> u32 {
+/// `MatchFinder_GetHashMask` (`LzFind.c:347`), all branches.
+///
+/// Not `MatchFinder_GetHashMask2` (`LzFind.c:321`), which looks nearly identical and
+/// is **not** the one on this path: it omits both `hs >>= 1` steps and is reachable
+/// only when `numHashOutBits != 0`, which `LzmaEnc` never sets. Using it doubles
+/// every mask.
+///
+/// The per-`numHashBytes` differences are easy to get wrong and hard to catch:
+///
+/// * **2** returns immediately and never reads `history_size` at all.
+/// * **3** *caps* at `(1 << 24) - 1`, where **4 and 5** take a second `>>= 1`. Those
+///   two branches agree for every `history_size <= 1 << 26` and first diverge at
+///   `1 << 27`, so a small-dictionary test cannot tell them apart.
+/// * **5** additionally floors the mask at `(256 << CRC_SHIFT_2) - 1`.
+fn get_hash_mask(num_hash_bytes: u32, history_size: u32) -> u32 {
+    if num_hash_bytes == 2 {
+        // LzFind.c:349 -- returns before the bit propagation, so history_size is
+        // irrelevant and the 2-byte table is always exactly 1 << 16 entries.
+        return (1 << 16) - 1;
+    }
     let mut hs = history_size.saturating_sub(1);
     hs |= hs >> 1;
     hs |= hs >> 2;
@@ -83,9 +110,16 @@ fn get_hash_mask(history_size: u32) -> u32 {
     hs |= hs >> 8;
     hs >>= 1;
     if hs >= (1 << 24) {
-        hs >>= 1; // numHashBytes == 4 branch
+        if num_hash_bytes == 3 {
+            hs = (1 << 24) - 1; // LzFind.c:362 -- a cap, not a shift
+        } else {
+            hs >>= 1; // LzFind.c:364
+        }
     }
-    hs |= (1 << 16) - 1;
+    hs |= (1 << 16) - 1; // "don't change it!" -- required for numHashBytes > 2
+    if num_hash_bytes >= 5 {
+        hs |= (256 << CRC_SHIFT_2) - 1; // LzFind.c:371
+    }
     hs
 }
 
@@ -146,6 +180,15 @@ pub struct MatchFinder<'a> {
     result: Result<(), StreamError>,
 
     // ---- search structures ----
+    /// Which finder's hashing and search to run. Set once; every per-finder
+    /// difference below is derived from it rather than from a flag.
+    kind: MatchFinderKind,
+    /// `p->numHashBytes` for `kind` -- read by `check_limits`, and it gates how many
+    /// bytes past `cur` the hash may read.
+    num_hash_bytes: u32,
+    /// `p->fixedHashSize`: the length of the 2-/3-byte prefix of `hash`, and hence
+    /// the base offset of this finder's main table.
+    fixed_hash_size: usize,
     history_size: u32,
     cyclic_buffer_pos: u32,
     cyclic_buffer_size: u32,
@@ -166,15 +209,21 @@ impl<'a> MatchFinder<'a> {
     pub fn new(stream: &'a mut dyn InStream, props: &LzmaProps) -> Self {
         let history_size = props.history_size();
         let cyclic_buffer_size = history_size + 1;
-        let hash_mask = get_hash_mask(history_size);
-        let hash_len = FIX4_HASH_SIZE + hash_mask as usize + 1;
+        let num_hash_bytes = props.mf.num_hash_bytes();
+        let hash_mask = get_hash_mask(num_hash_bytes, history_size);
+        // `hashMask + 1 + fixedHashSize` (LzFind.c:444-455): the 2-/3-byte tables
+        // form a prefix, and this finder's main table starts after them. Sized
+        // exactly, with no padding, because `normalize3` walks the whole Vec and the
+        // C walks exactly this span (LzFind.c:860).
+        let fixed_hash_size = props.mf.fixed_hash_size();
+        let hash_len = fixed_hash_size + hash_mask as usize + 1;
 
         // MatchFinder_Create:379 -- "we need one additional byte in keepSizeBefore,
         // since we use MoveBlock() after (p->pos++) and before dictionary using".
         let keep_size_before = history_size + KEEP_ADD_BUFFER_BEFORE + 1;
         // keepAddBufferAfter += matchMaxLen, then floored at numHashBytes (which
         // never binds: KEEP_ADD_BUFFER_AFTER alone already exceeds 4).
-        let keep_size_after = (KEEP_ADD_BUFFER_AFTER + props.fb).max(NUM_HASH_BYTES);
+        let keep_size_after = (KEEP_ADD_BUFFER_AFTER + props.fb).max(NUM_HASH_BYTES_MIN);
         let block_size = block_size(keep_size_before, keep_size_after) as usize;
 
         let mut crc = [0u32; 256];
@@ -201,6 +250,9 @@ impl<'a> MatchFinder<'a> {
             keep_size_after,
             stream_end_was_reached: false,
             result: Ok(()),
+            kind: props.mf,
+            num_hash_bytes,
+            fixed_hash_size,
             history_size,
             // CYC_TO_POS_OFFSET is 0, so cyclicBufferPos initializes to pos.
             cyclic_buffer_pos: 1,
@@ -209,7 +261,18 @@ impl<'a> MatchFinder<'a> {
             cut_value: props.mc,
             hash_mask,
             hash: vec![0u32; hash_len],
-            son: vec![0u32; 2 * cyclic_buffer_size as usize],
+            // `numSons = cyclicBufferSize; if (btMode) numSons <<= 1;`
+            // (MatchFinder_Create). The hash chains keep one link per slot, not two,
+            // so allocating the tree's size for them would work but doubles memory
+            // for nothing -- and reading `son[i*2]` in a chain would be wrong.
+            son: vec![
+                0u32;
+                if props.mf.bt_mode() {
+                    2 * cyclic_buffer_size as usize
+                } else {
+                    cyclic_buffer_size as usize
+                }
+            ],
             crc,
         };
         // MatchFinder_Init: hashes are already zero (kEmptyHashValue), so only the
@@ -350,7 +413,7 @@ impl<'a> MatchFinder<'a> {
             self.read_block();
         }
 
-        if self.pos == K_MAX_VAL_FOR_NORMALIZE && self.num_available() >= NUM_HASH_BYTES {
+        if self.pos == K_MAX_VAL_FOR_NORMALIZE && self.num_available() >= self.num_hash_bytes {
             // Unreachable below 4 GiB of input, since kMaxValForNormalize is 0 and
             // `pos` only gets there by wrapping. Ported for parity at that size;
             // `normalize3` itself is covered directly by unit test.
@@ -379,9 +442,368 @@ impl<'a> MatchFinder<'a> {
         }
     }
 
+    /// `Bt2_MatchFinder_GetMatches` (`LzFind.c:1151`).
+    ///
+    /// The whole function, which is the point: BT2 has **no** short-match pre-check,
+    /// no `mmm`, no `UPDATE_maxLen`, and no early exit. Everything comes out of the
+    /// tree walk, seeded with `max_len = 1` -- the literal in
+    /// `GET_MATCHES_FOOTER_BT(1)` at `LzFind.c:1158`. Seeding 2 instead would
+    /// suppress every length-2 match, because the walk's gate is `if (maxLen < len)`.
+    fn get_matches_bt2(&mut self, out: &mut Vec<Match>) {
+        out.clear();
+        let len_limit = self.len_limit;
+        if len_limit < 2 {
+            self.move_pos();
+            return;
+        }
+        let cur = self.buffer_offset;
+        let pos = self.pos;
+
+        let hv = self.hash2_calc(cur);
+        let cur_match = self.hash[hv];
+        self.hash[hv] = pos;
+
+        bt4::get_matches_spec1(
+            len_limit,
+            cur_match,
+            pos,
+            &self.buf,
+            cur,
+            &mut self.son,
+            self.cyclic_buffer_pos,
+            self.cyclic_buffer_size,
+            self.cut_value,
+            out,
+            1,
+        );
+        self.move_pos();
+    }
+
+    /// `Bt2_MatchFinder_Skip` (`LzFind.c:1515`).
+    fn skip_bt2(&mut self, num: u32) {
+        for _ in 0..num {
+            let len_limit = self.len_limit;
+            if len_limit < 2 {
+                self.move_pos();
+                continue;
+            }
+            let cur = self.buffer_offset;
+            let pos = self.pos;
+            let hv = self.hash2_calc(cur);
+            let cur_match = self.hash[hv];
+            self.hash[hv] = pos;
+            bt4::skip_matches_spec(
+                len_limit,
+                cur_match,
+                pos,
+                &self.buf,
+                cur,
+                &mut self.son,
+                self.cyclic_buffer_pos,
+                self.cyclic_buffer_size,
+                self.cut_value,
+            );
+            self.move_pos();
+        }
+    }
+
+    /// `HASH2_CALC` (`LzFind.c:35`): `hv = GetUi16(cur)`.
+    ///
+    /// A plain little-endian 16-bit load — **not** a CRC hash, and **not** masked
+    /// with `hash_mask`. It stays in range only because
+    /// [`get_hash_mask`] returns `0xFFFF` unconditionally for `numHashBytes == 2`, so
+    /// the table is exactly `1 << 16` entries. Deriving this from the 4-byte hash's
+    /// machinery, or masking it, assigns different buckets and changes the parse.
+    #[inline]
+    fn hash2_calc(&self, cur: usize) -> usize {
+        (self.buf[cur] as usize) | ((self.buf[cur + 1] as usize) << 8)
+    }
+
+    /// `Bt3_MatchFinder_GetMatches` (`LzFind.c:1177`).
+    ///
+    /// BT3's pre-check is **not a reduced BT4 pre-check**, and the difference is
+    /// output-visible rather than stylistic:
+    ///
+    /// * it has one candidate (`d2`), because `HASH3_CALC` produces no `h3`;
+    /// * it calls `UPDATE_maxLen` **before** emitting, then pushes a single pair
+    ///   whose length is already fully extended -- BT4 pushes `(2, d2-1)` first and
+    ///   patches the length afterwards, and can leave an orphan length-2 pair behind
+    ///   when `cur[2]` mismatches and `d3` fails;
+    /// * so BT3 emits zero or one pair here, never two.
+    ///
+    /// `ReadMatchDistances` consumes the pair list positionally, so either shape
+    /// error changes the parse immediately.
+    ///
+    /// One byte of comparison is enough before extending because `h2` keeps 10 bits
+    /// of `crc[cur[0]] ^ cur[1]` including the bijective low 8 (`LzFind.c:37`), so a
+    /// matching bucket plus a verified `cur[0]` implies `cur[1]` matches too.
+    fn get_matches_bt3(&mut self, out: &mut Vec<Match>) {
+        out.clear();
+        let len_limit = self.len_limit;
+        if len_limit < 3 {
+            self.move_pos();
+            return;
+        }
+        let cur = self.buffer_offset;
+        let pos = self.pos;
+
+        // HASH3_CALC (LzFind.c:44). Note `hv` is masked with `hash_mask`, whereas
+        // BT4's `h3` is masked with `kHash3Size - 1`: different values from the same
+        // `temp`, so one cannot stand in for the other.
+        let temp = self.crc[self.buf[cur] as usize] ^ self.buf[cur + 1] as u32;
+        let h2 = (temp & (HASH2_SIZE as u32 - 1)) as usize;
+        let hv = ((temp ^ ((self.buf[cur + 2] as u32) << 8)) & self.hash_mask) as usize;
+
+        let d2 = pos - self.hash[h2];
+        let cur_match = self.hash[FIX3_HASH_SIZE + hv];
+        self.hash[h2] = pos;
+        self.hash[FIX3_HASH_SIZE + hv] = pos;
+
+        let mmm = self.cyclic_buffer_size.min(pos);
+        let mut max_len = 2u32;
+
+        if d2 < mmm && self.buf[cur - d2 as usize] == self.buf[cur] {
+            // UPDATE_maxLen, scanning from `cur + max_len` == `cur + 2`.
+            let diff = d2 as usize;
+            let lim = cur + len_limit as usize;
+            let mut c = cur + max_len as usize;
+            while c != lim && self.buf[c - diff] == self.buf[c] {
+                c += 1;
+            }
+            max_len = (c - cur) as u32;
+            out.push(Match {
+                len: max_len,
+                dist: d2 - 1,
+            });
+            if max_len == len_limit {
+                bt4::skip_matches_spec(
+                    len_limit,
+                    cur_match,
+                    pos,
+                    &self.buf,
+                    cur,
+                    &mut self.son,
+                    self.cyclic_buffer_pos,
+                    self.cyclic_buffer_size,
+                    self.cut_value,
+                );
+                self.move_pos();
+                return;
+            }
+        }
+
+        bt4::get_matches_spec1(
+            len_limit,
+            cur_match,
+            pos,
+            &self.buf,
+            cur,
+            &mut self.son,
+            self.cyclic_buffer_pos,
+            self.cyclic_buffer_size,
+            self.cut_value,
+            out,
+            max_len,
+        );
+        self.move_pos();
+    }
+
+    /// `Bt3_MatchFinder_Skip` (`LzFind.c:1538`).
+    fn skip_bt3(&mut self, num: u32) {
+        for _ in 0..num {
+            let len_limit = self.len_limit;
+            if len_limit < 3 {
+                self.move_pos();
+                continue;
+            }
+            let cur = self.buffer_offset;
+            let pos = self.pos;
+
+            let temp = self.crc[self.buf[cur] as usize] ^ self.buf[cur + 1] as u32;
+            let h2 = (temp & (HASH2_SIZE as u32 - 1)) as usize;
+            let hv = ((temp ^ ((self.buf[cur + 2] as u32) << 8)) & self.hash_mask) as usize;
+
+            let cur_match = self.hash[FIX3_HASH_SIZE + hv];
+            // The C chains both assignments off `p->pos` (LzFind.c:1548).
+            self.hash[h2] = pos;
+            self.hash[FIX3_HASH_SIZE + hv] = pos;
+
+            bt4::skip_matches_spec(
+                len_limit,
+                cur_match,
+                pos,
+                &self.buf,
+                cur,
+                &mut self.son,
+                self.cyclic_buffer_pos,
+                self.cyclic_buffer_size,
+                self.cut_value,
+            );
+            self.move_pos();
+        }
+    }
+
     /// Find all matches at the current position into `out` (cleared first), then
-    /// advance one byte. Mirrors `Bt4_MatchFinder_GetMatches`.
+    /// advance one byte.
+    ///
+    /// Exhaustive on the finder kind — `MatchFinder_CreateVTable` (`LzFind.c:1664`)
+    /// as a `match` instead of a function-pointer table. Adding a variant will not
+    /// compile until it has a body here, which is the property that stopped an
+    /// unported finder from silently running BT4's search.
     pub fn get_matches(&mut self, out: &mut Vec<Match>) {
+        match self.kind {
+            MatchFinderKind::Bt2 => self.get_matches_bt2(out),
+            MatchFinderKind::Bt3 => self.get_matches_bt3(out),
+            MatchFinderKind::Bt4 => self.get_matches_bt4(out),
+            MatchFinderKind::Hc4 => self.get_matches_hc4(out),
+            MatchFinderKind::Hc5 => self.get_matches_hc5(out),
+        }
+    }
+
+    /// Advance `num` positions, maintaining the search structure but recording
+    /// nothing (`MatchFinder_Skip`).
+    pub fn skip(&mut self, num: u32) {
+        match self.kind {
+            MatchFinderKind::Bt2 => self.skip_bt2(num),
+            MatchFinderKind::Bt3 => self.skip_bt3(num),
+            MatchFinderKind::Bt4 => self.skip_bt4(num),
+            MatchFinderKind::Hc4 => self.skip_hc4(num),
+            MatchFinderKind::Hc5 => self.skip_hc5(num),
+        }
+    }
+
+    /// `Hc4_MatchFinder_GetMatches` (`LzFind.c:1362`).
+    fn get_matches_hc4(&mut self, out: &mut Vec<Match>) {
+        out.clear();
+        let len_limit = self.len_limit;
+        if len_limit < 4 {
+            self.move_pos();
+            return;
+        }
+        let cur = self.buffer_offset;
+        let pos = self.pos;
+
+        let (h2, h3, hv) = hc::hash4_calc(&self.crc, &self.buf, cur, self.hash_mask);
+        self.hc_body(pos, cur, len_limit, h2, FIX3_HASH_SIZE + h3, FIX4_HASH_SIZE + hv, out, false);
+    }
+
+    /// `Hc5_MatchFinder_GetMatches` (`LzFind.c:1431`).
+    fn get_matches_hc5(&mut self, out: &mut Vec<Match>) {
+        out.clear();
+        let len_limit = self.len_limit;
+        if len_limit < 5 {
+            self.move_pos();
+            return;
+        }
+        let cur = self.buffer_offset;
+        let pos = self.pos;
+
+        let (h2, h3, hv) = hc::hash5_calc(&self.crc, &self.buf, cur, self.hash_mask);
+        self.hc_body(pos, cur, len_limit, h2, FIX3_HASH_SIZE + h3, FIX5_HASH_SIZE + hv, out, true);
+    }
+
+    /// The shared tail of both hash-chain `GetMatches`, which differ only in their
+    /// hash function, their length gate and their prologue.
+    ///
+    /// The chain's `maxLen == lenLimit` case is where it parts company with the tree:
+    /// BT4 splices via `SkipMatchesSpec`, the chain merely plants
+    /// `son[cyclicBufferPos] = curMatch` (`LzFind.c:1421`, `:1495`). Running the
+    /// tree's version here would corrupt the chain rather than fail.
+    #[allow(clippy::too_many_arguments)]
+    fn hc_body(
+        &mut self,
+        pos: u32,
+        cur: usize,
+        len_limit: u32,
+        h2i: usize,
+        h3i: usize,
+        hvi: usize,
+        out: &mut Vec<Match>,
+        five: bool,
+    ) {
+        // Reads before writes (LzFind.c:1376-1382).
+        let d2 = pos - self.hash[h2i];
+        let d3 = pos - self.hash[h3i];
+        let cur_match = self.hash[hvi];
+        self.hash[h2i] = pos;
+        self.hash[h3i] = pos;
+        self.hash[hvi] = pos;
+
+        let mmm = self.cyclic_buffer_size.min(pos); // SET_mmm, LzFind.c:1171
+        let prologue = match five {
+            true => hc::hc5_prologue(len_limit, d2, d3, mmm, &self.buf, cur, out),
+            false => hc::hc4_prologue(len_limit, d2, d3, mmm, &self.buf, cur, out),
+        };
+        match prologue {
+            hc::Prologue::PlantAndStop => {
+                self.son[self.cyclic_buffer_pos as usize] = cur_match;
+            }
+            hc::Prologue::Search { max_len } => hc::get_matches_spec(
+                len_limit,
+                cur_match,
+                pos,
+                &self.buf,
+                cur,
+                &mut self.son,
+                self.cyclic_buffer_pos,
+                self.cyclic_buffer_size,
+                self.cut_value,
+                out,
+                max_len,
+            ),
+        }
+        self.move_pos();
+    }
+
+    /// `Hc4_MatchFinder_Skip` (`LzFind.c:1619`).
+    ///
+    /// The chain has no `SkipMatchesSpec` analogue — skipping is O(1) per byte, just
+    /// planting the chain link. The C batches the run (`HC_SKIP_HEADER`, `:1590`),
+    /// capping it at `posLimit - pos` and bumping `cyclicBufferPos` up front; this
+    /// per-position loop is equivalent because `len_limit` and `buffer` change only
+    /// inside `check_limits`, which runs only at `pos == pos_limit` — exactly the
+    /// batch cap.
+    fn skip_hc4(&mut self, num: u32) {
+        for _ in 0..num {
+            let len_limit = self.len_limit;
+            if len_limit < 4 {
+                self.move_pos();
+                continue;
+            }
+            let cur = self.buffer_offset;
+            let pos = self.pos;
+            let (h2, h3, hv) = hc::hash4_calc(&self.crc, &self.buf, cur, self.hash_mask);
+            self.hc_skip_one(pos, h2, FIX3_HASH_SIZE + h3, FIX4_HASH_SIZE + hv);
+        }
+    }
+
+    /// `Hc5_MatchFinder_Skip` (`LzFind.c:1635`).
+    fn skip_hc5(&mut self, num: u32) {
+        for _ in 0..num {
+            let len_limit = self.len_limit;
+            if len_limit < 5 {
+                self.move_pos();
+                continue;
+            }
+            let cur = self.buffer_offset;
+            let pos = self.pos;
+            let (h2, h3, hv) = hc::hash5_calc(&self.crc, &self.buf, cur, self.hash_mask);
+            self.hc_skip_one(pos, h2, FIX3_HASH_SIZE + h3, FIX5_HASH_SIZE + hv);
+        }
+    }
+
+    /// `HC_SKIP_FOOTER` (`LzFind.c:1610`) for one position.
+    fn hc_skip_one(&mut self, pos: u32, h2i: usize, h3i: usize, hvi: usize) {
+        let cur_match = self.hash[hvi];
+        self.hash[h2i] = pos;
+        self.hash[h3i] = pos;
+        self.hash[hvi] = pos;
+        self.son[self.cyclic_buffer_pos as usize] = cur_match;
+        self.move_pos();
+    }
+
+    /// `Bt4_MatchFinder_GetMatches` (`LzFind.c:1226`).
+    fn get_matches_bt4(&mut self, out: &mut Vec<Match>) {
         out.clear();
         // GET_MATCHES_HEADER2: lenLimit comes from SetLimits, not from avail.
         let len_limit = self.len_limit;
@@ -486,9 +908,8 @@ impl<'a> MatchFinder<'a> {
         self.move_pos();
     }
 
-    /// Advance `num` positions, maintaining the tree but recording nothing
-    /// (`MatchFinder_Skip` for BT4).
-    pub fn skip(&mut self, num: u32) {
+    /// `Bt4_MatchFinder_Skip` (`LzFind.c:1554`).
+    fn skip_bt4(&mut self, num: u32) {
         for _ in 0..num {
             let len_limit = self.len_limit;
             if len_limit < 4 {
@@ -565,7 +986,7 @@ mod tests {
         for &h in &histories {
             for fb in [1u32, 2, 5, 32, 64, 273] {
                 let ksb = h + KEEP_ADD_BUFFER_BEFORE + 1;
-                let ksa = (KEEP_ADD_BUFFER_AFTER + fb).max(NUM_HASH_BYTES);
+                let ksa = (KEEP_ADD_BUFFER_AFTER + fb).max(NUM_HASH_BYTES_MIN);
                 assert!(ksb >= h, "keepSizeBefore overflowed at history {h}");
                 let bs = ksb + ksa;
                 assert!(bs >= ksb, "blockSize overflowed at history {h}, fb {fb}");
@@ -586,6 +1007,44 @@ mod tests {
     }
 
     const K_REDUCE_MIN_FOR_TEST: u32 = 1 << 12;
+
+    /// `get_hash_mask` against the C, for every `numHashBytes`.
+    ///
+    /// The expected values are **not transcribed** from reading `LzFind.c`; they were
+    /// printed by a probe that `#include`s `LzFind.c` and calls the real (static)
+    /// `MatchFinder_GetHashMask`. That matters here because two of the branches are
+    /// one token apart -- nhb 3 caps at `(1 << 24) - 1` where nhb 4 takes a second
+    /// `>>= 1` -- and they agree for every history size up to `1 << 26`, so a
+    /// plausible-looking hand-written table would pass while being wrong.
+    #[test]
+    fn hash_mask_matches_the_c_for_every_num_hash_bytes() {
+        // history, nhb2, nhb3, nhb4, nhb5
+        let table: [(u32, u32, u32, u32, u32); 13] = [
+            (0, 65535, 65535, 65535, 262143),
+            (1, 65535, 65535, 65535, 262143),
+            (4096, 65535, 65535, 65535, 262143),
+            (19584, 65535, 65535, 65535, 262143),
+            (65536, 65535, 65535, 65535, 262143),
+            (1 << 20, 65535, 524287, 524287, 524287),
+            (1 << 24, 65535, 8388607, 8388607, 8388607),
+            ((1 << 24) + 1, 65535, 16777215, 16777215, 16777215),
+            (1 << 26, 65535, 16777215, 16777215, 16777215),
+            // The first history size where nhb 3 and nhb 4 part company.
+            ((1 << 26) + 1, 65535, 16777215, 33554431, 33554431),
+            (1 << 27, 65535, 16777215, 33554431, 33554431),
+            (1 << 30, 65535, 16777215, 268435455, 268435455),
+            (15 << 28, 65535, 16777215, 1073741823, 1073741823),
+        ];
+        for (hist, m2, m3, m4, m5) in table {
+            assert_eq!(get_hash_mask(2, hist), m2, "nhb2 history {hist}");
+            assert_eq!(get_hash_mask(3, hist), m3, "nhb3 history {hist}");
+            assert_eq!(get_hash_mask(4, hist), m4, "nhb4 history {hist}");
+            assert_eq!(get_hash_mask(5, hist), m5, "nhb5 history {hist}");
+        }
+        // Stated as an assertion so that collapsing the two branches fails here
+        // rather than only in a large-dictionary differential run.
+        assert_ne!(get_hash_mask(3, (1 << 26) + 1), get_hash_mask(4, (1 << 26) + 1));
+    }
 
     #[test]
     fn normalize3_saturates_at_zero() {
@@ -612,6 +1071,7 @@ mod tests {
             fb: 32,
             mc: 32,
             mf: crate::props::MatchFinderKind::Bt4,
+            fast_mode: false,
             write_end_mark: true,
         };
         let mut src = crate::stream::SliceIn::new(&data);

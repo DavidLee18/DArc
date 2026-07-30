@@ -569,8 +569,15 @@ impl<'a> Encoder<'a> {
         let num_pos_states = 1usize << self.pb;
 
         // LzmaEnc_InitPrices
-        self.prices.fill_distances_prices(&self.probs.pos_slot, &self.probs.spec_pos);
-        self.prices.fill_align_prices(&self.probs.align);
+        // LzmaEnc_InitPrices (LzmaEnc.c:2835) guards exactly these two on
+        // `!fastMode`. The tail below -- the counter and both len-price tables --
+        // runs either way. Fast mode reads no price table, so this is speed, not
+        // bytes; but "byte-identical yet 470x slower" has happened in this repo
+        // before, which is why the guard is here rather than left as a comment.
+        if !self.fast_mode {
+            self.prices.fill_distances_prices(&self.probs.pos_slot, &self.probs.spec_pos);
+            self.prices.fill_align_prices(&self.probs.align);
+        }
         self.prices.rep_len_enc_counter = REP_LEN_COUNT;
         len_price_update(
             &mut self.prices.len_enc,
@@ -614,7 +621,11 @@ impl<'a> Encoder<'a> {
         let mut now_pos: u32 = 1;
         if self.mf.num_available() != 0 {
             loop {
-                let len = if self.opt_end == self.opt_cur {
+                // LzmaEnc.c:2429: fast mode bypasses the optimal parser AND its
+                // `opt` backlog entirely -- there is never a pending path to drain.
+                let len = if self.fast_mode {
+                    self.get_optimum_fast()
+                } else if self.opt_end == self.opt_cur {
                     self.get_optimum(now_pos)
                 } else {
                     let o = self.opt[self.opt_cur];
@@ -642,6 +653,11 @@ impl<'a> Encoder<'a> {
                 self.additional_offset -= len;
 
                 if self.additional_offset == 0 {
+                    // LzmaEnc.c:2634 wraps BOTH refresh blocks in `if (!fastMode)`.
+                    // The counters themselves are still bumped in fast mode
+                    // (LzmaEnc.c:2540, :2560, outside any guard), which is what the
+                    // encode_* methods already do.
+                    if !self.fast_mode {
                     if self.prices.match_price_count >= 64 {
                         self.prices.fill_align_prices(&self.probs.align);
                         self.prices.fill_distances_prices(&self.probs.pos_slot, &self.probs.spec_pos);
@@ -668,6 +684,7 @@ impl<'a> Encoder<'a> {
                             &self.probs.rep_len.high,
                             &self.prices.pp,
                         );
+                    }
                     }
                     if self.mf.num_available() == 0 {
                         break;

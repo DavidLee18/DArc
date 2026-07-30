@@ -150,6 +150,15 @@ pub struct LzmaProps {
     /// Which match finder to run. See [`MatchFinderKind`]; DArc's default is
     /// [`MatchFinderKind::Hc5`], not `Bt4`.
     pub mf: MatchFinderKind,
+    /// `p->fastMode`, i.e. `algo == 0` (`LzmaEnc.c:568`) — the greedy/lazy parser
+    /// instead of the optimal one.
+    ///
+    /// DArc reaches it through the method-string words `fast` and `fastest`
+    /// (`C_LZMA.cpp:361-362`), and its own preset `3binary` uses one
+    /// (`Compression.hs:475`). `algo` changes nothing else on DArc's path: `btMode`
+    /// and `numHashBytes` come from `matchFinder` explicitly, so
+    /// `LzmaEncProps_Normalize`'s `algo`-derived defaults never apply.
+    pub fast_mode: bool,
     /// Emit an end-of-payload marker before the final flush, i.e. the SDK's
     /// `writeEndMark`.
     ///
@@ -214,6 +223,9 @@ impl LzmaProps {
             fb,
             mc,
             mf,
+            // algo defaults to `level < 5 ? 0 : 1` (LzmaEnc.c:95); every level this
+            // constructor is used with is >= 5, so the optimal parser.
+            fast_mode: false,
             // Upstream's default and the SDK's: `p->writeEndMark = 0`
             // (LzmaEnc.c:64). DArc's callers set it explicitly.
             write_end_mark: false,
