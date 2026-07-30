@@ -52,7 +52,9 @@ fn main() {
     // shift is 0.
     let mc = if mc == 0 { 16 + (fb >> 1) } else { mc };
 
-    let props = darc_lzma::LzmaProps { lc, lp, pb, dict_size, fb, mc };
+    // DArc always sets writeEndMark: C_LZMA.cpp says "FreeArc streams with EOPM
+    // (unknown size)". Matching it is the point of this driver.
+    let props = darc_lzma::LzmaProps { lc, lp, pb, dict_size, fb, mc, write_end_mark: true };
     let out = darc_lzma::encode(&input, &props);
     if let Err(e) = std::io::stdout().write_all(&out) {
         eprintln!("writing stdout: {e}");

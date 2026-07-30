@@ -17,7 +17,9 @@ inputs = 88 comparisons. Result:
 | text 31 KB | byte 107 | 111 (96.4%) | payload identical |
 | zeros 40 KB | byte 66 | 70 (94.3%) | payload identical |
 
-**Every divergence is in the last 4–6 bytes**, and the C output is consistently
+(Superseded by the `writeEndMark` work below — the encoder is now byte-identical.
+Kept because the reasoning is what located the gap.) **Every divergence is in the
+last 4–6 bytes**, and the C output is consistently
 +5..+7 bytes longer across all 88 comparisons — one end-of-payload marker. DArc
 sets `props.writeEndMark = 1` ("FreeArc streams with EOPM"); this crate emits
 none, and the marker also changes the range-coder flush, so the tail differs
@@ -47,9 +49,11 @@ grep is not sufficient proof of deadness.
 
 Ordered by what blocks a drop-in replacement:
 
-1. **`writeEndMark`.** The only thing between this crate and byte-identity.
-   Small, well-specified, and immediately verifiable: the measurement above should
-   go to 88/88 identical.
+1. ~~**`writeEndMark`.**~~ **DONE.** `LzmaProps::write_end_mark` plus
+   `Encoder::write_end_marker`, a port of `WriteEndMarker` (`LzmaEnc.c:2100`)
+   called from `finish` before the range-coder flush, as `Flush` (`:2190`) does.
+   **`lzma-gap-check.sh` now reports 88/88 byte-identical** — the encoder matches
+   DArc's C exactly at every parameter set and input in the corpus.
 2. **Streaming.** Upstream is in-memory by design ("full input, no streaming").
    DArc's LZMA is callback-driven — `CbIn_Read`/`CbOut_Write` adapt
    `CALLBACK_FUNC` to `ISeqInStream`/`ISeqOutStream` — and archives exceed memory.

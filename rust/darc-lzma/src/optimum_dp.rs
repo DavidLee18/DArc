@@ -586,7 +586,8 @@ impl<'a> Encoder<'a> {
         );
 
         if self.mf.num_available() == 0 {
-            return self.finish();
+            // Empty input: nowPos is 0, which the C also passes here.
+            return self.finish(0);
         }
 
         // First byte: always a literal (LzmaEnc.c:2405).
@@ -664,6 +665,6 @@ impl<'a> Encoder<'a> {
             }
         }
 
-        self.finish()
+        self.finish(now_pos)
     }
 }

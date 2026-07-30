@@ -30,6 +30,15 @@ pub struct LzmaProps {
     pub fb: u32,
     /// Match cycles (`mc` / `cutValue`). Level-8 / BT4 default: 48.
     pub mc: u32,
+    /// Emit an end-of-payload marker before the final flush, i.e. the SDK's
+    /// `writeEndMark`.
+    ///
+    /// **DArc always sets this** (`C_LZMA.cpp`: "FreeArc streams with EOPM
+    /// (unknown size)"), because its streams do not carry an uncompressed length.
+    /// Upstream lzma-sdk-rs had no equivalent and always emitted none, which is
+    /// the entire remaining difference between this encoder and DArc's C -- see
+    /// PROVENANCE.md for the measurement.
+    pub write_end_mark: bool,
 }
 
 impl LzmaProps {
@@ -83,6 +92,9 @@ impl LzmaProps {
             dict_size,
             fb,
             mc,
+            // Upstream's default and the SDK's: `p->writeEndMark = 0`
+            // (LzmaEnc.c:64). DArc's callers set it explicitly.
+            write_end_mark: false,
         }
     }
 

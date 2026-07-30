@@ -167,6 +167,8 @@ struct Encoder<'a> {
     lp_mask: u32,
     pb_mask: u32,
     pb: u32,
+    /// `props.write_end_mark`, consulted only in `finish`.
+    props_write_end_mark: bool,
     num_fast_bytes: u32,
     additional_offset: u32,
     num_avail: u32,
@@ -204,6 +206,7 @@ impl<'a> Encoder<'a> {
             lp_mask: (1u32 << props.lp) - 1,
             pb_mask: (1u32 << props.pb) - 1,
             pb: props.pb as u32,
+            props_write_end_mark: props.write_end_mark,
             num_fast_bytes: props.fb,
             additional_offset: 0,
             num_avail: 0,
@@ -420,7 +423,43 @@ impl<'a> Encoder<'a> {
         }
     }
 
-    fn finish(self) -> Vec<u8> {
+    /// `WriteEndMarker` (`LzmaEnc.c:2100`): a match with length symbol 0 and an
+    /// all-ones distance, which the decoder recognises as end-of-payload.
+    ///
+    /// The C's four blocks map onto this crate's range-coder API rather than
+    /// being transliterated bit by bit:
+    ///
+    /// * `isMatch[state][posState] = 1`, `isRep[state] = 0` — a plain match
+    /// * `LenEnc_Encode(.., 0, posState)` — length symbol 0
+    /// * the pos-slot loop walks `m = (m << 1) + 1` encoding a 1 each time, which
+    ///   is exactly `encode_tree` of the all-ones symbol over `NUM_POS_SLOT_BITS`
+    /// * `EncodeDirectBits(((1 << (30 - kNumAlignBits)) - 1), 30 - kNumAlignBits)`
+    /// * the align loop is `encode_tree_reverse` of the all-ones symbol
+    fn write_end_marker(&mut self, pos: u32) {
+        let ps = (pos & self.pb_mask) as usize;
+        let s = self.state as usize;
+        self.rc.encode_bit(&mut self.probs.is_match[s][ps], 1);
+        self.rc.encode_bit(&mut self.probs.is_rep[s], 0);
+        self.state = u32::from(MATCH_NEXT_STATES[s]);
+        self.probs.len.encode(&mut self.rc, 0, ps);
+        self.rc.encode_tree(
+            &mut self.probs.pos_slot[0],
+            NUM_POS_SLOT_BITS,
+            (1 << NUM_POS_SLOT_BITS) - 1,
+        );
+        let num_bits = 30 - NUM_ALIGN_BITS;
+        self.rc.encode_direct_bits((1u32 << num_bits) - 1, num_bits);
+        self.rc
+            .encode_tree_reverse(&mut self.probs.align, NUM_ALIGN_BITS, ALIGN_MASK);
+    }
+
+    fn finish(mut self, now_pos: u32) -> Vec<u8> {
+        // `Flush` (LzmaEnc.c:2190) writes the marker BEFORE flushing the range
+        // coder, which is why the marker changes the stream tail rather than
+        // simply appending to it.
+        if self.props_write_end_mark {
+            self.write_end_marker(now_pos);
+        }
         self.rc.finish()
     }
 }
