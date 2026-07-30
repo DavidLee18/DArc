@@ -258,8 +258,10 @@ LZMA_METHOD::LZMA_METHOD()
 }
 
 #ifdef DARC_RUST
-// The Rust decoder in rust/darc-lzma/src/decode_stream.rs. Same 11-argument ABI as
-// lzma_decompress, so the LoadFromDLL override below still works unchanged.
+// The Rust codec in rust/darc-lzma. Same 11-argument ABI as the C entry points, so
+// the LoadFromDLL overrides below still work unchanged.
+extern "C" int darc_lzma_compress   (int, int, int, int, int, int, int, int, int,
+                                     CALLBACK_FUNC*, void*);
 extern "C" int darc_lzma_decompress (int, int, int, int, int, int, int, int, int,
                                      CALLBACK_FUNC*, void*);
 #endif
@@ -283,7 +285,15 @@ int LZMA_METHOD::decompress (CALLBACK_FUNC *callback, void *auxdata)
 int LZMA_METHOD::compress (CALLBACK_FUNC *callback, void *auxdata)
 {
   static FARPROC f = LoadFromDLL ("lzma_compress");
+#ifdef DARC_RUST
+  // The Rust encoder in rust/darc-lzma. Byte-identical to the C across every
+  // configuration this wrapper can ask for -- all five match finders and both
+  // parsers -- gated by rust/difftest/lzma-gap-check.sh at 222/222. Switching it on
+  // therefore changes no archive bytes; that is the whole point of the gate.
+  if (!f) f = (FARPROC) darc_lzma_compress;
+#else
   if (!f) f = (FARPROC) lzma_compress;
+#endif
   return ((int (*)(int,int,int,int,int,int,int,int,int, CALLBACK_FUNC*, void*)) f)
            (dictionarySize, hashSize, algorithm, numFastBytes, matchFinder,
             matchFinderCycles, posStateBits, litContextBits, litPosBits,
