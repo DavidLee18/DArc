@@ -333,7 +333,13 @@ pub fn dis_unfilter(source: &[u8], dest_size: usize, mem_start: u32) -> Option<V
                     }
                     st.out.extend_from_slice(&rel.to_le_bytes());
                 }
-                _ => {}
+                // Dead by arithmetic, not by assumption: F_TYPE is 0xc, two
+                // bits, so `flags & F_TYPE` has exactly four possible values,
+                // and F_AD/F_DA/F_BR/F_DR are 0x0/0x4/0x8/0xc -- all four. The
+                // C's switch (DisPack.cpp:812) has no `default` for the same
+                // reason. Only a bare-integer mask forces an arm here at all;
+                // modelling F_TYPE as an enum would remove it.
+                _ => unreachable!("flags & F_TYPE outside the four-value mask"),
             }
         } else {
             match flags & F_TYPE {
@@ -348,7 +354,13 @@ pub fn dis_unfilter(source: &[u8], dest_size: usize, mem_start: u32) -> Option<V
                         copy16_chk!(ST_IMM16);
                     }
                 }
-                _ => {}
+                // F_NI, "no immediate" -- the common case for most opcodes.
+                // Named rather than left as `_`: the C's switch
+                // (DisPack.cpp:849) lists only fBI/fWI/fDI and lets fNI fall
+                // through, so doing nothing is the correct port, and saying so
+                // separates it from the impossible fourth value below.
+                F_NI => {}
+                _ => unreachable!("flags & F_TYPE outside the four-value mask"),
             }
         }
     }
