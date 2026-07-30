@@ -10,7 +10,7 @@
 // (e.g. a rep index is also the encoded rep distance).
 #![allow(clippy::needless_range_loop)]
 
-use crate::matchfinder::{Match, MatchFinder};
+use crate::matchfinder::{KEEP_ADD_BUFFER_BEFORE, Match, MatchFinder};
 use crate::optimum::{
     self, INFINITY_PRICE, MARK_LIT, NUM_OPTS, Optimal, Prices, REP_LEN_COUNT, len_price_update,
     len_to_pos_state, lit_get_price, lit_matched_get_price,
@@ -43,6 +43,7 @@ fn is_lit_state(s: u32) -> bool {
 }
 
 /// Length-coder probability model (`CLenEnc`).
+#[derive(Clone)]
 pub struct LenEnc {
     pub choice: u16,
     pub choice2: u16,
@@ -80,6 +81,15 @@ impl LenEnc {
 }
 
 /// Encoder probability models.
+///
+/// This is also **exactly** `CSaveState`'s probability half (`LzmaEnc.c:359-381`,
+/// copied by `COPY_LZMA_ENC_STATE` at `:501-515`): `posAlignEncoder`, `isRep`,
+/// `isRepG0`, `isRepG1`, `isRepG2`, `isMatch`, `isRep0Long`, `posSlotEncoder`,
+/// `posEncoders`, `lenProbs`, `repLenProbs`, `litProbs`. Keeping the two in one
+/// struct is what makes [`SaveState`] provably the right *set* — the C's save list
+/// is a hand-written macro, and adding a field to it (or forgetting one) changes
+/// every chunk after the first uncompressed one.
+#[derive(Clone)]
 pub struct EncProbs {
     pub is_match: [[u16; NUM_POS_STATES_MAX]; NUM_STATES],
     pub is_rep: [u16; NUM_STATES],
@@ -112,6 +122,53 @@ impl EncProbs {
             literal: vec![PROB_INIT_VALUE; 0x300usize << (lc + lp)],
         }
     }
+
+    /// The probability half of `LzmaEnc_Init` (`LzmaEnc.c:2762-2830`), in place.
+    ///
+    /// Re-running the constructor would do the same thing, but LZMA2 calls this once
+    /// per block and the literal table is up to 24 KiB; the C reuses its allocation
+    /// too (`LzmaEnc_Alloc` only reallocates when `lclp` changes, `:2700-2711`).
+    fn reset(&mut self) {
+        self.is_match = [[PROB_INIT_VALUE; NUM_POS_STATES_MAX]; NUM_STATES];
+        self.is_rep = [PROB_INIT_VALUE; NUM_STATES];
+        self.is_rep_g0 = [PROB_INIT_VALUE; NUM_STATES];
+        self.is_rep_g1 = [PROB_INIT_VALUE; NUM_STATES];
+        self.is_rep_g2 = [PROB_INIT_VALUE; NUM_STATES];
+        self.is_rep0_long = [[PROB_INIT_VALUE; NUM_POS_STATES_MAX]; NUM_STATES];
+        self.pos_slot = [[PROB_INIT_VALUE; POS_SLOT_TABLE_LEN]; 4];
+        self.spec_pos = [PROB_INIT_VALUE; NUM_FULL_DISTANCES as usize];
+        self.align = [PROB_INIT_VALUE; ALIGN_TABLE_LEN];
+        self.len = LenEnc::new();
+        self.rep_len = LenEnc::new();
+        self.literal.fill(PROB_INIT_VALUE);
+    }
+}
+
+/// `CSaveState` (`LzmaEnc.c:359-381`) — what `LzmaEnc_SaveState` copies, and
+/// nothing else.
+///
+/// The omissions are the load-bearing part, because the uncompressed-chunk path in
+/// `Lzma2EncInt_EncodeSubblock` (`Lzma2Enc.c:193`) restores this and then keeps
+/// encoding. **Not** saved, and therefore deliberately carried forward across a
+/// restore: `nowPos64`, `additionalOffset`, every price table, `matchPriceCount`,
+/// `repLenEncCounter`, and the match finder's entire state. Saving any of those
+/// would rewind work the C does not rewind; saving fewer would leak an adapted
+/// probability into a chunk the decoder will start fresh.
+pub struct SaveState {
+    state: u32,
+    reps: [u32; NUM_REPS],
+    probs: EncProbs,
+}
+
+/// The three out-parameters of `LzmaEnc_CodeOneMemBlock` (`LzmaEnc.c:2953`).
+pub struct MemBlockOutcome {
+    /// What `LzmaEnc_CodeOneBlock` returned.
+    pub res: Result<(), StreamError>,
+    /// `outStream.overflow` — the bounded sink truncated. Reported by the C as
+    /// `SZ_ERROR_OUTPUT_EOF`, ahead of `res`.
+    pub overflow: bool,
+    /// `*unpackSize` on return: `nowPos64` delta, i.e. input consumed.
+    pub unpack_size: u32,
 }
 
 // ---- pure-price helpers (free fns to keep borrows simple) ----
@@ -153,7 +210,23 @@ fn price_pure_rep(
     }
 }
 
-struct Encoder<'a> {
+/// `kPackReserve` (`LzmaEnc.c:278`) — the compressed-side slack the bounded break
+/// keeps in hand. `kNumOpts * 8`, not `kNumOpts`: shrinking it lets a chunk run
+/// past `maxPackSize`, widening it cuts every chunk early, and either way every
+/// subsequent chunk boundary moves.
+const K_PACK_RESERVE: u32 = NUM_OPTS as u32 * 8;
+
+/// The uncompressed-side slack in the same break (`LzmaEnc.c:2665`):
+/// `processed + kNumOpts + 300 >= maxUnpackSize`. The `300` is a literal in the C
+/// with no name and no derivation; it is transcribed, not reconstructed.
+const UNPACK_RESERVE: u32 = NUM_OPTS as u32 + 300;
+
+/// The 128 KiB the *unbounded* path uses instead (`LzmaEnc.c:2670`). It only decides
+/// how often `LzmaEnc_Encode2` (`:2999`) re-enters `CodeOneBlock`; nothing is reset
+/// between those re-entries, so it cannot change a byte.
+const UNBOUNDED_CHUNK: u32 = 1 << 17;
+
+pub struct Encoder<'a> {
     rc: RangeEncoder<'a>,
     probs: EncProbs,
     prices: Prices,
@@ -161,13 +234,28 @@ struct Encoder<'a> {
     opt: Vec<Optimal>,
     matches: Vec<u32>,
     mf_buf: Vec<Match>,
+    /// `p->saveState`. Allocated once, as the C allocates `saveState.litProbs`
+    /// alongside `litProbs` (`LzmaEnc.c:2703`).
+    save: SaveState,
     state: u32,
     reps: [u32; 4],
     lc: u32,
     lp_mask: u32,
     pb_mask: u32,
-    pb: u32,
-    /// `props.write_end_mark`, consulted only in `finish`.
+    /// `1 << pb`, the argument `LenPriceEnc_UpdateTables` takes.
+    num_pos_states: usize,
+    /// `p->nowPos64` — the stream position, carried *across* `code_one_block` calls.
+    /// This is the field that makes the block coder re-entrant.
+    now_pos64: u64,
+    /// `p->finished`, set by `flush`.
+    finished: bool,
+    /// `p->result`, the latched error `CheckErrors` (`LzmaEnc.c:2161`) maintains.
+    result: Result<(), StreamError>,
+    /// `props.write_end_mark`, consulted only in `flush`.
+    ///
+    /// Mutable because `LzmaEnc_CodeOneMemBlock` force-clears it
+    /// (`LzmaEnc.c:2967`): an LZMA2 chunk never carries an end marker, whatever the
+    /// caller asked for.
     props_write_end_mark: bool,
     /// `p->fastMode` (`LzmaEnc.c:568`): use `get_optimum_fast` and skip every price
     /// table the optimal parser needs.
@@ -182,11 +270,32 @@ struct Encoder<'a> {
     opt_end: usize,
 }
 
+/// `LzmaEnc_Alloc`'s `beforeSize` (`LzmaEnc.c:2686`, `:2729`):
+///
+/// ```text
+///     UInt32 beforeSize = kNumOpts;
+///     if (beforeSize + dictSize < keepWindowSize)
+///       beforeSize = keepWindowSize - dictSize;
+/// ```
+///
+/// `keep_window_size` is 0 for plain LZMA (`LzmaEnc_Prepare`, `:2877`) and
+/// `LZMA2_KEEP_WINDOW_SIZE` for LZMA2 (`Lzma2Enc.c:566`, `:581`).
+fn before_size(dict_size: u32, keep_window_size: u32) -> u32 {
+    let before = KEEP_ADD_BUFFER_BEFORE;
+    if before.saturating_add(dict_size) < keep_window_size {
+        keep_window_size - dict_size
+    } else {
+        before
+    }
+}
+
 impl<'a> Encoder<'a> {
-    fn new(
+    /// The parts of construction that do not depend on where the output goes.
+    fn build(
+        rc: RangeEncoder<'a>,
         source: &'a mut dyn InStream,
-        sink: &'a mut dyn OutStream,
         props: &LzmaProps,
+        keep_window_size: u32,
     ) -> Self {
         let dist_table_size = {
             let mut i = (END_POS_MODEL_INDEX / 2) as usize;
@@ -198,11 +307,21 @@ impl<'a> Encoder<'a> {
             }
             (i * 2) as u32
         };
+        let probs = EncProbs::new(props.lc as u32, props.lp as u32);
         Encoder {
-            rc: RangeEncoder::new(sink),
-            probs: EncProbs::new(props.lc as u32, props.lp as u32),
+            rc,
+            save: SaveState {
+                state: 0,
+                reps: [1; NUM_REPS],
+                probs: probs.clone(),
+            },
+            probs,
             prices: Prices::new(dist_table_size, props.fb),
-            mf: MatchFinder::new(source, props),
+            mf: MatchFinder::new(
+                source,
+                props,
+                before_size(props.history_size(), keep_window_size),
+            ),
             opt: vec![Optimal::default(); NUM_OPTS],
             matches: Vec::with_capacity(MATCH_LEN_MAX as usize * 2 + 2),
             mf_buf: Vec::with_capacity(MATCH_LEN_MAX as usize),
@@ -211,7 +330,10 @@ impl<'a> Encoder<'a> {
             lc: props.lc as u32,
             lp_mask: (1u32 << props.lp) - 1,
             pb_mask: (1u32 << props.pb) - 1,
-            pb: props.pb as u32,
+            num_pos_states: 1usize << props.pb,
+            now_pos64: 0,
+            finished: false,
+            result: Ok(()),
             props_write_end_mark: props.write_end_mark,
             fast_mode: props.fast_mode,
             num_fast_bytes: props.fb,
@@ -223,6 +345,25 @@ impl<'a> Encoder<'a> {
             opt_cur: 0,
             opt_end: 0,
         }
+    }
+
+    /// `LzmaEnc_Prepare` (`LzmaEnc.c:2868`): a stream sink and `keepWindowSize = 0`.
+    fn new(
+        source: &'a mut dyn InStream,
+        sink: &'a mut dyn OutStream,
+        props: &LzmaProps,
+    ) -> Self {
+        Self::build(RangeEncoder::new(sink), source, props, 0)
+    }
+
+    /// `LzmaEnc_PrepareForLzma2` (`LzmaEnc.c:2879`): the bounded scratch sink, and a
+    /// caller-chosen minimum window.
+    pub(crate) fn new_for_lzma2(
+        source: &'a mut dyn InStream,
+        props: &LzmaProps,
+        keep_window_size: u32,
+    ) -> Self {
+        Self::build(RangeEncoder::new_bounded(), source, props, keep_window_size)
     }
 
     /// `GetPointerToCurrentPos(..) - 1` as a window index — the position the match
@@ -508,21 +649,206 @@ impl<'a> Encoder<'a> {
             .encode_tree_reverse(&mut self.probs.align, NUM_ALIGN_BITS, ALIGN_MASK);
     }
 
-    fn finish(mut self, now_pos: u32) -> Result<(), StreamError> {
-        // `Flush` (LzmaEnc.c:2190) writes the marker BEFORE flushing the range
-        // coder, which is why the marker changes the stream tail rather than
-        // simply appending to it.
+    /// `Flush` (`LzmaEnc.c:2189`).
+    fn flush(&mut self, now_pos: u32) -> Result<(), StreamError> {
+        self.finished = true;
+        // `Flush` writes the marker BEFORE flushing the range coder, which is why
+        // the marker changes the stream tail rather than simply appending to it.
         if self.props_write_end_mark {
             self.write_end_marker(now_pos);
         }
-        // An input-stream error outranks the output: a truncated read would
-        // otherwise be reported as a successfully written short stream.
-        let read_result = self.mf.result();
-        let write_result = self.rc.finish();
-        match read_result {
-            Err(e) => Err(e),
-            Ok(()) => write_result,
+        // RangeEnc_FlushData + RangeEnc_FlushStream. The result is read back out of
+        // the coder by `check_errors`, exactly as the C reads `p->rc.res`.
+        let _ = self.rc.finish();
+        self.check_errors()
+    }
+
+    /// `CheckErrors` (`LzmaEnc.c:2161`).
+    ///
+    /// The order is the C's and it matters: the sink error is latched first, then
+    /// the *source* error overwrites it. An input-stream error outranks the output,
+    /// so a truncated read is never reported as a successfully written short stream.
+    /// (The C collapses both to `SZ_ERROR_WRITE` / `SZ_ERROR_READ`; this keeps the
+    /// caller's own code, which is strictly more information and changes no bytes.)
+    //
+    // `single_match` would rewrite the latch arms as `if let`, which this workspace
+    // bans outright (see the totality gate in `.github/workflows/build.yml`).
+    #[allow(clippy::single_match)]
+    fn check_errors(&mut self) -> Result<(), StreamError> {
+        match self.result {
+            Err(e) => return Err(e),
+            Ok(()) => {}
         }
+        match self.rc.result() {
+            Err(e) => self.result = Err(e),
+            Ok(()) => {}
+        }
+        match self.mf.result() {
+            Err(e) => self.result = Err(e),
+            Ok(()) => {}
+        }
+        match self.result {
+            Err(e) => {
+                self.finished = true;
+                Err(e)
+            }
+            Ok(()) => Ok(()),
+        }
+    }
+
+    /// `LzmaEnc_Init` (`LzmaEnc.c:2762`).
+    ///
+    /// Note what is *not* here, because LZMA2 calls it per block and the difference
+    /// shows up in the bytes: it does not touch `nowPos64`, the price tables,
+    /// `matchPriceCount` or `repLenEncCounter` (those belong to `init_prices`), and
+    /// it does not re-init the match finder — the C's `p->needInit` handles that,
+    /// and here the finder is initialized by its own constructor.
+    pub(crate) fn init(&mut self) {
+        self.state = 0;
+        self.reps = [1; NUM_REPS];
+        self.rc.reinit();
+        self.probs.reset();
+        self.opt_end = 0;
+        self.opt_cur = 0;
+        for o in self.opt.iter_mut() {
+            o.price = INFINITY_PRICE;
+        }
+        self.additional_offset = 0;
+    }
+
+    /// `LzmaEnc_InitPrices` (`LzmaEnc.c:2833`).
+    ///
+    /// LZMA2 runs this before **every** chunk (`LzmaEnc.c:2969`), even when the
+    /// probabilities were not reset. That restarts both adaptive-refresh schedules —
+    /// `repLenEncCounter` goes back to `REP_LEN_COUNT` and `FillDistancesPrices`
+    /// zeroes `matchPriceCount` — so the refresh cadence inside a chunk is not the
+    /// cadence a single long LZMA stream would have. It changes emitted bytes; it is
+    /// not an optimization that can be hoisted out of the chunk loop.
+    pub(crate) fn init_prices(&mut self) {
+        // The C guards exactly these two on `!fastMode`. The tail below -- the
+        // table sizes, the counter and both len-price tables -- runs either way.
+        // Fast mode reads no price table, so this is speed, not bytes; but
+        // "byte-identical yet 470x slower" has happened in this repo before, which
+        // is why the guard is here rather than left as a comment.
+        if !self.fast_mode {
+            self.prices
+                .fill_distances_prices(&self.probs.pos_slot, &self.probs.spec_pos);
+            self.prices.fill_align_prices(&self.probs.align);
+        }
+        self.prices.len_enc.table_size = self.num_fast_bytes + 1 - MATCH_LEN_MIN;
+        self.prices.rep_len_enc.table_size = self.num_fast_bytes + 1 - MATCH_LEN_MIN;
+        self.prices.rep_len_enc_counter = REP_LEN_COUNT;
+        self.update_len_prices();
+        self.update_rep_len_prices();
+    }
+
+    /// `LenPriceEnc_UpdateTables(&p->lenEnc, 1 << p->pb, &p->lenProbs, ...)`.
+    fn update_len_prices(&mut self) {
+        len_price_update(
+            &mut self.prices.len_enc,
+            self.num_pos_states,
+            self.probs.len.choice,
+            self.probs.len.choice2,
+            &self.probs.len.low,
+            &self.probs.len.mid,
+            &self.probs.len.high,
+            &self.prices.pp,
+        );
+    }
+
+    /// `LenPriceEnc_UpdateTables(&p->repLenEnc, 1 << p->pb, &p->repLenProbs, ...)`.
+    fn update_rep_len_prices(&mut self) {
+        len_price_update(
+            &mut self.prices.rep_len_enc,
+            self.num_pos_states,
+            self.probs.rep_len.choice,
+            self.probs.rep_len.choice2,
+            &self.probs.rep_len.low,
+            &self.probs.rep_len.mid,
+            &self.probs.rep_len.high,
+            &self.prices.pp,
+        );
+    }
+
+    /// `LzmaEnc_SaveState` (`LzmaEnc.c:517`) — see [`SaveState`] for the field list
+    /// and, more importantly, for what it deliberately omits.
+    pub(crate) fn save_state(&mut self) {
+        self.save.state = self.state;
+        self.save.reps = self.reps;
+        self.save.probs.clone_from(&self.probs);
+    }
+
+    /// `LzmaEnc_RestoreState` (`LzmaEnc.c:524`).
+    pub(crate) fn restore_state(&mut self) {
+        self.state = self.save.state;
+        self.reps = self.save.reps;
+        self.probs.clone_from(&self.save.probs);
+    }
+
+    /// What one [`Encoder::code_one_mem_block`] produced, split the way
+    /// `LzmaEnc_CodeOneMemBlock` (`LzmaEnc.c:2953`) splits its three out-parameters.
+    ///
+    /// `overflow` is deliberately separate from `res`: the C returns
+    /// `SZ_ERROR_OUTPUT_EOF` for it *in preference to* whatever `CodeOneBlock`
+    /// returned (`:2984`), and `Lzma2EncInt_EncodeSubblock` (`Lzma2Enc.c:157`)
+    /// treats that one code as "fall back to a copy chunk" rather than as failure.
+    /// Collapsing them would turn a routine incompressible block into an error.
+    pub(crate) fn code_one_mem_block(
+        &mut self,
+        re_init: bool,
+        dest_len: usize,
+        desired_pack_size: u32,
+        max_unpack_size: u32,
+    ) -> MemBlockOutcome {
+        self.rc.bounded_arm(dest_len);
+        // LzmaEnc.c:2967-2969. The forced clear is why an LZMA2 chunk never carries
+        // an end marker even when the caller asked for one.
+        self.props_write_end_mark = false;
+        self.finished = false;
+        self.result = Ok(());
+
+        if re_init {
+            self.init();
+        }
+        self.init_prices();
+        // `RangeEnc_Init` again, after `LzmaEnc_Init` may already have done it
+        // (`LzmaEnc.c:2970`). This is what makes every chunk payload start `0x00`.
+        self.rc.reinit();
+
+        let before = self.now_pos64;
+        let res = self.code_one_block(desired_pack_size, max_unpack_size);
+        let unpack_size = (self.now_pos64 - before) as u32;
+        let overflow = match self.rc.bounded() {
+            Some(b) => b.overflow,
+            None => false,
+        };
+        MemBlockOutcome {
+            res,
+            overflow,
+            unpack_size,
+        }
+    }
+
+    /// The bytes the last [`Encoder::code_one_mem_block`] wrote — the C's
+    /// `dest[0 .. *destLen]`.
+    pub(crate) fn mem_block_payload(&self) -> &[u8] {
+        match self.rc.bounded() {
+            Some(b) => &b.data,
+            None => &[],
+        }
+    }
+
+    /// `LzmaEnc_GetCurBuf(p) - back`, as a bounds-checked slice of `len` bytes
+    /// (`LzmaEnc.c:2946`; used at `Lzma2Enc.c:176` with `back == unpackSize`).
+    ///
+    /// The anchor is [`Encoder::emit_index`], **not** [`Encoder::parse_index`]: it is
+    /// the byte the symbol coder is about to emit, so "N bytes behind it" is exactly
+    /// the N bytes the last chunk consumed. Using the parse anchor would be off by
+    /// `additional_offset` and the copy chunk would carry the wrong bytes — bytes a
+    /// decoder would accept without complaint.
+    pub(crate) fn cur_buf_behind(&self, back: usize, len: usize) -> Option<&[u8]> {
+        let end = self.emit_index().checked_sub(back)?;
+        self.mf.bytes_ending_at(end + len, len)
     }
 }
 
@@ -539,7 +865,7 @@ pub fn encode_stream(
     sink: &mut dyn OutStream,
     props: &LzmaProps,
 ) -> Result<(), StreamError> {
-    let enc = Encoder::new(source, sink, props);
+    let mut enc = Encoder::new(source, sink, props);
     enc.run()
 }
 

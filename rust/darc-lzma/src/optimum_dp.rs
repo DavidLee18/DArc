@@ -565,60 +565,50 @@ impl<'a> Encoder<'a> {
         self.backward(cur)
     }
 
-    fn run(mut self) -> Result<(), StreamError> {
-        let num_pos_states = 1usize << self.pb;
-
-        // LzmaEnc_InitPrices
-        // LzmaEnc_InitPrices (LzmaEnc.c:2835) guards exactly these two on
-        // `!fastMode`. The tail below -- the counter and both len-price tables --
-        // runs either way. Fast mode reads no price table, so this is speed, not
-        // bytes; but "byte-identical yet 470x slower" has happened in this repo
-        // before, which is why the guard is here rather than left as a comment.
-        if !self.fast_mode {
-            self.prices.fill_distances_prices(&self.probs.pos_slot, &self.probs.spec_pos);
-            self.prices.fill_align_prices(&self.probs.align);
+    /// `LzmaEnc_CodeOneBlock` (`LzmaEnc.c:2383`), re-entrant.
+    ///
+    /// `max_pack == 0` is the C's "unbounded" mode, which `LzmaEnc_Encode2` uses:
+    /// the block ends after 128 KiB of input and the caller comes straight back in,
+    /// with nothing reset in between, so the split is invisible in the output.
+    /// `max_pack != 0` is LZMA2's mode: the block ends at a *chunk* boundary, which
+    /// is emphatically visible, and both terms of the test decide where it lands.
+    ///
+    /// Either way the break sits inside `if additional_offset == 0`, so a chunk
+    /// always ends on a symbol boundary and never mid-match.
+    pub(crate) fn code_one_block(
+        &mut self,
+        max_pack: u32,
+        max_unpack: u32,
+    ) -> Result<(), StreamError> {
+        if self.finished {
+            return self.result;
         }
-        self.prices.rep_len_enc_counter = REP_LEN_COUNT;
-        len_price_update(
-            &mut self.prices.len_enc,
-            num_pos_states,
-            self.probs.len.choice,
-            self.probs.len.choice2,
-            &self.probs.len.low,
-            &self.probs.len.mid,
-            &self.probs.len.high,
-            &self.prices.pp,
-        );
-        len_price_update(
-            &mut self.prices.rep_len_enc,
-            num_pos_states,
-            self.probs.rep_len.choice,
-            self.probs.rep_len.choice2,
-            &self.probs.rep_len.low,
-            &self.probs.rep_len.mid,
-            &self.probs.rep_len.high,
-            &self.prices.pp,
-        );
+        self.check_errors()?;
 
-        if self.mf.num_available() == 0 {
-            // Empty input: nowPos is 0, which the C also passes here.
-            return self.finish(0);
+        let mut now_pos: u32 = self.now_pos64 as u32;
+        let start_pos: u32 = now_pos;
+
+        if self.now_pos64 == 0 {
+            if self.mf.num_available() == 0 {
+                // Empty input: nowPos is 0, which the C also passes here.
+                return self.flush(now_pos);
+            }
+
+            // First byte: always a literal (LzmaEnc.c:2405). The C reads it as
+            // `*(GetPointerToCurrentPos(..) - additionalOffset)` (LzmaEnc.c:2414)
+            // rather than as byte 0 of the input: window index 0 and stream position
+            // 0 happen to coincide here, but only because nothing has slid yet.
+            self.read_match_distances();
+            self.rc.encode_bit(&mut self.probs.is_match[0][0], 0);
+            let first = self.win()[self.emit_index()] as u32;
+            {
+                let table = &mut self.probs.literal[0..0x300];
+                self.rc.encode_tree(table, 8, first);
+            }
+            self.additional_offset -= 1;
+            now_pos += 1;
         }
 
-        // First byte: always a literal (LzmaEnc.c:2405). The C reads it as
-        // `*(GetPointerToCurrentPos(..) - additionalOffset)` (LzmaEnc.c:2414) rather
-        // than as byte 0 of the input: window index 0 and stream position 0 happen
-        // to coincide here, but only because nothing has slid yet.
-        self.read_match_distances();
-        self.rc.encode_bit(&mut self.probs.is_match[0][0], 0);
-        let first = self.win()[self.emit_index()] as u32;
-        {
-            let table = &mut self.probs.literal[0..0x300];
-            self.rc.encode_tree(table, 8, first);
-        }
-        self.additional_offset -= 1;
-
-        let mut now_pos: u32 = 1;
         if self.mf.num_available() != 0 {
             loop {
                 // LzmaEnc.c:2429: fast mode bypasses the optimal parser AND its
@@ -658,41 +648,56 @@ impl<'a> Encoder<'a> {
                     // (LzmaEnc.c:2540, :2560, outside any guard), which is what the
                     // encode_* methods already do.
                     if !self.fast_mode {
-                    if self.prices.match_price_count >= 64 {
-                        self.prices.fill_align_prices(&self.probs.align);
-                        self.prices.fill_distances_prices(&self.probs.pos_slot, &self.probs.spec_pos);
-                        len_price_update(
-                            &mut self.prices.len_enc,
-                            num_pos_states,
-                            self.probs.len.choice,
-                            self.probs.len.choice2,
-                            &self.probs.len.low,
-                            &self.probs.len.mid,
-                            &self.probs.len.high,
-                            &self.prices.pp,
-                        );
-                    }
-                    if self.prices.rep_len_enc_counter <= 0 {
-                        self.prices.rep_len_enc_counter = REP_LEN_COUNT;
-                        len_price_update(
-                            &mut self.prices.rep_len_enc,
-                            num_pos_states,
-                            self.probs.rep_len.choice,
-                            self.probs.rep_len.choice2,
-                            &self.probs.rep_len.low,
-                            &self.probs.rep_len.mid,
-                            &self.probs.rep_len.high,
-                            &self.prices.pp,
-                        );
-                    }
+                        if self.prices.match_price_count >= 64 {
+                            self.prices.fill_align_prices(&self.probs.align);
+                            self.prices
+                                .fill_distances_prices(&self.probs.pos_slot, &self.probs.spec_pos);
+                            self.update_len_prices();
+                        }
+                        if self.prices.rep_len_enc_counter <= 0 {
+                            self.prices.rep_len_enc_counter = REP_LEN_COUNT;
+                            self.update_rep_len_prices();
+                        }
                     }
                     if self.mf.num_available() == 0 {
                         break;
+                    }
+
+                    // LzmaEnc.c:2662-2673. `processed` is this block's own input
+                    // count, not the stream's -- it restarts at every re-entry.
+                    let processed = now_pos - start_pos;
+                    if max_pack != 0 {
+                        if processed + UNPACK_RESERVE >= max_unpack
+                            || self.rc.get_processed() + u64::from(K_PACK_RESERVE)
+                                >= u64::from(max_pack)
+                        {
+                            break;
+                        }
+                    } else if processed >= UNBOUNDED_CHUNK {
+                        // The one exit that does NOT flush: the caller re-enters and
+                        // continues the same range-coded stream.
+                        self.now_pos64 += u64::from(now_pos - start_pos);
+                        return self.check_errors();
                     }
                 }
             }
         }
 
-        self.finish(now_pos)
+        self.now_pos64 += u64::from(now_pos - start_pos);
+        self.flush(now_pos)
+    }
+
+    /// `LzmaEnc_AllocAndInit` (`LzmaEnc.c:2851`) followed by `LzmaEnc_Encode2`
+    /// (`LzmaEnc.c:2994`): initialize, then re-enter the block coder until it
+    /// flushes.
+    fn run(&mut self) -> Result<(), StreamError> {
+        self.init();
+        self.init_prices();
+        loop {
+            self.code_one_block(0, 0)?;
+            if self.finished {
+                return self.result;
+            }
+        }
     }
 }

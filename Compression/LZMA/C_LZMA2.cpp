@@ -5,8 +5,6 @@
 
 extern "C" {
 #include "C_LZMA2.h"
-#include "7z24/Lzma2Enc.h"
-#include "7z24/Lzma2Dec.h"
 }
 
 #include <string.h>
@@ -14,172 +12,13 @@ extern "C" {
 extern "C" {
 
 // ---------- Allocator ----------
-static void *SzAlloc2 (ISzAllocPtr, size_t size) { return size == 0 ? NULL : malloc(size); }
-static void  SzFree2  (ISzAllocPtr, void *addr)  { free(addr); }
-static const ISzAlloc g_Alloc2 = { SzAlloc2, SzFree2 };
-
-// ---------- Stream wrappers over CALLBACK_FUNC ----------
-struct Cb2InStream  { ISeqInStream  vt; CALLBACK_FUNC *callback; void *auxdata; int errcode; };
-struct Cb2OutStream { ISeqOutStream vt; CALLBACK_FUNC *callback; void *auxdata; int errcode; };
-
-static SRes Cb2In_Read(ISeqInStreamPtr pp, void *buf, size_t *size)
-{
-  Cb2InStream *p = (Cb2InStream*)pp;
-  size_t want = *size;
-  if (want == 0) return SZ_OK;
-  SSIZE_T res = p->callback("read", buf, want, p->auxdata);
-  if (res < 0) { p->errcode = (int)res; *size = 0; return SZ_ERROR_READ; }
-  *size = (size_t)res;
-  return SZ_OK;
-}
-
-static size_t Cb2Out_Write(ISeqOutStreamPtr pp, const void *buf, size_t size)
-{
-  Cb2OutStream *p = (Cb2OutStream*)pp;
-  if (size == 0) return 0;
-  SSIZE_T res = p->callback("write", (void*)buf, size, p->auxdata);
-  if (res < 0) { p->errcode = (int)res; return 0; }
-  return (size_t)res;
-}
-
 } // extern "C"
 
 #ifndef FREEARC_DECOMPRESS_ONLY
 
-int lzma2_compress (int dictionarySize,
-                    int algorithm,
-                    int numFastBytes,
-                    int matchFinder,
-                    int matchFinderCycles,
-                    int posStateBits,
-                    int litContextBits,
-                    int litPosBits,
-                    CALLBACK_FUNC *callback,
-                    void *auxdata)
-{
-  Cb2InStream  inS;  inS.vt.Read = Cb2In_Read;    inS.callback = callback;  inS.auxdata = auxdata;  inS.errcode = 0;
-  Cb2OutStream outS; outS.vt.Write = Cb2Out_Write; outS.callback = callback; outS.auxdata = auxdata; outS.errcode = 0;
-
-  CLzma2EncHandle enc = Lzma2Enc_Create(&g_Alloc2, &g_Alloc2);
-  if (!enc) return FREEARC_ERRCODE_NOT_ENOUGH_MEMORY;
-
-  CLzma2EncProps props;
-  Lzma2EncProps_Init(&props);
-  props.lzmaProps.dictSize = dictionarySize;
-  props.lzmaProps.lc       = litContextBits;
-  props.lzmaProps.lp       = litPosBits;
-  props.lzmaProps.pb       = posStateBits;
-  props.lzmaProps.algo     = algorithm;
-  props.lzmaProps.fb       = numFastBytes;
-  // Match-finder mapping same as LZMA (kBT2..kHT4)
-  enum { kBT2, kBT3, kBT4, kHC4, kHT4 };
-  switch (matchFinder) {
-    case kBT2: props.lzmaProps.btMode = 1; props.lzmaProps.numHashBytes = 2; break;
-    case kBT3: props.lzmaProps.btMode = 1; props.lzmaProps.numHashBytes = 3; break;
-    case kBT4: props.lzmaProps.btMode = 1; props.lzmaProps.numHashBytes = 4; break;
-    case kHC4: props.lzmaProps.btMode = 0; props.lzmaProps.numHashBytes = 4; break;
-    case kHT4: props.lzmaProps.btMode = 0; props.lzmaProps.numHashBytes = 5; break;
-    default:   props.lzmaProps.btMode = 1; props.lzmaProps.numHashBytes = 4; break;
-  }
-  props.lzmaProps.mc        = matchFinderCycles;
-  props.lzmaProps.writeEndMark = 0;
-  props.numTotalThreads     = GetCompressionThreads();
-  props.numBlockThreads_Max = GetCompressionThreads();
-
-  SRes r = Lzma2Enc_SetProps(enc, &props);
-  if (r != SZ_OK) {
-    Lzma2Enc_Destroy(enc);
-    return r == SZ_ERROR_MEM ? FREEARC_ERRCODE_NOT_ENOUGH_MEMORY
-                             : FREEARC_ERRCODE_INVALID_COMPRESSOR;
-  }
-
-  Byte prop = Lzma2Enc_WriteProperties(enc);
-  SSIZE_T wrote = callback("write", &prop, 1, auxdata);
-  if (wrote < 0) { Lzma2Enc_Destroy(enc); return (int)wrote; }
-
-  r = Lzma2Enc_Encode2(enc, &outS.vt, NULL, NULL, &inS.vt, NULL, 0, NULL);
-  Lzma2Enc_Destroy(enc);
-
-  if (inS.errcode)  return inS.errcode;
-  if (outS.errcode) return outS.errcode;
-  if (r == SZ_ERROR_MEM) return FREEARC_ERRCODE_NOT_ENOUGH_MEMORY;
-  if (r != SZ_OK) return FREEARC_ERRCODE_GENERAL;
-  return FREEARC_OK;
-}
 
 #endif
 
-int lzma2_decompress (CALLBACK_FUNC *callback, void *auxdata)
-{
-  Byte prop;
-  SSIZE_T got = callback("read", &prop, 1, auxdata);
-  if (got < 0) return (int)got;
-  if (got != 1) return FREEARC_ERRCODE_BAD_COMPRESSED_DATA;
-
-  CLzma2Dec dec;
-  Lzma2Dec_Construct(&dec);
-  SRes r = Lzma2Dec_Allocate(&dec, prop, &g_Alloc2);
-  if (r != SZ_OK)
-    return r == SZ_ERROR_MEM ? FREEARC_ERRCODE_NOT_ENOUGH_MEMORY
-                             : FREEARC_ERRCODE_BAD_COMPRESSED_DATA;
-  Lzma2Dec_Init(&dec);
-
-  const size_t IN_BUF  = 1 << 16;
-  const size_t OUT_BUF = 1 << 16;
-  Byte *inBuf  = (Byte*)malloc(IN_BUF);
-  Byte *outBuf = (Byte*)malloc(OUT_BUF);
-  if (!inBuf || !outBuf) {
-    free(inBuf); free(outBuf);
-    Lzma2Dec_Free(&dec, &g_Alloc2);
-    return FREEARC_ERRCODE_NOT_ENOUGH_MEMORY;
-  }
-
-  size_t inAvail = 0, inPos = 0;
-  int rc = FREEARC_OK;
-
-  for (;;) {
-    if (inPos == inAvail) {
-      SSIZE_T n = callback("read", inBuf, IN_BUF, auxdata);
-      if (n < 0) { rc = (int)n; break; }
-      inAvail = (size_t)n;
-      inPos   = 0;
-    }
-
-    SizeT outLen = OUT_BUF;
-    SizeT srcLen = inAvail - inPos;
-    ELzmaStatus status;
-    r = Lzma2Dec_DecodeToBuf(&dec, outBuf, &outLen,
-                             inBuf + inPos, &srcLen,
-                             LZMA_FINISH_ANY, &status);
-    inPos += srcLen;
-
-    if (r != SZ_OK) {
-      rc = (r == SZ_ERROR_MEM) ? FREEARC_ERRCODE_NOT_ENOUGH_MEMORY
-                               : FREEARC_ERRCODE_BAD_COMPRESSED_DATA;
-      break;
-    }
-
-    if (outLen > 0) {
-      SSIZE_T w = callback("write", outBuf, outLen, auxdata);
-      if (w < 0) { rc = (int)w; break; }
-    }
-
-    if (status == LZMA_STATUS_FINISHED_WITH_MARK) break;
-    if (status == LZMA_STATUS_NEEDS_MORE_INPUT && inAvail == 0) {
-      rc = FREEARC_ERRCODE_BAD_COMPRESSED_DATA;
-      break;
-    }
-    if (outLen == 0 && srcLen == 0) {
-      rc = FREEARC_ERRCODE_BAD_COMPRESSED_DATA;
-      break;
-    }
-  }
-
-  free(inBuf);
-  free(outBuf);
-  Lzma2Dec_Free(&dec, &g_Alloc2);
-  return rc;
-}
 
 
 /*-------------------------------------------------*/
@@ -210,18 +49,25 @@ LZMA2_METHOD::LZMA2_METHOD()
   litPosBits        = 0;
 }
 
+// The Rust LZMA2 in rust/darc-lzma. Same ABI as the C entry points below.
+// rust/difftest/lzma2-check.sh gates it at 157/157 byte-identical streams and
+// 72/72 decode cases, with cross-decode clean in both directions.
+extern "C" int darc_lzma2_compress   (int, int, int, int, int, int, int, int,
+                                      CALLBACK_FUNC*, void*);
+extern "C" int darc_lzma2_decompress (CALLBACK_FUNC*, void*);
+
 int LZMA2_METHOD::decompress (CALLBACK_FUNC *callback, void *auxdata)
 {
-  return lzma2_decompress (callback, auxdata);
+  return darc_lzma2_decompress (callback, auxdata);
 }
 
 #ifndef FREEARC_DECOMPRESS_ONLY
 
 int LZMA2_METHOD::compress (CALLBACK_FUNC *callback, void *auxdata)
 {
-  return lzma2_compress (dictionarySize, algorithm, numFastBytes, matchFinder,
-                         matchFinderCycles, posStateBits, litContextBits, litPosBits,
-                         callback, auxdata);
+  return darc_lzma2_compress (dictionarySize, algorithm, numFastBytes, matchFinder,
+                              matchFinderCycles, posStateBits, litContextBits, litPosBits,
+                              callback, auxdata);
 }
 
 MemSize LZMA2_METHOD::GetCompressionMem (void)

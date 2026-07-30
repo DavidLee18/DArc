@@ -128,7 +128,7 @@ const K_ALIGN_TABLE_SIZE: usize = 1 << K_NUM_ALIGN_BITS;
 const K_MATCH_MIN_LEN: u32 = 2;
 /// `kMatchSpecLenStart` (`LzmaDec.c:118`) = 274. As a `remainLen` value it means
 /// "the stream ended with the end-of-payload marker".
-const K_MATCH_SPEC_LEN_START: u32 =
+pub(crate) const K_MATCH_SPEC_LEN_START: u32 =
     K_MATCH_MIN_LEN + K_LEN_NUM_LOW_SYMBOLS * 2 + K_LEN_NUM_HIGH_SYMBOLS;
 /// `kMatchSpecLen_Error_Data` (`LzmaDec.c:120`) = 512. `remainLen` at or above
 /// this latches a data error (`LzmaDec.c:175-180`, `:959-962`).
@@ -251,7 +251,7 @@ impl From<StreamError> for LzmaDecodeError {
 
 /// `ELzmaStatus` (`LzmaDec.h:106-113`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Status {
+pub(crate) enum Status {
     /// `LZMA_STATUS_FINISHED_WITH_MARK`: the end-of-payload marker was decoded and
     /// the range coder was drained.
     FinishedWithMark,
@@ -462,33 +462,33 @@ fn back_pos(dic_pos: usize, dist: usize, dic_buf_size: usize) -> Option<usize> {
 /// validation are computed from. [`crate::decoder`] conflated them, which is only
 /// sound while the whole output fits in one buffer.
 pub struct Decoder {
-    prop: LzmaDecProps,
+    pub(crate) prop: LzmaDecProps,
     /// Flat probability array in the C's order; see the module docs.
     probs: Vec<u16>,
     /// The circular dictionary window, `dic_buf_size` bytes.
-    dic: Vec<u8>,
+    pub(crate) dic: Vec<u8>,
     dic_buf_size: usize,
     /// Write cursor **within the window**; wraps at `dic_buf_size`.
-    dic_pos: usize,
+    pub(crate) dic_pos: usize,
     /// Index into whichever input slice is currently being decoded — the C's
     /// `p->buf` pointer (`LzmaDec.h:62`).
     buf_pos: usize,
     range: u32,
     code: u32,
     /// Total bytes decoded (mod 2^32, as in the C).
-    processed_pos: u32,
+    pub(crate) processed_pos: u32,
     /// 0 until the window has been filled once, then `prop.dic_size`
     /// (`LzmaDec.c:671-684`).
-    check_dic_size: u32,
+    pub(crate) check_dic_size: u32,
     reps: [u32; 4],
     state: u32,
     /// Decoder status *and* pending match length; see the table at
     /// `LzmaDec.c:173-181`.
-    remain_len: u32,
+    pub(crate) remain_len: u32,
     /// `tempBuf` (`LzmaDec.h:73`): the carry buffer for a symbol split across two
     /// input chunks.
     temp_buf: [u8; LZMA_REQUIRED_INPUT_MAX],
-    temp_buf_size: usize,
+    pub(crate) temp_buf_size: usize,
 }
 
 impl Decoder {
@@ -1371,7 +1371,7 @@ impl Decoder {
     ///
     /// Decodes into the window up to `dic_limit`, returning the status and the
     /// number of `src` bytes consumed.
-    fn decode_to_dic(
+    pub(crate) fn decode_to_dic(
         &mut self,
         dic_limit: usize,
         src: &[u8],

@@ -31,6 +31,9 @@ pub mod stream;
 
 mod encoder;
 
+pub mod lzma2_dec;
+pub mod lzma2_enc;
+
 #[cfg(any(test, feature = "decode"))]
 mod decoder;
 
@@ -40,6 +43,8 @@ pub mod decode_stream;
 mod roundtrip_tests;
 
 pub use decode_stream::{Decoder, DecodeSummary, Finish, LzmaDecProps, LzmaDecodeError};
+pub use lzma2_dec::{Lzma2Dec, Lzma2DecodeSummary};
+pub use lzma2_enc::{Lzma2Enc, Lzma2EncProps, Lzma2Error, RawLzmaProps};
 pub use props::{LzmaProps, MatchFinderKind};
 pub use stream::{ERR_UNSUPPORTED, InStream, OutStream, SliceIn, StreamError, VecOut};
 

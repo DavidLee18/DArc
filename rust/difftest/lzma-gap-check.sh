@@ -42,7 +42,12 @@ trap 'rm -rf "$W"' EXIT
 # DArc ships today is from stock, and the driver includes the working-tree
 # C_LZMA.cpp by relative path anyway. Mixing a pinned SDK with a working-tree
 # wrapper would compare neither cleanly.
-SDK="$ROOT/Compression/LZMA/7z24"
+# The C oracle now comes from the PINNED reference, not the working tree: the C
+# LZMA/LZMA2 engine has been deleted from the tree it used to be read from. This is
+# the same move every other codec's difftest made when its C went, and it is what
+# keeps the gate meaningful -- the Rust is still being compared against the C DArc
+# shipped, byte for byte, rather than against itself.
+SDK="$CREF/Compression/LZMA/7z24"
 DEFS="-DFREEARC_UNIX -DFREEARC_INTEL_BYTE_ORDER -DFREEARC_64BIT -DZ7_ST"
 objs=""
 # SDK sources, with the makefile's C7Z_CFLAGS.
@@ -55,9 +60,9 @@ done
 # Wrapper + driver, with the wrapper flag set.
 # shellcheck disable=SC2086
 clang++ -std=c++17 $CFLAGS_C -w $DEFS \
-  -I"$ROOT" -I"$ROOT/Compression" -I"$SDK" \
-  "$ROOT/rust/difftest/lzma_ref.cpp" \
-  "$ROOT/Compression/Common.cpp" \
+  -I"$CREF" -I"$CREF/Compression" -I"$SDK" \
+  "$CREF/rust/difftest/lzma_ref.cpp" \
+  "$CREF/Compression/Common.cpp" \
   $objs \
   -o "$W/c" 2>>"$W/cbuild.log"
 if [ ! -x "$W/c" ]; then

@@ -78,7 +78,20 @@ const K_MAX_VAL_FOR_NORMALIZE: u32 = 0;
 const NUM_HASH_BYTES_MIN: u32 = 2;
 /// `beforeSize = kNumOpts` (`LzmaEnc.c:2688`), the encoder's lookbehind slack on
 /// top of the dictionary. Equal to [`crate::optimum::NUM_OPTS`].
-const KEEP_ADD_BUFFER_BEFORE: u32 = crate::optimum::NUM_OPTS as u32;
+///
+/// This is only the *floor*. `LzmaEnc_Alloc` widens it when a caller asks for a
+/// minimum window (`LzmaEnc.c:2729`):
+///
+/// ```text
+///     if (beforeSize + dictSize < keepWindowSize)
+///       beforeSize = keepWindowSize - dictSize;
+/// ```
+///
+/// which is why [`MatchFinder::new`] takes the resolved value as a parameter rather
+/// than reading this constant. LZMA passes `keepWindowSize = 0`, so it lands here;
+/// LZMA2 passes `LZMA2_KEEP_WINDOW_SIZE = 1 << 21` (`Lzma2Enc.c:30`) and gets a
+/// wider lookbehind whenever the dictionary is under 2 MiB.
+pub const KEEP_ADD_BUFFER_BEFORE: u32 = crate::optimum::NUM_OPTS as u32;
 /// `LZMA_MATCH_LEN_MAX + 1` (`LzmaEnc.c:2752`), the lookahead slack `LzmaEnc`
 /// requests on top of `numFastBytes`.
 const KEEP_ADD_BUFFER_AFTER: u32 = MATCH_LEN_MAX + 1;
@@ -204,9 +217,20 @@ impl<'a> MatchFinder<'a> {
     /// Create and initialize the finder, filling the first window from `stream`.
     ///
     /// Mirrors `MatchFinder_Create` + `MatchFinder_Init` with `LzmaEnc`'s arguments
-    /// (`LzmaEnc.c:2751`): `keepAddBufferBefore = kNumOpts`,
-    /// `matchMaxLen = numFastBytes`, `keepAddBufferAfter = LZMA_MATCH_LEN_MAX + 1`.
-    pub fn new(stream: &'a mut dyn InStream, props: &LzmaProps) -> Self {
+    /// (`LzmaEnc.c:2751`): `matchMaxLen = numFastBytes`,
+    /// `keepAddBufferAfter = LZMA_MATCH_LEN_MAX + 1`.
+    ///
+    /// `keep_add_buffer_before` is `LzmaEnc_Alloc`'s `beforeSize`
+    /// (`LzmaEnc.c:2686`, `:2729`) — [`KEEP_ADD_BUFFER_BEFORE`] for plain LZMA, and
+    /// widened by LZMA2 so that the *uncompressed-chunk* path can still read up to
+    /// 2 MiB behind the cursor after `MoveBlock` has slid the window. It is a
+    /// correctness parameter, not a tuning knob: too small and the copy chunk reads
+    /// bytes `MoveBlock` has already discarded.
+    pub fn new(
+        stream: &'a mut dyn InStream,
+        props: &LzmaProps,
+        keep_add_buffer_before: u32,
+    ) -> Self {
         let history_size = props.history_size();
         let cyclic_buffer_size = history_size + 1;
         let num_hash_bytes = props.mf.num_hash_bytes();
@@ -220,7 +244,7 @@ impl<'a> MatchFinder<'a> {
 
         // MatchFinder_Create:379 -- "we need one additional byte in keepSizeBefore,
         // since we use MoveBlock() after (p->pos++) and before dictionary using".
-        let keep_size_before = history_size + KEEP_ADD_BUFFER_BEFORE + 1;
+        let keep_size_before = history_size + keep_add_buffer_before + 1;
         // keepAddBufferAfter += matchMaxLen, then floored at numHashBytes (which
         // never binds: KEEP_ADD_BUFFER_AFTER alone already exceeds 4).
         let keep_size_after = (KEEP_ADD_BUFFER_AFTER + props.fb).max(NUM_HASH_BYTES_MIN);
@@ -293,6 +317,29 @@ impl<'a> MatchFinder<'a> {
     #[inline]
     pub fn cur_index(&self) -> usize {
         self.buffer_offset
+    }
+
+    /// `len` bytes of already-consumed input ending at window index `end`, or `None`
+    /// if that span is not inside the window.
+    ///
+    /// The C's equivalent is plain pointer arithmetic — `LzmaEnc_GetCurBuf(enc) -
+    /// unpackSize` at `Lzma2Enc.c:176`, followed by a `memcpy` of up to 64 KiB. That
+    /// only stays inside the allocation because `beforeSize` was widened to
+    /// `LZMA2_KEEP_WINDOW_SIZE` at create time; get that wrong and the C reads
+    /// whatever `MoveBlock` left behind, silently. Here it is a bounds check with a
+    /// `None`, so the same mistake refuses instead of copying rubbish into an
+    /// archive.
+    #[inline]
+    pub fn bytes_ending_at(&self, end: usize, len: usize) -> Option<&[u8]> {
+        let start = end.checked_sub(len)?;
+        self.buf.get(start..end)
+    }
+
+    /// The window allocation, `blockSize` from `GetBlockSize` (`LzFind.c:286`).
+    /// Exposed so the LZMA-value regression test can assert on it.
+    #[inline]
+    pub fn block_size(&self) -> usize {
+        self.block_size
     }
 
     /// Bytes read but not yet consumed (`GET_AVAIL_BYTES`, `LzFind.c:24`).
@@ -1008,6 +1055,88 @@ mod tests {
 
     const K_REDUCE_MIN_FOR_TEST: u32 = 1 << 12;
 
+    /// [`MatchFinder::new`] grew a `keep_add_buffer_before` parameter where it used
+    /// to hard-code [`KEEP_ADD_BUFFER_BEFORE`]. At that value nothing may move: the
+    /// window geometry decides when `MoveBlock` runs, and `MoveBlock`'s alignment
+    /// remainder is already known to be output-visible (PROVENANCE.md — dropping it
+    /// diverges 11 of the 24 sliding-window comparisons).
+    ///
+    /// The expected sizes were **computed** from `GetBlockSize` rather than copied
+    /// out of a passing run, so this fails if the formula changes, not merely if the
+    /// parameter is misrouted.
+    #[test]
+    fn lzma_keep_add_buffer_before_reproduces_the_previous_block_size() {
+        let table: [((u32, u32), usize); 7] = [
+            ((4096, 32), 65536),
+            ((4096, 64), 65536),
+            ((65536, 64), 131072),
+            ((1048576, 64), 1638400),
+            ((1048576, 273), 1638400),
+            ((16777216, 64), 25231360),
+            ((67108864, 64), 100728832),
+        ];
+        let data = [0u8; 64];
+        for ((dict, fb), expect) in table {
+            let props = LzmaProps {
+                lc: 3,
+                lp: 0,
+                pb: 2,
+                dict_size: dict,
+                fb,
+                mc: 32,
+                mf: crate::props::MatchFinderKind::Hc5,
+                fast_mode: false,
+                write_end_mark: true,
+            };
+            let mut src = crate::stream::SliceIn::new(&data);
+            let mf = MatchFinder::new(&mut src, &props, KEEP_ADD_BUFFER_BEFORE);
+            assert_eq!(
+                mf.block_size(),
+                expect,
+                "block_size moved for dict {dict}, fb {fb}"
+            );
+            // And the parameter is genuinely wired: a wider lookbehind must widen
+            // the window, or the test above would pass on a hard-coded constant.
+            let mut src2 = crate::stream::SliceIn::new(&data);
+            let wide = MatchFinder::new(&mut src2, &props, (1 << 21) - dict.min(1 << 21));
+            assert!(
+                wide.block_size() >= mf.block_size(),
+                "keep_add_buffer_before is ignored: dict {dict}, fb {fb}"
+            );
+        }
+    }
+
+    /// `LZMA2_KEEP_WINDOW_SIZE` widens the lookbehind for small dictionaries, which
+    /// is what lets the copy chunk read 2 MiB back. A 4 KiB dictionary must end up
+    /// with a window big enough to hold that history plus the lookahead.
+    #[test]
+    fn a_widened_lookbehind_can_hold_the_lzma2_copy_chunk() {
+        let keep_window: u32 = 1 << 21;
+        let data = [0u8; 64];
+        for dict in [4096u32, 1 << 16, 1 << 20] {
+            let before = keep_window - dict;
+            let props = LzmaProps {
+                lc: 3,
+                lp: 0,
+                pb: 2,
+                dict_size: dict,
+                fb: 64,
+                mc: 32,
+                mf: crate::props::MatchFinderKind::Hc5,
+                fast_mode: false,
+                write_end_mark: false,
+            };
+            let mut src = crate::stream::SliceIn::new(&data);
+            let mf = MatchFinder::new(&mut src, &props, before);
+            assert!(
+                mf.keep_size_before as u64 >= keep_window as u64,
+                "dict {dict}: keepSizeBefore {} below the 2 MiB copy-chunk reach",
+                mf.keep_size_before
+            );
+            assert!(mf.block_size() as u64 > keep_window as u64, "dict {dict}");
+        }
+    }
+
     /// `get_hash_mask` against the C, for every `numHashBytes`.
     ///
     /// The expected values are **not transcribed** from reading `LzFind.c`; they were
@@ -1075,7 +1204,7 @@ mod tests {
             write_end_mark: true,
         };
         let mut src = crate::stream::SliceIn::new(&data);
-        let mut mf = MatchFinder::new(&mut src, &props);
+        let mut mf = MatchFinder::new(&mut src, &props, KEEP_ADD_BUFFER_BEFORE);
         let first_block = mf.block_size;
         assert!(first_block < n, "block must be smaller than the input to slide");
 

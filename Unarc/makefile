@@ -17,7 +17,7 @@ OBJDIR  = $(TEMPDIR)-unarc
 # every SFX module has had an unresolved LzmaDec_* since, which no build noticed
 # because no build ran.
 LINKOBJ_FAR_PLUGIN = $(OBJDIR)/Environment.o $(OBJDIR)/Common.o $(OBJDIR)/CompressionLibrary.o \
-                     $(OBJDIR)/C_LZMA.o $(OBJDIR)/LzmaDec.o $(OBJDIR)/CpuArch.o
+                     $(OBJDIR)/C_LZMA.o $(OBJDIR)/CpuArch.o
 LINKOBJ_TINY = $(LINKOBJ_FAR_PLUGIN) $(OBJDIR)/C_BCJ.o $(OBJDIR)/C_Dict.o $(OBJDIR)/C_Delta.o
 LINKOBJ_MINI = $(LINKOBJ_TINY) $(OBJDIR)/C_REP.o $(OBJDIR)/C_LZP.o $(OBJDIR)/C_PPMD.o
 # The full module gets every codec the archiver can put in a chain. Everything
@@ -29,7 +29,7 @@ LINKOBJ = $(LINKOBJ_MINI) $(OBJDIR)/C_MM.o $(OBJDIR)/C_TTA.o \
           $(OBJDIR)/C_Tornado.o $(OBJDIR)/C_External.o $(OBJDIR)/C_GRZip.o \
           $(OBJDIR)/C_DisPack.o $(OBJDIR)/C_4x4.o $(OBJDIR)/C_BSC.o \
           $(OBJDIR)/C_LZ4.o $(OBJDIR)/C_Zstd.o \
-          $(OBJDIR)/C_LZMA2.o $(OBJDIR)/Lzma2Dec.o \
+          $(OBJDIR)/C_LZMA2.o \
           $(OBJDIR)/C_Encryption.o
 HEADERS =  ../Compression/Compression.h ../Compression/Common.h
 
@@ -205,17 +205,10 @@ $(OBJDIR)/C_Encryption.o: ../Compression/_Encryption/C_Encryption.cpp ../Compres
 
 
 # --- 7-Zip 24.09 C sources (compile as C, not C++) ------------------------
-# Same recipe as Compression/LZMA/makefile, restricted to the decode side:
-# these builds define FREEARC_DECOMPRESS_ONLY, so LzmaEnc and the match
-# finders are never referenced.
+# All that is left is CpuArch, which the .7z container reader still needs.
+# LZMA, LZMA2 and BCJ decode in Rust now, out of libdarc_codecs.a.
 CC_C      ?= $(firstword $(CC) cc)
 C7Z_CFLAGS = -std=c11 -O2 -DNDEBUG -D_REENTRANT $(DEFINES)
 
-$(OBJDIR)/LzmaDec.o: ../Compression/LZMA/7z24/LzmaDec.c
-	$(CC_C) -c $(C7Z_CFLAGS) -o $@ $<
-
 $(OBJDIR)/CpuArch.o: ../Compression/LZMA/7z24/CpuArch.c
-	$(CC_C) -c $(C7Z_CFLAGS) -o $@ $<
-
-$(OBJDIR)/Lzma2Dec.o: ../Compression/LZMA/7z24/Lzma2Dec.c
 	$(CC_C) -c $(C7Z_CFLAGS) -o $@ $<

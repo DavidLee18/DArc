@@ -6,8 +6,6 @@
 
 extern "C" {
 #include "C_LZMA.h"
-#include "7z24/LzmaEnc.h"
-#include "7z24/LzmaDec.h"
 }
 
 #include <string.h>
@@ -28,210 +26,9 @@ static int FindMatchFinder(const char *s)
 extern "C" {
 
 // ---------- Allocator (malloc/free) ----------
-static void *SzAlloc (ISzAllocPtr, size_t size) { return size == 0 ? NULL : malloc(size); }
-static void  SzFree  (ISzAllocPtr, void *addr)  { free(addr); }
-static const ISzAlloc g_Alloc = { SzAlloc, SzFree };
-
-// ---------- Stream wrappers over CALLBACK_FUNC ----------
-struct CbInStream {
-  ISeqInStream vt;
-  CALLBACK_FUNC *callback;
-  void *auxdata;
-  int errcode;
-};
-
-struct CbOutStream {
-  ISeqOutStream vt;
-  CALLBACK_FUNC *callback;
-  void *auxdata;
-  int errcode;
-};
-
-static SRes CbIn_Read(ISeqInStreamPtr pp, void *buf, size_t *size)
-{
-  CbInStream *p = (CbInStream*)pp;
-  size_t want = *size;
-  if (want == 0) return SZ_OK;
-  SSIZE_T res = p->callback("read", buf, want, p->auxdata);
-  if (res < 0) { p->errcode = (int)res; *size = 0; return SZ_ERROR_READ; }
-  *size = (size_t)res;
-  return SZ_OK;
-}
-
-static size_t CbOut_Write(ISeqOutStreamPtr pp, const void *buf, size_t size)
-{
-  CbOutStream *p = (CbOutStream*)pp;
-  if (size == 0) return 0;
-  SSIZE_T res = p->callback("write", (void*)buf, size, p->auxdata);
-  if (res < 0) { p->errcode = (int)res; return 0; }
-  return (size_t)res;
-}
-
 } // extern "C"
 
-#ifndef FREEARC_DECOMPRESS_ONLY
 
-int lzma_compress (int dictionarySize,
-                   int hashSize,
-                   int algorithm,
-                   int numFastBytes,
-                   int matchFinder,
-                   int matchFinderCycles,
-                   int posStateBits,
-                   int litContextBits,
-                   int litPosBits,
-                   CALLBACK_FUNC *callback,
-                   void *auxdata)
-{
-  CbInStream  inS;  inS.vt.Read  = CbIn_Read;  inS.callback = callback; inS.auxdata = auxdata; inS.errcode = 0;
-  CbOutStream outS; outS.vt.Write = CbOut_Write; outS.callback = callback; outS.auxdata = auxdata; outS.errcode = 0;
-
-  CLzmaEncHandle enc = LzmaEnc_Create(&g_Alloc);
-  if (!enc) return FREEARC_ERRCODE_NOT_ENOUGH_MEMORY;
-
-  CLzmaEncProps props;
-  LzmaEncProps_Init(&props);
-  props.dictSize     = dictionarySize;
-  props.lc           = litContextBits;
-  props.lp           = litPosBits;
-  props.pb           = posStateBits;
-  props.algo         = algorithm;      // 0 = fast, 1 = normal
-  props.fb           = numFastBytes;
-  // Old FreeArc match-finder id -> 7zip (btMode, numHashBytes)
-  switch (matchFinder) {
-    case kBT2: props.btMode = 1; props.numHashBytes = 2; break;
-    case kBT3: props.btMode = 1; props.numHashBytes = 3; break;
-    case kBT4: props.btMode = 1; props.numHashBytes = 4; break;
-    case kHC4: props.btMode = 0; props.numHashBytes = 4; break;
-    case kHT4: props.btMode = 0; props.numHashBytes = 5; break;  // map to 5-byte hash
-    default:   props.btMode = 1; props.numHashBytes = 4; break;
-  }
-  props.mc           = matchFinderCycles;  // 0 = auto
-  props.writeEndMark = 1;                  // FreeArc streams with EOPM (unknown size)
-  props.numThreads   = GetCompressionThreads() > 1 ? 2 : 1;
-
-  SRes r = LzmaEnc_SetProps(enc, &props);
-  if (r != SZ_OK) {
-    LzmaEnc_Destroy(enc, &g_Alloc, &g_Alloc);
-    return r == SZ_ERROR_MEM ? FREEARC_ERRCODE_NOT_ENOUGH_MEMORY
-                             : FREEARC_ERRCODE_INVALID_COMPRESSOR;
-  }
-
-  r = LzmaEnc_Encode(enc, &outS.vt, &inS.vt, NULL, &g_Alloc, &g_Alloc);
-  LzmaEnc_Destroy(enc, &g_Alloc, &g_Alloc);
-
-  if (inS.errcode)  return inS.errcode;
-  if (outS.errcode) return outS.errcode;
-  if (r == SZ_ERROR_MEM) return FREEARC_ERRCODE_NOT_ENOUGH_MEMORY;
-  if (r != SZ_OK) return FREEARC_ERRCODE_GENERAL;
-  return FREEARC_OK;
-}
-
-#endif // !FREEARC_DECOMPRESS_ONLY
-
-// Encode 5-byte LZMA properties blob from FreeArc params.
-//   byte 0 = (pb*5 + lp)*9 + lc
-//   bytes 1..4 = dictSize (little-endian UInt32)
-static void encode_props(Byte *props, int dictSize, int pb, int lc, int lp)
-{
-  props[0] = (Byte)((pb * 5 + lp) * 9 + lc);
-  UInt32 d = (UInt32)dictSize;
-  props[1] = (Byte)(d);
-  props[2] = (Byte)(d >> 8);
-  props[3] = (Byte)(d >> 16);
-  props[4] = (Byte)(d >> 24);
-}
-
-int lzma_decompress (int dictionarySize,
-                     int hashSize,
-                     int algorithm,
-                     int numFastBytes,
-                     int matchFinder,
-                     int matchFinderCycles,
-                     int posStateBits,
-                     int litContextBits,
-                     int litPosBits,
-                     CALLBACK_FUNC *callback,
-                     void *auxdata)
-{
-  Byte propsBuf[LZMA_PROPS_SIZE];
-  encode_props(propsBuf, dictionarySize, posStateBits, litContextBits, litPosBits);
-
-  CLzmaDec dec;
-  LzmaDec_Construct(&dec);
-  SRes r = LzmaDec_Allocate(&dec, propsBuf, LZMA_PROPS_SIZE, &g_Alloc);
-  if (r != SZ_OK) {
-    return r == SZ_ERROR_MEM ? FREEARC_ERRCODE_NOT_ENOUGH_MEMORY
-                             : FREEARC_ERRCODE_INVALID_COMPRESSOR;
-  }
-  LzmaDec_Init(&dec);
-
-  const size_t IN_BUF  = 1 << 16;
-  const size_t OUT_BUF = 1 << 16;
-  Byte *inBuf  = (Byte*)malloc(IN_BUF);
-  Byte *outBuf = (Byte*)malloc(OUT_BUF);
-  if (!inBuf || !outBuf) {
-    free(inBuf); free(outBuf);
-    LzmaDec_Free(&dec, &g_Alloc);
-    return FREEARC_ERRCODE_NOT_ENOUGH_MEMORY;
-  }
-
-  size_t inAvail = 0;
-  size_t inPos   = 0;
-  int rc = FREEARC_OK;
-  int finished = 0;
-
-  for (;;)
-  {
-    if (inPos == inAvail) {
-      SSIZE_T got = callback("read", inBuf, IN_BUF, auxdata);
-      if (got < 0) { rc = (int)got; break; }
-      inAvail = (size_t)got;
-      inPos   = 0;
-    }
-
-    SizeT outLen = OUT_BUF;
-    SizeT srcLen = inAvail - inPos;
-    ELzmaStatus status;
-    r = LzmaDec_DecodeToBuf(&dec, outBuf, &outLen,
-                            inBuf + inPos, &srcLen,
-                            LZMA_FINISH_ANY, &status);
-    inPos += srcLen;
-
-    if (r != SZ_OK) {
-      rc = (r == SZ_ERROR_MEM) ? FREEARC_ERRCODE_NOT_ENOUGH_MEMORY
-                               : FREEARC_ERRCODE_BAD_COMPRESSED_DATA;
-      break;
-    }
-
-    if (outLen > 0) {
-      SSIZE_T wrote = callback("write", outBuf, outLen, auxdata);
-      if (wrote < 0) { rc = (int)wrote; break; }
-    }
-
-    if (status == LZMA_STATUS_FINISHED_WITH_MARK ||
-        status == LZMA_STATUS_MAYBE_FINISHED_WITHOUT_MARK) {
-      finished = 1;
-      break;
-    }
-    if (status == LZMA_STATUS_NEEDS_MORE_INPUT && inAvail == 0) {
-      // EOF without end marker and without indicating finished — error.
-      rc = FREEARC_ERRCODE_BAD_COMPRESSED_DATA;
-      break;
-    }
-    if (outLen == 0 && srcLen == 0) {
-      // No progress: avoid infinite loop.
-      rc = FREEARC_ERRCODE_BAD_COMPRESSED_DATA;
-      break;
-    }
-  }
-
-  (void)finished;
-  free(inBuf);
-  free(outBuf);
-  LzmaDec_Free(&dec, &g_Alloc);
-  return rc;
-}
 
 
 /*-------------------------------------------------*/
@@ -257,23 +54,17 @@ LZMA_METHOD::LZMA_METHOD()
   litPosBits        = 0;
 }
 
-#ifdef DARC_RUST
-// The Rust codec in rust/darc-lzma. Same 11-argument ABI as the C entry points, so
+// The Rust codec in rust/darc-lzma. Same 11-argument ABI the C entry points had, so
 // the LoadFromDLL overrides below still work unchanged.
 extern "C" int darc_lzma_compress   (int, int, int, int, int, int, int, int, int,
                                      CALLBACK_FUNC*, void*);
 extern "C" int darc_lzma_decompress (int, int, int, int, int, int, int, int, int,
                                      CALLBACK_FUNC*, void*);
-#endif
 
 int LZMA_METHOD::decompress (CALLBACK_FUNC *callback, void *auxdata)
 {
   static FARPROC f = LoadFromDLL ("lzma_decompress");
-#ifdef DARC_RUST
   if (!f) f = (FARPROC) darc_lzma_decompress;
-#else
-  if (!f) f = (FARPROC) lzma_decompress;
-#endif
   return ((int (*)(int,int,int,int,int,int,int,int,int, CALLBACK_FUNC*, void*)) f)
            (dictionarySize, hashSize, algorithm, numFastBytes, matchFinder,
             matchFinderCycles, posStateBits, litContextBits, litPosBits,
@@ -285,15 +76,11 @@ int LZMA_METHOD::decompress (CALLBACK_FUNC *callback, void *auxdata)
 int LZMA_METHOD::compress (CALLBACK_FUNC *callback, void *auxdata)
 {
   static FARPROC f = LoadFromDLL ("lzma_compress");
-#ifdef DARC_RUST
   // The Rust encoder in rust/darc-lzma. Byte-identical to the C across every
   // configuration this wrapper can ask for -- all five match finders and both
-  // parsers -- gated by rust/difftest/lzma-gap-check.sh at 222/222. Switching it on
-  // therefore changes no archive bytes; that is the whole point of the gate.
+  // parsers -- gated by rust/difftest/lzma-gap-check.sh at 222/222, which is why
+  // switching it on changed no archive bytes.
   if (!f) f = (FARPROC) darc_lzma_compress;
-#else
-  if (!f) f = (FARPROC) lzma_compress;
-#endif
   return ((int (*)(int,int,int,int,int,int,int,int,int, CALLBACK_FUNC*, void*)) f)
            (dictionarySize, hashSize, algorithm, numFastBytes, matchFinder,
             matchFinderCycles, posStateBits, litContextBits, litPosBits,

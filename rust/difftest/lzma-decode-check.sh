@@ -75,9 +75,14 @@ export LZMA_DEC_OUT_CAP=16777216
 # ---- build the C drivers ------------------------------------------------------
 # File list taken from Compression/LZMA/makefile, not guessed. The WORKING TREE,
 # not the pinned reference: this harness's job is to check the decoder DArc
-# ships today, and lzma_dec_ref.cpp includes the working-tree C_LZMA.cpp by
+# ships today, and lzma_dec_ref.cpp includes the PINNED C_LZMA.cpp by
 # relative path anyway.
-SDK="$ROOT/Compression/LZMA/7z24"
+# The C oracle now comes from the PINNED reference, not the working tree: the C
+# LZMA/LZMA2 engine has been deleted from the tree it used to be read from. This is
+# the same move every other codec's difftest made when its C went, and it is what
+# keeps the gate meaningful -- the Rust is still being compared against the C DArc
+# shipped, byte for byte, rather than against itself.
+SDK="$CREF/Compression/LZMA/7z24"
 DEFS="-DFREEARC_UNIX -DFREEARC_INTEL_BYTE_ORDER -DFREEARC_64BIT -DZ7_ST"
 objs=""
 for c in LzmaEnc LzmaDec LzFind LzFindOpt CpuArch 7zStream; do
@@ -89,8 +94,8 @@ done
 build_driver () { # $1 = source basename, $2 = output
   # shellcheck disable=SC2086
   clang++ -std=c++17 $CFLAGS_C -w $DEFS \
-    -I"$ROOT" -I"$ROOT/Compression" -I"$SDK" \
-    "$ROOT/rust/difftest/$1" "$ROOT/Compression/Common.cpp" $objs \
+    -I"$CREF" -I"$CREF/Compression" -I"$SDK" \
+    "$CREF/rust/difftest/$1" "$CREF/Compression/Common.cpp" $objs \
     -o "$2" 2>>"$W/cbuild.log"
   [ -x "$2" ] || { echo "building $1 failed:" >&2; tail -25 "$W/cbuild.log" >&2; return 1; }
 }

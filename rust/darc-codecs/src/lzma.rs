@@ -259,3 +259,124 @@ unsafe fn decompress_inner(
         Err(darc_lzma::LzmaDecodeError::Internal) => crate::ffi::FREEARC_ERRCODE_GENERAL,
     }
 }
+
+// ---- LZMA2 --------------------------------------------------------------------
+//
+// `C_LZMA2.cpp`'s two entry points. LZMA2 is LZMA plus chunk framing: the wrapper
+// writes one property byte itself (`C_LZMA2.cpp:96-98`) and the SDK writes the
+// chunked stream, which self-terminates on a `0x00` control byte and carries no
+// length prefix.
+
+/// Encode via `darc_lzma`'s LZMA2, or refuse.
+///
+/// Signature mirrors `lzma2_compress` (`C_LZMA2.cpp:49`) — note it takes eight
+/// parameters where `lzma_compress` takes nine: LZMA2 has no `hashSize`.
+///
+/// # Safety
+///
+/// `callback` must be a valid `CALLBACK_FUNC` and `auxdata` whatever it expects.
+#[no_mangle]
+pub unsafe extern "C" fn darc_lzma2_compress(
+    dictionary_size: c_int,
+    algorithm: c_int,
+    num_fast_bytes: c_int,
+    match_finder: c_int,
+    match_finder_cycles: c_int,
+    pos_state_bits: c_int,
+    lit_context_bits: c_int,
+    lit_pos_bits: c_int,
+    callback: crate::ffi::CALLBACK_FUNC,
+    auxdata: *mut c_void,
+) -> c_int {
+    let io = match Io::new(callback, auxdata) {
+        Some(io) => io,
+        None => return FREEARC_ERRCODE_NOT_IMPLEMENTED,
+    };
+
+    // `C_LZMA2.cpp:63-89` sets these explicitly rather than leaning on the level
+    // defaults, so they are built the same way here. The (btMode, numHashBytes)
+    // mapping is that file's own switch at `:75-82`.
+    let mut props = darc_lzma::Lzma2EncProps::init();
+    props.lzma.dict_size = dictionary_size as u32;
+    props.lzma.lc = lit_context_bits;
+    props.lzma.lp = lit_pos_bits;
+    props.lzma.pb = pos_state_bits;
+    props.lzma.fb = num_fast_bytes;
+    props.lzma.mc = match_finder_cycles.max(0) as u32;
+    props.lzma.algo = algorithm;
+    let (bt_mode, num_hash_bytes) = match match_finder {
+        0 => (1, 2),
+        1 => (1, 3),
+        2 => (1, 4),
+        3 => (0, 4),
+        4 => (0, 5),
+        // The C's `default:` arm picks BT4 silently (`C_LZMA2.cpp:82`). Refusing
+        // instead, for the same reason as in `darc_lzma_compress`: two builds must
+        // not disagree about what a malformed method string means.
+        _ => return FREEARC_ERRCODE_NOT_IMPLEMENTED,
+    };
+    props.lzma.bt_mode = bt_mode;
+    props.lzma.num_hash_bytes = num_hash_bytes;
+    // `C_LZMA2.cpp:86-87` takes both from GetCompressionThreads(). darc_lzma
+    // implements the single-threaded, SOLID-block path only and REFUSES the rest
+    // rather than silently encoding a different stream, so ask for one thread and
+    // let a caller that wanted more get an explicit error.
+    props.num_total_threads = 1;
+    props.num_block_threads_max = 1;
+    props.normalize();
+
+    let mut source = CallbackIn { io: &io };
+    let mut sink = CallbackOut { io: &io };
+    match darc_lzma::lzma2_enc::compress_stream(&mut source, &mut sink, &props) {
+        Ok(()) => OK,
+        Err(darc_lzma::Lzma2Error::Stream(StreamError(code))) => code,
+        // Everything else is a parameter fault, which is what `C_LZMA2.cpp:92-93`
+        // reports for a rejected `Lzma2Enc_SetProps`.
+        Err(_) => crate::ffi::FREEARC_ERRCODE_INVALID_COMPRESSOR,
+    }
+}
+
+/// Decode via `darc_lzma`'s LZMA2, mirroring `lzma2_decompress`
+/// (`C_LZMA2.cpp:112`), which takes no parameters at all — everything the decoder
+/// needs travels in the stream's own leading property byte.
+///
+/// # Safety
+///
+/// `callback` must be a valid `CALLBACK_FUNC` and `auxdata` whatever it expects.
+#[no_mangle]
+pub unsafe extern "C" fn darc_lzma2_decompress(
+    callback: crate::ffi::CALLBACK_FUNC,
+    auxdata: *mut c_void,
+) -> c_int {
+    // Panic firewall, for the same reason as `darc_lzma_decompress`: this parses
+    // bytes an attacker wrote, and unarc plus every SFX module link it compiled
+    // `-D_NO_EXCEPTIONS`.
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let io = match Io::new(callback, auxdata) {
+            Some(io) => io,
+            None => return FREEARC_ERRCODE_NOT_IMPLEMENTED,
+        };
+        let mut source = CallbackIn { io: &io };
+        let mut sink = CallbackOut { io: &io };
+        match darc_lzma::lzma2_dec::decode_lzma2_stream(&mut source, &mut sink) {
+            Ok(_) => OK,
+            Err(darc_lzma::LzmaDecodeError::UnsupportedProps) => {
+                crate::ffi::FREEARC_ERRCODE_INVALID_COMPRESSOR
+            }
+            Err(darc_lzma::LzmaDecodeError::NotEnoughMemory) => {
+                crate::ffi::FREEARC_ERRCODE_NOT_ENOUGH_MEMORY
+            }
+            Err(darc_lzma::LzmaDecodeError::Stream(StreamError(code))) => code,
+            // `C_LZMA2.cpp:157-158` collapses every data fault to one code.
+            Err(darc_lzma::LzmaDecodeError::DataError)
+            | Err(darc_lzma::LzmaDecodeError::TruncatedInput)
+            | Err(darc_lzma::LzmaDecodeError::Internal) => {
+                crate::ffi::FREEARC_ERRCODE_BAD_COMPRESSED_DATA
+            }
+        }
+    }));
+    match result {
+        Ok(code) => code,
+        Err(_) => crate::ffi::FREEARC_ERRCODE_GENERAL,
+    }
+}
