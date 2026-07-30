@@ -67,10 +67,17 @@ build_c "$W/c" "$CREF" || { echo "building the pinned C reference failed" >&2; e
 # pinned source.
 CREF32="$W/cref32"
 cp -R "$CREF" "$CREF32" || exit 1
-cp "$ROOT/Compression/_Encryption/headers/tomcrypt_macros.h" \
+# The header now lives beside this oracle in rust/cryptref/, not in
+# Compression/_Encryption -- that directory holds only C_Encryption.cpp since the
+# vendored LibTomCrypt was deleted from the working tree. It is kept because it is
+# a FIX, not a copy: it types ulong32 as uint32_t where the pinned header says
+# `unsigned`, which is 64 bits on LP64 targets other than x86-64 and breaks
+# serpent's key expansion. Its own comment records the shipped arm64 builds that
+# were affected.
+cp "$ROOT/rust/cryptref/tomcrypt_macros.h" \
    "$CREF32/Compression/_Encryption/headers/tomcrypt_macros.h" || exit 1
 grep -q 'typedef uint32_t ulong32' "$CREF32/Compression/_Encryption/headers/tomcrypt_macros.h" \
-  || { echo "the working tree's tomcrypt_macros.h no longer types ulong32 as uint32_t;" >&2
+  || { echo "rust/cryptref/tomcrypt_macros.h no longer types ulong32 as uint32_t;" >&2
        echo "the c32 reference would be identical to c and would prove nothing" >&2; exit 1; }
 build_c "$W/c32" "$CREF32" || { echo "building the 32-bit-ulong32 reference failed" >&2; exit 1; }
 

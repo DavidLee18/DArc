@@ -196,10 +196,12 @@ $(OBJDIR)/C_Zstd.o: ../Compression/Zstd/C_Zstd.cpp ../Compression/Zstd/C_Zstd.h 
 $(OBJDIR)/C_LZMA2.o: ../Compression/LZMA/C_LZMA2.cpp ../Compression/LZMA/C_LZMA2.h $(HEADERS)
 	$(GCC) -c $(CFLAGS) -I../Compression/LZMA/7z24 -o $*.o $<
 
-# -Iheaders is how Compression/_Encryption/makefile compiles it: C_Encryption.cpp
-# reaches LibTomCrypt's headers by bare name.
+# No -Iheaders any more: that existed because C_Encryption.cpp used to reach
+# LibTomCrypt's headers by bare name. Under DARC_RUST it routes to darc-crypto and
+# includes only C_Encryption.h, so the vendored headers were deleted from the
+# working tree; the difftest oracle builds its reference from the pinned revision.
 $(OBJDIR)/C_Encryption.o: ../Compression/_Encryption/C_Encryption.cpp ../Compression/_Encryption/C_Encryption.h $(HEADERS)
-	$(GCC) -c $(CFLAGS) -I../Compression/_Encryption/headers -o $*.o $<
+	$(GCC) -c $(CFLAGS) -o $*.o $<
 
 
 # --- 7-Zip 24.09 C sources (compile as C, not C++) ------------------------
