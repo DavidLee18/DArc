@@ -627,6 +627,11 @@ fn encode(
                 2 => diff2(data, chan, &mut base),
                 3 => diff3(data, chan, &mut base),
                 4 => diff4(data, chan, &mut base),
+                // Verified against the pinned C: `switch (byte_size)` has cases
+                // 1-4 and NO default (MM/tta.cpp:133, :183), so a value outside
+                // 1..=4 passes through unchanged there too. Documented rather than
+                // turned into `unreachable!()` because the fall-through is the C's
+                // behaviour, not an impossibility.
                 _ => {}
             }
             // reorder_words (:r2) is not resurrected: the C is `return buf;`.

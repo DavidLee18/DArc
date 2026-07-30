@@ -470,6 +470,43 @@ reaches Rust through the C dispatcher rather than calling `darc_rs_*` directly.
 `lzma` is deliberately excluded as an inner method: it has no Rust port, so that
 comparison would compare a build against itself.
 
+### 10b. Make the silent-no-op bug class a COMPILER error -- AGREED, item 4 PENDING
+
+Prompted by the Tornado presets 7-11 divergence, whose cause was a trait default
+that did nothing in release: `MatchFinder::update_hash1` defaulted to
+`debug_assert!(false, ...)`, `Hash3` implemented it only inherently, and
+`CombineMF`'s `Box<dyn MatchFinder>` call landed on the default. Every difftest
+builds `--release`, so the guard never ran.
+
+**Done.** No defaulted trait methods remain anywhere in the crate. Removing the
+two on `MatchFinder` turned the omission into a compile error and immediately
+surfaced two more instances of the same shape -- `MatchFinderN` (inherent-only)
+and `CachingMatchFinder` (absent, though the C has one at MatchFinder.cpp:462).
+`debug-assert-check.sh` now runs the codecs in a debug profile, which nothing did
+before.
+
+**Small, low risk, worth doing next:**
+
+1. Crate-level lint gates in `rust/darc-codecs/src/lib.rs` -- there are none.
+2. The 11 `_ => {}` catch-all arms: consult the C per site, `unreachable!()` where
+   the C would not compile, a documented no-op where it genuinely falls through.
+   `mm.rs:445` already does the latter correctly and is the model to copy.
+3. Audit the 23 `debug_assert!`s: promote cheap invariant checks to `assert!` so
+   they are live in release; leave per-call hot-path ones as debug. For scale,
+   342 assertions in the crate ARE live -- the bug hid in one of the 23 that
+   were not.
+
+**Item 4, agreed and deliberately deferred: model mode bytes as enums and
+offsets as newtypes.** This is the only item that yields a compile error rather
+than a runtime panic, because bare integers cannot be matched exhaustively.
+
+It is a project, not a patch: roughly 1968 `as` casts in the crate, each a
+possible silent truncation, in codecs whose output must stay byte-exact. Do it
+PER CODEC, with that codec's difftest green at every step, and expect it to
+surface further latent holes the way removing the trait defaults did. Candidates:
+GRZip's mode bits, MM's filter selector, TTA's `byte_size`, DisPack's mode,
+Tornado's `encoding_method`/`caching_finder`.
+
 ### 11. Port the Haskell application layer (17,843 lines, 41 files)
 
 The largest remaining piece. Suggested order (from `CLAUDE.md`):

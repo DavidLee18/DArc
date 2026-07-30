@@ -115,7 +115,11 @@ mod tests {
                 Hash::Md5 => Md5::digest(data).to_vec(),
                 Hash::Sha1 => Sha1::digest(data).to_vec(),
                 Hash::Sha512 => Sha512::digest(data).to_vec(),
-                _ => unreachable!(),
+                // Exhaustive rather than `_`: the loop above lists the three
+                // seedless hashes, and the crate root denies
+                // clippy::wildcard_enum_match_arm so a new variant has to be
+                // classified here instead of silently landing in this arm.
+                Hash::None | Hash::Unverified(_) => unreachable!(),
             };
             assert_eq!(good.len(), h.stored_bytes());
             assert!(h.verify(data, &good).is_ok());

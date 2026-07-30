@@ -134,7 +134,16 @@ impl Lz77Encoder for ByteCoder<'_> {
     }
 
     fn encode_table(&mut self, _kind: i32, _len: i32) {
-        debug_assert!(false, "encode_table on a coder without table support");
+        // `unreachable!`, not `debug_assert!`. The whole body used to be a
+        // debug_assert, which compiles out in release -- so a mis-dispatch here
+        // silently skipped table encoding and produced a different stream with
+        // nothing failing. That is exactly how the Tornado presets 7-11
+        // divergence happened one module over (MatchFinder::update_hash1).
+        //
+        // The encode loop only calls this when `support_tables` is set, and the
+        // preset sweep covers `notables` both ways, so this is unreachable in
+        // practice -- and now says so in release too.
+        unreachable!("encode_table on a coder without table support");
     }
 
     fn shift_occurs(&mut self) {}
@@ -204,7 +213,16 @@ impl Lz77Encoder for BitCoder<'_> {
     }
 
     fn encode_table(&mut self, _kind: i32, _len: i32) {
-        debug_assert!(false, "encode_table on a coder without table support");
+        // `unreachable!`, not `debug_assert!`. The whole body used to be a
+        // debug_assert, which compiles out in release -- so a mis-dispatch here
+        // silently skipped table encoding and produced a different stream with
+        // nothing failing. That is exactly how the Tornado presets 7-11
+        // divergence happened one module over (MatchFinder::update_hash1).
+        //
+        // The encode loop only calls this when `support_tables` is set, and the
+        // preset sweep covers `notables` both ways, so this is unreachable in
+        // practice -- and now says so in release too.
+        unreachable!("encode_table on a coder without table support");
     }
 
     fn shift_occurs(&mut self) {}
