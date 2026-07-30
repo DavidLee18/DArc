@@ -112,12 +112,11 @@ fn decompress_block_at(input: &[u8], out: &mut [u8], depth: u32) -> Result<usize
     if mode == -2 {
         // Recursive: `RecMode` decides 2 or 4 sub-blocks laid end to end, each
         // a complete block with its own header.
-        // From the stream, so it may be anything; `RecMode` carries the raw
-        // value and still yields a part count for an unknown mode, because the C
-        // derives that from the low bit alone.
-        let rec_mode = rec::RecMode::from_stream(mid_size);
+        // The count comes from the RAW byte, before any check that it names a
+        // transform: the C computes `Mode & 1` unconditionally, so a corrupt
+        // header still walks a definite number of sub-blocks.
+        let parts = rec::parts_from_stream(mid_size);
         let size = raw_size as usize;
-        let parts = rec_mode.parts();
         let mut buf = vec![0u8; size + 1024];
         let mut at = 0usize; // offset within `body`
         let mut written = 0usize;
@@ -143,7 +142,18 @@ fn decompress_block_at(input: &[u8], out: &mut [u8], depth: u32) -> Result<usize
         if out.len() < size {
             return Err(GRZ_UNEXPECTED_EOF);
         }
-        rec::decode(&buf, size, &mut out[..size], rec_mode);
+        // An exhaustive `match`, not `if let`: the `None` branch is archive
+        // behaviour, not an absent case, so it must be written down and must not
+        // be droppable. `clippy::wildcard_enum_match_arm` is denied at the crate
+        // root, so this cannot decay into a `_ =>` either.
+        match rec::RecMode::from_stream(mid_size) {
+            Some(m) => rec::decode(&buf, size, &mut out[..size], m),
+            // Precisely the C's four `if (Mode==n)` tests with no `else`
+            // (Rec_Flt.c:211..:269): the output is left exactly as the sub-block
+            // walk wrote it. A crafted archive reaches this, so it stays a quiet
+            // no-op rather than a panic across the FFI boundary.
+            None => {}
+        }
         return Ok(size);
     }
 
@@ -275,9 +285,9 @@ pub fn compress_block(input: &[u8], size: usize, out: &mut [u8], mode: i32) -> R
 
     // Record filter: de-interleave, then compress each part independently.
     if size > 1024 && (mode & DISABLE_DELTA_FLT) == 0 {
-        let rec_test = super::rec::test(input, size);
-        if rec_test != 0 {
-            let rec_mode = super::rec::RecMode::from_stream(rec_test);
+        // `test` hands back a classified mode or nothing at all, so the encoder
+        // never holds a raw mode integer.
+        if let Some(rec_mode) = super::rec::test(input, size) {
             let mut buffer = vec![0u8; size + 1024];
             super::rec::encode(input, size, &mut buffer, rec_mode);
             let sub_mode = mode + DISABLE_DELTA_FLT;
@@ -312,9 +322,9 @@ pub fn compress_block(input: &[u8], size: usize, out: &mut [u8], mode: i32) -> R
             }
             if ok && new_size < size {
                 put_word(out, 4, -2);
-                // The raw number, not the enum: this byte IS the archive
-                // format, and the decoder re-classifies it on the way back in.
-                put_word(out, 8, rec_test);
+                // The mode NUMBER: this byte is the archive format, and the
+                // decoder re-classifies it on the way back in.
+                put_word(out, 8, rec_mode.to_i32());
                 put_word(out, 16, new_size as i32);
                 put_word(out, 20, 0);
                 put_word(out, 24, 0);

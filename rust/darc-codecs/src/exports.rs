@@ -1301,11 +1301,15 @@ pub unsafe extern "C" fn darc_rs_grzip_rec_encode(
     let n = size as usize;
     let inp = core::slice::from_raw_parts(input, n);
     let out = core::slice::from_raw_parts_mut(output, n);
-    let mode = grzip::rec::test(inp, n);
-    if mode != 0 {
-        grzip::rec::encode(inp, n, out, grzip::rec::RecMode::from_stream(mode));
+    // Returns the mode NUMBER, because the harness compares it against what the
+    // C's `GRZip_Rec_Test` returned; 0 for "no filter".
+    match grzip::rec::test(inp, n) {
+        Some(mode) => {
+            grzip::rec::encode(inp, n, out, mode);
+            mode.to_i32()
+        }
+        None => 0,
     }
-    mode
 }
 
 /// GRZip's MTF + arithmetic coder, forward direction. Harness-only.

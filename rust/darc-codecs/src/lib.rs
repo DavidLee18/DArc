@@ -28,9 +28,25 @@
 //! Deliberately NOT denied: `unreachable_pub` (84 pre-existing hits) and the
 //! ~169 style warnings the port carries. Those are noise to fix, not hazards,
 //! and denying them would mean touching byte-exact code for cosmetics.
+//! ## Why `single_match` is allowed
+//!
+//! This crate prefers an exhaustive `match` with every case named over `if let`,
+//! so that a branch carrying archive behaviour has to be written down and cannot
+//! be silently absent. `clippy::single_match` is warn-by-default (it is in
+//! `clippy::all`) and pushes the opposite way -- it asked, by name, for
+//! `grzip/block.rs`'s mode dispatch to become
+//! `if let Some(m) = RecMode::from_stream(..)`, which is exactly the form this
+//! crate is moving away from. So it is allowed on purpose, not by oversight.
+//!
+//! Note there is no clippy lint that bans `if let`; the whole family of related
+//! lints (`single_match`, `single_match_else`, `manual_let_else`,
+//! `option_if_let_else`) points from `match` towards `if let`. Totality here is
+//! `wildcard_enum_match_arm` (which forbids `_ =>`, so every arm is named) plus
+//! the convention, not a lint.
 #![deny(clippy::wildcard_enum_match_arm)]
 #![deny(clippy::todo, clippy::unimplemented, clippy::mem_forget)]
 #![deny(unused_must_use)]
+#![allow(clippy::single_match)]
 
 pub mod bsc;
 pub mod delta;
