@@ -103,6 +103,8 @@ mod tests {
         let mut out = vec![0u8; 4];
         rec::decode(&[], 0, &mut out, rec::RecMode::Delta16);
         rec::decode(&[1, 2], 99, &mut out, rec::RecMode::Delta32); // size beyond the buffers
-        rec::decode(&[1, 2, 3, 4], 4, &mut out, rec::RecMode::from_stream(77)); // unknown mode
+        // An unrecognised mode can no longer be passed here at all -- `decode`
+        // takes a `RecMode`, and `from_stream(77)` is `None`. Asserted in
+        // rec::rec_tests::unrecognised_modes_do_not_classify.
     }
 }

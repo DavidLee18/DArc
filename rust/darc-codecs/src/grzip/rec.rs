@@ -19,17 +19,19 @@
 //! Every mode reads exactly `Size` bytes and writes exactly `Size`, so the
 //! caller's buffers bound everything; the slicing here is checked regardless.
 
-/// `GRZip_Rec_Decode`/`_Encode`'s `Mode`: how a recursive block's sub-blocks
-/// were de-interleaved.
+/// `GRZip_Rec_Decode`/`_Encode`'s `Mode`: which de-interleave a recursive block
+/// used.
 ///
-/// Modelled as a type rather than a bare `i32` so both directions must handle
-/// every case (RUST_PORT_PROGRESS.md section 10b item 4). Unlike DisPack's flag
-/// nibble, this one has a genuine `Unknown`: the C is four independent
-/// `if (Mode==n)` tests with no `else` (Rec_Flt.c:211/:234/:262/:269), and on the
-/// decode side `Mode` is read from the compressed stream -- so a corrupt or
-/// crafted archive can carry any value, and the C's response is to leave the
-/// output untouched. An exhaustive four-variant enum would have turned that into
-/// a panic across the FFI boundary.
+/// Exactly four variants, with **no `Unknown`**. The first version of this type
+/// (#106) had one, and it was a mistake worth recording: `test` returns only
+/// 0..=4 and the encode call site filters 0, so `Unknown` was unreachable on the
+/// encode path and carried a documented no-op body -- a can't-happen arm
+/// reintroduced by the very refactor meant to delete them (#105 removed three).
+///
+/// "Not one of the four" is a **parse failure**, not a mode, so it is
+/// `Option<RecMode>`: see [`RecMode::from_stream`]. The C is four independent
+/// `if (Mode==n)` tests with no `else` (Rec_Flt.c:211/:234/:262/:269), which in
+/// Rust is exactly "no mode, so no transform".
 #[derive(Copy, Clone, PartialEq, Eq, Debug)]
 pub enum RecMode {
     /// Mode 1 -- 2-way byte de-interleave.
@@ -40,44 +42,61 @@ pub enum RecMode {
     Delta16,
     /// Mode 4 -- 32-bit delta records.
     Delta32,
-    /// Not one of the four. Carries the raw value because the sub-block *count*
-    /// is derived from its low bit independently of the transform -- see
-    /// [`RecMode::parts`].
-    Unknown(i32),
 }
 
 impl RecMode {
-    /// Classify a mode that came from the compressed stream, or from
-    /// [`test`] on the encode side.
-    pub fn from_stream(mode: i32) -> RecMode {
+    /// Classify a mode byte read from the compressed stream.
+    ///
+    /// `None` for anything outside 1..=4, which is the C's fall-through: with no
+    /// `else` on those four `if`s, an unrecognised mode leaves the output
+    /// untouched. Returning `Option` rather than an `Unknown` variant keeps that
+    /// case out of the enum, where it would be dead on the encode path.
+    ///
+    /// A crafted archive can carry any value here, so this must never panic.
+    pub fn from_stream(mode: i32) -> Option<RecMode> {
         match mode {
-            1 => RecMode::Interleave2,
-            2 => RecMode::Interleave4,
-            3 => RecMode::Delta16,
-            4 => RecMode::Delta32,
-            other => RecMode::Unknown(other),
+            1 => Some(RecMode::Interleave2),
+            2 => Some(RecMode::Interleave4),
+            3 => Some(RecMode::Delta16),
+            4 => Some(RecMode::Delta32),
+            _ => None,
         }
     }
 
-    /// How many sub-blocks the recursive block was split into: 2 for modes 1 and
-    /// 3, 4 for modes 2 and 4.
-    ///
-    /// The C derives this from the low bit alone (`Mode & 1`), so an unknown mode
-    /// still yields a count -- the same byte read two different ways. Preserved
-    /// exactly, because the block walk must consume the same number of
-    /// sub-blocks the C would even when the transform then does nothing.
+    /// The mode number as stored in the block header. Inverse of
+    /// [`RecMode::from_stream`] on 1..=4.
+    pub fn to_i32(self) -> i32 {
+        match self {
+            RecMode::Interleave2 => 1,
+            RecMode::Interleave4 => 2,
+            RecMode::Delta16 => 3,
+            RecMode::Delta32 => 4,
+        }
+    }
+
+    /// How many sub-blocks a recognised mode splits into: 2 for modes 1 and 3,
+    /// 4 for modes 2 and 4.
     pub fn parts(self) -> usize {
         match self {
             RecMode::Interleave2 | RecMode::Delta16 => 2,
             RecMode::Interleave4 | RecMode::Delta32 => 4,
-            RecMode::Unknown(m) => {
-                if m & 1 == 1 {
-                    2
-                } else {
-                    4
-                }
-            }
         }
+    }
+}
+
+/// The sub-block count for a **raw** mode byte, recognised or not.
+///
+/// Separate from [`RecMode::parts`] on purpose. The C computes the count as
+/// `Mode & 1` before it ever checks whether `Mode` names a transform, so an
+/// unrecognised mode still yields 2 or 4 -- the same byte read two different
+/// ways. The block walk must consume exactly as many sub-blocks as the C would,
+/// even when the transform then declines to run, so this rule lives on the raw
+/// value where the C has it rather than being smuggled into a classified mode.
+pub fn parts_from_stream(mode: i32) -> usize {
+    if mode & 1 == 1 {
+        2
+    } else {
+        4
     }
 }
 
@@ -155,16 +174,6 @@ pub fn decode(input: &[u8], size: usize, out: &mut [u8], mode: RecMode) {
                 }
             }
         }
-        // Deliberately a no-op, not `unreachable!()`. `GRZip_Rec_Decode` is four
-        // independent `if (Mode==n)` statements -- 3, 4, 1, 2 at Rec_Flt.c:211,
-        // :234, :262, :269 -- with no `else` and no `default`, so any other mode
-        // leaves the output untouched.
-        //
-        // `mode` here came from the compressed stream, so a corrupt or crafted
-        // archive can carry any value. The C tolerates it silently; a panic
-        // would abort across the FFI boundary on input the C merely shrugs at.
-        // The enum makes this arm mandatory instead of implicit.
-        RecMode::Unknown(_) => {}
     }
 }
 
@@ -192,10 +201,10 @@ pub fn decode(input: &[u8], size: usize, out: &mut [u8], mode: RecMode) {
 /// of a *value* rather than a type. It is right only by coincidence -- the
 /// macro is an `int` literal and the arrays are `sint32` -- so there is nothing
 /// to port, but it is worth not copying the idiom.)
-pub fn test(input: &[u8], size: usize) -> i32 {
+pub fn test(input: &[u8], size: usize) -> Option<RecMode> {
     const MAX_BYTE: usize = 256;
     if size == 0 || input.len() < size {
-        return 0;
+        return None;
     }
 
     let mut freq0 = [0i32; MAX_BYTE];
@@ -305,7 +314,10 @@ pub fn test(input: &[u8], size: usize) -> i32 {
         }
     }
 
-    min
+    // `min` is 0 (no filter worth applying) or 1..=4. Classifying here means no
+    // raw mode integer escapes this module on the encode path, so the encoder
+    // cannot reach the decode-only "unrecognised" case at all.
+    RecMode::from_stream(min)
 }
 
 /// `GRZip_Rec_Encode` (Rec_Flt.c:137). Inverse of `decode`.
@@ -393,13 +405,6 @@ pub fn encode(input: &[u8], size: usize, out: &mut [u8], mode: RecMode) {
                 }
             }
         }
-        // Same as `decode`: `GRZip_Rec_Encode` is four independent `if (Mode==n)`
-        // tests (Rec_Flt.c:140, :162, :188, :195) with no `else`, so an
-        // out-of-range mode writes nothing. Here the mode comes from [`test`]
-        // rather than from a stream, so it is in range in practice -- but
-        // symmetry between the directions is worth more than a guard that could
-        // only ever fire on a caller bug.
-        RecMode::Unknown(_) => {}
     }
 }
 
@@ -420,41 +425,49 @@ mod rec_tests {
         assert!(wrapped < 0, "the signed product wraps negative here");
     }
 
-    /// Modes 1 and 2 are pure de-interleaves and must invert exactly.
-    /// The `Unknown` arm of [`RecMode::parts`] cannot be reached from any valid
-    /// archive, so no differential harness covers it -- a sabotage probe that
-    /// replaced the whole arm with `=> 4` went undetected by grzip-check. It is
-    /// still load-bearing: the block walk consumes `parts()` sub-blocks before
-    /// the transform declines to run, so a wrong count here would misparse a
-    /// corrupt archive instead of yielding the C's untouched buffer.
+    /// [`parts_from_stream`] cannot be reached with an unrecognised mode from any
+    /// valid archive, so no differential harness covers that case -- a sabotage
+    /// probe replacing the rule with `=> 4` went undetected by grzip-check (#106).
+    /// It is still load-bearing: the block walk consumes this many sub-blocks
+    /// before the transform is even looked up, so a wrong count here misparses a
+    /// corrupt archive instead of leaving the C's untouched buffer.
     #[test]
-    fn unknown_mode_part_count_follows_the_low_bit() {
-        // The C computes `Mode & 1` regardless of whether Mode means anything.
-        for m in [5, 7, 77, -1, 0x7fff_ffff] {
-            assert_eq!(RecMode::from_stream(m).parts(), 2, "odd mode {m}");
+    fn part_count_follows_the_low_bit_for_any_mode() {
+        // The C computes `Mode & 1` before checking whether Mode names anything.
+        for m in [1, 3, 5, 7, 77, -1, 0x7fff_ffff] {
+            assert_eq!(parts_from_stream(m), 2, "odd mode {m}");
         }
-        for m in [0, 6, 78, -2, 0x7fff_fffe] {
-            assert_eq!(RecMode::from_stream(m).parts(), 4, "even mode {m}");
+        for m in [0, 2, 4, 6, 78, -2, 0x7fff_fffe] {
+            assert_eq!(parts_from_stream(m), 4, "even mode {m}");
         }
-        // And the four known modes keep the widths their transforms imply.
-        assert_eq!(RecMode::from_stream(1).parts(), 2);
-        assert_eq!(RecMode::from_stream(3).parts(), 2);
-        assert_eq!(RecMode::from_stream(2).parts(), 4);
-        assert_eq!(RecMode::from_stream(4).parts(), 4);
+        // The four recognised modes agree with the raw rule.
+        for m in [1, 2, 3, 4] {
+            let classified = RecMode::from_stream(m).expect("1..=4 are recognised");
+            assert_eq!(classified.parts(), parts_from_stream(m), "mode {m}");
+        }
     }
 
-    /// An unknown mode must leave the output exactly as it was: that is what the
-    /// C's four `if`s with no `else` do, and it is what keeps a crafted archive
-    /// from panicking across the FFI boundary.
+    /// An unrecognised mode must yield no transform at all -- the C's four `if`s
+    /// with no `else`. Since #106's `Unknown` variant was removed this is
+    /// structural: `decode`/`encode` take a `RecMode`, so there is no way to *ask*
+    /// for the unrecognised case. What remains testable is that classification
+    /// rejects those values, which is what the call sites branch on.
     #[test]
-    fn unknown_mode_writes_nothing() {
-        let input: Vec<u8> = (0..64u8).collect();
-        let mut out = vec![0xabu8; 64];
-        decode(&input, 64, &mut out, RecMode::from_stream(77));
-        assert!(out.iter().all(|&b| b == 0xab), "decode touched the buffer");
-        let mut out2 = vec![0xcdu8; 64];
-        encode(&input, 64, &mut out2, RecMode::from_stream(-9));
-        assert!(out2.iter().all(|&b| b == 0xcd), "encode touched the buffer");
+    fn unrecognised_modes_do_not_classify() {
+        for m in [0, 5, 6, 77, -1, -9, i32::MIN, i32::MAX] {
+            assert!(RecMode::from_stream(m).is_none(), "mode {m} must not classify");
+        }
+        for m in [1, 2, 3, 4] {
+            assert!(RecMode::from_stream(m).is_some(), "mode {m} must classify");
+        }
+    }
+
+    /// The header stores the mode number, so the round trip must be exact.
+    #[test]
+    fn to_i32_inverts_from_stream() {
+        for m in [1, 2, 3, 4] {
+            assert_eq!(RecMode::from_stream(m).unwrap().to_i32(), m);
+        }
     }
 
     #[test]
