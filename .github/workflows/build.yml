@@ -960,10 +960,18 @@ jobs:
         # the filter stubbed out. It also sweeps chunk sizes, because the filter
         # carries state across calls and that is where it breaks.
         rust/difftest/bcj-check.sh
-        # rust/darc-lzma is not called from C_LZMA.cpp yet -- it implements BT4
-        # alone of the five match finders that wrapper accepts. It IS byte-identical
-        # to DArc's C over the corpus (100/100), streaming both ways, which is the
-        # property that makes the rest of the port worth doing.
+        # The LZMA DECODER, which C_LZMA.cpp now routes to under DARC_RUST. 3,267
+        # cases against DArc's own lzma_decompress, comparing four things per case:
+        # the verdict, the FreeArc error code, the plaintext, and the consumed and
+        # produced byte counts. The corpus is mostly adversarial -- 2,500 mutations,
+        # 84 truncations, the props byte swept over all 256 values, hand-built
+        # streams for the three sides of the distance check, and window-wrap cases --
+        # because this decoder is what unarc and every SFX target run on hostile
+        # input with no exception handling.
+        LZMA_DEC_REQUIRE_RUST=1 rust/difftest/lzma-decode-check.sh
+        # The LZMA ENCODER. Not called from C_LZMA.cpp yet, but byte-identical to
+        # DArc's C across every configuration that wrapper accepts -- all five match
+        # finders and both parsers.
         #
         # This harness is a gate, not a report: it fails on any divergence, and also
         # if no sliding-window comparison ran. The latter is not paranoia -- every
