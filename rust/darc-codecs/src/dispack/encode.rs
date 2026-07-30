@@ -223,7 +223,7 @@ impl Encoder {
             self.put16(ST_IMM16, v);
         }
 
-        if flags & F_MODE == F_MR {
+        if mode_of(flags) == Mode::ModRm {
             let modrm = instr[p];
             p += 1;
             self.put8(ST_MODRM, modrm);
@@ -252,30 +252,29 @@ impl Encoder {
             }
         }
 
-        if flags & F_MODE == F_AM {
-            match flags & F_TYPE {
-                F_AD => {
+        if mode_of(flags) == Mode::Address {
+            match addr_of(flags) {
+                AddrType::Absolute => {
                     let w = &instr[p..p + 4];
                     let v = u32::from_le_bytes([w[0], w[1], w[2], w[3]]);
                     p += 4;
                     self.put32(ST_ADDR32, v);
                 }
-                F_DA => {
+                AddrType::DwordAbsJump => {
                     let w = &instr[p..p + 4];
                     let v = u32::from_le_bytes([w[0], w[1], w[2], w[3]]);
                     p += 4;
                     self.put32(ST_AJUMP32, v);
                 }
-                F_BR => {
+                AddrType::ByteRel => {
                     let v = instr[p];
                     p += 1;
                     self.put8(ST_JUMP8, v);
                 }
-                // Named, not `_`: this arm carries F_DR's real logic, and as a
-                // catch-all it would have silently applied that logic to any
-                // unexpected value. It is correct only because F_DR is the
-                // fourth of four; say which case it is.
-                F_DR => {
+                // This arm carries real logic. Before #104 it was spelled `_`,
+                // so any unexpected value silently received the relative-dword
+                // treatment; now the type makes that impossible to write.
+                AddrType::DwordRel => {
                     // Relative dword target -> absolute.
                     let w = &instr[p..p + 4];
                     let disp = u32::from_le_bytes([w[0], w[1], w[2], w[3]]);
@@ -289,24 +288,23 @@ impl Encoder {
                         self.put_call_target(target);
                     }
                 }
-                // F_TYPE is 0xc -- two bits, four values -- and the four arms
-                // above are 0x0/0x4/0x8/0xc. The C's switch (DisPack.cpp:516)
-                // has no `default` for the same reason.
-                _ => unreachable!("flags & F_TYPE outside the four-value mask"),
+                // No catch-all: all four variants are named, so the match is
+                // total by construction. The C's switch (DisPack.cpp:516) has no
+                // `default` for the same reason.
             }
         } else {
-            match flags & F_TYPE {
-                F_BI => {
+            match imm_of(flags) {
+                ImmSize::Byte => {
                     let v = instr[p];
                     p += 1;
                     self.put8(ST_IMM8, v);
                 }
-                F_WI => {
+                ImmSize::Word => {
                     let v = u16::from_le_bytes([instr[p], instr[p + 1]]);
                     p += 2;
                     self.put16(ST_IMM16, v);
                 }
-                F_DI => {
+                ImmSize::Dword => {
                     if !o16 {
                         let w = &instr[p..p + 4];
                         let v = u32::from_le_bytes([w[0], w[1], w[2], w[3]]);
@@ -318,12 +316,9 @@ impl Encoder {
                         self.put16(ST_IMM16, v);
                     }
                 }
-                // F_NI, "no immediate". The C's switch (DisPack.cpp:541) lists
-                // only fBI/fWI/fDI and lets fNI fall through, so a no-op is the
-                // correct port -- named so it is distinguishable from the
-                // impossible fourth value.
-                F_NI => {}
-                _ => unreachable!("flags & F_TYPE outside the four-value mask"),
+                // The C's switch (DisPack.cpp:541) lists only fBI/fWI/fDI and
+                // lets fNI fall through, so a no-op is the correct port.
+                ImmSize::None => {}
             }
         }
 

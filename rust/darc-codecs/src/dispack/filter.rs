@@ -256,10 +256,13 @@ pub fn dis_unfilter(source: &[u8], dest_size: usize, mem_start: u32) -> Option<V
             copy16_chk!(ST_IMM16);
         }
 
-        // "Has a ModR/M byte" is `flags & fMR` (0x2): true for fMR (0x2) and
-        // fMEXTRA (0x3), false for fNM (0x0) and fAM (0x1).
+        // "Has a ModR/M byte" is the C's `flags & fMR` (DisPack.cpp:782): true
+        // for fMR and fMEXTRA, false for fNM and fAM. Note the encoder tests
+        // `(flags & fMODE) == fMR` instead (:496) -- the asymmetry is the C's
+        // own, and spelling both as `Mode` makes it legible rather than two
+        // similar-looking bit tests.
         let mut flags = flags;
-        if flags & F_MR != 0 {
+        if matches!(mode_of(flags), Mode::ModRm | Mode::ModRmExtra) {
             if !st.src_avail(ST_MODRM, 1) || !st.dst_ok(cap, 1) {
                 return None;
             }
@@ -298,14 +301,14 @@ pub fn dis_unfilter(source: &[u8], dest_size: usize, mem_start: u32) -> Option<V
             }
         }
 
-        if (flags & F_MODE) == F_AM {
-            match flags & F_TYPE {
-                F_AD => copy32_chk!(ST_ADDR32),
-                F_DA => copy32_chk!(ST_AJUMP32),
-                F_BR => {
+        if mode_of(flags) == Mode::Address {
+            match addr_of(flags) {
+                AddrType::Absolute => copy32_chk!(ST_ADDR32),
+                AddrType::DwordAbsJump => copy32_chk!(ST_AJUMP32),
+                AddrType::ByteRel => {
                     copy8_chk!(ST_JUMP8);
                 }
-                F_DR => {
+                AddrType::DwordRel => {
                     // Relative dword target: recover it from the absolute value.
                     let target = if code as u8 == OP_CALLN {
                         check_src!(ST_CALL_IDX, 1);
@@ -333,34 +336,26 @@ pub fn dis_unfilter(source: &[u8], dest_size: usize, mem_start: u32) -> Option<V
                     }
                     st.out.extend_from_slice(&rel.to_le_bytes());
                 }
-                // Dead by arithmetic, not by assumption: F_TYPE is 0xc, two
-                // bits, so `flags & F_TYPE` has exactly four possible values,
-                // and F_AD/F_DA/F_BR/F_DR are 0x0/0x4/0x8/0xc -- all four. The
-                // C's switch (DisPack.cpp:812) has no `default` for the same
-                // reason. Only a bare-integer mask forces an arm here at all;
-                // modelling F_TYPE as an enum would remove it.
-                _ => unreachable!("flags & F_TYPE outside the four-value mask"),
+                // No catch-all: all four variants are named, so the compiler
+                // knows the match is total. #104 had to establish that by hand
+                // from the C header; now it is a property of the type.
             }
         } else {
-            match flags & F_TYPE {
-                F_BI => {
+            match imm_of(flags) {
+                ImmSize::Byte => {
                     copy8_chk!(ST_IMM8);
                 }
-                F_WI => copy16_chk!(ST_IMM16),
-                F_DI => {
+                ImmSize::Word => copy16_chk!(ST_IMM16),
+                ImmSize::Dword => {
                     if !o16 {
                         copy32_chk!(ST_IMM32);
                     } else {
                         copy16_chk!(ST_IMM16);
                     }
                 }
-                // F_NI, "no immediate" -- the common case for most opcodes.
-                // Named rather than left as `_`: the C's switch
-                // (DisPack.cpp:849) lists only fBI/fWI/fDI and lets fNI fall
-                // through, so doing nothing is the correct port, and saying so
-                // separates it from the impossible fourth value below.
-                F_NI => {}
-                _ => unreachable!("flags & F_TYPE outside the four-value mask"),
+                // The C's switch (DisPack.cpp:849) lists only fBI/fWI/fDI and
+                // lets fNI fall through, so doing nothing is the correct port.
+                ImmSize::None => {}
             }
         }
     }
