@@ -24,10 +24,7 @@
 
 use crate::ffi::{FREEARC_ERRCODE_NOT_IMPLEMENTED, Io, OK};
 use core::ffi::{c_int, c_void};
-use darc_lzma::{InStream, OutStream, StreamError};
-
-/// `kBT4` in `C_LZMA.cpp`'s `enum { kBT2, kBT3, kBT4, kHC4, kHT4 }`.
-const K_BT4: c_int = 2;
+use darc_lzma::{InStream, MatchFinderKind, OutStream, StreamError};
 
 /// The callback's `read` side as an [`InStream`].
 ///
@@ -89,9 +86,18 @@ pub unsafe extern "C" fn darc_lzma_compress(
     // Refuse the configurations this encoder does not implement, before touching
     // the stream. `_hash_size` is ignored deliberately: the pinned C_LZMA.cpp does
     // not forward it into CLzmaEncProps either.
-    if match_finder != K_BT4 || algorithm != 1 {
+    //
+    // `algorithm != 1` is the fast parser, which is not ported. An unrecognized
+    // matchFinder id is refused rather than defaulted to BT4 the way the C does
+    // (`C_LZMA.cpp:107`) -- silently encoding with a different finder than asked for
+    // would produce an archive that no other build reproduces.
+    if algorithm != 1 {
         return FREEARC_ERRCODE_NOT_IMPLEMENTED;
     }
+    let mf = match MatchFinderKind::from_stream(match_finder) {
+        Some(k) => k,
+        None => return FREEARC_ERRCODE_NOT_IMPLEMENTED,
+    };
     if dictionary_size <= 0 || num_fast_bytes <= 0 {
         return FREEARC_ERRCODE_NOT_IMPLEMENTED;
     }
@@ -102,12 +108,13 @@ pub unsafe extern "C" fn darc_lzma_compress(
     };
 
     // `mc == 0` is DArc's "auto" sentinel, resolved by the SDK at LzmaEnc.c:99 as
-    // `(16 + (fb >> 1)) >> (btMode ? 0 : 1)`; btMode is 1 for BT4, so the shift is
-    // 0. darc_lzma takes mc literally, and 0 would make the BT4 tree walk's
-    // cut_value underflow.
+    // `(16 + (fb >> 1)) >> (btMode ? 0 : 1)`. darc_lzma takes mc literally, so 0
+    // would make the search's cut counter underflow -- and the shift means the
+    // answer differs per finder, which is why this asks `mf` instead of inlining
+    // the BT form.
     let fb = num_fast_bytes as u32;
     let mc = if match_finder_cycles <= 0 {
-        16 + (fb >> 1)
+        mf.auto_mc(fb)
     } else {
         match_finder_cycles as u32
     };
@@ -119,6 +126,7 @@ pub unsafe extern "C" fn darc_lzma_compress(
         dict_size: dictionary_size as u32,
         fb,
         mc,
+        mf,
         // DArc always sets it: "FreeArc streams with EOPM (unknown size)".
         // rust/difftest/lzma-gap-check.sh is what pins that this reproduces the
         // C's bytes exactly, over a corpus that includes inputs many times the
@@ -130,6 +138,10 @@ pub unsafe extern "C" fn darc_lzma_compress(
     let mut sink = CallbackOut { io: &io };
     match darc_lzma::encode_stream(&mut source, &mut sink, &props) {
         Ok(()) => OK,
+        // darc_lzma reports an unported configuration as the C SDK's
+        // SZ_ERROR_UNSUPPORTED; translate that one into DArc's vocabulary. Every
+        // other error came from the callback and is already a FreeArc code.
+        Err(e) if e == darc_lzma::ERR_UNSUPPORTED => FREEARC_ERRCODE_NOT_IMPLEMENTED,
         Err(StreamError(code)) => code,
     }
 }

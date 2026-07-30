@@ -37,8 +37,8 @@ mod decoder;
 #[cfg(test)]
 mod roundtrip_tests;
 
-pub use props::LzmaProps;
-pub use stream::{InStream, OutStream, SliceIn, StreamError, VecOut};
+pub use props::{LzmaProps, MatchFinderKind};
+pub use stream::{ERR_UNSUPPORTED, InStream, OutStream, SliceIn, StreamError, VecOut};
 
 /// Encode `input` into a raw LZMA stream that is byte-identical to
 /// `LzmaEnc_MemEncode` for the same `props`.

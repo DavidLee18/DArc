@@ -611,6 +611,7 @@ mod tests {
             dict_size: 1 << 12,
             fb: 32,
             mc: 32,
+            mf: crate::props::MatchFinderKind::Bt4,
             write_end_mark: true,
         };
         let mut src = crate::stream::SliceIn::new(&data);

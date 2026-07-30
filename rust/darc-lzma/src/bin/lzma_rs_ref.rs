@@ -13,7 +13,7 @@
 
 use std::io::{Read, Write};
 
-use darc_lzma::{InStream, LzmaProps, OutStream, StreamError};
+use darc_lzma::{InStream, LzmaProps, MatchFinderKind, OutStream, StreamError};
 
 /// stdin as an `InStream`. `Ok(0)` means end of stream, so a `read` returning 0
 /// from a non-empty pipe would truncate -- `Read::read` only does that at EOF.
@@ -69,26 +69,27 @@ fn main() {
     let mf = num(6);
     let algorithm = num(7);
 
-    // kBT4 == 2 in C_LZMA.cpp's `enum { kBT2, kBT3, kBT4, kHC4, kHT4 }`.
-    if mf != 2 {
-        eprintln!("darc-lzma implements BT4 only (matchFinder=2); got {mf}");
-        std::process::exit(3);
-    }
+    // The DArc matchFinder ID, resolved through the same table C_LZMA.cpp uses.
+    // Refused rather than defaulted: the C's `default:` arm silently picks BT4, and
+    // a driver that quietly measured a different finder than the one asked for would
+    // report agreement it never tested.
+    let mf = match MatchFinderKind::from_stream(mf as i32) {
+        Some(k) => k,
+        None => {
+            eprintln!("no such matchFinder id: {mf} (valid: 0=BT2 1=BT3 2=BT4 3=HC4 4=HT4/Hc5)");
+            std::process::exit(3);
+        }
+    };
     if algorithm != 1 {
         eprintln!("darc-lzma implements the optimal parser only (algorithm=1); got {algorithm}");
         std::process::exit(3);
     }
 
-    // DArc passes mc = 0 meaning "auto" and lets the SDK derive it; this crate
-    // takes mc literally, so 0 makes cut_value 0 and the BT4 tree walk underflows.
-    // Apply the SDK's own formula rather than inventing one --
-    // LzmaEnc.c:99 (7z24):
-    //
-    //     if (p->mc == 0) p->mc = (16 + (fb >> 1)) >> (btMode ? 0 : 1);
-    //
-    // btMode is 1 here (BT4 is the only finder this crate implements), so the
-    // shift is 0.
-    let mc = if mc == 0 { 16 + (fb >> 1) } else { mc };
+    // DArc passes mc = 0 meaning "auto" and lets the SDK derive it; this crate takes
+    // mc literally, so 0 makes cut_value 0 and the search's cut counter underflows.
+    // The formula is the SDK's own (LzmaEnc.c:99) and it is finder-dependent -- the
+    // hash chains get half what the trees do, via the `>> (btMode ? 0 : 1)`.
+    let mc = if mc == 0 { mf.auto_mc(fb) } else { mc };
 
     // DArc always sets writeEndMark: C_LZMA.cpp says "FreeArc streams with EOPM
     // (unknown size)". Matching it is the point of this driver.
@@ -99,6 +100,7 @@ fn main() {
         dict_size,
         fb,
         mc,
+        mf,
         write_end_mark: true,
     };
 

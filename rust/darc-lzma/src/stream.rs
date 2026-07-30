@@ -19,6 +19,17 @@
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StreamError(pub i32);
 
+/// The configuration asked for is not implemented by this crate.
+///
+/// `SZ_ERROR_UNSUPPORTED` (`7zTypes.h:32`), so a caller that forwards `SRes` codes
+/// stays consistent with the C. Callers that speak FreeArc codes should map it to
+/// `FREEARC_ERRCODE_NOT_IMPLEMENTED`.
+///
+/// This exists so that an unported match finder is a **refusal**, not a silent
+/// substitution: encoding with a different finder than the caller asked for would
+/// produce an archive no other build reproduces, and it would look like success.
+pub const ERR_UNSUPPORTED: StreamError = StreamError(4);
+
 /// The encoder's input side — `ISeqInStream`.
 pub trait InStream {
     /// Read into `buf`, returning how many bytes were stored.

@@ -2,10 +2,10 @@
 //! `LzmaEncProps_Normalize` (`LzmaEnc.c:57-115`) and `LzmaEnc_WriteProperties`
 //! (`LzmaEnc.c:3037`).
 //!
-//! This crate targets only the single-threaded, optimal-parser, BT4 path that
-//! MAME's CHD codec uses (`chdcodec.cpp:1310`: `level = 8`, `reduceSize = hunk`),
-//! so [`LzmaProps`] exposes just the fields that path needs. `algo` is always 1
-//! (optimal parser) and the match finder is always BT4 (`numHashBytes = 4`).
+//! This crate targets the single-threaded, optimal-parser path (`algo` is always 1;
+//! the fast parser is not ported), across all five match finders DArc's
+//! `C_LZMA.cpp` accepts -- see [`MatchFinderKind`], and note that DArc's own
+//! default is the 5-byte hash chain, not BT4.
 
 /// Smallest dictionary the encoder will use, even after reduction
 /// (`kReduceMin`, `LzmaEnc.c:84`).
@@ -19,7 +19,112 @@ const K_REDUCE_MIN: u32 = 1 << 12; // 4096
 /// `LzmaEnc_WriteProperties` encodes the clamped value.
 pub(crate) const K_MAX_HISTORY_SIZE: u32 = 15 << 28;
 
-/// Normalized LZMA encoder properties for the optimal-parser / BT4 path.
+/// Which match finder `LzmaEnc` runs.
+///
+/// DArc's five `matchFinder` IDs (`C_LZMA.cpp:16`) do **not** name the SDK's five
+/// implementations. They name `(btMode, numHashBytes)` pairs
+/// (`C_LZMA.cpp:100-107`), which `MatchFinder_CreateVTable` (`LzFind.c:1664`) then
+/// resolves to the search function. The mapping is worth stating because two of the
+/// names are actively misleading:
+///
+/// | DArc ID | `(btMode, numHashBytes)` | SDK function |
+/// |---|---|---|
+/// | `kBT2` = 0 | (1, 2) | `Bt2_MatchFinder_GetMatches` |
+/// | `kBT3` = 1 | (1, 3) | `Bt3_MatchFinder_GetMatches` |
+/// | `kBT4` = 2 | (1, 4) | `Bt4_MatchFinder_GetMatches` |
+/// | `kHC4` = 3 | (0, 4) | `Hc4_MatchFinder_GetMatches` |
+/// | `kHT4` = 4 | (0, **5**) | `Hc5_MatchFinder_GetMatches` |
+///
+/// `kHT4` is a five-byte hash *chain*, not a four-byte hash table — and it is
+/// **DArc's default** (`C_LZMA.cpp:253`), so it is the finder the shipped archiver
+/// actually uses. This enum is named for what each variant *is* rather than for the
+/// DArc ID, so that the misnomer cannot propagate.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MatchFinderKind {
+    /// Binary tree, 2-byte hash.
+    Bt2,
+    /// Binary tree, 3-byte hash.
+    Bt3,
+    /// Binary tree, 4-byte hash.
+    Bt4,
+    /// Hash chain, 4-byte hash.
+    Hc4,
+    /// Hash chain, 5-byte hash. DArc's default, via the `kHT4` ID.
+    Hc5,
+}
+
+impl MatchFinderKind {
+    /// Resolve a DArc `matchFinder` ID, or `None` if it names no finder.
+    ///
+    /// Returns `Option` rather than falling back, because the ID reaches us from a
+    /// method string that was **stored in the archive** — it is caller-supplied
+    /// data, not a value this code computes, so an unrecognized one has to be
+    /// refused rather than quietly turned into BT4. (The C's `default:` arm does
+    /// silently pick BT4, `C_LZMA.cpp:107`; reproducing that would mean two builds
+    /// disagreeing about what a malformed method string means.)
+    pub fn from_stream(id: i32) -> Option<Self> {
+        match id {
+            0 => Some(MatchFinderKind::Bt2),
+            1 => Some(MatchFinderKind::Bt3),
+            2 => Some(MatchFinderKind::Bt4),
+            3 => Some(MatchFinderKind::Hc4),
+            4 => Some(MatchFinderKind::Hc5),
+            _ => None,
+        }
+    }
+
+    /// `props.btMode`: 1 for the binary-tree finders, 0 for the hash chains.
+    ///
+    /// Load-bearing beyond the search itself: it halves the `son` array
+    /// (`MatchFinder_Create`: `numSons <<= 1` only when `btMode`), it shifts the
+    /// automatic `mc` (`LzmaEnc.c:99`), and it gates multi-threading entirely
+    /// (`LzmaEnc.c:2695`: `mtMode = multiThread && !fastMode && btMode != 0`).
+    pub fn bt_mode(self) -> bool {
+        match self {
+            MatchFinderKind::Bt2 | MatchFinderKind::Bt3 | MatchFinderKind::Bt4 => true,
+            MatchFinderKind::Hc4 | MatchFinderKind::Hc5 => false,
+        }
+    }
+
+    /// `MFB.numHashBytes` after `LzmaEnc_SetProps`'s clamping (`LzmaEnc.c:573-581`).
+    pub fn num_hash_bytes(self) -> u32 {
+        match self {
+            MatchFinderKind::Bt2 => 2,
+            MatchFinderKind::Bt3 => 3,
+            MatchFinderKind::Bt4 | MatchFinderKind::Hc4 => 4,
+            MatchFinderKind::Hc5 => 5,
+        }
+    }
+
+    /// `p->fixedHashSize` (`MatchFinder_Create`, `LzFind.c:450`) with the default
+    /// `numHashBytes_Min = 2` (`MatchFinder_SetDefaultSettings`).
+    ///
+    /// The 4- and 5-byte finders share a value: the C accumulates only for
+    /// `numHashBytes > 2` and `> 3`, and its `> 4` term is commented out.
+    pub fn fixed_hash_size(self) -> usize {
+        let mut n = 0usize;
+        if self.num_hash_bytes() > 2 {
+            n += 1 << 10; // kHash2Size
+        }
+        if self.num_hash_bytes() > 3 {
+            n += 1 << 16; // kHash3Size
+        }
+        n
+    }
+
+    /// The automatic `mc`, i.e. `LzmaEnc.c:99`:
+    /// `mc = (16 + (fb >> 1)) >> (btMode ? 0 : 1)`.
+    ///
+    /// The shift is why a single "auto mc" formula cannot be shared across finders:
+    /// the hash chains get **half** the cut value the trees do. Applying the BT
+    /// formula to a chain doubles its search depth and changes the parse.
+    pub fn auto_mc(self, fb: u32) -> u32 {
+        let mc = 16 + (fb >> 1);
+        if self.bt_mode() { mc } else { mc >> 1 }
+    }
+}
+
+/// Normalized LZMA encoder properties for the optimal-parser path.
 ///
 /// Construct via [`LzmaProps::for_level`] or [`LzmaProps::chd_for_hunk`]; both
 /// reproduce `LzmaEncProps_Normalize` exactly. The fields mirror the C
@@ -37,7 +142,14 @@ pub struct LzmaProps {
     /// Fast bytes (`fb` / `numFastBytes`). Level-8 default: 64.
     pub fb: u32,
     /// Match cycles (`mc` / `cutValue`). Level-8 / BT4 default: 48.
+    ///
+    /// If a caller has `mc == 0` — DArc's "auto" sentinel — it must resolve it with
+    /// [`MatchFinderKind::auto_mc`] before constructing this, because the formula
+    /// depends on `mf` and taking 0 literally underflows the search's cut counter.
     pub mc: u32,
+    /// Which match finder to run. See [`MatchFinderKind`]; DArc's default is
+    /// [`MatchFinderKind::Hc5`], not `Bt4`.
+    pub mf: MatchFinderKind,
     /// Emit an end-of-payload marker before the final flush, i.e. the SDK's
     /// `writeEndMark`.
     ///
@@ -85,13 +197,14 @@ impl LzmaProps {
         let lp = 0u8;
         let pb = 2u8;
 
-        // We only support the optimal parser + BT4. With algo defaulting to
-        // `level < 5 ? 0 : 1` and btMode to `algo == 0 ? 0 : 1`, every level >= 5
-        // lands on algo=1 / btMode=1 / numHashBytes=4 (LzmaEnc.c:95-98).
+        // The SDK's own level defaults, which land on the binary tree: with `algo`
+        // defaulting to `level < 5 ? 0 : 1` and `btMode` to `algo == 0 ? 0 : 1`,
+        // every level >= 5 gives algo=1 / btMode=1 / numHashBytes=4
+        // (LzmaEnc.c:95-98). Note this is NOT what DArc's LZMA_METHOD does -- DArc
+        // sets its parameters explicitly and defaults to Hc5 (C_LZMA.cpp:246-257).
         let fb = if level < 7 { 32u32 } else { 64u32 };
-        // mc = (16 + (fb >> 1)) >> (btMode ? 0 : 1); btMode == 1 here
-        // (LzmaEnc.c:99).
-        let mc = 16 + (fb >> 1);
+        let mf = MatchFinderKind::Bt4;
+        let mc = mf.auto_mc(fb);
 
         LzmaProps {
             lc,
@@ -100,6 +213,7 @@ impl LzmaProps {
             dict_size,
             fb,
             mc,
+            mf,
             // Upstream's default and the SDK's: `p->writeEndMark = 0`
             // (LzmaEnc.c:64). DArc's callers set it explicitly.
             write_end_mark: false,
@@ -162,6 +276,53 @@ impl LzmaProps {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn darc_match_finder_ids_map_as_c_lzma_does() {
+        // The table in C_LZMA.cpp:100-107, checked rather than trusted -- two of the
+        // five names do not describe what they select, and kHT4 is DArc's DEFAULT.
+        let cases = [
+            (0, MatchFinderKind::Bt2, true, 2u32),
+            (1, MatchFinderKind::Bt3, true, 3),
+            (2, MatchFinderKind::Bt4, true, 4),
+            (3, MatchFinderKind::Hc4, false, 4),
+            (4, MatchFinderKind::Hc5, false, 5),
+        ];
+        for (id, kind, bt, nhb) in cases {
+            assert_eq!(MatchFinderKind::from_stream(id), Some(kind), "id {id}");
+            assert_eq!(kind.bt_mode(), bt, "{kind:?} btMode");
+            assert_eq!(kind.num_hash_bytes(), nhb, "{kind:?} numHashBytes");
+        }
+        // Out of range is refused, not defaulted to BT4 the way the C's `default:`
+        // arm does. See from_stream's doc comment for why.
+        assert_eq!(MatchFinderKind::from_stream(-1), None);
+        assert_eq!(MatchFinderKind::from_stream(5), None);
+    }
+
+    #[test]
+    fn auto_mc_halves_for_the_hash_chains() {
+        // LzmaEnc.c:99 -- `>> (btMode ? 0 : 1)`. Getting this wrong doubles a chain's
+        // search depth, which changes the parse without changing anything visible in
+        // the parameters.
+        for fb in [1u32, 5, 32, 64, 273] {
+            let bt = 16 + (fb >> 1);
+            assert_eq!(MatchFinderKind::Bt4.auto_mc(fb), bt, "fb {fb}");
+            assert_eq!(MatchFinderKind::Bt2.auto_mc(fb), bt, "fb {fb}");
+            assert_eq!(MatchFinderKind::Hc4.auto_mc(fb), bt >> 1, "fb {fb}");
+            assert_eq!(MatchFinderKind::Hc5.auto_mc(fb), bt >> 1, "fb {fb}");
+        }
+    }
+
+    #[test]
+    fn fixed_hash_size_matches_matchfinder_create() {
+        // LzFind.c:450 with numHashBytes_Min = 2: only the `> 2` and `> 3` terms are
+        // live, so 4 and 5 share a value and 2 contributes nothing.
+        assert_eq!(MatchFinderKind::Bt2.fixed_hash_size(), 0);
+        assert_eq!(MatchFinderKind::Bt3.fixed_hash_size(), 1 << 10);
+        assert_eq!(MatchFinderKind::Bt4.fixed_hash_size(), (1 << 10) + (1 << 16));
+        assert_eq!(MatchFinderKind::Hc4.fixed_hash_size(), (1 << 10) + (1 << 16));
+        assert_eq!(MatchFinderKind::Hc5.fixed_hash_size(), (1 << 10) + (1 << 16));
+    }
 
     #[test]
     fn chd_level8_params_match_sdk() {

@@ -16,14 +16,14 @@ use crate::optimum::{
     len_to_pos_state, lit_get_price, lit_matched_get_price,
 };
 use crate::price::ProbPrices;
-use crate::props::LzmaProps;
+use crate::props::{LzmaProps, MatchFinderKind};
 use crate::rangecoder::RangeEncoder;
 use crate::state::{
     END_POS_MODEL_INDEX, LITERAL_NEXT_STATES, MATCH_LEN_MAX, MATCH_LEN_MIN, MATCH_NEXT_STATES,
     NUM_ALIGN_BITS, NUM_FULL_DISTANCES, NUM_POS_SLOT_BITS, NUM_STATES, PROB_INIT_VALUE,
     REP_NEXT_STATES, SHORT_REP_NEXT_STATES, START_POS_MODEL_INDEX,
 };
-use crate::stream::{InStream, OutStream, SliceIn, StreamError, VecOut};
+use crate::stream::{ERR_UNSUPPORTED, InStream, OutStream, SliceIn, StreamError, VecOut};
 
 const NUM_LIT_STATES: u32 = 7;
 const NUM_POS_STATES_MAX: usize = 16;
@@ -527,11 +527,22 @@ impl<'a> Encoder<'a> {
 ///
 /// Memory is O(dictionary), not O(input): the match finder holds a sliding window
 /// and the range coder stages 64 KiB at a time.
+/// Returns [`ERR_UNSUPPORTED`] for a match finder this crate has not ported. That
+/// check is an **exhaustive** match on purpose: porting one of them, or adding a
+/// variant, will not compile until this list is updated, so an unimplemented finder
+/// can never fall through to a different one's search.
 pub fn encode_stream(
     source: &mut dyn InStream,
     sink: &mut dyn OutStream,
     props: &LzmaProps,
 ) -> Result<(), StreamError> {
+    match props.mf {
+        MatchFinderKind::Bt4 => {}
+        MatchFinderKind::Bt2
+        | MatchFinderKind::Bt3
+        | MatchFinderKind::Hc4
+        | MatchFinderKind::Hc5 => return Err(ERR_UNSUPPORTED),
+    }
     let enc = Encoder::new(source, sink, props);
     enc.run()
 }
