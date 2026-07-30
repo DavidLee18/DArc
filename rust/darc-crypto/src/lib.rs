@@ -11,6 +11,19 @@
 // crate level; the FFI boundary (ffi, exports) needs unsafe and opts back in
 // per-module, so the guarantee holds everywhere it can.
 #![deny(unsafe_code)]
+// Totality, matching darc-codecs. CI additionally rejects `if let` anywhere under
+// rust/, so an unhandled case has to be written down rather than being the shape
+// of the code. This crate had zero `if let` when that gate was widened.
+//
+// The three existing `_ =>` arms in exports.rs are unaffected: they match on
+// integers from the C caller (`cipher`, `key.len()`), not enums, so this lint
+// does not apply to them -- and they are correct as they stand, rejecting an
+// unknown cipher id with FREEARC_ERRCODE_INVALID_COMPRESSOR. A c_int cannot be
+// matched exhaustively; an enum can, which is what this guards.
+#![deny(clippy::wildcard_enum_match_arm)]
+#![deny(clippy::todo, clippy::unimplemented, clippy::mem_forget)]
+#![deny(unused_must_use)]
+#![allow(clippy::single_match)]
 
 pub mod cfb;
 pub mod ffi;

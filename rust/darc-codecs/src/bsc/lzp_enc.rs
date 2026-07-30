@@ -416,14 +416,17 @@ fn encode_unrolled(input: &[u8], output: &mut [u8], hash_size: u32, min_len: u32
             }
         }
 
-        if let Some(k) = bad {
-            // BAD_MATCH_FOUND: step past the literal, which is already in the
-            // output, and append the escape byte.
-            ip += k + 1;
-            op += k + 1;
-            output[op] = 255;
-            op += 1;
-            continue;
+        match bad {
+            Some(k) => {
+                // BAD_MATCH_FOUND: step past the literal, which is already in the
+                // output, and append the escape byte.
+                ip += k + 1;
+                op += k + 1;
+                output[op] = 255;
+                op += 1;
+                continue;
+            }
+            None => {}
         }
 
         let (k, reference) = match good {

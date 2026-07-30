@@ -100,8 +100,11 @@ impl<'a> Window<'a> {
 macro_rules! flush_if {
     ($w:expr, $d:expr, $cond:expr) => {
         if $cond {
-            if let Some(e) = $d.error() {
-                return Err(e);
+            match $d.error() {
+                Some(e) => {
+                    return Err(e);
+                }
+                None => {}
             }
             $w.flush()?;
         }
@@ -114,8 +117,11 @@ fn decompress0<D: Lz77Decoder>(
     header_bufsize: u32,
     minlen: u32,
 ) -> Result<(), c_int> {
-    if let Some(e) = d.error() {
-        return Err(e);
+    match d.error() {
+        Some(e) => {
+            return Err(e);
+        }
+        None => {}
     }
     // compress_all_at_once is false on the archiver's streaming path, so the
     // window is grown to at least HUGE_BUFFER_SIZE exactly as the C does.
@@ -202,8 +208,11 @@ fn decompress0<D: Lz77Decoder>(
         }
     }
 
-    if let Some(e) = d.error() {
-        return Err(e);
+    match d.error() {
+        Some(e) => {
+            return Err(e);
+        }
+        None => {}
     }
     Ok(())
 }
@@ -221,8 +230,11 @@ fn run(io: &Io) -> Result<(), c_int> {
     let method = hdr.get8();
     let minlen = hdr.get8();
     let bufsize = hdr.get32();
-    if let Some(e) = hdr.error() {
-        return Err(e);
+    match hdr.error() {
+        Some(e) => {
+            return Err(e);
+        }
+        None => {}
     }
     if bufsize == 0 || bufsize > MAX_BUFSIZE {
         return Err(BAD);

@@ -640,15 +640,21 @@ fn compress_mid(src: &[u8], out: &mut Out) -> Option<usize> {
 
     macro_rules! addpos8 {
         ($p:expr, $idx:expr) => {
-            if let Some(v) = read64(src, $p) {
-                hash8[mid_hash8(v)] = $idx;
+            match read64(src, $p) {
+                Some(v) => {
+                    hash8[mid_hash8(v)] = $idx;
+                }
+                None => {}
             }
         };
     }
     macro_rules! addpos4 {
         ($p:expr, $idx:expr) => {
-            if let Some(v) = read32(src, $p) {
-                hash4[mid_hash4(v)] = $idx;
+            match read32(src, $p) {
+                Some(v) => {
+                    hash4[mid_hash4(v)] = $idx;
+                }
+                None => {}
             }
         };
     }
@@ -663,47 +669,56 @@ fn compress_mid(src: &[u8], out: &mut Out) -> Option<usize> {
         // never-written slots, so no separate emptiness test is needed.
         'found: {
             // Long match first.
-            if let Some(v) = read64(src, ip) {
-                let h8 = mid_hash8(v);
-                let pos8 = hash8[h8];
-                hash8[h8] = ip_index;
-                if ip_index - pos8 <= DISTANCE_MAX {
-                    let m = (pos8 - BASE) as i32;
-                    match_length = count_forward(src, ip, m, matchlimit);
-                    if match_length >= MINMATCH {
-                        match_distance = (ip_index - pos8) as i32;
-                        break 'found;
+            match read64(src, ip) {
+                Some(v) => {
+                    let h8 = mid_hash8(v);
+                    let pos8 = hash8[h8];
+                    hash8[h8] = ip_index;
+                    if ip_index - pos8 <= DISTANCE_MAX {
+                        let m = (pos8 - BASE) as i32;
+                        match_length = count_forward(src, ip, m, matchlimit);
+                        if match_length >= MINMATCH {
+                            match_distance = (ip_index - pos8) as i32;
+                            break 'found;
+                        }
                     }
                 }
+                None => {}
             }
             // Then a short match, with a one-byte lookahead for a longer one.
-            if let Some(v) = read32(src, ip) {
-                let h4 = mid_hash4(v);
-                let pos4 = hash4[h4];
-                hash4[h4] = ip_index;
-                if ip_index - pos4 <= DISTANCE_MAX {
-                    let m = (pos4 - BASE) as i32;
-                    match_length = count_forward(src, ip, m, matchlimit);
-                    if match_length >= MINMATCH {
-                        match_distance = (ip_index - pos4) as i32;
-                        if let Some(v2) = read64(src, ip + 1) {
-                            let h8 = mid_hash8(v2);
-                            let pos8 = hash8[h8];
-                            let m2_distance = ip_index + 1 - pos8;
-                            if m2_distance <= DISTANCE_MAX && ip < mflimit {
-                                let m2 = (pos8 - BASE) as i32;
-                                let ml2 = count_forward(src, ip + 1, m2, matchlimit);
-                                if ml2 > match_length {
-                                    hash8[h8] = ip_index + 1;
-                                    ip += 1;
-                                    match_length = ml2;
-                                    match_distance = m2_distance as i32;
+            match read32(src, ip) {
+                Some(v) => {
+                    let h4 = mid_hash4(v);
+                    let pos4 = hash4[h4];
+                    hash4[h4] = ip_index;
+                    if ip_index - pos4 <= DISTANCE_MAX {
+                        let m = (pos4 - BASE) as i32;
+                        match_length = count_forward(src, ip, m, matchlimit);
+                        if match_length >= MINMATCH {
+                            match_distance = (ip_index - pos4) as i32;
+                            match read64(src, ip + 1) {
+                                Some(v2) => {
+                                    let h8 = mid_hash8(v2);
+                                    let pos8 = hash8[h8];
+                                    let m2_distance = ip_index + 1 - pos8;
+                                    if m2_distance <= DISTANCE_MAX && ip < mflimit {
+                                        let m2 = (pos8 - BASE) as i32;
+                                        let ml2 = count_forward(src, ip + 1, m2, matchlimit);
+                                        if ml2 > match_length {
+                                            hash8[h8] = ip_index + 1;
+                                            ip += 1;
+                                            match_length = ml2;
+                                            match_distance = m2_distance as i32;
+                                        }
+                                    }
                                 }
+                                None => {}
                             }
+                            break 'found;
                         }
-                        break 'found;
                     }
                 }
+                None => {}
             }
             // No match: step forward, accelerating over incompressible data.
             ip += 1 + ((ip - anchor) >> 9);
@@ -1072,170 +1087,182 @@ pub fn compress_hc(src: &[u8], dst: &mut [u8], level: i32) -> usize {
     let mut ip = 0i32;
     let mut anchor = 0i32;
 
-    if input_size >= LZ4_MIN_LENGTH && strategy == Strategy::Mid {
-        match compress_mid(src, &mut out) {
-            Some(a) => anchor = a as i32,
-            None => return 0,
-        }
-    } else if let (true, Strategy::Optimal(nb, target, full)) =
-        (input_size >= LZ4_MIN_LENGTH, strategy)
-    {
-        let mut ctx = HashChain::new();
-        match compress_optimal(src, &mut out, &mut ctx, nb, target, full) {
-            Some(a) => anchor = a,
-            None => return 0,
-        }
-    } else if input_size >= LZ4_MIN_LENGTH {
-        let mut ctx = HashChain::new();
-
-        'main: while ip <= mflimit {
-            let mut m1 = ctx.get_wider_match(src, ip, ip, matchlimit, MINMATCH - 1, max_nb_attempts, pattern_analysis, false);
-            if m1.len < MINMATCH {
-                ip += 1;
-                continue;
+    // Exhaustive on (long enough, which parser). This was an `if let` on a
+    // tuple plus two `else if`s, which meant a NEW `Strategy` variant fell
+    // silently into the hash-chain branch -- the same silent-fallback class as
+    // the Tornado presets 7-11 bug. Now it is a compile error.
+    match (input_size >= LZ4_MIN_LENGTH, strategy) {
+        (true, Strategy::Mid) => {
+            match compress_mid(src, &mut out) {
+                Some(a) => anchor = a as i32,
+                None => return 0,
             }
+        }
+        (true, Strategy::Optimal(nb, target, full)) => {
+            let mut ctx = HashChain::new();
+            match compress_optimal(src, &mut out, &mut ctx, nb, target, full) {
+                Some(a) => anchor = a,
+                None => return 0,
+            }
+        }
+        (true, Strategy::HashChain(_)) => {
+            let mut ctx = HashChain::new();
 
-            // Saved, in case the parser later decides it skipped too far.
-            let mut start0 = ip;
-            let mut m0 = m1;
-            let mut start2 = ip;
-            let mut m2 = NO_MATCH;
-            let mut start3;
-            let mut m3;
+            'main: while ip <= mflimit {
+                let mut m1 = ctx.get_wider_match(src, ip, ip, matchlimit, MINMATCH - 1, max_nb_attempts, pattern_analysis, false);
+                if m1.len < MINMATCH {
+                    ip += 1;
+                    continue;
+                }
 
-            // The C threads this section with `goto _Search2` / `goto _Search3`;
-            // `state` reproduces those jumps exactly.
-            let mut state = 2u8;
-            loop {
-                if state == 2 {
-                    // ---- _Search2 (lz4hc.c:1165) ----
-                    if ip + m1.len <= mflimit {
-                        start2 = ip + m1.len - 2;
-                        m2 = ctx.get_wider_match(src, start2, ip, matchlimit, m1.len, max_nb_attempts, pattern_analysis, false);
-                        start2 += m2.back;
-                    } else {
-                        m2 = NO_MATCH; // do not search further
+                // Saved, in case the parser later decides it skipped too far.
+                let mut start0 = ip;
+                let mut m0 = m1;
+                let mut start2 = ip;
+                let mut m2 = NO_MATCH;
+                let mut start3;
+                let mut m3;
+
+                // The C threads this section with `goto _Search2` / `goto _Search3`;
+                // `state` reproduces those jumps exactly.
+                let mut state = 2u8;
+                loop {
+                    if state == 2 {
+                        // ---- _Search2 (lz4hc.c:1165) ----
+                        if ip + m1.len <= mflimit {
+                            start2 = ip + m1.len - 2;
+                            m2 = ctx.get_wider_match(src, start2, ip, matchlimit, m1.len, max_nb_attempts, pattern_analysis, false);
+                            start2 += m2.back;
+                        } else {
+                            m2 = NO_MATCH; // do not search further
+                        }
+
+                        if m2.len <= m1.len {
+                            // No better match => encode ML1 immediately.
+                            if encode_sequence(src, &mut out, &mut ip, &mut anchor, m1.len, m1.off) {
+                                return 0;
+                            }
+                            continue 'main;
+                        }
+
+                        if start0 < ip && start2 < ip + m0.len {
+                            // Squeezing ML1 between ML0 and ML2: restore Match1.
+                            ip = start0;
+                            m1 = m0;
+                        }
+
+                        if start2 - ip < 3 {
+                            // First match too small: drop it.
+                            ip = start2;
+                            m1 = m2;
+                            continue;
+                        }
+                        state = 3;
+                        continue;
                     }
 
-                    if m2.len <= m1.len {
-                        // No better match => encode ML1 immediately.
+                    // ---- _Search3 (lz4hc.c:1198) ----
+                    if start2 - ip < OPTIMAL_ML {
+                        let mut new_ml = m1.len.min(OPTIMAL_ML);
+                        if ip + new_ml > start2 + m2.len - MINMATCH {
+                            new_ml = (start2 - ip) + m2.len - MINMATCH;
+                        }
+                        let correction = new_ml - (start2 - ip);
+                        if correction > 0 {
+                            start2 += correction;
+                            m2.len -= correction;
+                        }
+                    }
+
+                    if start2 + m2.len <= mflimit {
+                        start3 = start2 + m2.len - 3;
+                        m3 = ctx.get_wider_match(src, start3, start2, matchlimit, m2.len, max_nb_attempts, pattern_analysis, false);
+                        start3 += m3.back;
+                    } else {
+                        start3 = start2;
+                        m3 = NO_MATCH;
+                    }
+
+                    if m3.len <= m2.len {
+                        // No better match => encode ML1 and ML2.
+                        if start2 < ip + m1.len {
+                            m1.len = start2 - ip;
+                        }
                         if encode_sequence(src, &mut out, &mut ip, &mut anchor, m1.len, m1.off) {
+                            return 0;
+                        }
+                        ip = start2;
+                        if encode_sequence(src, &mut out, &mut ip, &mut anchor, m2.len, m2.off) {
                             return 0;
                         }
                         continue 'main;
                     }
 
-                    if start0 < ip && start2 < ip + m0.len {
-                        // Squeezing ML1 between ML0 and ML2: restore Match1.
-                        ip = start0;
-                        m1 = m0;
+                    if start3 < ip + m1.len + 3 {
+                        if start3 >= ip + m1.len {
+                            // Seq1 can be written now; Seq2 goes away and Seq3
+                            // becomes the new Seq1.
+                            if start2 < ip + m1.len {
+                                let correction = ip + m1.len - start2;
+                                start2 += correction;
+                                m2.len -= correction;
+                                if m2.len < MINMATCH {
+                                    start2 = start3;
+                                    m2 = m3;
+                                }
+                            }
+                            if encode_sequence(src, &mut out, &mut ip, &mut anchor, m1.len, m1.off) {
+                                return 0;
+                            }
+                            ip = start3;
+                            m1 = m3;
+                            start0 = start2;
+                            m0 = m2;
+                            state = 2;
+                            continue;
+                        }
+                        start2 = start3;
+                        m2 = m3;
+                        continue; // state stays 3
                     }
 
-                    if start2 - ip < 3 {
-                        // First match too small: drop it.
-                        ip = start2;
-                        m1 = m2;
-                        continue;
-                    }
-                    state = 3;
-                    continue;
-                }
-
-                // ---- _Search3 (lz4hc.c:1198) ----
-                if start2 - ip < OPTIMAL_ML {
-                    let mut new_ml = m1.len.min(OPTIMAL_ML);
-                    if ip + new_ml > start2 + m2.len - MINMATCH {
-                        new_ml = (start2 - ip) + m2.len - MINMATCH;
-                    }
-                    let correction = new_ml - (start2 - ip);
-                    if correction > 0 {
-                        start2 += correction;
-                        m2.len -= correction;
-                    }
-                }
-
-                if start2 + m2.len <= mflimit {
-                    start3 = start2 + m2.len - 3;
-                    m3 = ctx.get_wider_match(src, start3, start2, matchlimit, m2.len, max_nb_attempts, pattern_analysis, false);
-                    start3 += m3.back;
-                } else {
-                    start3 = start2;
-                    m3 = NO_MATCH;
-                }
-
-                if m3.len <= m2.len {
-                    // No better match => encode ML1 and ML2.
+                    // Three ascending matches; write the first.
                     if start2 < ip + m1.len {
-                        m1.len = start2 - ip;
+                        if start2 - ip < OPTIMAL_ML {
+                            if m1.len > OPTIMAL_ML {
+                                m1.len = OPTIMAL_ML;
+                            }
+                            if ip + m1.len > start2 + m2.len - MINMATCH {
+                                m1.len = (start2 - ip) + m2.len - MINMATCH;
+                            }
+                            let correction = m1.len - (start2 - ip);
+                            if correction > 0 {
+                                start2 += correction;
+                                m2.len -= correction;
+                            }
+                        } else {
+                            m1.len = start2 - ip;
+                        }
                     }
                     if encode_sequence(src, &mut out, &mut ip, &mut anchor, m1.len, m1.off) {
                         return 0;
                     }
-                    ip = start2;
-                    if encode_sequence(src, &mut out, &mut ip, &mut anchor, m2.len, m2.off) {
-                        return 0;
-                    }
-                    continue 'main;
-                }
 
-                if start3 < ip + m1.len + 3 {
-                    if start3 >= ip + m1.len {
-                        // Seq1 can be written now; Seq2 goes away and Seq3
-                        // becomes the new Seq1.
-                        if start2 < ip + m1.len {
-                            let correction = ip + m1.len - start2;
-                            start2 += correction;
-                            m2.len -= correction;
-                            if m2.len < MINMATCH {
-                                start2 = start3;
-                                m2 = m3;
-                            }
-                        }
-                        if encode_sequence(src, &mut out, &mut ip, &mut anchor, m1.len, m1.off) {
-                            return 0;
-                        }
-                        ip = start3;
-                        m1 = m3;
-                        start0 = start2;
-                        m0 = m2;
-                        state = 2;
-                        continue;
-                    }
+                    // ML2 becomes ML1, ML3 becomes ML2; look for a new ML3.
+                    ip = start2;
+                    m1 = m2;
                     start2 = start3;
                     m2 = m3;
-                    continue; // state stays 3
+                    // state stays 3
                 }
-
-                // Three ascending matches; write the first.
-                if start2 < ip + m1.len {
-                    if start2 - ip < OPTIMAL_ML {
-                        if m1.len > OPTIMAL_ML {
-                            m1.len = OPTIMAL_ML;
-                        }
-                        if ip + m1.len > start2 + m2.len - MINMATCH {
-                            m1.len = (start2 - ip) + m2.len - MINMATCH;
-                        }
-                        let correction = m1.len - (start2 - ip);
-                        if correction > 0 {
-                            start2 += correction;
-                            m2.len -= correction;
-                        }
-                    } else {
-                        m1.len = start2 - ip;
-                    }
-                }
-                if encode_sequence(src, &mut out, &mut ip, &mut anchor, m1.len, m1.off) {
-                    return 0;
-                }
-
-                // ML2 becomes ML1, ML3 becomes ML2; look for a new ML3.
-                ip = start2;
-                m1 = m2;
-                start2 = start3;
-                m2 = m3;
-                // state stays 3
             }
         }
+        // Shorter than LZ4_MIN_LENGTH: no matches are emitted at all, and the
+        // tail below stores the whole input as literals. Spelled out per
+        // variant rather than `(false, _)` so a new strategy lands here too.
+        (false, Strategy::Mid)
+        | (false, Strategy::HashChain(_))
+        | (false, Strategy::Optimal(..)) => {}
     }
 
     // ---- Encode last literals (lz4hc.c:1308) ----

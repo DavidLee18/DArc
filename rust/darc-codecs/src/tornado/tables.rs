@@ -169,16 +169,19 @@ impl DataTables {
     /// Undiff everything up to `write_end`, ready for the bytes to be written.
     pub fn undiff_tables(&mut self, buf: &mut [u8], write_start: usize, write_end: usize) {
         self.original_bytes = 0;
-        if let Some(first) = self.tables.first().copied() {
-            if first.start < write_start {
-                // This table began in the previous chunk. Its first row on disk
-                // is a difference, so swap in the base row saved back then, and
-                // remember what was there to put back afterwards.
-                let n = first.row.min(write_start - first.start).min(MAX_ROW);
-                self.original[..n].copy_from_slice(&buf[first.start..first.start + n]);
-                buf[first.start..first.start + n].copy_from_slice(&self.base_data[..n]);
-                self.original_bytes = n;
+        match self.tables.first().copied() {
+            Some(first) => {
+                if first.start < write_start {
+                    // This table began in the previous chunk. Its first row on disk
+                    // is a difference, so swap in the base row saved back then, and
+                    // remember what was there to put back afterwards.
+                    let n = first.row.min(write_start - first.start).min(MAX_ROW);
+                    self.original[..n].copy_from_slice(&buf[first.start..first.start + n]);
+                    buf[first.start..first.start + n].copy_from_slice(&self.base_data[..n]);
+                    self.original_bytes = n;
+                }
             }
+            None => {}
         }
         self.process(buf, write_end, true);
     }
@@ -187,36 +190,45 @@ impl DataTables {
     /// clear the list -- keeping the tail of a table that runs past `write_end`.
     pub fn diff_tables(&mut self, buf: &mut [u8], write_start: usize, write_end: usize) {
         let mut carry_over: Option<TableEntry> = None;
-        if let Some(&last) = self.tables.last() {
-            if last.row != 0 && write_end >= last.start {
-                let processed = (write_end - last.start) / last.row;
-                if processed < last.len {
-                    // Keep two extra rows: one as the undiff base for the next
-                    // chunk, and one because a row can straddle the boundary.
-                    let processed = processed.saturating_sub(2);
-                    let mut tail = last;
-                    tail.start += processed * last.row;
-                    tail.len -= processed;
-                    let n = tail.row.min(MAX_ROW);
-                    self.base_data[..n].copy_from_slice(&buf[tail.start..tail.start + n]);
-                    carry_over = Some(tail);
+        match self.tables.last() {
+            Some(&last) => {
+                if last.row != 0 && write_end >= last.start {
+                    let processed = (write_end - last.start) / last.row;
+                    if processed < last.len {
+                        // Keep two extra rows: one as the undiff base for the next
+                        // chunk, and one because a row can straddle the boundary.
+                        let processed = processed.saturating_sub(2);
+                        let mut tail = last;
+                        tail.start += processed * last.row;
+                        tail.len -= processed;
+                        let n = tail.row.min(MAX_ROW);
+                        self.base_data[..n].copy_from_slice(&buf[tail.start..tail.start + n]);
+                        carry_over = Some(tail);
+                    }
                 }
             }
+            None => {}
         }
         self.process(buf, write_end, false);
         // Put back the bytes undiff_tables borrowed for the base row.
         if self.original_bytes > 0 {
-            if let Some(first) = self.tables.first().copied() {
-                if first.start < write_start {
-                    let n = self.original_bytes;
-                    buf[first.start..first.start + n].copy_from_slice(&self.original[..n]);
+            match self.tables.first().copied() {
+                Some(first) => {
+                    if first.start < write_start {
+                        let n = self.original_bytes;
+                        buf[first.start..first.start + n].copy_from_slice(&self.original[..n]);
+                    }
                 }
+                None => {}
             }
         }
         self.original_bytes = 0;
         self.tables.clear();
-        if let Some(t) = carry_over {
-            self.tables.push(t);
+        match carry_over {
+            Some(t) => {
+                self.tables.push(t);
+            }
+            None => {}
         }
     }
 

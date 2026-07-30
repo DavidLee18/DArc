@@ -125,8 +125,11 @@ impl<'a> InputByteStream<'a> {
     /// Any hard error seen so far: a negative callback return, or reading so far
     /// past the end of the data that the stream must be truncated.
     pub fn error(&self) -> Option<c_int> {
-        if let Some(e) = self.err {
-            return Some(e);
+        match self.err {
+            Some(e) => {
+                return Some(e);
+            }
+            None => {}
         }
         if self.overrun > EXHAUSTED_SLACK {
             return Some(BAD);
