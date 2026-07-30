@@ -287,50 +287,53 @@ pub fn compress_block(input: &[u8], size: usize, out: &mut [u8], mode: i32) -> R
     if size > 1024 && (mode & DISABLE_DELTA_FLT) == 0 {
         // `test` hands back a classified mode or nothing at all, so the encoder
         // never holds a raw mode integer.
-        if let Some(rec_mode) = super::rec::test(input, size) {
-            let mut buffer = vec![0u8; size + 1024];
-            super::rec::encode(input, size, &mut buffer, rec_mode);
-            let sub_mode = mode + DISABLE_DELTA_FLT;
-            // Modes 1 and 3 split in two, 2 and 4 in four, matching the record
-            // width the filter chose.
-            let parts: Vec<(usize, usize)> = if rec_mode.parts() == 2 {
-                let half = size >> 1;
-                vec![(0, half), (half, size - half)]
-            } else {
-                let q = size >> 2;
-                vec![(0, q), (q, q), (2 * q, q), (3 * q, size - 3 * q)]
-            };
-            let mut new_size = 0usize;
-            let mut ok = true;
-            for (off, len) in parts {
-                let mut sub = vec![0u8; len + BLOCK_HEADER + 1024];
-                match compress_block(&buffer[off..off + len], len, &mut sub, sub_mode) {
-                    Ok(n) => {
-                        if BLOCK_HEADER + new_size + n > out.len() {
+        match super::rec::test(input, size) {
+            Some(rec_mode) => {
+                let mut buffer = vec![0u8; size + 1024];
+                super::rec::encode(input, size, &mut buffer, rec_mode);
+                let sub_mode = mode + DISABLE_DELTA_FLT;
+                // Modes 1 and 3 split in two, 2 and 4 in four, matching the record
+                // width the filter chose.
+                let parts: Vec<(usize, usize)> = if rec_mode.parts() == 2 {
+                    let half = size >> 1;
+                    vec![(0, half), (half, size - half)]
+                } else {
+                    let q = size >> 2;
+                    vec![(0, q), (q, q), (2 * q, q), (3 * q, size - 3 * q)]
+                };
+                let mut new_size = 0usize;
+                let mut ok = true;
+                for (off, len) in parts {
+                    let mut sub = vec![0u8; len + BLOCK_HEADER + 1024];
+                    match compress_block(&buffer[off..off + len], len, &mut sub, sub_mode) {
+                        Ok(n) => {
+                            if BLOCK_HEADER + new_size + n > out.len() {
+                                ok = false;
+                                break;
+                            }
+                            out[BLOCK_HEADER + new_size..BLOCK_HEADER + new_size + n]
+                                .copy_from_slice(&sub[..n]);
+                            new_size += n;
+                        }
+                        Err(_) => {
                             ok = false;
                             break;
                         }
-                        out[BLOCK_HEADER + new_size..BLOCK_HEADER + new_size + n]
-                            .copy_from_slice(&sub[..n]);
-                        new_size += n;
-                    }
-                    Err(_) => {
-                        ok = false;
-                        break;
                     }
                 }
+                if ok && new_size < size {
+                    put_word(out, 4, -2);
+                    // The mode NUMBER: this byte is the archive format, and the
+                    // decoder re-classifies it on the way back in.
+                    put_word(out, 8, rec_mode.to_i32());
+                    put_word(out, 16, new_size as i32);
+                    put_word(out, 20, 0);
+                    put_word(out, 24, 0);
+                    return Ok(new_size + BLOCK_HEADER);
+                }
+                return Ok(store_block(input, size, out, 0));
             }
-            if ok && new_size < size {
-                put_word(out, 4, -2);
-                // The mode NUMBER: this byte is the archive format, and the
-                // decoder re-classifies it on the way back in.
-                put_word(out, 8, rec_mode.to_i32());
-                put_word(out, 16, new_size as i32);
-                put_word(out, 20, 0);
-                put_word(out, 24, 0);
-                return Ok(new_size + BLOCK_HEADER);
-            }
-            return Ok(store_block(input, size, out, 0));
+            None => {}
         }
     }
 
@@ -374,8 +377,11 @@ pub fn compress_block(input: &[u8], size: usize, out: &mut [u8], mode: i32) -> R
             let mut lz = vec![0u8; size + 1024];
             let mml = ((mode / 65536) % 32767) as u32;
             let ht = (1u32 << ((mode / 256) % 256)) - 1;
-            if let Ok(n) = super::lzp::encode(&input[..size], &mut lz, mml, ht) {
-                return store_block(&lz, n, out, mode);
+            match super::lzp::encode(&input[..size], &mut lz, mml, ht) {
+                Ok(n) => {
+                    return store_block(&lz, n, out, mode);
+                }
+                Err(_) => {}
             }
         }
         store_block(input, size, out, 0)

@@ -177,8 +177,11 @@ impl<'a> OutputByteStream<'a> {
         if self.err.is_some() {
             return;
         }
-        if let Err(e) = self.io.write_all(&self.buf[..n]) {
-            self.err = Some(e);
+        match self.io.write_all(&self.buf[..n]) {
+            Err(e) => {
+                self.err = Some(e);
+            }
+            Ok(_) => {}
         }
     }
 }

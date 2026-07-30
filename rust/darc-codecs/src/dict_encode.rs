@@ -666,9 +666,12 @@ impl Encoder {
             if dict_is_two[i] {
                 continue;
             }
-            if let Some(k) = dict[i] {
-                let w = self.words[k];
-                out.extend_from_slice(&self.text[w.at..w.at + w.len as usize]);
+            match dict[i] {
+                Some(k) => {
+                    let w = self.words[k];
+                    out.extend_from_slice(&self.text[w.at..w.at + w.len as usize]);
+                }
+                None => {}
             }
         }
         // 4. separator, then the two-byte words minus their shared prefix
@@ -682,9 +685,12 @@ impl Encoder {
                         (Some(a), Some(b)) => self.common_prefix_length(a, b),
                         _ => 0,
                     };
-                    if let Some(k) = cur {
-                        let w = self.words[k];
-                        out.extend_from_slice(&self.text[w.at + n..w.at + w.len as usize]);
+                    match cur {
+                        Some(k) => {
+                            let w = self.words[k];
+                            out.extend_from_slice(&self.text[w.at + n..w.at + w.len as usize]);
+                        }
+                        None => {}
                     }
                     out.push(word_sep);
                     prev = cur;
@@ -767,8 +773,13 @@ impl Encoder {
                 let idx = (hash & self.hashmask) as usize;
                 if self.codewords[idx].len != 0 {
                     longest = Some(self.codewords[idx].clone());
-                } else if let Some(l) = &longest {
-                    self.codewords[idx] = l.clone();
+                } else {
+                    match &longest {
+                        Some(l) => {
+                            self.codewords[idx] = l.clone();
+                        }
+                        None => {}
+                    }
                 }
             }
             if abandoned {
@@ -837,20 +848,23 @@ impl Encoder {
         let mut out: Vec<u8> = Vec::new();
         let mut p = 0usize;
         while p < endbuf {
-            if let Some(w) = self.find_word(p, endbuf) {
-                out.push(w.chr);
-                if w.chr2 != RESERVED_CHAR {
-                    out.push(w.chr2);
+            match self.find_word(p, endbuf) {
+                Some(w) => {
+                    out.push(w.chr);
+                    if w.chr2 != RESERVED_CHAR {
+                        out.push(w.chr2);
+                    }
+                    p += w.len as usize;
                 }
-                p += w.len as usize;
-            } else {
-                let c = self.text[p];
-                p += 1;
-                // A character whose code was given away must be escaped.
-                if self.char_counts[c as usize] == 0 || c == self.prefix_for_weak_chars {
-                    out.push(self.prefix_for_weak_chars);
+                None => {
+                    let c = self.text[p];
+                    p += 1;
+                    // A character whose code was given away must be escaped.
+                    if self.char_counts[c as usize] == 0 || c == self.prefix_for_weak_chars {
+                        out.push(self.prefix_for_weak_chars);
+                    }
+                    out.push(c);
                 }
-                out.push(c);
             }
         }
         out

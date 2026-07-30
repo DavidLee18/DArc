@@ -194,13 +194,16 @@ fn compress_chunk(
                     Ok(true) => {}
                 }
                 // A slide moves every recorded position (:113-116).
-                if let Some(sh) = w.last_shift.take() {
-                    let _ = before;
-                    if find_tables {
-                        table_end = if table_end > sh { table_end - sh } else { 0 };
-                        last_found = if last_found > sh { last_found - sh } else { 0 };
+                match w.last_shift.take() {
+                    Some(sh) => {
+                        let _ = before;
+                        if find_tables {
+                            table_end = if table_end > sh { table_end - sh } else { 0 };
+                            last_found = if last_found > sh { last_found - sh } else { 0 };
+                        }
+                        last_checked.reset();
                     }
-                    last_checked.reset();
+                    None => {}
                 }
                 matchend = w.bufend - MAX_HASHED_BYTES.min(w.bufend);
             }
@@ -246,11 +249,17 @@ fn compress_chunk(
         }
     }
 
-    if let Some(e) = mf.error() {
-        return Err(e);
+    match mf.error() {
+        Some(e) => {
+            return Err(e);
+        }
+        None => {}
     }
-    if let Some(e) = coder.error() {
-        return Err(e);
+    match coder.error() {
+        Some(e) => {
+            return Err(e);
+        }
+        None => {}
     }
     // End of data (:209).
     coder.encode(IMPOSSIBLE_LEN, &w.buf, 0, i32::MAX / 2, minlen);
@@ -450,8 +459,11 @@ fn run<M: MatchFinder + 'static>(
     coder_kind: u32,
     all_at_once: bool,
 ) -> Result<(), c_int> {
-    if let Some(e) = mf.error() {
-        return Err(e);
+    match mf.error() {
+        Some(e) => {
+            return Err(e);
+        }
+        None => {}
     }
     compress_chunk(io, m, &mut mf, coder_kind, all_at_once)
 }

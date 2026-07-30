@@ -285,10 +285,14 @@ fn dict_roundtrips_text() {
         DICT_MIN_SMALL,
         DICT_MIN_RATIO,
     );
-    // Declining an input is legitimate; decoding it to the wrong bytes is not.
-    if let Ok(encoded) = encoded {
-        let out = dict::decode(&encoded, input.len() * 4 + 65_536)
-            .expect("dict::decode rejected dict_encode's own output");
-        assert_eq!(out, input);
+    match encoded {
+        Ok(encoded) => {
+            let out = dict::decode(&encoded, input.len() * 4 + 65_536)
+                .expect("dict::decode rejected dict_encode's own output");
+            assert_eq!(out, input);
+        }
+        // Declining an input is legitimate; decoding it to the wrong bytes is
+        // not. Spelled out rather than left implicit by an `if let`.
+        Err(_) => {}
     }
 }

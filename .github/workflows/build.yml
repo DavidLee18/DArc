@@ -761,6 +761,44 @@ jobs:
     - name: cargo clippy
       working-directory: rust
       run: cargo clippy --all-targets || true
+    # Totality gate, across the WHOLE Rust workspace -- darc-codecs and
+    # darc-crypto both. An exhaustive `match` with every arm named is preferred
+    # over `if let`, so a branch carrying archive or crypto behaviour has to be
+    # written down and cannot be silently absent -- that is the shape of the
+    # Tornado presets 7-11 bug (#102) and of the lz4hc `Strategy` fall-through
+    # this gate's own PR fixed.
+    #
+    # darc-crypto had zero `if let` when the gate was widened, so this costs
+    # nothing today and is purely about keeping it that way.
+    #
+    # This is a grep because clippy cannot express it. There is no lint that bans
+    # `if let`; the whole related family (`single_match`, `single_match_else`,
+    # `manual_let_else`, `option_if_let_else`) points from `match` TOWARDS
+    # `if let`, and `single_match` is warn-by-default, which is why the crate root
+    # allows it. Totality is `deny(clippy::wildcard_enum_match_arm)` -- no `_ =>`,
+    # so every arm is named -- plus this gate.
+    #
+    # `while let` and `let ... else` are deliberately NOT covered: the first is a
+    # loop's termination condition, and the second must diverge in its `else`, so
+    # both already write down what happens in the other case.
+    - name: no `if let` in the Rust workspace
+      run: |
+        set -uo pipefail
+        # -F for a literal match; the pattern must not be read as a regex.
+        # --exclude-dir=target keeps build artefacts and vendored crate sources
+        # out: `rust/target` contains third-party code this rule does not govern.
+        # The two -v filters drop comment lines: `//` after the file:line prefix,
+        # and `//!` module docs (the rule is documented in prose in lib.rs).
+        # Single quotes throughout -- backticks inside double quotes would be
+        # command substitution, and "if let" is not a command.
+        hits=$(grep -rnF 'if let ' rust --include='*.rs' --exclude-dir=target \
+                 | grep -Ev ':[0-9]+: *//' | grep -v '//!' || true)
+        if [ -n "$hits" ]; then
+          echo '::error::this workspace uses an exhaustive match, not if let. Offenders:'
+          echo "$hits"
+          exit 1
+        fi
+        echo 'no if let anywhere under rust/ (excluding target)'
 
   # ── Rust codec ports ────────────────────────────────────────────────────────
   # Two things are checked, and they are not the same thing:

@@ -99,8 +99,11 @@ pub fn compress_stream(io: &Io, params: Params) -> c_int {
                 (output.pos(), remaining)
             };
             if produced > 0 {
-                if let Err(e) = io.write_all(&out_buf[..produced]) {
-                    return e;
+                match io.write_all(&out_buf[..produced]) {
+                    Err(e) => {
+                        return e;
+                    }
+                    Ok(_) => {}
                 }
             }
             let drained = if end { remaining == 0 } else { input.pos() == got };
@@ -152,8 +155,11 @@ pub fn decompress_stream(io: &Io) -> c_int {
                 output.pos()
             };
             if produced > 0 {
-                if let Err(e) = io.write_all(&out_buf[..produced]) {
-                    return e;
+                match io.write_all(&out_buf[..produced]) {
+                    Err(e) => {
+                        return e;
+                    }
+                    Ok(_) => {}
                 }
             }
         }

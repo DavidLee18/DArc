@@ -236,8 +236,11 @@ pub fn compress(
             Ok(n) => n,
             Err(e) => return e,
         };
-        if let Err(e) = io.write_all(&outbuf[..n]) {
-            return e;
+        match io.write_all(&outbuf[..n]) {
+            Err(e) => {
+                return e;
+            }
+            Ok(_) => {}
         }
         if remainder > 0 {
             inbuf.copy_within(rem_pos..rem_pos + remainder, 0);

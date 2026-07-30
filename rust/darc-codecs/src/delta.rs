@@ -532,22 +532,33 @@ pub fn compress(io: &Io, block_size: u32, _extended_tables: c_int) -> c_int {
                             if !fast_check(&buf, n, p) {
                                 continue;
                             }
-                            if let Some((ts, te, ty)) = slow_check_for_data_table(
+                            match slow_check_for_data_table(
                                 &mut buf, n, p, last_table_end as isize, bufend, &mut scratch,
                             ) {
-                                tskip.extend_from_slice(&((ts - last_table_end) as u32).to_le_bytes());
-                                ttype.extend_from_slice(&ty.to_le_bytes());
-                                trows.extend_from_slice(&(((te - ts) / n) as u32).to_le_bytes());
-                                last_table_end = te;
-                                found_end = Some(te);
-                                break 'candidates;
+                                Some((ts, te, ty)) => {
+                                    tskip.extend_from_slice(
+                                        &((ts - last_table_end) as u32).to_le_bytes(),
+                                    );
+                                    ttype.extend_from_slice(&ty.to_le_bytes());
+                                    trows.extend_from_slice(
+                                        &(((te - ts) / n) as u32).to_le_bytes(),
+                                    );
+                                    last_table_end = te;
+                                    found_end = Some(te);
+                                    break 'candidates;
+                                }
+                                // No table at this candidate; try the next `p`.
+                                None => {}
                             }
                         }
                     }
                 }
-                if let Some(te) = found_end {
-                    ptr = core::cmp::max(ptr + LINE, te);
-                    continue;
+                match found_end {
+                    Some(te) => {
+                        ptr = core::cmp::max(ptr + LINE, te);
+                        continue;
+                    }
+                    None => {}
                 }
             }
             ptr += LINE;
