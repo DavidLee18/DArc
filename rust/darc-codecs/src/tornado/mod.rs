@@ -66,6 +66,57 @@ pub const BITCODER: u32 = 2;
 pub const HUFCODER: u32 = 3;
 pub const ARICODER: u32 = 4;
 
+/// The entropy back-end, as stored in the stream header's first byte.
+///
+/// Four variants and no `Storing`, deliberately. `STORING` (0) is a value the
+/// encoder *writes* -- the C's dispatch chain builds an `LZ77_ByteCoder` for it
+/// while still emitting 0 as the method (`Tornado.cpp:331-333`) -- but no decoder
+/// accepts it: the C's own switch rejects STORING with `BAD_COMPRESSED_DATA`
+/// (`:522`). So STORING is not a back-end, it is a value that fails to name one,
+/// which is `None` from [`Coder::from_stream`].
+///
+/// The gain over the bare `u32` constants is narrow but real: both dispatch sites
+/// already handled an unknown method correctly (`Err(BAD)` decoding, `None` from
+/// `DynamicCoder::new`), so nothing was silently wrong -- but a *newly added*
+/// coder would have been silently rejected by those catch-alls instead of failing
+/// to compile.
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub enum Coder {
+    /// `BYTECODER`
+    Byte,
+    /// `BITCODER`
+    Bit,
+    /// `HUFCODER`
+    Huf,
+    /// `ARICODER`
+    Ari,
+}
+
+impl Coder {
+    /// Classify a method byte. `None` for `STORING` and for anything above
+    /// `ARICODER` -- both of which callers turn into the error the C returns.
+    pub fn from_stream(method: u32) -> Option<Coder> {
+        match method {
+            BYTECODER => Some(Coder::Byte),
+            BITCODER => Some(Coder::Bit),
+            HUFCODER => Some(Coder::Huf),
+            ARICODER => Some(Coder::Ari),
+            _ => None,
+        }
+    }
+
+    /// The method byte. Note the header is written from `m.encoding_method`, not
+    /// from this -- see the note at `encode.rs`'s `coder_kind`.
+    pub fn to_u32(self) -> u32 {
+        match self {
+            Coder::Byte => BYTECODER,
+            Coder::Bit => BITCODER,
+            Coder::Huf => HUFCODER,
+            Coder::Ari => ARICODER,
+        }
+    }
+}
+
 /// Code-space layout for the Huffman/arith back-ends (LZ77_Coder.cpp:388-398).
 pub const REPDIST_CODES: usize = 4;
 pub const DIST_CODES: usize = vle::EXTRA_DBITS.len() + REPDIST_CODES; // 36

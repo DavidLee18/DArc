@@ -17,7 +17,7 @@ use super::lz77::BitDecoder;
 use super::range::ArithDecoder;
 use super::stream::{InputBitStream, InputByteStream, BAD};
 use super::tables::DataTables;
-use super::{ARICODER, BITCODER, BYTECODER, HUFCODER, PAD_FOR_TABLES};
+use super::{Coder, PAD_FOR_TABLES};
 use crate::ffi::{Io, OK};
 use core::ffi::c_int;
 
@@ -241,15 +241,19 @@ fn run(io: &Io) -> Result<(), c_int> {
     }
     // The header stream has already buffered part of the payload, so the
     // back-end must continue from it rather than opening a second one.
-    match method {
-        BYTECODER => decompress0(io, ByteDecoder::new(hdr), bufsize, minlen),
-        BITCODER => decompress0(io, BitDecoder::new(InputBitStream::from_bytes(hdr)), bufsize, minlen),
-        HUFCODER => {
+    match Coder::from_stream(method) {
+        Some(Coder::Byte) => decompress0(io, ByteDecoder::new(hdr), bufsize, minlen),
+        Some(Coder::Bit) => {
+            decompress0(io, BitDecoder::new(InputBitStream::from_bytes(hdr)), bufsize, minlen)
+        }
+        Some(Coder::Huf) => {
             decompress0(io, GenericDecoder::new(HufBackend::new(InputBitStream::from_bytes(hdr))), bufsize, minlen)
         }
-        ARICODER => {
+        Some(Coder::Ari) => {
             decompress0(io, GenericDecoder::new(ArithDecoder::new(hdr, super::CODES)), bufsize, minlen)
         }
-        _ => Err(BAD),
+        // STORING, and anything above ARICODER. The C rejects STORING here too
+        // (`Tornado.cpp:522`) even though its encoder emits it.
+        None => Err(BAD),
     }
 }
