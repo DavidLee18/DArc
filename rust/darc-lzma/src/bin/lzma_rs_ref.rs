@@ -36,9 +36,12 @@ fn main() {
     }
 
     let mut input = Vec::new();
-    if let Err(e) = std::io::stdin().read_to_end(&mut input) {
-        eprintln!("reading stdin: {e}");
-        std::process::exit(1);
+    match std::io::stdin().read_to_end(&mut input) {
+        Ok(_) => {}
+        Err(e) => {
+            eprintln!("reading stdin: {e}");
+            std::process::exit(1);
+        }
     }
 
     // DArc passes mc = 0 meaning "auto" and lets the SDK derive it; this crate
@@ -56,8 +59,11 @@ fn main() {
     // (unknown size)". Matching it is the point of this driver.
     let props = darc_lzma::LzmaProps { lc, lp, pb, dict_size, fb, mc, write_end_mark: true };
     let out = darc_lzma::encode(&input, &props);
-    if let Err(e) = std::io::stdout().write_all(&out) {
-        eprintln!("writing stdout: {e}");
-        std::process::exit(1);
+    match std::io::stdout().write_all(&out) {
+        Ok(()) => {}
+        Err(e) => {
+            eprintln!("writing stdout: {e}");
+            std::process::exit(1);
+        }
     }
 }

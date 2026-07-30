@@ -954,6 +954,14 @@ jobs:
         # byte-identical to the C for every level DArc can select (1-9), and
         # decodes each block with the C decoder rather than lz4_flex.
         rust/difftest/lz4hc-check.sh
+        # rust/darc-lzma is NOT wired into the archiver -- it cannot be yet: it is
+        # in-memory where DArc's LZMA is callback-driven, and implements BT4 alone
+        # of the five match finders C_LZMA.cpp accepts. What this harness pins is
+        # the property that makes the rest of that port worth doing: its encoder is
+        # byte-identical to DArc's C over the corpus (88/88), so the optimal parser
+        # does not have to be re-derived. Without this in CI, that could regress
+        # silently while the remaining work is in progress.
+        rust/difftest/lzma-gap-check.sh
 
   # Debug profile, on purpose. Every other codec job builds --release, where
   # `debug_assert!` compiles to nothing -- so the crate's 19 assertions are dead
