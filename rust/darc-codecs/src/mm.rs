@@ -64,6 +64,43 @@ const GENERAL: c_int = FREEARC_ERRCODE_GENERAL as c_int;
 /// and the decoder must ask for exactly the same amount.
 const BUFFER_SIZE: usize = 64 << 10;
 
+/// Bytes per channel word, as MM's differencing filters understand it.
+///
+/// Derived from the header's `word_size` byte -- `(word_size + 7) / 8` -- so it
+/// spans **0..=32**, not 1..=4: `word_size` is a single header byte, so a crafted
+/// stream can ask for any width. Only 1..=4 name a filter, and the C's
+/// `switch (byte_size)` has cases 1-4 and NO default (`mm.cpp:207` encoding,
+/// `:311` decoding), so every other width passes the data through unchanged.
+///
+/// `Option<WordBytes>` rather than a fifth `Unknown` variant, for the reason
+/// settled in #107: "not a filtered width" is a parse outcome, not a width, and
+/// an `Unknown` variant would be dead on any path that computes the value itself.
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+enum WordBytes {
+    /// 8-bit samples.
+    One,
+    /// 16-bit.
+    Two,
+    /// 24-bit, whose base stride is 4 rather than 3 -- see `base_stride`.
+    Three,
+    /// 32-bit.
+    Four,
+}
+
+impl WordBytes {
+    /// Classify a `byte_size`. `None` means no filter applies, which is the C's
+    /// fall-through rather than an error.
+    fn from_byte_size(n: usize) -> Option<WordBytes> {
+        match n {
+            1 => Some(WordBytes::One),
+            2 => Some(WordBytes::Two),
+            3 => Some(WordBytes::Three),
+            4 => Some(WordBytes::Four),
+            _ => None,
+        }
+    }
+}
+
 /// The largest reorder block the encoder can emit: `BUFSIZE` in `mm.cpp`, the
 /// size of its first read. Bounds the buffer growth in the reorder path so a
 /// declared length cannot choose the allocation size.
@@ -435,14 +472,16 @@ fn run(io: &Io) -> Result<(), c_int> {
         if reorder {
             unreorder_bytes(data, num_chan, byte_size);
         }
-        match byte_size {
-            1 => undiff1(data, num_chan, &mut base),
-            2 => undiff2(data, num_chan, &mut base),
-            3 => undiff3(data, num_chan, &mut base),
-            4 => undiff4(data, num_chan, &mut base),
-            // No filter exists for 0 or for words wider than 32 bits; C's
-            // `switch` has no default either, so the data passes through.
-            _ => {}
+        match WordBytes::from_byte_size(byte_size) {
+            Some(WordBytes::One) => undiff1(data, num_chan, &mut base),
+            Some(WordBytes::Two) => undiff2(data, num_chan, &mut base),
+            Some(WordBytes::Three) => undiff3(data, num_chan, &mut base),
+            Some(WordBytes::Four) => undiff4(data, num_chan, &mut base),
+            // No filter exists for 0, or for words wider than 32 bits. The C's
+            // `switch` (mm.cpp:311) has no default either, so the data passes
+            // through. `byte_size` derives from a header byte, so a crafted
+            // stream reaches this: it must stay a quiet no-op, not a panic.
+            None => {}
         }
         write_out(io, data)?;
     }
@@ -622,17 +661,19 @@ fn encode(
     loop {
         {
             let data = &mut buf[ptr..ptr + blk];
-            match byte_size {
-                1 => diff1(data, chan, &mut base),
-                2 => diff2(data, chan, &mut base),
-                3 => diff3(data, chan, &mut base),
-                4 => diff4(data, chan, &mut base),
+            match WordBytes::from_byte_size(byte_size) {
+                Some(WordBytes::One) => diff1(data, chan, &mut base),
+                Some(WordBytes::Two) => diff2(data, chan, &mut base),
+                Some(WordBytes::Three) => diff3(data, chan, &mut base),
+                Some(WordBytes::Four) => diff4(data, chan, &mut base),
                 // Verified against the pinned C: `switch (byte_size)` has cases
-                // 1-4 and NO default (MM/tta.cpp:133, :183), so a value outside
-                // 1..=4 passes through unchanged there too. Documented rather than
-                // turned into `unreachable!()` because the fall-through is the C's
-                // behaviour, not an impossibility.
-                _ => {}
+                // 1-4 and NO default at `mm.cpp:207`, so a width outside 1..=4
+                // passes through unchanged there too.
+                //
+                // (An earlier revision of this comment cited MM/tta.cpp:133,:183.
+                // Those are TTA's switches, which document tta.rs; MM's own are in
+                // mm.cpp.)
+                None => {}
             }
             // reorder_words (:r2) is not resurrected: the C is `return buf;`.
             if n != 0 && reorder == 1 {
@@ -708,6 +749,37 @@ pub fn compress(
 
 #[cfg(test)]
 mod diff_tests {
+    /// `byte_size` is `(word_size + 7) / 8` over a header BYTE, so it spans
+    /// 0..=32 and nothing validates it down to 1..=4.
+    ///
+    /// The *behaviour* of the unclassified widths is already covered, by
+    /// `tests/mm.rs`'s `zero_word_size_copies_through_as_c_does` and
+    /// `oversized_word_size_copies_through` -- both fail if the `None` arm is
+    /// given work to do, which I checked rather than assumed. What this adds is
+    /// the mapping itself: that 1..=4 and *only* 1..=4 classify, out to
+    /// `usize::MAX`, which no stream-level test pins.
+    ///
+    /// Worth knowing: `mm-check.sh` reaches none of this. It builds only streams
+    /// an encoder would emit, so `byte_size` is always 1..=4 there.
+    #[test]
+    fn word_bytes_classifies_only_the_four_filtered_widths() {
+        use super::WordBytes;
+        assert_eq!(WordBytes::from_byte_size(1), Some(WordBytes::One));
+        assert_eq!(WordBytes::from_byte_size(2), Some(WordBytes::Two));
+        assert_eq!(WordBytes::from_byte_size(3), Some(WordBytes::Three));
+        assert_eq!(WordBytes::from_byte_size(4), Some(WordBytes::Four));
+        // 0 is `word_size == 0`; 5..=32 are the wider words a crafted header can
+        // declare. Both are plain-copy territory in the C, which has no default.
+        assert_eq!(WordBytes::from_byte_size(0), None);
+        for n in 5..=32 {
+            assert_eq!(WordBytes::from_byte_size(n), None, "byte_size {n}");
+        }
+        // And well past anything a header can produce, so the guard is total.
+        for n in [33usize, 64, 255, usize::MAX] {
+            assert_eq!(WordBytes::from_byte_size(n), None, "byte_size {n}");
+        }
+    }
+
     use super::*;
 
     /// diff then undiff must be the identity for every width and channel count,
