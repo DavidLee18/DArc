@@ -25,7 +25,7 @@ use super::huffman::HuffmanEncoder;
 use super::out_stream::{OutputBitStream, OutputByteStream};
 use super::range::ArithEncoder;
 use super::vle::Tables;
-use super::{CODES, EOB_CODE, LEN_CODES, REPCHAR, REPDIST_CODES};
+use super::{Coder, CODES, EOB_CODE, LEN_CODES, REPCHAR, REPDIST_CODES};
 use crate::ffi::Io;
 use core::ffi::c_int;
 
@@ -475,22 +475,21 @@ pub enum DynamicCoder<'a> {
 }
 
 impl<'a> DynamicCoder<'a> {
-    /// `coder` is the `encoding_method`; 1..4 are BYTECODER..ARICODER. STORING
-    /// never reaches here, and the C's switch silently does nothing for anything
-    /// else, so an unknown method is reported rather than ignored.
-    pub fn new(coder: u32, io: &'a Io, chunk: usize, pad: usize) -> Option<Self> {
-        Some(match coder {
-            super::BYTECODER => DynamicCoder::Byte(ByteCoder::new(io, chunk, pad)),
-            super::BITCODER => DynamicCoder::Bit(BitCoder::new(io, chunk, pad)),
-            super::HUFCODER => {
-                DynamicCoder::Huf(GenericEncoder::new(HufBackend::new(io, chunk, pad)))
-            }
-            super::ARICODER => DynamicCoder::Ari(GenericEncoder::new(ArithEncoder::new(
+    /// Takes a classified [`Coder`], so there is no failure case left: STORING and
+    /// unknown methods are rejected by `Coder::from_stream` at the boundary, which
+    /// is where the C reports them too. This used to take a `u32` and return
+    /// `Option`, whose `None` arm a newly added coder would have fallen into
+    /// silently.
+    pub fn new(coder: Coder, io: &'a Io, chunk: usize, pad: usize) -> Self {
+        match coder {
+            Coder::Byte => DynamicCoder::Byte(ByteCoder::new(io, chunk, pad)),
+            Coder::Bit => DynamicCoder::Bit(BitCoder::new(io, chunk, pad)),
+            Coder::Huf => DynamicCoder::Huf(GenericEncoder::new(HufBackend::new(io, chunk, pad))),
+            Coder::Ari => DynamicCoder::Ari(GenericEncoder::new(ArithEncoder::new(
                 OutputByteStream::new(io, chunk, pad),
                 CODES,
             ))),
-            _ => return None,
-        })
+        }
     }
 
     fn inner(&mut self) -> &mut dyn Lz77Encoder {

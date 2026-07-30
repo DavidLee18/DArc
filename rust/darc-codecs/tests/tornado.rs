@@ -195,6 +195,7 @@ fn a_write_error_is_propagated_not_ignored() {
 
 use darc_codecs::ffi::Io as EncIo;
 use darc_codecs::tornado::lz77_enc::{DynamicCoder, Lz77Encoder, IMPOSSIBLE_LEN};
+use darc_codecs::tornado::Coder;
 
 /// `IMPOSSIBLE_DIST` (LZ77_Coder.cpp:8).
 const IMPOSSIBLE_DIST: i32 = i32::MAX / 2;
@@ -233,8 +234,12 @@ fn encode_tokens(method: u32, minlen: i32, bufsize: u32, tokens: &[Token]) -> Ve
     {
         let io = unsafe { EncIo::new(Some(mem_callback), &mut mem as *mut Mem as *mut c_void) }
             .expect("callback was not null");
-        let mut coder =
-            DynamicCoder::new(method, &io, 1 << 16, 1 << 16).expect("known encoding method");
+        // `DynamicCoder::new` takes a classified `Coder` now, so the "unknown
+        // method" case cannot be expressed here at all -- it is rejected by
+        // `Coder::from_stream` at the boundary. Callers of this helper pass a
+        // real back-end; `expect` documents that rather than guarding it.
+        let coder_kind = Coder::from_stream(method).expect("known encoding method");
+        let mut coder = DynamicCoder::new(coder_kind, &io, 1 << 16, 1 << 16);
 
         // Tornado.cpp:154 -- method, minimum match length, window size.
         coder.put8(method);

@@ -37,7 +37,7 @@ use super::matchfinder::{
     CachingMatchFinder, CombineMF, CycledCachingMatchFinder, ExactMatchFinder, Hash3,
     LazyMatching, MatchFinder, MatchFinder1, MatchFinder2, MAX_HASHED_BYTES,
 };
-use super::{ARICODER, BITCODER, BYTECODER, HUFCODER, STORING};
+use super::{Coder, ARICODER, BITCODER, BYTECODER, HUFCODER, STORING};
 use crate::ffi::{Io, FREEARC_ERRCODE_GENERAL};
 use core::ffi::c_int;
 
@@ -106,7 +106,7 @@ fn compress_chunk(
     io: &Io,
     m: &PackMethod,
     mf: &mut dyn MatchFinder,
-    coder_kind: u32,
+    coder_kind: Coder,
     all_at_once: bool,
 ) -> Result<(), c_int> {
     let bufsize = m.buffer as usize;
@@ -156,8 +156,7 @@ fn compress_chunk(
     // still writing 0 as the encoding method (:331-333). The resulting stream is
     // one no decoder accepts -- the C's own switch rejects STORING with
     // BAD_COMPRESSED_DATA (:522) -- but that is what the C produces.
-    let mut coder = DynamicCoder::new(coder_kind, io, outbuf_size(bufsize, all_at_once), chunk * 2)
-        .ok_or(FREEARC_ERRCODE_GENERAL)?;
+    let mut coder = DynamicCoder::new(coder_kind, io, outbuf_size(bufsize, all_at_once), chunk * 2);
 
     // Six-byte header (:154).
     coder.put8(m.encoding_method as u32);
@@ -366,13 +365,13 @@ pub fn compress(mut m: PackMethod, io: &Io, all_at_once: bool) -> c_int {
 
     let r = if (e == BYTECODER && row == 1 && plain) || e == STORING {
         // (:331) LZ77_ByteCoder either way -- STORING included.
-        run(io, &m, MatchFinder1::new(m.hashsize, row), BYTECODER, all_at_once)
+        run(io, &m, MatchFinder1::new(m.hashsize, row), Coder::Byte, all_at_once)
     } else if e == BITCODER && row == 1 && plain {
         // (:334)
-        run(io, &m, MatchFinder1::new(m.hashsize, row), BITCODER, all_at_once)
+        run(io, &m, MatchFinder1::new(m.hashsize, row), Coder::Bit, all_at_once)
     } else if e == HUFCODER && row == 2 && plain {
         // (:336)
-        run(io, &m, MatchFinder2::new(m.hashsize, row), HUFCODER, all_at_once)
+        run(io, &m, MatchFinder2::new(m.hashsize, row), Coder::Huf, all_at_once)
     } else if e == HUFCODER
         && row >= 2
         && m.hash3 == 0
@@ -381,7 +380,7 @@ pub fn compress(mut m: PackMethod, io: &Io, all_at_once: bool) -> c_int {
     {
         // (:338) CachingMatchFinder<4>. The condition tests `m.caching_finder`
         // for truth, not for 1.
-        run(io, &m, CachingMatchFinder::new(4, m.hashsize, row), HUFCODER, all_at_once)
+        run(io, &m, CachingMatchFinder::new(4, m.hashsize, row), Coder::Huf, all_at_once)
     } else if (e == ARICODER || e == HUFCODER)
         && row >= 2
         && m.hash3 == 1
@@ -401,7 +400,13 @@ pub fn compress(mut m: PackMethod, io: &Io, all_at_once: bool) -> c_int {
             10,
             false,
         ));
-        run(io, &m, mf, e, all_at_once)
+        // `e` is the preset's encoding_method, so it can in principle be STORING
+        // or out of range; that used to surface as `DynamicCoder::new` returning
+        // None. Same error, decided one step earlier.
+        match Coder::from_stream(e) {
+            Some(c) => run(io, &m, mf, c, all_at_once),
+            None => Err(FREEARC_ERRCODE_GENERAL),
+        }
     } else if row >= 2 && m.hash3 == 2 && m.match_parser == LAZY_ON && (5..=7).contains(&m.caching_finder)
     {
         // (:347), (:351) and (:354): three arms differing only in the cycled
@@ -434,7 +439,13 @@ pub fn compress(mut m: PackMethod, io: &Io, all_at_once: bool) -> c_int {
             CycledCachingMatchFinder::new(n, m.hashsize, row),
             aux,
         ));
-        run(io, &m, mf, e, all_at_once)
+        // `e` is the preset's encoding_method, so it can in principle be STORING
+        // or out of range; that used to surface as `DynamicCoder::new` returning
+        // None. Same error, decided one step earlier.
+        match Coder::from_stream(e) {
+            Some(c) => run(io, &m, mf, c, all_at_once),
+            None => Err(FREEARC_ERRCODE_GENERAL),
+        }
     } else {
         // The remaining instantiations need the cycled caching finder, the
         // exact finder and CombineMF, or the data-table detector, none of
@@ -456,7 +467,7 @@ fn run<M: MatchFinder + 'static>(
     io: &Io,
     m: &PackMethod,
     mut mf: M,
-    coder_kind: u32,
+    coder_kind: Coder,
     all_at_once: bool,
 ) -> Result<(), c_int> {
     match mf.error() {
