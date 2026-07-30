@@ -34,9 +34,12 @@ mod encoder;
 #[cfg(any(test, feature = "decode"))]
 mod decoder;
 
+pub mod decode_stream;
+
 #[cfg(test)]
 mod roundtrip_tests;
 
+pub use decode_stream::{Decoder, DecodeSummary, Finish, LzmaDecProps, LzmaDecodeError};
 pub use props::{LzmaProps, MatchFinderKind};
 pub use stream::{ERR_UNSUPPORTED, InStream, OutStream, SliceIn, StreamError, VecOut};
 

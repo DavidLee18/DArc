@@ -257,10 +257,21 @@ LZMA_METHOD::LZMA_METHOD()
   litPosBits        = 0;
 }
 
+#ifdef DARC_RUST
+// The Rust decoder in rust/darc-lzma/src/decode_stream.rs. Same 11-argument ABI as
+// lzma_decompress, so the LoadFromDLL override below still works unchanged.
+extern "C" int darc_lzma_decompress (int, int, int, int, int, int, int, int, int,
+                                     CALLBACK_FUNC*, void*);
+#endif
+
 int LZMA_METHOD::decompress (CALLBACK_FUNC *callback, void *auxdata)
 {
   static FARPROC f = LoadFromDLL ("lzma_decompress");
+#ifdef DARC_RUST
+  if (!f) f = (FARPROC) darc_lzma_decompress;
+#else
   if (!f) f = (FARPROC) lzma_decompress;
+#endif
   return ((int (*)(int,int,int,int,int,int,int,int,int, CALLBACK_FUNC*, void*)) f)
            (dictionarySize, hashSize, algorithm, numFastBytes, matchFinder,
             matchFinderCycles, posStateBits, litContextBits, litPosBits,

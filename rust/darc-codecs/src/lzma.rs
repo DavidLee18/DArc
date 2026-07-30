@@ -151,3 +151,111 @@ pub unsafe extern "C" fn darc_lzma_compress(
         Err(StreamError(code)) => code,
     }
 }
+
+/// Decode via [`darc_lzma`]'s hardened decoder.
+///
+/// Signature mirrors the C's `lzma_decompress` (`C_LZMA.cpp:145`) so the wrapper can
+/// forward its parameters unchanged. Only four of the nine are read on this path --
+/// `encode_props` (`C_LZMA.cpp:135-143`) builds the five decoder property bytes from
+/// `dictionarySize`, `posStateBits`, `litContextBits` and `litPosBits`, and the rest
+/// are encoder knobs the stream does not depend on. `algorithm` in particular has no
+/// effect here: the parser choice is invisible to a decoder.
+///
+/// # Safety
+///
+/// `callback` must be a valid `CALLBACK_FUNC` and `auxdata` whatever it expects.
+#[no_mangle]
+pub unsafe extern "C" fn darc_lzma_decompress(
+    dictionary_size: c_int,
+    _hash_size: c_int,
+    _algorithm: c_int,
+    _num_fast_bytes: c_int,
+    _match_finder: c_int,
+    _match_finder_cycles: c_int,
+    pos_state_bits: c_int,
+    lit_context_bits: c_int,
+    lit_pos_bits: c_int,
+    callback: crate::ffi::CALLBACK_FUNC,
+    auxdata: *mut c_void,
+) -> c_int {
+    // A panic firewall, and this entry point is where it matters most. Everything
+    // below parses bytes an attacker wrote, and `unarc` plus every SFX module link
+    // this and are compiled `-D_NO_EXCEPTIONS` -- an unwind out of an `extern "C"`
+    // frame there is undefined behaviour. The decoder is written not to panic
+    // (rust/darc-lzma/src/decode_stream.rs bounds-checks every read), so reaching
+    // this handler is a bug; it exists so that the bug is an error code rather than
+    // a corrupted process.
+    let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        // SAFETY: the caller's contract, forwarded unchanged.
+        unsafe {
+            decompress_inner(
+            dictionary_size,
+            pos_state_bits,
+            lit_context_bits,
+            lit_pos_bits,
+            callback,
+            auxdata,
+        )
+        }
+    }));
+    match result {
+        Ok(code) => code,
+        Err(_) => crate::ffi::FREEARC_ERRCODE_GENERAL,
+    }
+}
+
+/// # Safety
+///
+/// Same contract as the caller: `callback` valid, `auxdata` whatever it expects.
+unsafe fn decompress_inner(
+    dictionary_size: c_int,
+    pos_state_bits: c_int,
+    lit_context_bits: c_int,
+    lit_pos_bits: c_int,
+    callback: crate::ffi::CALLBACK_FUNC,
+    auxdata: *mut c_void,
+) -> c_int {
+    // `encode_props` (C_LZMA.cpp:135-143), including its `(Byte)` truncation: an
+    // out-of-range pb/lc/lp from a method string wraps here exactly as it does in
+    // the C, and is then REJECTED by the props validation rather than indexing a
+    // table with it.
+    let byte0 = ((pos_state_bits as u32)
+        .wrapping_mul(5)
+        .wrapping_add(lit_pos_bits as u32)
+        .wrapping_mul(9)
+        .wrapping_add(lit_context_bits as u32)) as u8;
+    let d = dictionary_size as u32;
+    let props = [
+        byte0,
+        d as u8,
+        (d >> 8) as u8,
+        (d >> 16) as u8,
+        (d >> 24) as u8,
+    ];
+
+    let io = match crate::ffi::Io::new(callback, auxdata) {
+        Some(io) => io,
+        None => return FREEARC_ERRCODE_NOT_IMPLEMENTED,
+    };
+    let mut source = CallbackIn { io: &io };
+    let mut sink = CallbackOut { io: &io };
+
+    match darc_lzma::decode_stream::decode_stream(&mut source, &mut sink, &props) {
+        Ok(_) => OK,
+        // The mapping the C uses, one arm each: C_LZMA.cpp:163-166 turns a bad props
+        // byte into INVALID_COMPRESSOR, :203/:219/:224 turn corrupt or truncated
+        // data into BAD_COMPRESSED_DATA, and a callback error is returned verbatim.
+        Err(darc_lzma::LzmaDecodeError::UnsupportedProps) => {
+            crate::ffi::FREEARC_ERRCODE_INVALID_COMPRESSOR
+        }
+        Err(darc_lzma::LzmaDecodeError::DataError)
+        | Err(darc_lzma::LzmaDecodeError::TruncatedInput) => {
+            crate::ffi::FREEARC_ERRCODE_BAD_COMPRESSED_DATA
+        }
+        Err(darc_lzma::LzmaDecodeError::NotEnoughMemory) => {
+            crate::ffi::FREEARC_ERRCODE_NOT_ENOUGH_MEMORY
+        }
+        Err(darc_lzma::LzmaDecodeError::Stream(darc_lzma::StreamError(code))) => code,
+        Err(darc_lzma::LzmaDecodeError::Internal) => crate::ffi::FREEARC_ERRCODE_GENERAL,
+    }
+}
