@@ -37,8 +37,10 @@ done
 ```
 
 `5c2c6ce` is the pinned C-reference SHA, the last revision holding the full C
-codec set, so the difference is what the port has removed since. At `0159485`
-that was 104,052 → 65,061, i.e. **38,991 lines**.
+codec set, so the difference is what the port has removed since. At `7a054bd`
+that is 104,052 → 61,338, i.e. **42,714 lines**. (It read 38,991 at `0159485`;
+the figure is a moving target, which is why the command above is the answer and
+this sentence is only an illustration.)
 
 The old claim that everything unpruned "is still present because `Unarc/` still
 builds them" is no longer a reason for anything: `Unarc/makefile` links
@@ -133,10 +135,34 @@ a formality.
 
 ### Branch state
 
-`main` = `0159485` (PR #96 merged), post-merge CI green. Recent landings:
-#86-#92 the BSC encoder ported stage by stage, #93 the vendored libbsc deleted,
-#94 PPMd ported, #95 every difftest oracle rebuilt with its codec makefile's
-flags, #96 `-mppmd` routed through Rust and the C engine deleted.
+`main` = `7a054bd` (PR #111 merged), post-merge CI green.
+
+**Do not trust a hand-written SHA here for long.** This section was stale by
+fourteen PRs once, while the codec table above had been kept current -- which is
+worse than uniform staleness, because a reader cannot tell which half to believe.
+Check with `git log --oneline origin/main -1`.
+
+Recent landings, newest first:
+
+* **#105, #106/#107, #109, #110, #111** item 4: mode bytes modelled as types, one
+  codec per PR -- DisPack, GRZip, MM, TTA, Tornado. See section 10b.
+* **#108** no `if let` anywhere in the Rust workspace; totality enforced by
+  `deny(clippy::wildcard_enum_match_arm)` plus a CI grep. See section 10c.
+* **#103, #104** crate-level lint gates, and the eleven `_ => {}` catch-all arms
+  resolved against the pinned C.
+* **#102** Tornado presets 7-11 diverged: `Hash3` implemented `update_hash1`
+  only inherently, so `CombineMF`'s `Box<dyn MatchFinder>` reached the trait
+  default -- a `debug_assert!` that compiles out in release.
+* **#99** Dict/LZP reported Unarc's stop signal as an I/O error, so every `-m9`
+  archive containing text was unreadable by the standalone extractor and every
+  SFX module.
+* **#97, #98** the GRZip and MM/TTA C engines deleted (3,700 lines).
+* **#100, #101** `dict-check.sh` written (Dict had no difftest at all) and
+  `grzip-stage-check.sh` wired into CI (it had never run).
+
+Earlier: #86-#92 the BSC encoder ported stage by stage, #93 the vendored libbsc
+deleted, #94 PPMd ported, #95 every difftest oracle rebuilt with its codec
+makefile's flags, #96 `-mppmd` routed through Rust and the C engine deleted.
 
 Earlier: #71 Delta/Dict/REP deleted, #72 LZ4-HC ported and `Compression/LZ4`'s C
 deleted, #73 the `lz4opt` optimal parser (LZ4 now byte-identical to the C at all
@@ -146,6 +172,61 @@ Prior landmarks: `588522d` (PR #66: LZ4 + zstd wired, Rust codecs
 cross-compiling for both Windows targets, every action SHA-pinned, Rust
 toolchain pinned, CI caching); `5c2c6ce` is the pinned C-reference SHA
 (`DARC_C_REF_SHA`), the last revision holding the full C codec set.
+
+### How much of the port is actually closed
+
+Measured at `7a054bd` against `5c2c6ce`, the pinned reference holding the full C
+codec set. Regenerate rather than trusting these:
+
+```bash
+for rev in 5c2c6ce HEAD; do
+  git ls-tree -r --name-only $rev | rg '\.(c|cpp|h|hpp)$' \
+    | while read -r f; do git show "$rev:$f" | wc -l; done \
+    | awk -v r=$rev '{s+=$1} END {print r, s}'
+done
+```
+
+| | pinned `5c2c6ce` | `7a054bd` | change |
+|---|---|---|---|
+| C/C++ under `Compression/` | 104,052 | 61,338 | **−42,714 (−41%)** |
+| C/C++ whole repo | 143,739 | 102,608 | −41,131 (−29%) |
+| Haskell | 20,262 | 20,265 | **+3 (untouched)** |
+| Rust | 16,285 | 33,481 | +17,196 |
+
+**Read that carefully before calling the port "41% done".** The remaining 61,338
+lines under `Compression/` are dominated by code nobody intends to port:
+
+| lines | what | status |
+|---|---|---|
+| 25,391 | `LZMA` | 7-Zip SDK, kept pristine by decision -- and the default method |
+| 13,789 | `7z` | 7-Zip SDK for `.7z` reading, kept |
+| 10,050 | `_Encryption` | vendored LibTomCrypt -- see below, it is NOT dead |
+| 3,168 | `SREP` | external tool; section 14 before touching the encoder |
+| 2,329 | top level | `CompressionLibrary.cpp` and the dispatcher |
+| 709 | `4x4` | not ported by decision (section 10), and NOT dead code |
+| ~4,000 | everything else | thin `C_*.cpp` wrappers for ported codecs, plus `mmdet.cpp` |
+
+LZMA + 7z alone are 39,180 lines -- **64% of what is left** -- and both stay. So
+the codec *engines* are essentially done; what remains in `Compression/` is
+vendored SDKs, external tools, and the thin entry-point layer that can only go
+when the Haskell side does.
+
+**The honest summary: the codecs are done, the application layer has not been
+started.** 20,265 lines of Haskell are within 3 lines of where they were. By any
+line-count measure that is the majority of the remaining work, and it is at
+roughly zero percent. Outside `Compression/` the C/C++ is `HsLua` 16,338
+(vendored Lua, kept), `srep` 12,907 (vendored tool), `Unarc` 5,389 (the second,
+independent archive reader), `rust/` 3,887 (difftest drivers, deliberately C) and
+2,677 at the root (`Environment.cpp` and friends).
+
+**`_Encryption` looks prunable and is not.** `C_Encryption.cpp` routes entirely to
+`darc-crypto` under `DARC_RUST`, and the `#ifndef DARC_RUST` fallbacks are gone --
+so the 10,050 lines of LibTomCrypt read as dead. They are not: `fortuna_start` and
+`sha512_init` are still referenced from `Compression/EncryptionLib.hs`,
+`Compression/EncryptionFFI.h` and **`Compression/SREP/hashes.cpp`**. SREP's
+hashing is the real blocker; the Haskell FFI declarations need checking for
+whether they are live or vestigial. Do not delete on the strength of the routing
+alone -- see section 4's note about `mmdet.cpp`, which nearly went the same way.
 
 ### Scale, so effort goes where the code is
 
@@ -286,11 +367,14 @@ binaries differ, and all 24 fingerprints are identical across them.
   comparisons byte-identical across four block sizes (8 MB → 16 KB), four
   sabotages caught (36/13/8/12 failures). A codec's claim to be "verified" is
   worth checking against the CI job list, not the comment above it.
-- Everything else is decode-only, so its encoder keeps the file alive; pruning
-  there is surgical — the `#ifndef DARC_RUST` blocks total only **361 lines**
-  of entry points, because the decode logic is interleaved with encode logic in
-  shared files. **The encoders, not the decoders, are what unlock file
-  deletion** from here.
+- ~~Everything else is decode-only, so its encoder keeps the file alive.~~
+  **Superseded.** That was written when encoders were the blocker. Every codec in
+  the table above is now ported in both directions and its C engine deleted, and
+  the `#ifndef DARC_RUST` fallbacks are gone with the `DARC_NO_RUST` opt-out. What
+  keeps the remaining `Compression/` files alive is no longer a missing encoder:
+  it is the vendored SDKs (LZMA, 7z), the external tools (SREP), `mmdet.cpp`'s
+  Haskell FFI bindings, and the thin `C_*.cpp` entry points, which can only go
+  when the Haskell layer does. See "How much of the port is actually closed".
 - **Leave vendored trees pristine** (libbsc, LZMA SDK) per `CLAUDE.md`, or make
   that an explicit, recorded exception.
 
@@ -470,42 +554,142 @@ reaches Rust through the C dispatcher rather than calling `darc_rs_*` directly.
 `lzma` is deliberately excluded as an inner method: it has no Rust port, so that
 comparison would compare a build against itself.
 
-### 10b. Make the silent-no-op bug class a COMPILER error -- AGREED, item 4 PENDING
+### 10b. Make the silent-no-op bug class a COMPILER error -- DONE
 
-Prompted by the Tornado presets 7-11 divergence, whose cause was a trait default
-that did nothing in release: `MatchFinder::update_hash1` defaulted to
+Prompted by the Tornado presets 7-11 divergence (#102), whose cause was a trait
+default that did nothing in release: `MatchFinder::update_hash1` defaulted to
 `debug_assert!(false, ...)`, `Hash3` implemented it only inherently, and
 `CombineMF`'s `Box<dyn MatchFinder>` call landed on the default. Every difftest
 builds `--release`, so the guard never ran.
 
-**Done.** No defaulted trait methods remain anywhere in the crate. Removing the
-two on `MatchFinder` turned the omission into a compile error and immediately
-surfaced two more instances of the same shape -- `MatchFinderN` (inherent-only)
-and `CachingMatchFinder` (absent, though the C has one at MatchFinder.cpp:462).
+**0. No defaulted trait methods.** Zero remain crate-wide. Removing the two on
+`MatchFinder` turned the omission into a compile error and immediately surfaced
+two more of the same shape -- `MatchFinderN` (inherent-only) and
+`CachingMatchFinder` (absent, though the C has one at `MatchFinder.cpp:462`).
 `debug-assert-check.sh` now runs the codecs in a debug profile, which nothing did
 before.
 
-**Small, low risk, worth doing next:**
+**1-3, #103/#104.** Crate-level lint gates added (`wildcard_enum_match_arm`,
+`todo`, `unimplemented`, `mem_forget`, `unused_must_use`); the eleven `_ => {}`
+arms resolved against the pinned C; the release-dead `debug_assert!(false, ...)`
+bodies promoted.
 
-1. Crate-level lint gates in `rust/darc-codecs/src/lib.rs` -- there are none.
-2. The 11 `_ => {}` catch-all arms: consult the C per site, `unreachable!()` where
-   the C would not compile, a documented no-op where it genuinely falls through.
-   `mm.rs:445` already does the latter correctly and is the model to copy.
-3. Audit the 23 `debug_assert!`s: promote cheap invariant checks to `assert!` so
-   they are live in release; leave per-call hot-path ones as debug. For scale,
-   342 assertions in the crate ARE live -- the bug hid in one of the 23 that
-   were not.
+#104 is the one to read for method. The eleven arms did NOT split the way the
+plan assumed:
 
-**Item 4, agreed and deliberately deferred: model mode bytes as enums and
-offsets as newtypes.** This is the only item that yields a compile error rather
-than a runtime panic, because bare integers cannot be matched exhaustively.
+* DisPack's `flags & F_TYPE` is a **two-bit mask** (`DisPack.cpp:158`), so it has
+  exactly four values and the four named arms already covered them. Three
+  catch-alls were dead **by arithmetic**, provable without running anything.
+* GRZip's rec mode looks identical and must stay a documented no-op: the C is
+  four independent `if (Mode==n)` tests with no `else` (`Rec_Flt.c:211..:269`),
+  and on decode the mode comes **from the compressed stream**. An
+  `unreachable!()` there turns a corrupt archive the C tolerates into a panic
+  across the FFI boundary -- hardening that adds a denial of service.
+* It also found a real latent bug: `dispack/encode.rs` used `_ =>` **as** the
+  F_DR arm, so a catch-all was carrying real logic, correct only because F_DR
+  happened to be the fourth of four.
 
-It is a project, not a patch: roughly 1968 `as` casts in the crate, each a
-possible silent truncation, in codecs whose output must stay byte-exact. Do it
-PER CODEC, with that codec's difftest green at every step, and expect it to
-surface further latent holes the way removing the trait defaults did. Candidates:
-GRZip's mode bits, MM's filter selector, TTA's `byte_size`, DisPack's mode,
-Tornado's `encoding_method`/`caching_finder`.
+**The general rule that came out of it:** whether an unhandled value is
+impossible or merely unusual depends on **where the value comes from**. A mask
+the code computes is provable; a byte the archive supplies is attacker-controlled.
+Same `match`, opposite answer.
+
+**4. Mode bytes as types -- DONE, one PR per codec.** All five candidates landed,
+and they needed **four different designs**, each forced by that rule rather than
+chosen:
+
+| codec | PR | shape | why |
+|---|---|---|---|
+| DisPack | #105 | exhaustive, no `Option` | two-bit mask: four values by arithmetic |
+| GRZip | #106, #107 | four variants + `Option` | rec mode read from the stream |
+| MM | #109 | four variants + `Option` | width from an **unvalidated** header byte |
+| TTA | #110 | exhaustive, classify at the guard | width validated before the filtered path |
+| Tornado | #111 | four variants + `Option` | method from the stream; STORING names no back-end |
+
+Worth knowing per codec:
+
+* **#106 first modelled GRZip's unknown mode as an `Unknown` variant, and that
+  was wrong.** `test()` returns only 0..=4 and the encode call site filters 0, so
+  the variant was unreachable on the encode path and carried a documented no-op
+  body -- a can't-happen arm reintroduced by the refactor meant to delete them.
+  #107 replaced it with `Option`: "not one of the four" is a **parse failure**,
+  not a mode.
+* **MM's `byte_size` spans 0..=32, not 1..=4.** `word_size` is a single header
+  byte and nothing validates it, so unfiltered widths are ordinary input.
+* **TTA's is validated** (`:545-549`, `:568`, and the encoder's fallback at
+  `:1141-1143`), so the classification moved to those guards -- the one place an
+  unsupported width has a real answer -- and all four catch-alls were deleted
+  rather than documented.
+* **Tornado's gain was the smallest, and saying so matters.** Both dispatch sites
+  already handled an unknown method correctly. The enum only turns a *future*
+  coder from a silent rejection into a compile error.
+
+**4b. The Tornado encode dispatch chain -- DONE.** The 78-line, 7-arm
+`if`/`else if` chain that selected the match-finder instantiation is now an
+exhaustive `match` on a `Shape` enum.
+
+The claim it "could not be converted because its order is the semantics" was
+**measured and found wrong**: over all 7,776 combinations of the five parameters
+it dispatches on, exactly **one** overlap exists -- the first arm's bare
+`|| e == STORING` against the last arm's silence about `e`, on 21 points, all
+with `encoding_method == 0`. Making that explicit (`e != STORING`) leaves the six
+conditions disjoint, after which order carries no meaning.
+
+Two sweep tests hold it, and **neither is sufficient alone** -- a sabotage probe
+showed why. Deleting the `e != STORING` guard makes `conditions_are_disjoint`
+fail but leaves `matches_the_original_ordered_chain` **passing**, because the
+classifier is itself written as ordered `if`s and reproduces the same precedence.
+Equivalence proves the behaviour; disjointness proves the ordering is not
+load-bearing.
+
+**What is deliberately NOT modelled:** `caching_finder` as a whole (an
+encoder-side preset parameter feeding that cascade, never in the stream), and
+GRZip's other mode bits, which are a **bitfield** -- `&`-tested, combined, passed
+down to sub-blocks. That wants a bitflags type, not an enum, and is a different
+risk profile.
+
+Item 4's original framing mentioned ~1968 `as` casts as part of the same project.
+They were not touched, and the count has since grown; treat casts as separate
+work and **measure before quoting a number**:
+
+```bash
+rg -oE ' as (u8|u16|u32|u64|usize|i8|i16|i32|i64|isize|c_int|f32|f64)\b' \
+  rust/darc-codecs/src | wc -l
+```
+
+### 10c. Totality: no `if let` in the Rust workspace -- DONE (#108)
+
+An exhaustive `match` with every arm named is preferred over `if let`, so a branch
+carrying archive or crypto behaviour has to be written down and cannot be
+silently absent. 33 sites converted; the workspace has none left.
+
+**There is no clippy lint that bans `if let`,** and the whole related family
+points the other way -- `single_match` (warn by default, via `clippy::all`),
+`single_match_else`, `manual_let_else`, `option_if_let_else`. `single_match` asked
+by name for `grzip/block.rs`'s mode dispatch to become an `if let`. So totality is
+three things together:
+
+* `deny(clippy::wildcard_enum_match_arm)` -- no `_ =>`, every arm named
+* `allow(clippy::single_match)` -- documented at both crate roots, or clippy
+  fights the convention
+* a CI grep step in `build.yml`, covering all of `rust/` with
+  `--exclude-dir=target`
+
+`while let` and `let ... else` are deliberately **not** covered: a loop's
+termination condition and a diverging `else` already state the other case.
+
+The conversion found one live bug: `lz4hc.rs` used `if let (true,
+Strategy::Optimal(..))` on a **tuple**, followed by `else if input_size >= ...`,
+so a new `Strategy` variant would have fallen silently into the hash-chain
+parser. It is now a `match` over all four `(bool, Strategy)` combinations --
+`(false, _)` deliberately avoided -- so a new variant fails to compile.
+
+Two traps in writing the CI gate, both of which produce a gate that stops
+measuring rather than one that fails: backticks inside double quotes are command
+substitution (`` `if let` `` gets *executed*), and `--exclude-dir=target` is
+load-bearing because `rust/target` holds vendored crate sources full of `if let`.
+**Test a gate all four ways**: passes clean, rejects a planted `if let` in each
+crate, ignores the phrase in a comment, ignores `while let`.
 
 ### 11. Port the Haskell application layer (17,843 lines, 41 files)
 
