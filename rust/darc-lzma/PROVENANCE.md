@@ -48,10 +48,12 @@ Seven of its eight identifiers — `BinTreeMain`, `CalcHashSize`,
 references `7zip/` **zero times**. It is not compiled. The live encoder is
 `7z24/`, the modern C SDK, essentially stock.
 
-So the readme documents a predecessor that is still in the tree but out of the
-build. `7zip/` is 5,552 lines and a deletion candidate on the same footing as
-LibTomCrypt was — but see `libtomcrypt-is-held-by-the-oracle` for why a makefile
-grep is not sufficient proof of deadness.
+So the readme documented a predecessor that was still in the tree but out of the
+build. `7zip/` is **now deleted** — #115 took 37 of its files, and the last 10 went
+with the BCJ port, because `C_BCJ.cpp` `#include`d three `.c`/`.cpp` straight out of
+it. That is exactly the trap `libtomcrypt-is-held-by-the-oracle` records: a makefile
+grep said the directory was dead twice over, and both times a `#include` of a `.c`
+file kept part of it alive.
 
 ## What is actually left to do
 
@@ -127,8 +129,7 @@ Ordered by what blocks a drop-in replacement:
 ## Status
 
 Vendored, wired as a workspace member, builds, tests pass under DArc's toolchain
-with `--features decode`. `rust/difftest/lzma-gap-check.sh` reports **100/100
-byte-identical, 12 of them with a sliding window**.
+with `--features decode`.
 
 `rust/difftest/lzma-gap-check.sh` reports **222/222 byte-identical** — 24
 sliding-window, 5/5 match finders, 2/2 parsers — and gates on that coverage, not
