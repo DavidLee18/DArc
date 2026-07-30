@@ -688,7 +688,11 @@ fn run(io: &Io) -> Result<(), c_int> {
             for row in buffer.iter_mut() {
                 read_exact(io, &mut raw)?;
                 for (slot, chunk) in row.iter_mut().zip(raw.chunks_exact(8)) {
-                    *slot = i64::from_le_bytes(chunk.try_into().unwrap());
+                    // `chunks_exact(8)` yields exactly 8 bytes, so this cannot
+                    // fail; expressed as an error return rather than a panic
+                    // because this runs under a C caller.
+                    let word: [u8; 8] = chunk.try_into().map_err(|_| BAD)?;
+                    *slot = i64::from_le_bytes(word);
                 }
                 filters_decompress(row, level, bytes);
             }

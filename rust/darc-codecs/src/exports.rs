@@ -1521,10 +1521,9 @@ mod bsc_ppmd_sa {
 #[inline]
 #[allow(static_mut_refs)]
 unsafe fn sa() -> &'static mut bsc_ppmd_sa::SubAllocator {
-    if PPMD_SA.is_none() {
-        PPMD_SA = Some(bsc_ppmd_sa::SubAllocator::new());
-    }
-    PPMD_SA.as_mut().unwrap()
+    // `get_or_insert_with`, not `is_none()` + `unwrap()`: this is an FFI helper,
+    // and a panic here would unwind across `extern "C"`.
+    PPMD_SA.get_or_insert_with(bsc_ppmd_sa::SubAllocator::new)
 }
 
 /// # Safety

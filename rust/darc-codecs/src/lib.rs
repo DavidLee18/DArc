@@ -47,6 +47,19 @@
 #![deny(clippy::todo, clippy::unimplemented, clippy::mem_forget)]
 #![deny(unused_must_use)]
 #![allow(clippy::single_match)]
+//! ## No `unwrap` / `expect` in production paths
+//!
+//! `cfg_attr(not(test), ...)`, so the deny applies to the normal library build
+//! while unit-test modules -- which are compiled with `cfg(test)` -- keep both.
+//! Integration tests under `tests/` are separate crates and never see this
+//! attribute at all.
+//!
+//! The reason is specific to this crate: every entry point is reached across a C
+//! ABI, and an unwind across `extern "C"` is undefined behaviour. A panic here is
+//! not a crash report, it is a corrupted process. `src/bin/` is deliberately NOT
+//! covered -- those are dev helpers, separate crate targets, where panicking on a
+//! failed stdin read is the right behaviour.
+#![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used))]
 
 pub mod bsc;
 pub mod delta;
