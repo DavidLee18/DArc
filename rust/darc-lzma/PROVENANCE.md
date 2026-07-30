@@ -83,13 +83,35 @@ Ordered by what blocks a drop-in replacement:
    * **An index captured before an advance is stale after it.** `MoveBlock` memmoves
      the window, so `ReadMatchDistances` must read its pointer *after* `GetMatches`,
      which is exactly where the C reads it (`LzmaEnc.c:1113`).
-3. **Four match finders.** Upstream has BT4; `C_LZMA.cpp`'s `kMatchFinderIDs`
-   accepts BT2, BT3, BT4, HC4, HT4.
-4. **LZMA2 and BCJ.** `C_LZMA2.cpp` (322 lines) and `C_BCJ.cpp` (67) have no
-   upstream counterpart.
-5. **Multi-threaded match finder.** DArc sets
-   `numThreads = GetCompressionThreads() > 1 ? 2 : 1`; the harness forces 1 to
-   isolate that axis. Whether the mt path emits different bytes is unmeasured.
+3. ~~**Four match finders.**~~ **DONE**, and this was the important one. DArc's
+   `LZMA_METHOD` defaults to `matchFinder = kHT4` (`C_LZMA.cpp:253`), which maps to
+   `(btMode=0, numHashBytes=5)` → `Hc5` — a five-byte hash **chain**. No preset in
+   `Compression.hs` names a finder, so every `-mlzma` archive DArc has ever written
+   used the one configuration the harness never tested. All five (Bt2, Bt3, Bt4,
+   Hc4, Hc5) are ported, plus `GetOptimumFast` for `algorithm = 0`, which preset
+   `3binary` uses.
+
+   The bug that fell out of it: `mc`'s auto-resolution is
+   `(16 + (fb >> 1)) >> (btMode ? 0 : 1)` (`LzmaEnc.c:99`), and the BT form was
+   inlined in two places. Every hash chain would have run at **double** its search
+   depth — identical parameters, different parse.
+4. ~~**BCJ.**~~ **DONE** — `rust/darc-codecs/src/bcj.rs`, 1340/1340 byte-identical
+   (`rust/difftest/bcj-check.sh`), and `Compression/LZMA/7zip/` is deleted: its last
+   ten files existed only because `C_BCJ.cpp` `#include`d three `.c`/`.cpp` from it.
+   **LZMA2** remains (`C_LZMA2.cpp`, 322 lines), reachable only if a user types
+   `lzma2` — no preset uses it.
+5. ~~**Multi-threaded match finder.**~~ **Answered, not by measuring but by
+   reading:** `mtMode = multiThread && !fastMode && btMode != 0` (`LzmaEnc.c:2695`).
+   `btMode` is 0 for both hash chains, so for DArc's default the MT match finder is
+   never reached at all. It remains unmeasured for the BT finders, which no preset
+   selects.
+6. **The decoder.** `decoder.rs` is a test oracle, not a decoder: it needs a known
+   output length (DArc's streams carry none — they end on an EOPM), keeps all output
+   instead of a bounded window, and has panics reachable from archive input (an
+   unvalidated props byte gives `pb = 5` against a 16-entry table; match distances
+   are unchecked; truncated input is fed zeros). This is now the blocker for
+   deleting C: **every `unarc` and SFX target links `LzmaDec.o`**, and those parse
+   hostile archives compiled `-D_NO_EXCEPTIONS`.
 
 ## Two harness traps worth keeping
 
@@ -108,8 +130,13 @@ Vendored, wired as a workspace member, builds, tests pass under DArc's toolchain
 with `--features decode`. `rust/difftest/lzma-gap-check.sh` reports **100/100
 byte-identical, 12 of them with a sliding window**.
 
-`rust/darc-codecs/src/lzma.rs` exposes `darc_lzma_compress` with `lzma_compress`'s
-argument order, streaming both ways through the `CALLBACK_FUNC`. It is **not yet
-called from `C_LZMA.cpp`**: BT2, BT3, HC4 and HT4 remain unimplemented, so switching
-the wrapper over needs either those four or a documented fallback.
-`Compression/LZMA` is untouched and remains the implementation in use.
+`rust/difftest/lzma-gap-check.sh` reports **222/222 byte-identical** — 24
+sliding-window, 5/5 match finders, 2/2 parsers — and gates on that coverage, not
+just on the diffs. `rust/darc-codecs/src/lzma.rs` exposes `darc_lzma_compress` with
+`lzma_compress`'s argument order and refuses nothing: every configuration
+`C_LZMA.cpp` can ask for is implemented.
+
+It is **still not called from `C_LZMA.cpp`**. Switching the wrapper over is now a
+decision rather than a blocked task — but it only buys a deletion once the decoder
+lands too, since `LzmaEnc.c` and `LzmaDec.c` are compiled together and Unarc needs
+the latter.

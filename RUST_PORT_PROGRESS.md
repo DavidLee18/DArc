@@ -602,11 +602,31 @@ Two findings changed the shape of this work:
   had no field for. Adding it took the corpus from "diverges in the last 4-6 bytes"
   to byte-identical.
 
-What blocks calling it from `C_LZMA.cpp`: BT2, BT3, HC4 and HT4 (the wrapper accepts
-five match finders; the fork implements BT4), plus LZMA2 and BCJ, which have their
-own wrappers. Streaming is done — `encode_stream` is O(dictionary), and
-`rust/darc-codecs/src/lzma.rs` adapts the `CALLBACK_FUNC` in both directions. See
-`rust/darc-lzma/PROVENANCE.md`.
+**The encoder is complete.** All five match finders and both parsers:
+**222/222 byte-identical**, 24 with a sliding window. The finder axis is where the
+value was — `LZMA_METHOD` defaults to `kHT4`, i.e. `Hc5`, a five-byte hash chain,
+and no preset in `Compression.hs` names a finder, so every `-mlzma` archive DArc
+has written used a configuration the harness had never tested. Adding that axis
+immediately exposed a live bug: `mc`'s auto value is
+`(16 + (fb >> 1)) >> (btMode ? 0 : 1)`, and the binary-tree form was inlined in two
+places, so every hash chain would have searched twice as deep.
+
+**BCJ is done and its C is deleted** — `rust/darc-codecs/src/bcj.rs`, 1340/1340
+byte-identical, and with it `Compression/LZMA/7zip/` finally goes. Those last ten
+files survived #115 only because `C_BCJ.cpp` `#include`d three `.c`/`.cpp` out of
+them, which no makefile search can see.
+
+What is left before any of `Compression/LZMA/7z24` can be deleted:
+
+1. **The decoder.** `darc-lzma`'s is a test oracle — it needs a known output length
+   where DArc's streams end on an end-of-payload marker, it keeps all output rather
+   than a bounded window, and it has panics reachable from archive input. **Every
+   `unarc` and SFX target links `LzmaDec.o`**, and those parse hostile archives
+   compiled `-D_NO_EXCEPTIONS`, so this is the load-bearing piece.
+2. **LZMA2** — 3,878 deletable lines, but reachable only if a user types `lzma2`;
+   no preset uses it.
+
+See `rust/darc-lzma/PROVENANCE.md`.
 
 ### 10b. Make the silent-no-op bug class a COMPILER error -- DONE
 
