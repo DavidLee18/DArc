@@ -75,6 +75,115 @@ pub struct PackMethod {
 }
 
 /// `tornado_compressor_outbuf_size` (:65).
+/// Which instantiation the C's dispatch chain selects (`Tornado.cpp:329-360`).
+///
+/// Carries the parameters that used to be re-read inside the arm bodies, so a
+/// body builds what it is told to and interprets nothing.
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+enum Shape {
+    /// (:331) `MatchFinder1` + byte coder. STORING lands here too.
+    Byte1,
+    /// (:334) `MatchFinder1` + bit coder.
+    Bit1,
+    /// (:336) `MatchFinder2` + huffman coder.
+    Huf2,
+    /// (:338) `CachingMatchFinder<4>` + huffman coder.
+    HufCaching,
+    /// (:340)/(:343) `LazyMatching<Hash3<CachingMatchFinder<4>>>`, dynamic coder.
+    LazyHash3Caching,
+    /// (:347)/(:351)/(:354) `LazyMatching<CombineMF<CycledCaching, aux>>`.
+    ///
+    /// `n` is the main cycled finder's N. `exact_aux` picks the auxiliary
+    /// finder: `caching_finder == 5` (presets -7..-9) pairs with an exact
+    /// finder, 6 and 7 (-10, -11) with a second cycled one. Deciding that here
+    /// rather than in the body is what removes the last `if` from the dispatch.
+    LazyCombine { n: usize, exact_aux: bool },
+}
+
+// The six conditions, each its own function so `shape_tests` can evaluate them
+// INDEPENDENTLY and prove no two ever fire on the same input. Without that,
+// "the order does not matter" would be a claim rather than a checked property.
+//
+// `plain` is the shared prefix of the first three: no 3-byte hash, no caching
+// finder, no lazy parser.
+fn plain_params(hash3: c_int, cf: c_int, mp: c_int) -> bool {
+    hash3 == 0 && cf == 0 && mp == LAZY_OFF
+}
+
+fn is_byte1(e: u32, row: c_int, hash3: c_int, cf: c_int, mp: c_int) -> bool {
+    (e == BYTECODER && row == 1 && plain_params(hash3, cf, mp)) || e == STORING
+}
+
+fn is_bit1(e: u32, row: c_int, hash3: c_int, cf: c_int, mp: c_int) -> bool {
+    e == BITCODER && row == 1 && plain_params(hash3, cf, mp)
+}
+
+fn is_huf2(e: u32, row: c_int, hash3: c_int, cf: c_int, mp: c_int) -> bool {
+    e == HUFCODER && row == 2 && plain_params(hash3, cf, mp)
+}
+
+fn is_huf_caching(e: u32, row: c_int, hash3: c_int, cf: c_int, mp: c_int) -> bool {
+    // Tests `caching_finder` for TRUTH, not for 1 -- unlike the arm below.
+    e == HUFCODER && row >= 2 && hash3 == 0 && cf != 0 && mp == LAZY_OFF
+}
+
+fn is_lazy_hash3_caching(e: u32, row: c_int, hash3: c_int, cf: c_int, mp: c_int) -> bool {
+    // Exactly 1 here, where the huffman arm above tests for truth.
+    (e == ARICODER || e == HUFCODER) && row >= 2 && hash3 == 1 && cf == 1 && mp == LAZY_ON
+}
+
+fn is_lazy_combine(e: u32, row: c_int, hash3: c_int, cf: c_int, mp: c_int) -> bool {
+    // `e != STORING` is the one thing added when this chain stopped being
+    // ordered. The C's first arm ends in a bare `|| e == STORING`, which matches
+    // whatever the other four parameters say, and this arm constrains `e` not at
+    // all -- so the two overlap on 21 of 7776 parameter points, all with
+    // `encoding_method == 0`, and the C resolved that by position. Stating it
+    // makes the six conditions disjoint, which `shape_tests` proves, and leaves
+    // behaviour identical: STORING went to the first arm before and still does.
+    e != STORING && row >= 2 && hash3 == 2 && mp == LAZY_ON && (5..=7).contains(&cf)
+}
+
+/// Classify a `PackMethod` into the instantiation to build, or `None` for a
+/// combination this port does not implement.
+///
+/// The conditions are disjoint, so the order they appear in here carries no
+/// meaning -- which is the point of the rewrite. `shape_tests::conditions_are_disjoint`
+/// fails if an overlap is ever reintroduced, and
+/// `shape_tests::matches_the_original_ordered_chain` pins the result against a
+/// transliteration of the C's ordered chain over the whole parameter space.
+fn shape_of(m: &PackMethod) -> Option<Shape> {
+    shape_from(
+        m.encoding_method as u32,
+        m.hash_row_width,
+        m.hash3,
+        m.caching_finder,
+        m.match_parser,
+    )
+}
+
+/// The classification proper, over the five values it actually depends on.
+///
+/// Split from [`shape_of`] so the sweep tests can drive it directly: building a
+/// `#[repr(C)]` `PackMethod` per point would mean giving an FFI struct a
+/// `Default` it does not otherwise need.
+fn shape_from(e: u32, row: c_int, hash3: c_int, cf: c_int, mp: c_int) -> Option<Shape> {
+    if is_byte1(e, row, hash3, cf, mp) {
+        Some(Shape::Byte1)
+    } else if is_bit1(e, row, hash3, cf, mp) {
+        Some(Shape::Bit1)
+    } else if is_huf2(e, row, hash3, cf, mp) {
+        Some(Shape::Huf2)
+    } else if is_huf_caching(e, row, hash3, cf, mp) {
+        Some(Shape::HufCaching)
+    } else if is_lazy_hash3_caching(e, row, hash3, cf, mp) {
+        Some(Shape::LazyHash3Caching)
+    } else if is_lazy_combine(e, row, hash3, cf, mp) {
+        Some(Shape::LazyCombine { n: cf as usize, exact_aux: cf == 5 })
+    } else {
+        None
+    }
+}
+
 fn outbuf_size(buffer: usize, all_at_once: bool) -> usize {
     if all_at_once {
         buffer + buffer / 8 + 512
@@ -359,99 +468,89 @@ pub fn compress(mut m: PackMethod, io: &Io, all_at_once: bool) -> c_int {
 
     // The C's `#else` if-chain (:329-360), in its order. `plain` is every
     // condition the first six arms share.
-    let e = m.encoding_method as u32;
     let row = m.hash_row_width;
-    let plain = m.hash3 == 0 && m.caching_finder == 0 && m.match_parser == LAZY_OFF;
 
-    let r = if (e == BYTECODER && row == 1 && plain) || e == STORING {
-        // (:331) LZ77_ByteCoder either way -- STORING included.
-        run(io, &m, MatchFinder1::new(m.hashsize, row), Coder::Byte, all_at_once)
-    } else if e == BITCODER && row == 1 && plain {
-        // (:334)
-        run(io, &m, MatchFinder1::new(m.hashsize, row), Coder::Bit, all_at_once)
-    } else if e == HUFCODER && row == 2 && plain {
-        // (:336)
-        run(io, &m, MatchFinder2::new(m.hashsize, row), Coder::Huf, all_at_once)
-    } else if e == HUFCODER
-        && row >= 2
-        && m.hash3 == 0
-        && m.caching_finder != 0
-        && m.match_parser == LAZY_OFF
-    {
-        // (:338) CachingMatchFinder<4>. The condition tests `m.caching_finder`
-        // for truth, not for 1.
-        run(io, &m, CachingMatchFinder::new(4, m.hashsize, row), Coder::Huf, all_at_once)
-    } else if (e == ARICODER || e == HUFCODER)
-        && row >= 2
-        && m.hash3 == 1
-        && m.caching_finder == 1
-        && m.match_parser == LAZY_ON
-    {
-        // (:340) and (:343): the same finder under both coders. The second is
-        // what FreeArc's -m4$compressed reaches via "-5 -c3".
-        //
-        // Hash3 makes min_length() 2 rather than 4, so the header's minlen byte
-        // and the coder's MINLEN both change -- it is not merely an extra
-        // lookup. Note this arm tests caching_finder == 1 exactly, where the
-        // huffman arm above tests it for truth.
-        let mf = LazyMatching::new(Hash3::new(
-            CachingMatchFinder::new(4, m.hashsize, row),
-            12,
-            10,
-            false,
-        ));
-        // `e` is the preset's encoding_method, so it can in principle be STORING
-        // or out of range; that used to surface as `DynamicCoder::new` returning
-        // None. Same error, decided one step earlier.
-        match Coder::from_stream(e) {
-            Some(c) => run(io, &m, mf, c, all_at_once),
-            None => Err(FREEARC_ERRCODE_GENERAL),
+    // Exhaustive on `Shape`, not an ordered if-chain. Selection and construction
+    // are now separate: `shape_of` decides (from disjoint conditions), each arm
+    // only builds. See `shape_of` for why the C's ordering is not needed here.
+    let r = match shape_of(&m) {
+        Some(Shape::Byte1) => {
+            // (:331) LZ77_ByteCoder either way -- STORING included.
+            run(io, &m, MatchFinder1::new(m.hashsize, row), Coder::Byte, all_at_once)
         }
-    } else if row >= 2 && m.hash3 == 2 && m.match_parser == LAZY_ON && (5..=7).contains(&m.caching_finder)
-    {
-        // (:347), (:351) and (:354): three arms differing only in the cycled
-        // finder's N and in what the auxiliary hash wraps. The coder is
-        // LZ77_DynamicCoder, which picks a back-end from encoding_method at run
-        // time -- which is exactly what DynamicCoder::new does.
-        //
-        // CombineMF gives its children the main and the *auxiliary* hash
-        // geometry respectively, and its min_length() is the smaller of the
-        // two -- so with Hash3 on the auxiliary side that is 2, not 5.
-        let n = m.caching_finder as usize;
-        let aux: Box<dyn MatchFinder> = if m.caching_finder == 5 {
-            // -7..-9 pair the cycled finder with an exact one.
-            Box::new(Hash3::new(
-                ExactMatchFinder::new(4, m.auxhash_size, m.auxhash_row_width),
-                16,
-                12,
-                true,
-            ))
-        } else {
-            // -10 and -11 use a cycled finder on both sides.
-            Box::new(Hash3::new(
-                CycledCachingMatchFinder::new(4, m.auxhash_size, m.auxhash_row_width),
-                16,
-                12,
-                true,
-            ))
-        };
-        let mf = LazyMatching::new(CombineMF::new(
-            CycledCachingMatchFinder::new(n, m.hashsize, row),
-            aux,
-        ));
-        // `e` is the preset's encoding_method, so it can in principle be STORING
-        // or out of range; that used to surface as `DynamicCoder::new` returning
-        // None. Same error, decided one step earlier.
-        match Coder::from_stream(e) {
-            Some(c) => run(io, &m, mf, c, all_at_once),
-            None => Err(FREEARC_ERRCODE_GENERAL),
+        Some(Shape::Bit1) => {
+            // (:334)
+            run(io, &m, MatchFinder1::new(m.hashsize, row), Coder::Bit, all_at_once)
         }
-    } else {
-        // The remaining instantiations need the cycled caching finder, the
-        // exact finder and CombineMF, or the data-table detector, none of
-        // which are ported yet. Refusing is what the C's own chain does for a combination
-        // it was not compiled for (:358).
-        return FREEARC_ERRCODE_INVALID_COMPRESSOR;
+        Some(Shape::Huf2) => {
+            // (:336)
+            run(io, &m, MatchFinder2::new(m.hashsize, row), Coder::Huf, all_at_once)
+        }
+        Some(Shape::HufCaching) => {
+            // (:338) CachingMatchFinder<4>.
+            run(io, &m, CachingMatchFinder::new(4, m.hashsize, row), Coder::Huf, all_at_once)
+        }
+        Some(Shape::LazyHash3Caching) => {
+            // (:340) and (:343): the same finder under both coders. The second is
+            // what FreeArc's -m4$compressed reaches via "-5 -c3".
+            //
+            // Hash3 makes min_length() 2 rather than 4, so the header's minlen byte
+            // and the coder's MINLEN both change -- it is not merely an extra
+            // lookup.
+            let mf = LazyMatching::new(Hash3::new(
+                CachingMatchFinder::new(4, m.hashsize, row),
+                12,
+                10,
+                false,
+            ));
+            // Resolved here rather than in `shape_of`, so that an unusable
+            // encoding_method keeps returning GENERAL while an unimplemented
+            // COMBINATION returns INVALID_COMPRESSOR. Folding them together would
+            // merge two distinct error codes.
+            match Coder::from_stream(m.encoding_method as u32) {
+                Some(c) => run(io, &m, mf, c, all_at_once),
+                None => Err(FREEARC_ERRCODE_GENERAL),
+            }
+        }
+        Some(Shape::LazyCombine { n, exact_aux }) => {
+            // (:347), (:351) and (:354): three C arms differing only in the cycled
+            // finder's N and in what the auxiliary hash wraps. `shape_of` has
+            // already decided both, so there is no branch left here.
+            //
+            // CombineMF gives its children the main and the *auxiliary* hash
+            // geometry respectively, and its min_length() is the smaller of the
+            // two -- so with Hash3 on the auxiliary side that is 2, not 5.
+            let aux: Box<dyn MatchFinder> = if exact_aux {
+                Box::new(Hash3::new(
+                    ExactMatchFinder::new(4, m.auxhash_size, m.auxhash_row_width),
+                    16,
+                    12,
+                    true,
+                ))
+            } else {
+                Box::new(Hash3::new(
+                    CycledCachingMatchFinder::new(4, m.auxhash_size, m.auxhash_row_width),
+                    16,
+                    12,
+                    true,
+                ))
+            };
+            let mf = LazyMatching::new(CombineMF::new(
+                CycledCachingMatchFinder::new(n, m.hashsize, row),
+                aux,
+            ));
+            match Coder::from_stream(m.encoding_method as u32) {
+                Some(c) => run(io, &m, mf, c, all_at_once),
+                None => Err(FREEARC_ERRCODE_GENERAL),
+            }
+        }
+        None => {
+            // The remaining instantiations need the cycled caching finder, the
+            // exact finder and CombineMF, or the data-table detector, none of
+            // which are ported yet. Refusing is what the C's own chain does for a
+            // combination it was not compiled for (:358).
+            return FREEARC_ERRCODE_INVALID_COMPRESSOR;
+        }
     };
     match r {
         Ok(()) => crate::ffi::OK,
@@ -486,3 +585,97 @@ fn lb32(n: u32) -> u32 {
 
 /// `FREEARC_ERRCODE_INVALID_COMPRESSOR` (Compression.h:21).
 const FREEARC_ERRCODE_INVALID_COMPRESSOR: c_int = -2;
+
+#[cfg(test)]
+mod shape_tests {
+    use super::*;
+
+    /// Every parameter point the sweep visits. `row` and `caching_finder` go
+    /// past anything a preset sets, and `match_parser` includes values that are
+    /// neither LAZY_OFF nor LAZY_ON, so the conditions are exercised outside the
+    /// range the presets happen to produce.
+    fn sweep() -> impl Iterator<Item = (u32, c_int, c_int, c_int, c_int)> {
+        (0..6u32).flat_map(|e| {
+            (0..9i32).flat_map(move |row| {
+                (0..4i32).flat_map(move |h3| {
+                    (0..9i32).flat_map(move |cf| {
+                        [0, LAZY_OFF, LAZY_ON, 3].into_iter().map(move |mp| (e, row, h3, cf, mp))
+                    })
+                })
+            })
+        })
+    }
+
+    /// The claim the rewrite rests on: no two conditions ever fire on the same
+    /// input, so the order they are written in cannot change the outcome.
+    ///
+    /// This is why `is_lazy_combine` carries `e != STORING`. Without it, arm 1's
+    /// bare `|| e == STORING` and arm 6's silence about `e` overlap on 21 points,
+    /// and the C picked between them by position.
+    #[test]
+    fn conditions_are_disjoint() {
+        let mut checked = 0usize;
+        for (e, row, h3, cf, mp) in sweep() {
+            let hits = [
+                is_byte1(e, row, h3, cf, mp),
+                is_bit1(e, row, h3, cf, mp),
+                is_huf2(e, row, h3, cf, mp),
+                is_huf_caching(e, row, h3, cf, mp),
+                is_lazy_hash3_caching(e, row, h3, cf, mp),
+                is_lazy_combine(e, row, h3, cf, mp),
+            ]
+            .iter()
+            .filter(|&&b| b)
+            .count();
+            assert!(
+                hits <= 1,
+                "{hits} conditions fire at e={e} row={row} hash3={h3} cf={cf} mp={mp}; \
+                 the dispatch order would then be load-bearing"
+            );
+            checked += 1;
+        }
+        assert_eq!(checked, 7776, "the sweep must cover the whole space");
+    }
+
+    /// Equivalence with the C's ORDERED chain, over the same space. This is the
+    /// evidence that the rewrite preserved behaviour -- not that the arms were
+    /// copied carefully, but that the two agree at every point.
+    ///
+    /// `original` is a literal transliteration of `Tornado.cpp:329-360` as this
+    /// file expressed it before the rewrite: same order, same conditions, and
+    /// arm 1 still ending in the unconditional `|| e == STORING`.
+    #[test]
+    fn matches_the_original_ordered_chain() {
+        fn original(e: u32, row: c_int, h3: c_int, cf: c_int, mp: c_int) -> Option<Shape> {
+            let plain = h3 == 0 && cf == 0 && mp == LAZY_OFF;
+            if (e == BYTECODER && row == 1 && plain) || e == STORING {
+                Some(Shape::Byte1)
+            } else if e == BITCODER && row == 1 && plain {
+                Some(Shape::Bit1)
+            } else if e == HUFCODER && row == 2 && plain {
+                Some(Shape::Huf2)
+            } else if e == HUFCODER && row >= 2 && h3 == 0 && cf != 0 && mp == LAZY_OFF {
+                Some(Shape::HufCaching)
+            } else if (e == ARICODER || e == HUFCODER)
+                && row >= 2
+                && h3 == 1
+                && cf == 1
+                && mp == LAZY_ON
+            {
+                Some(Shape::LazyHash3Caching)
+            } else if row >= 2 && h3 == 2 && mp == LAZY_ON && (5..=7).contains(&cf) {
+                Some(Shape::LazyCombine { n: cf as usize, exact_aux: cf == 5 })
+            } else {
+                None
+            }
+        }
+
+        for (e, row, h3, cf, mp) in sweep() {
+            assert_eq!(
+                shape_from(e, row, h3, cf, mp),
+                original(e, row, h3, cf, mp),
+                "diverged at e={e} row={row} hash3={h3} cf={cf} mp={mp}"
+            );
+        }
+    }
+}
