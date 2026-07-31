@@ -343,10 +343,19 @@ jobs:
         # instantiation if any C Tornado encoder were still being built, so if
         # it is gone the Rust one is necessarily what runs.
         syms=$("${LLVM_MINGW:-x86_64-w64-mingw32}-nm" Tests/arc-mhs-win64.exe 2>/dev/null)
-        echo "$syms" | grep -q darc_rs_ \
+        grep -q darc_rs_ <<< "$syms" \
           || { echo "::error::no darc_rs_* symbols -- the Rust codecs were not linked"; exit 1; }
-        echo "$syms" | grep -q tor_compress0 \
-          && { echo "::error::C Tornado encoder is still present -- the Rust port is not what runs"; exit 1; }
+        # Rust-mangled names are excluded before matching, and that is not
+        # cosmetic. A v0 symbol length-prefixes each component and appends a
+        # closure disambiguator, so wrapping darc_rs_tor_compress's body in a
+        # closure produces `...exports20darc_rs_tor_compress0E...` -- which
+        # contains the substring `tor_compress0` and made this check fail on a
+        # tree with no C Tornado in it at all. Match the C symbol, not any symbol
+        # that happens to spell it.
+        c_tornado=$(grep tor_compress0 <<< "$syms" | grep -v darc_rs_ || true)
+        [ -z "$c_tornado" ] \
+          || { echo "::error::C Tornado encoder is still present -- the Rust port is not what runs"; \
+               echo "$c_tornado" | head -3; exit 1; }
         echo "Rust codecs linked; no C Tornado encoder present"
 
   # ── Windows on ARM64 ────────────────────────────────────────────────────────
