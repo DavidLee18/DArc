@@ -324,6 +324,51 @@ impl HashTable {
         found
     }
 
+    /// `find_match()` -> `find_match0()` (`:205`, `:263`).
+    ///
+    /// Unlike [`Self::add_hash`] this does not insert; it only probes. `i` is
+    /// the candidate position in `buf`, whose fresh digest is compared against
+    /// the stored one.
+    pub fn find_match(&self, buf: &[u8], i: usize, hash2: u64) -> Chunk {
+        let stored_value = Self::stored_hash(hash2);
+        let index = hash2;
+        let mut h = index;
+        let mut limit = MAX_HASH_CHAIN;
+        let saved_hash = self.chunkarr_value(index, 0);
+
+        loop {
+            let value = self.chunkarr[self.hash_index(h)];
+            limit -= 1;
+            if value == NOT_FOUND || limit == 0 {
+                return NOT_FOUND;
+            }
+            if value & self.hash_mask == saved_hash {
+                let chunk = value & self.chunknum_mask;
+                let ci = chunk as usize;
+                if ci < self.hasharr.len() && self.hasharr[ci] == stored_value {
+                    match self.cfg.compare_digests {
+                        // -m3: confirm with the full chunk digest.
+                        true => {
+                            if i + self.cfg.l <= buf.len() && ci < self.digestarr.len() {
+                                let dig = Self::digest(&buf[i..i + self.cfg.l]);
+                                if dig == self.digestarr[ci] {
+                                    return chunk;
+                                }
+                            }
+                        }
+                        // -m4: `slicehash.check()` is vacuously true with no
+                        // SliceHash allocated, so the stored hash is accepted.
+                        false => return chunk,
+                    }
+                }
+            }
+            h += 1;
+            if limit & 3 == 0 {
+                h = Self::next_hash_slot(h);
+            }
+        }
+    }
+
     /// `match_len()` (`:303`) — how far a candidate match actually extends.
     ///
     /// `-m3` only (`COMPARE_DIGESTS`). `start_i` is where the match begins in
