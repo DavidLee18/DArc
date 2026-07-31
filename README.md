@@ -416,4 +416,10 @@ arc a myarchive.arc docs/ -x"*.tmp" -x"*.log"
 
 ## License
 
-See [LICENSE](LICENSE) for details.
+DArc is distributed under the **GNU General Public License, version 3 or later**
+— see [LICENSE](LICENSE).
+
+It was GPLv2 until the `.7z` reader moved to the `sevenz-rust2` crate, which is
+Apache-2.0; Apache-2.0 is compatible with GPLv3 and not with GPLv2. Bundled and
+depended-on components carry their own terms — see
+[THIRD-PARTY.md](THIRD-PARTY.md).

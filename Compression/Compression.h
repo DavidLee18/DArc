@@ -368,9 +368,11 @@ int fortuna_size (void);
 // translation unit that includes both, which broke the build on all five
 // platforms.
 
-// .7z support, implemented in Compression/7z/C_7z.c. Declared here rather than
-// in a 7z-specific header so that the FFI imports in Arc7z.hs can name a
-// header the generated C already includes.
+// .7z support, implemented by the darc-sevenz crate (rust/darc-sevenz).
+// Declared here rather than in a 7z-specific header so that the FFI imports in
+// Arc7z.hs can name a header the generated C already includes. The signatures
+// are unchanged from the Compression/7z/C_7z.c this replaced -- they are the
+// whole ABI of the .7z reader.
 int darc_7z_list    (const char *path);
 int darc_7z_extract (const char *path, const char *out_dir);
 int darc_7z_test    (const char *path);

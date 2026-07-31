@@ -7,7 +7,7 @@ version = "0.1.0"
 # The upstream is edition 2024; kept as-is so upstream diffs stay readable.
 edition = "2024"
 rust-version = "1.85"
-license = "BSD-3-Clause AND GPL-2.0-or-later"
+license = "BSD-3-Clause AND GPL-3.0-or-later"
 publish = false
 
 [lib]

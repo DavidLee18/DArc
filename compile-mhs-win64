@@ -149,13 +149,16 @@ if true; then
 
   rust_features=""
   rust_features="--features darc-codecs/dropin"
-  echo "building Rust codecs and crypto for $rust_target"
-  ( cd rust && cargo build --release -p darc-codecs -p darc-crypto \
+  echo "building Rust codecs, crypto and the .7z reader for $rust_target"
+  ( cd rust && cargo build --release -p darc-codecs -p darc-crypto -p darc-sevenz \
       $rust_features --target "$rust_target" ) ||
     { echo "error: cargo build failed for $rust_target" >&2; exit 1; }
 
   rust_libs="$PWD/rust/target/$rust_target/release/libdarc_codecs.a"
   rust_libs="$rust_libs $PWD/rust/target/$rust_target/release/libdarc_crypto.a"
+  # The native .7z reader; replaces C_7z.o and the nineteen sdk_*.o that used
+  # to be listed in c_objs below.
+  rust_libs="$rust_libs $PWD/rust/target/$rust_target/release/libdarc_sevenz.a"
   for l in $rust_libs; do
     [ -f "$l" ] || { echo "error: cargo produced no $l" >&2; exit 1; }
   done
@@ -184,14 +187,6 @@ c_objs=(
   "$WINOUT/C_MM.o" "$WINOUT/C_TTA.o" "$WINOUT/C_Tornado.o"
   "$WINOUT/C_4x4.o" "$WINOUT/C_Delta.o" "$WINOUT/C_External.o"
   "$WINOUT/C_Encryption.o"
-  "$WINOUT/C_7z.o"
-  "$WINOUT/sdk_7zArcIn.o" "$WINOUT/sdk_7zBuf.o" "$WINOUT/sdk_7zCrc.o"
-  "$WINOUT/sdk_7zCrcOpt.o" "$WINOUT/sdk_7zDec.o" "$WINOUT/sdk_7zFile.o"
-  "$WINOUT/sdk_7zStream.o" "$WINOUT/sdk_7zAlloc.o"
-  "$WINOUT/sdk_Bcj2.o" "$WINOUT/sdk_Bra.o" "$WINOUT/sdk_Bra86.o" "$WINOUT/sdk_BraIA64.o"
-  "$WINOUT/sdk_Delta.o" "$WINOUT/sdk_LzmaDec.o" "$WINOUT/sdk_Lzma2Dec.o"
-  "$WINOUT/sdk_Ppmd7.o" "$WINOUT/sdk_Ppmd7Dec.o"
-  "$WINOUT/sdk_CpuArch.o" "$WINOUT/sdk_Alloc.o"
 )
 [[ -f "$WINOUT/C_BCJ.o" ]] && c_objs+=("$WINOUT/C_BCJ.o")
 
@@ -273,7 +268,11 @@ case "$toolchain" in
     cc_quirks="-include errno.h -Wno-incompatible-function-pointer-types" ;;
 esac
 export MHSCCFLAGS="-O2 $cc_quirks -I. -ICompression -IHsLua/src $runtime_defs $defines $gui_flag"
-export MHSCCLIBS="$linker_inputs $rust_libs $win_libs"
+# Same GNU ld archive-ordering problem as in ./compile -- see the note there.
+# mingw ld is GNU ld, and PE-COFF on x86_64/aarch64 carries no leading
+# underscore, so the ELF spelling is the right one here.
+sevenz_undef="-Wl,--undefined=darc_7z_list -Wl,--undefined=darc_7z_extract -Wl,--undefined=darc_7z_test"
+export MHSCCLIBS="$linker_inputs $sevenz_undef $rust_libs $win_libs"
 # Neither MicroHs runtime config fits a mingw cross-build on its own, so use
 # "mingw" and supply what it is missing (see runtime_defs above).
 #
