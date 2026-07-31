@@ -51,6 +51,8 @@
 
 pub mod compress;
 pub mod decode;
+pub mod emit;
+pub mod encode_file;
 pub mod future_lz;
 pub mod hash_table;
 pub mod hashes;

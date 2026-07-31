@@ -82,6 +82,23 @@ impl Hash {
         }
     }
 
+    /// Compute the bytes to store after a block header, for the COMPRESSOR.
+    ///
+    /// `Unverified` returns zeros: those are keyed MACs whose key this port does
+    /// not reproduce. That is fine for `-hash=md5`, which is what the harness
+    /// pins, and any archive written with a keyed hash would fail its own
+    /// verification -- so the caller must not select one until the MAC is
+    /// ported. `stored_bytes()` still gives the right length either way.
+    pub fn digest(self, data: &[u8]) -> Vec<u8> {
+        match self {
+            Hash::None => Vec::new(),
+            Hash::Md5 => Md5::digest(data).to_vec(),
+            Hash::Sha1 => Sha1::digest(data).to_vec(),
+            Hash::Sha512 => Sha512::digest(data).to_vec(),
+            Hash::Unverified(n) => vec![0u8; n as usize],
+        }
+    }
+
     /// Verify a decompressed block against its stored hash. `Ok(())` when the
     /// hash matches, cannot be checked, or is absent; `Err(())` on a genuine
     /// mismatch, which is the C's fatal "checksum ... not the same" error.

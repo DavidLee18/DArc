@@ -119,10 +119,18 @@ pub fn compress(
         match matches::decode(instat, false, p.round_matches, p.base_len, block_start) {
             Some((rec, used)) => {
                 instat = &instat[used..];
+                // Wrapping, because the FENCE record's derived values are
+                // deliberately nonsense and are never read. Its src is
+                // `dest/L1*L1 - offset`, and on a block shorter than BASE_LEN
+                // that is `0 - 512`, which wraps in the C's unsigned Offset too.
+                // The branch that would consume them is unreachable, since the
+                // fence sets match_start past the end of the block. Under
+                // overflow-checks a plain `-` panics here on any small input --
+                // found by the round-trip test, not by reading.
                 (
-                    (rec.lz_match.dest - block_start) as usize,
+                    rec.lz_match.dest.wrapping_sub(block_start) as usize,
                     rec.lz_match.len as usize,
-                    rec.lz_match.dest - rec.lz_match.src,
+                    rec.lz_match.dest.wrapping_sub(rec.lz_match.src),
                 )
             }
             // The C always has at least the fence record; with none, arrange for
@@ -210,9 +218,10 @@ pub fn compress(
                 match matches::decode(instat, false, p.round_matches, p.base_len, basic) {
                     Some((rec, used)) => {
                         instat = &instat[used..];
-                        match_start = (rec.lz_match.dest - block_start) as usize;
+                        // Wrapping for the same reason as the first decode above.
+                        match_start = rec.lz_match.dest.wrapping_sub(block_start) as usize;
                         match_len = rec.lz_match.len as usize;
-                        match_offset = rec.lz_match.dest - rec.lz_match.src;
+                        match_offset = rec.lz_match.dest.wrapping_sub(rec.lz_match.src);
                     }
                     None => match_start = block_size + 1,
                 }
@@ -262,8 +271,14 @@ pub fn compress(
                 match p.accelerator {
                     0 => {
                         // ACCELERATOR == 0: every byte, single window.
+                        //
+                        // The C runs the full X iterations regardless of last_i
+                        // -- the `while (i < last_i)` above is the only guard, so
+                        // it deliberately OVERSHOOTS by up to X-1 positions and
+                        // the candidates it collects there are real. Breaking
+                        // early here changed which matches were found.
                         for _ in 0..x {
-                            if i >= last_i {
+                            if i + l >= buf.len() {
                                 break;
                             }
                             hash1.update(buf[i], buf[i + l]);
