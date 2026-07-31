@@ -6,15 +6,53 @@
 //! that did not compress. That is the whole format; every compressed byte still
 //! comes out of [`crate::encoder`].
 //!
-//! ## Scope, and what is refused rather than approximated
+//! ## Scope
 //!
-//! Single-threaded, `blockSize == LZMA2_ENC_PROPS_BLOCK_SIZE_SOLID` only. Anything
-//! else returns a distinct [`Lzma2Error`] — see [`Lzma2Enc::encode_stream`]. That is
-//! not a formality: DArc's `C_LZMA2.cpp:86` sets both thread counts from
-//! `GetCompressionThreads()`, so on a multi-core machine `Lzma2EncProps_Normalize`
-//! (`Lzma2Enc.c:305`) does **not** choose SOLID — it computes a real block size and
-//! `Lzma2Enc_Encode2` (`:736`) dispatches to `MtCoder_Code`. Only with
-//! `GetCompressionThreads() == 1` does DArc land on the path implemented here.
+//! All three configurations `Lzma2Enc_Encode2` can reach from `lzma2_compress`:
+//!
+//! | `numBlockThreads_Reduced` | `blockSize` | C path | here |
+//! |---|---|---|---|
+//! | 1 | SOLID | `Lzma2Enc_EncodeMt1`, `inStream` | [`Lzma2Enc::encode_stream`] → one block |
+//! | 1 | a size | `Lzma2Enc_EncodeMt1`, `inStream` | the same loop, several blocks |
+//! | > 1 | a size | `MtCoder_Code` → `Lzma2Enc_MtCallback_Code` | [`crate::lzma2_mt`] |
+//!
+//! Which one DArc gets is decided by `GetCompressionThreads()`, since
+//! `C_LZMA2.cpp:86-87` sets both thread counts from it: at one thread
+//! `Lzma2EncProps_Normalize` (`Lzma2Enc.c:305-309`) turns AUTO into SOLID, and above
+//! one it computes a real block size and `Lzma2Enc_Encode2` (`:739`) hands the whole
+//! stream to `MtCoder`.
+//!
+//! **The multi-threaded stream is the ordered concatenation of independently encoded
+//! blocks, and nothing more.** `MtCoder` hands out blocks in index order
+//! (`MtCoder.c:118`, `:170-173`) and `Lzma2Enc_MtCallback_Write` (`Lzma2Enc.c:695`)
+//! writes them back in index order, so the thread count changes the output only
+//! through `blockSize` — which is why the C's own bytes are identical for every
+//! thread count above one, and why encoding those blocks sequentially or in parallel
+//! is the same stream.
+//!
+//! ## Why the blocked paths are not just "the SOLID loop, restarted"
+//!
+//! Two things change with the block, both of them observable in the bytes:
+//!
+//! * **`expectedDataSize`.** `Lzma2Enc_MtCallback_Code` encodes from memory, so
+//!   `LzmaEnc_MemPrepare` calls `LzmaEnc_SetDataSize(p, srcLen)` (`LzmaEnc.c:2896`)
+//!   with *that block's* length. `MatchFinder_Create` then narrows the hash **mask**
+//!   — not merely the allocation — when the declared size is under the dictionary
+//!   (`LzFind.c:434-439`), which changes which positions collide and so which
+//!   matches are found. Measured against the C: 12 of 330 single-block
+//!   configurations differ on this alone. The `inStream` path instead declares
+//!   `blockSize` for every block (`Lzma2Enc.c:562-564`), including the short last
+//!   one, so the two blocked paths are not interchangeable either.
+//! * **The output limit.** On the memory path `packSizeLimit` is
+//!   `outLim - packTotal` (`Lzma2Enc.c:594`) and shrinks as the block fills, and the
+//!   copy loop's `destPos` accumulates across chunks instead of resetting at each
+//!   write (`:186` vs `:189`). Both are ported rather than argued to be
+//!   non-binding.
+//!
+//! What is *not* reproduced is `MtCoder`'s threading structure: no read thread, no
+//! block semaphore, no ring of buffers. Only the block boundaries it produces
+//! (`MtCoder.c:118`, `:140` — `blockSize` verbatim, no adjustment) and the order it
+//! writes them in.
 //!
 //! ## The five places a plausible port emits different bytes
 //!
@@ -41,7 +79,7 @@
 use crate::encoder::Encoder;
 use crate::props::{LzmaProps, MatchFinderKind};
 use crate::state::MATCH_LEN_MAX;
-use crate::stream::{InStream, OutStream, StreamError};
+use crate::stream::{InStream, OutStream, SliceIn, StreamError, VecOut};
 
 // ---------------------------------------------------------------------------
 // Constants (Lzma2Enc.c:18-32)
@@ -113,16 +151,28 @@ pub enum Lzma2Error {
     /// LZMA2 is stricter than plain LZMA here, which allows `lc <= 8, lp <= 4`
     /// independently.
     LcLpTooLarge,
-    /// `SZ_ERROR_PARAM` from `LzmaEnc_SetProps` (`LzmaEnc.c:537`): `lc > 8`,
-    /// `lp > 4` or `pb > 4`.
+    /// `SZ_ERROR_PARAM`, from either of two places: `LzmaEnc_SetProps`
+    /// (`LzmaEnc.c:537`) rejecting `lc > 8`, `lp > 4` or `pb > 4`, or
+    /// `Lzma2Enc_Encode2` (`Lzma2Enc.c:770-777`) rejecting a `blockSize` that does
+    /// not fit a `size_t` or whose output buffer size overflows. The second is
+    /// unreachable on a 64-bit target, where `blockSize` is capped at 256 MiB by
+    /// `Lzma2EncProps_Normalize`.
     LzmaParam,
-    /// Not implemented: `numBlockThreads_Reduced > 1` routes `Lzma2Enc_Encode2`
-    /// (`Lzma2Enc.c:736`) into `MtCoder_Code`, which is a different chunking.
+    /// No longer produced. `numBlockThreads_Reduced > 1` is implemented — see
+    /// [`crate::lzma2_mt`]. Retained so that callers matching exhaustively on this
+    /// enum keep compiling.
     MultiThreadedBlocks,
     /// Not implemented: `numThreads > 1` with a binary-tree finder and the optimal
     /// parser selects the multi-threaded match finder (`LzmaEnc.c:2695`).
+    ///
+    /// This is `lzmaProps.numThreads`, which is **not** the block thread count:
+    /// `Lzma2EncProps_Normalize` derives it as `numTotalThreads / numBlockThreads`
+    /// (`Lzma2Enc.c:276`), so DArc's `numTotalThreads == numBlockThreads_Max`
+    /// (`C_LZMA2.cpp:86-87`) always yields 1 and never reaches this refusal.
     MultiThreadedMatchFinder,
-    /// Not implemented: only `blockSize == BLOCK_SIZE_SOLID` is ported.
+    /// No longer produced. A non-SOLID `blockSize` is implemented on both the
+    /// `inStream` and the `MtCoder` path. Retained for the same reason as
+    /// [`Lzma2Error::MultiThreadedBlocks`].
     NonSolidBlock,
     /// Not implemented: `btMode` with `numHashBytes >= 5` selects
     /// `Bt5_MatchFinder_GetMatches` (`LzFind.c:1697`), which this crate has no port
@@ -436,6 +486,12 @@ impl Lzma2EncProps {
 // The encoder handle
 // ---------------------------------------------------------------------------
 
+/// The default ceiling on memory held by blocks being encoded at once, in bytes.
+///
+/// See [`Lzma2Enc::with_mt_memory_budget`] for what it bounds and why there has to
+/// be a bound at all.
+pub const DEFAULT_MT_MEMORY_BUDGET: u64 = 1 << 30;
+
 /// A configured LZMA2 encoder — the C's `CLzma2EncHandle` after
 /// `Lzma2Enc_SetProps`.
 pub struct Lzma2Enc {
@@ -445,6 +501,9 @@ pub struct Lzma2Enc {
     /// `p->propsByte`, i.e. `LzmaEnc_WriteProperties`'s byte 0
     /// (`Lzma2Enc.c:100`) — **not** the LZMA2 properties byte.
     props_byte: u8,
+    /// The in-flight memory ceiling for the multi-block path. Affects speed and
+    /// peak memory only; the emitted bytes do not depend on it.
+    mt_memory_budget: u64,
 }
 
 impl Lzma2Enc {
@@ -465,25 +524,84 @@ impl Lzma2Enc {
         let mut props = *props;
         props.normalize();
 
-        // Lzma2Enc_Encode2:736 dispatches on this, and MtCoder is not ported.
-        if props.num_block_threads_reduced > 1 {
-            return Err(Lzma2Error::MultiThreadedBlocks);
-        }
-        if props.block_size != BLOCK_SIZE_SOLID {
-            return Err(Lzma2Error::NonSolidBlock);
-        }
-
         let lzma = resolve_lzma_props(&props.lzma)?;
 
         // Lzma2EncInt_InitStream (Lzma2Enc.c:92): the first byte of
-        // LzmaEnc_WriteProperties, cached once for the whole stream.
+        // LzmaEnc_WriteProperties, cached once for the whole stream. Note "for the
+        // whole stream", not per block: `propsAreSet` is per coder and the props
+        // never change, so every block's mode-2/3 chunk carries this same byte.
         let props_byte = lzma.decoder_props()[0];
 
         Ok(Lzma2Enc {
             props,
             lzma,
             props_byte,
+            mt_memory_budget: DEFAULT_MT_MEMORY_BUDGET,
         })
+    }
+
+    /// Cap the memory the multi-block path may hold in blocks being encoded at once.
+    ///
+    /// **It cannot change the output.** Blocks are independent and written in index
+    /// order, so this only decides how many of them are in flight; one gives a purely
+    /// sequential encode. The bound is needed because `blockSize` reaches 256 MiB
+    /// (`Lzma2Enc.c:315`) and each in-flight block holds its input *and* its output
+    /// buffer, so an unbounded `numBlockThreads` would ask for
+    /// `threads * 2 * blockSize` — several gigabytes on an ordinary machine. The C
+    /// has the same appetite and no such cap.
+    ///
+    /// At least one block is always in flight, whatever the budget.
+    pub fn with_mt_memory_budget(mut self, bytes: u64) -> Self {
+        self.mt_memory_budget = bytes;
+        self
+    }
+
+    /// How many blocks [`Lzma2Enc::encode_stream`] will encode concurrently, after
+    /// both `numBlockThreads_Reduced` and the memory budget have had their say.
+    ///
+    /// `1` means the encode runs on the calling thread with no spawning at all.
+    pub fn mt_blocks_in_flight(&self) -> usize {
+        match self.props.num_block_threads_reduced > 1 {
+            false => 1,
+            true => match self.block_geometry() {
+                Err(_) => 1,
+                Ok((block_size, out_lim)) => {
+                    let threads = self.props.num_block_threads_reduced.max(1) as usize;
+                    // Saturating rather than checked: `block_size + out_lim` is at
+                    // most ~512 MiB, so the sum cannot wrap on any target that got
+                    // this far.
+                    let per_block = (block_size as u64).saturating_add(out_lim as u64);
+                    let by_memory = (self.mt_memory_budget / per_block.max(1)).max(1);
+                    threads.min(by_memory.min(usize::MAX as u64) as usize)
+                }
+            },
+        }
+    }
+
+    /// `Lzma2Enc_Encode2`'s two block-size derivations (`Lzma2Enc.c:770-781`): the
+    /// block size as a `size_t`, and `destBlockSize`, the per-block output buffer
+    /// that becomes `outLim`.
+    fn block_geometry(&self) -> Result<(usize, usize), Lzma2Error> {
+        // Lzma2Enc.c:770-772.
+        let block_size = match usize::try_from(self.props.block_size) {
+            Ok(v) => v,
+            Err(_) => return Err(Lzma2Error::LzmaParam),
+        };
+        // Normalization floors a real block size at 1 MiB (`Lzma2Enc.c:314`, `:318`),
+        // so zero means the caller reached here with props this crate did not
+        // normalize. Refuse rather than loop forever reading nothing.
+        if block_size == 0 {
+            return Err(Lzma2Error::LzmaParam);
+        }
+        // Lzma2Enc.c:775-777.
+        let out_lim = match block_size
+            .checked_add(block_size >> 10)
+            .and_then(|v| v.checked_add(16))
+        {
+            Some(v) => v,
+            None => return Err(Lzma2Error::LzmaParam),
+        };
+        Ok((block_size, out_lim))
     }
 
     /// `Lzma2Enc_WriteProperties` (`Lzma2Enc.c:485`) — the single LZMA2 property
@@ -510,9 +628,12 @@ impl Lzma2Enc {
         &self.lzma
     }
 
-    /// `Lzma2Enc_Encode2` (`Lzma2Enc.c:715`) → `Lzma2Enc_EncodeMt1`
-    /// (`Lzma2Enc.c:498`) with `outBuf == NULL`, `inStream != NULL`,
-    /// `finished == True` — which is exactly how `C_LZMA2.cpp:101` calls it.
+    /// `Lzma2Enc_Encode2` (`Lzma2Enc.c:716`) with `outBuf == NULL`,
+    /// `inStream != NULL` — which is exactly how `C_LZMA2.cpp:101` calls it.
+    ///
+    /// Dispatches on `numBlockThreads_Reduced` exactly as `Lzma2Enc.c:739` does: at
+    /// most one block thread runs [`Lzma2Enc::encode_mt1`], more than one runs the
+    /// `MtCoder`-shaped path in [`crate::lzma2_mt`].
     ///
     /// The LZMA2 property byte is **not** written here; `Lzma2Enc_WriteProperties`
     /// is a separate call in the C and DArc writes its result itself.
@@ -521,30 +642,50 @@ impl Lzma2Enc {
         source: &mut dyn InStream,
         sink: &mut dyn OutStream,
     ) -> Result<(), Lzma2Error> {
-        // Re-checked here and not only in `new`, because these are the conditions
-        // Lzma2Enc_Encode2 itself dispatches on.
-        if self.props.num_block_threads_reduced > 1 {
-            return Err(Lzma2Error::MultiThreadedBlocks);
+        match self.props.num_block_threads_reduced > 1 {
+            true => {
+                let (block_size, out_lim) = self.block_geometry()?;
+                crate::lzma2_mt::encode_blocks_in_order(
+                    self,
+                    source,
+                    sink,
+                    block_size,
+                    out_lim,
+                    self.mt_blocks_in_flight(),
+                )
+            }
+            false => self.encode_mt1(source, sink),
         }
-        if self.props.block_size != BLOCK_SIZE_SOLID {
-            return Err(Lzma2Error::NonSolidBlock);
-        }
+    }
 
-        // Lzma2EncInt_InitBlock (Lzma2Enc.c:106). With SOLID the outer `for(;;)` at
-        // Lzma2Enc.c:545 runs exactly once, so this is not inside a loop: the
-        // limited stream's limit is the SOLID sentinel, which
-        // LimitedSeqInStream_Read (:62) treats as "no limit", so the first block
-        // consumes the whole input and `finished` is set.
-        let mut st = Lzma2EncInt {
-            props_byte: self.props_byte,
-            need_init_state: true,
-            need_init_prop: true,
-            src_pos: 0,
+    /// `Lzma2Enc_EncodeMt1` (`Lzma2Enc.c:497`) with `outBuf == NULL`,
+    /// `inStream != NULL`, `finished == True`.
+    ///
+    /// The outer `for(;;)` at `:545` is a *block* loop; with
+    /// `blockSize == SOLID` the limited stream's limit is the sentinel that
+    /// `LimitedSeqInStream_Read` (`:62`) reads as "no limit", so it runs exactly
+    /// once. With a real block size it runs once per block, and each iteration
+    /// re-prepares the LZMA encoder — a fresh dictionary, `nowPos64 = 0` and
+    /// `reps = [1,1,1,1]` — which is what makes every block independently decodable.
+    fn encode_mt1(
+        &self,
+        source: &mut dyn InStream,
+        sink: &mut dyn OutStream,
+    ) -> Result<(), Lzma2Error> {
+        let block_size = self.props.block_size;
+        // Lzma2Enc.c:557-564. `me->expectedDataSize` is the sentinel because DArc
+        // never calls `Lzma2Enc_SetDataSize` (`C_LZMA2.cpp` has no such call), so
+        // `expected` starts at "unknown" and is then clamped to the block size for
+        // every block of a non-SOLID stream -- including the short last one, which
+        // is where this path parts company with the memory path.
+        let expected = match block_size {
+            BLOCK_SIZE_SOLID => u64::MAX,
+            _ => block_size,
         };
 
         let mut limited = LimitedIn {
             real: source,
-            limit: self.props.block_size,
+            limit: block_size,
             processed: 0,
             finished: false,
         };
@@ -552,52 +693,147 @@ impl Lzma2Enc {
         // `me->tempBufLzma`, sized LZMA2_CHUNK_SIZE_COMPRESSED_MAX (Lzma2Enc.c:534).
         let mut chunk: Vec<u8> = Vec::with_capacity(CHUNK_SIZE_COMPRESSED_MAX);
 
+        loop {
+            // Lzma2EncInt_InitBlock (Lzma2Enc.c:106, called at :550).
+            let mut st = Lzma2EncInt {
+                props_byte: self.props_byte,
+                need_init_state: true,
+                need_init_prop: true,
+                src_pos: 0,
+            };
+            // LimitedSeqInStream_Init (:49) then `limit = blockSize` (:552-553).
+            limited.limit = block_size;
+            limited.processed = 0;
+            limited.finished = false;
+
+            let res = {
+                // LzmaEnc_SetDataSize (:566) then LzmaEnc_PrepareForLzma2 (:568).
+                let mut enc = Encoder::new_for_lzma2_sized(
+                    &mut limited,
+                    &self.lzma,
+                    KEEP_WINDOW_SIZE,
+                    expected,
+                );
+                enc.init();
+                enc.init_prices();
+
+                // The inner `for(;;)` at Lzma2Enc.c:590.
+                loop {
+                    match encode_subblock(
+                        &mut st,
+                        &mut enc,
+                        &mut chunk,
+                        CHUNK_SIZE_COMPRESSED_MAX,
+                        sink,
+                        OutMode::Stream,
+                    ) {
+                        Err(e) => break Err(e),
+                        // `if (packSize == 0) break;` (Lzma2Enc.c:616).
+                        Ok(0) => break Ok(()),
+                        Ok(_) => {}
+                    }
+                }
+                // LzmaEnc_Finish (LzmaEnc.c:2900) releases the MT match finder's
+                // stream and is a no-op single-threaded; dropping `enc` is the
+                // equivalent.
+            };
+            res?;
+
+            // Lzma2Enc.c:626-627. A debug assertion for the message, and the C's own
+            // runtime check so that release builds refuse rather than emit a stream
+            // whose chunk lengths do not add up to the input.
+            debug_assert_eq!(
+                st.src_pos, limited.processed,
+                "block consumed {} bytes but the limited stream delivered {}",
+                st.src_pos, limited.processed
+            );
+            if st.src_pos != limited.processed {
+                return Err(Lzma2Error::Fail);
+            }
+
+            // Lzma2Enc.c:629. With SOLID this always holds -- the limit is the "no
+            // limit" sentinel, so the only way the inner loop ended is end-of-input.
+            // With a real block size it is the loop's exit test.
+            if limited.finished {
+                break;
+            }
+        }
+
+        // Lzma2Enc.c:643-645, the `finished` (outBuf == NULL) arm. Once, after the
+        // last block, not per block.
+        sink.write(&[CONTROL_EOF]).map_err(Lzma2Error::Stream)
+    }
+
+    /// One block of the `MtCoder` path: `Lzma2Enc_MtCallback_Code`
+    /// (`Lzma2Enc.c:657`) → `Lzma2Enc_EncodeMt1` with `inData`/`outBuf` and
+    /// `finished` left to the caller, since the terminator is written once for the
+    /// whole stream rather than per block.
+    ///
+    /// Returns the block's compressed bytes, which the caller must emit in block
+    /// order — `Lzma2Enc_MtCallback_Write` (`:695`) is called by `MtCoder` in index
+    /// order, and that ordering is the entire difference between this and a
+    /// single-threaded encode.
+    pub(crate) fn encode_one_block(
+        &self,
+        data: &[u8],
+        out_lim: usize,
+    ) -> Result<Vec<u8>, Lzma2Error> {
+        let mut st = Lzma2EncInt {
+            props_byte: self.props_byte,
+            need_init_state: true,
+            need_init_prop: true,
+            src_pos: 0,
+        };
+        let mut src = SliceIn::new(data);
+        // `me->outBufs[outBufIndex]`, `me->outBufSize` bytes (Lzma2Enc.c:665-675).
+        // A Vec rather than a fixed buffer: `outLim` is the *limit*, and the C's
+        // buffer is only ever written up to `packTotal`.
+        let mut out = VecOut {
+            data: Vec::with_capacity(data.len() / 3 + 64),
+        };
+        let mut chunk: Vec<u8> = Vec::with_capacity(CHUNK_SIZE_COMPRESSED_MAX);
+
         let res = {
-            // LzmaEnc_PrepareForLzma2 (LzmaEnc.c:2879) -> LzmaEnc_AllocAndInit.
-            let mut enc = Encoder::new_for_lzma2(&mut limited, &self.lzma, KEEP_WINDOW_SIZE);
+            // LzmaEnc_MemPrepare (Lzma2Enc.c:583) -- and this is where the block's
+            // own length becomes `expectedDataSize` (LzmaEnc.c:2896). The C also
+            // switches the match finder to `directInput` here; that is invisible in
+            // the output (the window is a copy of the same bytes) and is not
+            // reproduced.
+            let mut enc = Encoder::new_for_lzma2_sized(
+                &mut src,
+                &self.lzma,
+                KEEP_WINDOW_SIZE,
+                data.len() as u64,
+            );
             enc.init();
             enc.init_prices();
 
-            // The inner `for(;;)` at Lzma2Enc.c:583.
             loop {
+                // Lzma2Enc.c:592-594: on the outBuf path the limit is what is left of
+                // the block's output buffer, so it shrinks as the block fills.
+                let limit = out_lim.saturating_sub(out.data.len());
                 match encode_subblock(
                     &mut st,
                     &mut enc,
                     &mut chunk,
-                    CHUNK_SIZE_COMPRESSED_MAX,
-                    sink,
+                    limit,
+                    &mut out,
+                    OutMode::Memory,
                 ) {
                     Err(e) => break Err(e),
-                    // `if (packSize == 0) break;` (Lzma2Enc.c:606).
                     Ok(0) => break Ok(()),
                     Ok(_) => {}
                 }
             }
-            // LzmaEnc_Finish (LzmaEnc.c:2900) releases the MT match finder's stream
-            // and is a no-op single-threaded; dropping `enc` is the equivalent.
         };
         res?;
 
-        // Lzma2Enc.c:626-627. A debug assertion for the message, and the C's own
-        // runtime check so that release builds refuse rather than emit a stream
-        // whose chunk lengths do not add up to the input.
-        debug_assert_eq!(
-            st.src_pos, limited.processed,
-            "block consumed {} bytes but the limited stream delivered {}",
-            st.src_pos, limited.processed
-        );
-        if st.src_pos != limited.processed {
+        // Lzma2Enc.c:626-627, with `inSizeCur` on the right-hand side because this is
+        // the `inData` arm.
+        if st.src_pos != data.len() as u64 {
             return Err(Lzma2Error::Fail);
         }
-
-        // Lzma2Enc.c:629. With SOLID this must hold: the limit is the "no limit"
-        // sentinel, so the only way the inner loop ended is end-of-input.
-        if !limited.finished {
-            return Err(Lzma2Error::Fail);
-        }
-
-        // Lzma2Enc.c:643-645, the `finished` (outBuf == NULL) arm.
-        sink.write(&[CONTROL_EOF]).map_err(Lzma2Error::Stream)
+        Ok(out.data)
     }
 }
 
@@ -745,7 +981,25 @@ impl InStream for LimitedIn<'_> {
     }
 }
 
-/// `Lzma2EncInt_EncodeSubblock` (`Lzma2Enc.c:129`), stream-output form.
+/// Which of `Lzma2EncInt_EncodeSubblock`'s two output disciplines to follow.
+///
+/// The C selects between them with `outStream != NULL` at three points
+/// (`Lzma2Enc.c:171`, `:181-189`). They agree on every byte emitted; they disagree
+/// on when the *limit* is consulted, and a block whose output buffer is nearly full
+/// takes the copy path in one and not the other.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum OutMode {
+    /// `outStream != NULL`: each copy chunk is written as it is produced and
+    /// `destPos` restarts, so the limit is tested against a single chunk
+    /// (`Lzma2Enc.c:186`).
+    Stream,
+    /// `outBuf != NULL`: the block accumulates and `destPos` does not restart, so the
+    /// limit is tested against everything this subblock has produced
+    /// (`Lzma2Enc.c:189`).
+    Memory,
+}
+
+/// `Lzma2EncInt_EncodeSubblock` (`Lzma2Enc.c:129`).
 ///
 /// Returns `*packSizeRes` — the bytes written for this subblock, `0` meaning the
 /// block is exhausted and the caller's loop should stop.
@@ -755,6 +1009,7 @@ fn encode_subblock(
     chunk: &mut Vec<u8>,
     pack_size_limit: usize,
     sink: &mut dyn OutStream,
+    mode: OutMode,
 ) -> Result<usize, Lzma2Error> {
     let lz_header_size = 5 + usize::from(st.need_init_prop);
     if pack_size_limit < lz_header_size {
@@ -798,11 +1053,17 @@ fn encode_subblock(
         // Lzma2Enc.c:163-195.
         let mut remaining = unpack_size;
         let mut pack_size_res = 0usize;
+        // `size_t destPos` (Lzma2Enc.c:165). On the stream path it is reset after
+        // every write (:186) so it is always 0 at the test; on the memory path it
+        // accumulates (:189).
+        let mut dest_pos = 0usize;
         while remaining > 0 {
             let u = remaining.min(COPY_CHUNK_SIZE);
-            // `packSizeLimit - destPos < u + 3`, with destPos always 0 on the stream
-            // path because it is reset after every write (Lzma2Enc.c:186).
-            if pack_size_limit < u as usize + 3 {
+            // `if (packSizeLimit - destPos < u + 3)` (Lzma2Enc.c:171). Saturating
+            // where the C wraps: `destPos` can never exceed `packSizeLimit`, because
+            // this very test ran before each increment, so the two agree -- and a
+            // saturating subtraction refuses where a wrapped one would sail past.
+            if pack_size_limit.saturating_sub(dest_pos) < u as usize + 3 {
                 return Err(Lzma2Error::OutputEof);
             }
             chunk.clear();
@@ -823,8 +1084,17 @@ fn encode_subblock(
             }
             remaining -= u;
             st.src_pos += u64::from(u);
-            pack_size_res += chunk.len();
+            dest_pos += chunk.len();
             sink.write(chunk).map_err(Lzma2Error::Stream)?;
+            match mode {
+                // `*packSizeRes += destPos; destPos = 0;` (Lzma2Enc.c:183-186).
+                OutMode::Stream => {
+                    pack_size_res += dest_pos;
+                    dest_pos = 0;
+                }
+                // `*packSizeRes = destPos;` (Lzma2Enc.c:189).
+                OutMode::Memory => pack_size_res = dest_pos,
+            }
         }
 
         // Lzma2Enc.c:193. The probability model is rolled back to before the

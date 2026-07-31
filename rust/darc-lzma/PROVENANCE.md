@@ -115,6 +115,26 @@ Ordered by what blocks a drop-in replacement:
    deleting C: **every `unarc` and SFX target links `LzmaDec.o`**, and those parse
    hostile archives compiled `-D_NO_EXCEPTIONS`.
 
+## LzFindMt: measured before porting
+
+The multi-threaded match finder was deleted with the rest of `7z24` and is not
+ported. Two measurements bound what porting it is worth, both against the pinned C
+built with MT real (no `-DZ7_ST`, `LzFindMt.o` and `Threads.o` linked):
+
+* **It is byte-neutral.** `numThreads` 1 vs 2 over BT2/BT3/BT4 x compressible and
+  incompressible shapes x dictSize 1 MiB and 16 MiB: **12/12 byte-identical**, with a
+  BT4-vs-BT2 control confirming the comparison can see a difference. So a port has to
+  match the existing single-threaded match lists exactly, and nothing else — which
+  makes the correctness gate trivial and absolute.
+* **It buys about 8%.** 24 MB at BT4: threads=1 ~14.5 s, threads=2 ~13.3 s, three
+  runs each, on a busy arm64 machine. Treat as +-5%.
+
+Scope is narrow: `LzmaEnc.c:2695` is
+`mtMode = multiThread && !fastMode && btMode != 0`, and `C_LZMA.cpp:111` caps
+`numThreads` at 2. So binary-tree finders only, optimal parser only, two threads
+maximum — and DArc's default is `kHT4` (`btMode = 0`), which no preset overrides, so
+it takes an explicit `-mlzma:mf=BT4` to reach at all.
+
 ## The one place this port does NOT reproduce DArc's C
 
 **LZMA2 block splitting is not implemented, and the difference is measurable.**

@@ -231,16 +231,45 @@ impl<'a> MatchFinder<'a> {
         props: &LzmaProps,
         keep_add_buffer_before: u32,
     ) -> Self {
+        // `MatchFinder_Construct` leaves `expectedDataSize` at `(UInt64)(Int64)-1`
+        // (`LzFind.c:245`) and only `LzmaEnc_SetDataSize` (`LzmaEnc.c:610`) ever
+        // moves it. Every caller but LZMA2's blocked path leaves it there.
+        Self::new_with_expected(stream, props, keep_add_buffer_before, u64::MAX)
+    }
+
+    /// [`MatchFinder::new`] with `MFB.expectedDataSize` set, as
+    /// `LzmaEnc_MemPrepare` sets it from `srcLen` (`LzmaEnc.c:2896`).
+    ///
+    /// It is **not** a memory hint: `MatchFinder_Create` narrows the hash *mask* —
+    /// not the allocation — when the declared data size is smaller than the
+    /// dictionary (`LzFind.c:434-439`), so a smaller expectation genuinely changes
+    /// which positions collide and therefore which matches the encoder finds. The
+    /// LZMA2 multi-block path reaches this: each block is encoded from memory with
+    /// `expectedDataSize` equal to that block's length.
+    pub fn new_with_expected(
+        stream: &'a mut dyn InStream,
+        props: &LzmaProps,
+        keep_add_buffer_before: u32,
+        expected_data_size: u64,
+    ) -> Self {
         let history_size = props.history_size();
         let cyclic_buffer_size = history_size + 1;
         let num_hash_bytes = props.mf.num_hash_bytes();
-        let hash_mask = get_hash_mask(num_hash_bytes, history_size);
+        // LzFind.c:432-442. `hs` sizes the table, `hsCur` is the mask actually used;
+        // they differ exactly when `expectedDataSize < historySize`. The `> hs` guard
+        // is the C's ("is it possible?"), kept rather than reasoned away.
+        let hs = get_hash_mask(num_hash_bytes, history_size);
+        let hash_mask = match expected_data_size < u64::from(history_size) {
+            true => get_hash_mask(num_hash_bytes, expected_data_size as u32).min(hs),
+            false => hs,
+        };
         // `hashMask + 1 + fixedHashSize` (LzFind.c:444-455): the 2-/3-byte tables
         // form a prefix, and this finder's main table starts after them. Sized
         // exactly, with no padding, because `normalize3` walks the whole Vec and the
-        // C walks exactly this span (LzFind.c:860).
+        // C walks exactly this span (LzFind.c:860). The C sizes it from `hs`, not
+        // from the possibly-narrowed mask, and so does this.
         let fixed_hash_size = props.mf.fixed_hash_size();
-        let hash_len = fixed_hash_size + hash_mask as usize + 1;
+        let hash_len = fixed_hash_size + hs as usize + 1;
 
         // MatchFinder_Create:379 -- "we need one additional byte in keepSizeBefore,
         // since we use MoveBlock() after (p->pos++) and before dictionary using".
