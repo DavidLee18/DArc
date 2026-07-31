@@ -205,7 +205,7 @@ lines under `Compression/` are dominated by code nobody intends to port -- LZMA 
 
 | lines | what | status |
 |---|---|---|
-| 25,391 | `LZMA` | 7-Zip SDK, kept pristine by decision -- and the default method |
+| 25,391 | `LZMA` | 7-Zip SDK, still the implementation in use -- but see below |
 | 13,789 | `7z` | 7-Zip SDK for `.7z` reading, kept |
 | 3,168 | `SREP` | external tool; section 14 before touching the encoder |
 | 2,329 | top level | `CompressionLibrary.cpp` and the dispatcher |
@@ -580,8 +580,53 @@ The harness therefore builds the SAME pinned C driver twice — once over pinned
 codecs, once with `-DDARC_RUST` over the Rust staticlib — and requires identical
 streams. It needs the `dropin` cargo feature, unlike the others, because it
 reaches Rust through the C dispatcher rather than calling `darc_rs_*` directly.
-`lzma` is deliberately excluded as an inner method: it has no Rust port, so that
-comparison would compare a build against itself.
+`lzma` is excluded as an inner method: `C_LZMA.cpp` still routes to the C SDK, so
+that comparison would compare a build against itself.
+
+### 10d. LZMA: a Rust encoder exists, and it is byte-identical
+
+`rust/darc-lzma` is a fork of `lzma-sdk-rs` (BSD-3-Clause), and
+`rust/difftest/lzma-gap-check.sh` reports **100/100 streams byte-identical** to
+DArc's own `lzma_compress`, 12 of those with a sliding window. So the line above
+("kept pristine by decision") is now a decision about *wiring*, not about
+feasibility.
+
+Two findings changed the shape of this work:
+
+* **`Compression/LZMA/readme` describes the wrong encoder.** Its ten "changes made"
+  name identifiers that live in `Compression/LZMA/7zip/`, which
+  `Compression/LZMA/makefile` references zero times. The live encoder is `7z24/`,
+  essentially stock — which is why the fork's parse matched with no re-derivation.
+  `7zip/` was deleted in #115.
+* **The only real difference was `writeEndMark`**, one flag DArc sets and upstream
+  had no field for. Adding it took the corpus from "diverges in the last 4-6 bytes"
+  to byte-identical.
+
+**The encoder is complete.** All five match finders and both parsers:
+**222/222 byte-identical**, 24 with a sliding window. The finder axis is where the
+value was — `LZMA_METHOD` defaults to `kHT4`, i.e. `Hc5`, a five-byte hash chain,
+and no preset in `Compression.hs` names a finder, so every `-mlzma` archive DArc
+has written used a configuration the harness had never tested. Adding that axis
+immediately exposed a live bug: `mc`'s auto value is
+`(16 + (fb >> 1)) >> (btMode ? 0 : 1)`, and the binary-tree form was inlined in two
+places, so every hash chain would have searched twice as deep.
+
+**BCJ is done and its C is deleted** — `rust/darc-codecs/src/bcj.rs`, 1340/1340
+byte-identical, and with it `Compression/LZMA/7zip/` finally goes. Those last ten
+files survived #115 only because `C_BCJ.cpp` `#include`d three `.c`/`.cpp` out of
+them, which no makefile search can see.
+
+What is left before any of `Compression/LZMA/7z24` can be deleted:
+
+1. **The decoder.** `darc-lzma`'s is a test oracle — it needs a known output length
+   where DArc's streams end on an end-of-payload marker, it keeps all output rather
+   than a bounded window, and it has panics reachable from archive input. **Every
+   `unarc` and SFX target links `LzmaDec.o`**, and those parse hostile archives
+   compiled `-D_NO_EXCEPTIONS`, so this is the load-bearing piece.
+2. **LZMA2** — 3,878 deletable lines, but reachable only if a user types `lzma2`;
+   no preset uses it.
+
+See `rust/darc-lzma/PROVENANCE.md`.
 
 ### 10b. Make the silent-no-op bug class a COMPILER error -- DONE
 

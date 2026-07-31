@@ -2,30 +2,13 @@ extern "C" {
 #include "C_BCJ.h"
 }
 
-#include "7zip/Compress/Branch/BranchX86.c"
-#include "7zip/Compress/Branch/BranchCoder.cpp"
-#include "7zip/Compress/Branch/x86.cpp"
-
-template <class CBCJ_x86_Coder>
-int bcj_x86_de_compress( CALLBACK_FUNC *callback, void *auxdata)
-{
-  CBCJ_x86_Coder c; c.Init();                    // encoder/decoder for the BCJ-X86 preprocessor
-  BYTE* Buf = (BYTE*)malloc(LARGE_BUFFER_SIZE);  // room for the data
-  if (Buf==NULL)   return FREEARC_ERRCODE_NOT_ENOUGH_MEMORY;
-  int RemainderSize=0;                           // data left over from the previous round
-  int x, InSize;                                 // number of bytes read
-  while ( (InSize = x = callback ("read", Buf+RemainderSize, LARGE_BUFFER_SIZE-RemainderSize, auxdata)) >= 0 )
-  {
-    if ((InSize+=RemainderSize)==0)            goto Ok;  // No more data
-    int OutSize = InSize<=5? InSize : c.Filter(Buf, InSize);  // this filter doesn't handle less than 5 bytes :)
-    if( (x=callback("write",Buf,OutSize,auxdata)) != OutSize )      goto Error;
-    RemainderSize = InSize-OutSize;
-    // Move the unprocessed remainder of the data to the start of the buffer
-    if (RemainderSize>0)                memmove(Buf,Buf+OutSize,RemainderSize);
-  }
-Error: free(Buf); return x;            // an error occurred while reading/writing
-Ok:    free(Buf); return FREEARC_OK;   // everything is fine
-}
+// The x86 branch filter and this driver loop now live in rust/darc-codecs/src/bcj.rs,
+// byte-identical to the C they replace (rust/difftest/bcj-check.sh). The three
+// #includes that used to pull in 7zip/Compress/Branch/ are gone with them -- those
+// files were the last live users of that directory.
+//
+// bcj_x86_compress / bcj_x86_decompress are declared in C_BCJ.h, which is included
+// inside `extern "C"` above, so the Rust symbols already have the right linkage.
 
 
 /*-------------------------------------------------*/
@@ -34,7 +17,7 @@ Ok:    free(Buf); return FREEARC_OK;   // everything is fine
 // Decompression function
 int BCJ_X86_METHOD::decompress (CALLBACK_FUNC *callback, void *auxdata)
 {
-  return bcj_x86_de_compress<CBCJ_x86_Decoder> (callback, auxdata);
+  return bcj_x86_decompress (callback, auxdata);
 }
 
 #ifndef FREEARC_DECOMPRESS_ONLY
@@ -42,7 +25,7 @@ int BCJ_X86_METHOD::decompress (CALLBACK_FUNC *callback, void *auxdata)
 // Compression function
 int BCJ_X86_METHOD::compress (CALLBACK_FUNC *callback, void *auxdata)
 {
-  return bcj_x86_de_compress<CBCJ_x86_Encoder> (callback, auxdata);
+  return bcj_x86_compress (callback, auxdata);
 }
 
 // Write into buf[MAX_METHOD_STRLEN] a string describing the compression method (the inverse of parse_BCJ_X86)

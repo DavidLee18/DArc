@@ -144,14 +144,8 @@ C7Z_FLAGS=(
   -D_WIN32_WINNT=$win_ver -DWINVER=$win_ver
   -Wno-unknown-pragmas -Wno-sign-compare -Wno-deprecated-declarations
 )
-for src in Compression/LZMA/7z24/*.c; do
-  base=$(basename "$src" .c)
-  echo "  $src"
-  $CC_C "${C7Z_FLAGS[@]}" "$src" -o "$WINOUT/$base.o"
-done
-
 # zstd is the zstd-safe crate now; the vendored libzstd tree is gone.
-# 7z native reader: C_7z.c + SDK sources (sdk_* prefix to avoid collisions with LZMA/7z24)
+# 7z native reader: C_7z.c + its own SDK sources, merged and symbol-localized.
 for src in Compression/7z/C_7z.c; do
   echo "  $src"
   $CC_C "${C7Z_FLAGS[@]}" -ICompression/7z/sdk "$src" -o "$WINOUT/C_7z.o"

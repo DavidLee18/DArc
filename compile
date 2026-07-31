@@ -124,7 +124,7 @@ for src in HsLua/src/*.c; do
   clang -std=c99 -O2 -w -c "$src" -IHsLua/src -o "$obj"
   lua_objs="$lua_objs $obj"
 done
-c_objs="$ctempdir/Environment.o $ctempdir/URL.o $ctempdir/Common.o $ctempdir/CompressionLibrary.o $ctempdir/C_PPMD.o $ctempdir/C_LZP.o $ctempdir/C_LZMA.o $ctempdir/C_LZMA2.o $ctempdir/LzmaEnc.o $ctempdir/LzmaDec.o $ctempdir/Lzma2Enc.o $ctempdir/Lzma2Dec.o $ctempdir/MtCoder.o $ctempdir/MtDec.o $ctempdir/7zStream.o $ctempdir/LzFind.o $ctempdir/LzFindMt.o $ctempdir/Threads.o $ctempdir/LzFindOpt.o $ctempdir/CpuArch.o $ctempdir/C_LZ4.o $ctempdir/C_BCJ.o $ctempdir/C_GRZip.o $ctempdir/C_BSC.o $ctempdir/C_DisPack.o $ctempdir/C_Zstd.o $ctempdir/C_7z.o $ctempdir/C_Dict.o $ctempdir/C_REP.o $ctempdir/C_MM.o $ctempdir/C_TTA.o $ctempdir/C_Tornado.o $ctempdir/C_4x4.o $ctempdir/C_Delta.o $ctempdir/C_External.o $ctempdir/C_Encryption.o"
+c_objs="$ctempdir/Environment.o $ctempdir/URL.o $ctempdir/Common.o $ctempdir/CompressionLibrary.o $ctempdir/C_PPMD.o $ctempdir/C_LZP.o $ctempdir/C_LZMA.o $ctempdir/C_LZMA2.o $ctempdir/C_LZ4.o $ctempdir/C_BCJ.o $ctempdir/C_GRZip.o $ctempdir/C_BSC.o $ctempdir/C_DisPack.o $ctempdir/C_Zstd.o $ctempdir/C_7z.o $ctempdir/C_Dict.o $ctempdir/C_REP.o $ctempdir/C_MM.o $ctempdir/C_TTA.o $ctempdir/C_Tornado.o $ctempdir/C_4x4.o $ctempdir/C_Delta.o $ctempdir/C_External.o $ctempdir/C_Encryption.o"
 # -lgomp is GNU's OpenMP runtime and does not exist on macOS. Nothing in this
 # build actually uses OpenMP (see the note in unix-common.mak), so it is simply
 # omitted there rather than substituting Apple's -lomp.

@@ -182,6 +182,34 @@ pub fn encode(input: &[u8], out: &mut [u8], min_len: i32, hash_size: usize, barr
     size - (out_end - outp)
 }
 
+/// The largest `HashSizeLog` any archive `arc` can write may carry.
+///
+/// The C bounds it in `LZP_METHOD::SetBlockSize` (`C_LZP.cpp:71`) as
+/// `min(HashSizeLog, 1 + lb(BlockSize - 1))`, and `BlockSize` is a `MemSize`
+/// (32-bit), so 32 is the ceiling that clamp can ever produce. Anything above it
+/// came from something other than a stock `arc`.
+const MAX_HASH_SIZE_LOG: c_int = 32;
+
+/// `1 << HashSizeLog`, or an error if the archive's `HashSizeLog` is out of range.
+///
+/// **This is a security boundary, not tidiness.** `HashSizeLog` reaches here from
+/// the method string in the archive's directory block: `parse_LZP` reads it with a
+/// bare `parseInt` and no range check (`C_LZP.cpp:120`), and the only clamp is
+/// `SetBlockSize`, which is on the *create* path — nothing calls it while
+/// extracting. So the value is attacker-controlled, and `1usize << 99` is a panic
+/// under this workspace's `overflow-checks = true` (`rust/Cargo.toml:74`), unwinding
+/// out of an `extern "C"` frame into `unarc` and the SFX modules, which are compiled
+/// `-D_NO_EXCEPTIONS`. That is undefined behaviour reachable from an archive.
+///
+/// A corrupt archive must produce a diagnosis, not a fault — the same reasoning
+/// that made GRZip's rec mode an `Option` rather than an `unreachable!()`.
+fn hash_size_from_log(hash_size_log: c_int) -> Result<usize, c_int> {
+    if hash_size_log < 1 || hash_size_log > MAX_HASH_SIZE_LOG {
+        return Err(crate::ffi::FREEARC_ERRCODE_BAD_COMPRESSED_DATA);
+    }
+    Ok(1usize << hash_size_log)
+}
+
 /// Port of `LZPDecode`.
 pub fn decode(input: &[u8], out: &mut Vec<u8>, min_len: i32, hash_size: usize, barrier: i32, smallest_len: i32) -> Result<usize, c_int> {
     let size = input.len();
@@ -189,7 +217,15 @@ pub fn decode(input: &[u8], out: &mut Vec<u8>, min_len: i32, hash_size: usize, b
         return Err(crate::ffi::FREEARC_ERRCODE_BAD_COMPRESSED_DATA);
     }
     let mask = (hash_size - 1) as u32;
-    let mut htable = vec![5usize; hash_size];
+    // `try_reserve`, not `vec![]`: at the top of the permitted range this is 32 GiB,
+    // and an infallible allocation would abort the process rather than report that
+    // the archive asked for too much. Same shape as `grzip::stream::run`.
+    let mut htable: Vec<usize> = Vec::new();
+    match htable.try_reserve_exact(hash_size) {
+        Ok(()) => {}
+        Err(_) => return Err(crate::ffi::FREEARC_ERRCODE_NOT_ENOUGH_MEMORY),
+    }
+    htable.resize(hash_size, 5usize);
 
     out.clear();
     out.extend_from_slice(&input[..12]);
@@ -257,7 +293,10 @@ pub fn decode(input: &[u8], out: &mut Vec<u8>, min_len: i32, hash_size: usize, b
 /// Port of `lzp_decompress`: block framing around `decode`.
 #[allow(clippy::too_many_arguments)]
 pub fn decompress(io: &Io, block_size: u32, min_len: c_int, hash_size_log: c_int, barrier: c_int, smallest_len: c_int) -> c_int {
-    let hash_size = 1usize << hash_size_log.max(1);
+    let hash_size = match hash_size_from_log(hash_size_log) {
+        Ok(n) => n,
+        Err(e) => return e,
+    };
     let mut out: Vec<u8> = Vec::new();
     loop {
         let mut hdr = [0u8; 4];
@@ -312,7 +351,14 @@ pub fn decompress(io: &Io, block_size: u32, min_len: c_int, hash_size_log: c_int
 pub fn compress(io: &Io, block_size: u32, min_compression: c_int, min_len: c_int,
                 hash_size_log: c_int, barrier: c_int, smallest_len: c_int) -> c_int {
     let block_size = block_size.max(1) as usize;
-    let hash_size = 1usize << hash_size_log.max(1);
+    // Bounded on the encode side too. The value is local rather than
+    // attacker-supplied here, but the shift panics just the same, and a codec that
+    // refuses in one direction and faults in the other is harder to reason about
+    // than one that refuses in both.
+    let hash_size = match hash_size_from_log(hash_size_log) {
+        Ok(n) => n,
+        Err(e) => return e,
+    };
     let mut inbuf = vec![0u8; block_size];
     loop {
         let got = io.read(&mut inbuf);
@@ -335,5 +381,41 @@ pub fn compress(io: &Io, block_size: u32, min_compression: c_int, min_len: c_int
         } else if io.write(&(out_size as u32).to_le_bytes()) < 0 || io.write(&out[..out_size]) < 0 {
             return FREEARC_ERRCODE_IO;
         }
+    }
+}
+
+#[cfg(test)]
+mod hash_size_tests {
+    use super::*;
+
+    /// The archive-supplied `HashSizeLog` must be refused, not shifted.
+    ///
+    /// `1usize << 99` panics under this workspace's `overflow-checks = true`, and
+    /// that panic would unwind out of `lzp_decompress`'s `extern "C"` frame into
+    /// `unarc`/SFX code compiled `-D_NO_EXCEPTIONS`. The value arrives from the
+    /// method string stored in the archive's directory block, which `parse_LZP`
+    /// reads with no range check (`C_LZP.cpp:120`); the only clamp is on the create
+    /// path (`C_LZP.cpp:71`), so nothing bounds it while extracting.
+    #[test]
+    fn out_of_range_hash_size_log_is_refused_not_shifted() {
+        for bad in [-1, 0, MAX_HASH_SIZE_LOG + 1, 64, 99, i32::MAX] {
+            assert_eq!(
+                hash_size_from_log(bad),
+                Err(crate::ffi::FREEARC_ERRCODE_BAD_COMPRESSED_DATA),
+                "HashSizeLog {bad} must be refused"
+            );
+        }
+    }
+
+    /// Everything a stock `arc` can write still works: `SetBlockSize` clamps to
+    /// `1 + lb(BlockSize - 1)` and `BlockSize` is 32-bit, so 32 is its ceiling.
+    #[test]
+    fn every_hash_size_log_a_stock_arc_can_write_is_accepted() {
+        for good in 1..=MAX_HASH_SIZE_LOG {
+            assert_eq!(hash_size_from_log(good), Ok(1usize << good), "log {good}");
+        }
+        // The default (C_LZP.cpp:37) and the largest a 1 GiB block permits.
+        assert_eq!(hash_size_from_log(18), Ok(1 << 18));
+        assert_eq!(hash_size_from_log(30), Ok(1 << 30));
     }
 }

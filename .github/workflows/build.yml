@@ -954,6 +954,45 @@ jobs:
         # byte-identical to the C for every level DArc can select (1-9), and
         # decodes each block with the C decoder rather than lz4_flex.
         rust/difftest/lz4hc-check.sh
+        # BCJ's x86 branch filter, which C_BCJ.cpp now routes to Rust. The corpus
+        # deliberately includes real x86 binaries: random data almost never contains
+        # the E8/E9 opcodes the filter acts on, so a random-only corpus passes with
+        # the filter stubbed out. It also sweeps chunk sizes, because the filter
+        # carries state across calls and that is where it breaks.
+        rust/difftest/bcj-check.sh
+        # LZMA2's MULTI-BLOCK path, which the other lzma2 harness deliberately
+        # isolates out by stubbing GetCompressionThreads() to 1. Above one block
+        # thread the C splits input into blocks and the stream itself differs, so
+        # this is a separate oracle rather than another case in that one. It also
+        # fails if no run produces a multi-block stream -- a green run over
+        # single-block inputs would prove nothing this suite does not already prove.
+        LZMA2_MT_REQUIRE_RUST=1 rust/difftest/lzma2-mt-check.sh
+        # LZMA2, both directions, which C_LZMA2.cpp routes to under DARC_RUST.
+        # Encode is gated on whole-stream byte identity INCLUDING the leading
+        # property byte the wrapper writes itself, plus a per-chunk
+        # (control, unpackSize, packSize) trace -- a diverging stream is far cheaper
+        # to diagnose from the first differing chunk than from a byte offset. Decode
+        # is gated in both directions, and "C decoder over Rust streams" separately,
+        # because that is the one that decides whether ported archives stay readable.
+        LZMA2_REQUIRE_RUST=1 rust/difftest/lzma2-check.sh
+        # The LZMA DECODER, which C_LZMA.cpp now routes to under DARC_RUST. 3,267
+        # cases against DArc's own lzma_decompress, comparing four things per case:
+        # the verdict, the FreeArc error code, the plaintext, and the consumed and
+        # produced byte counts. The corpus is mostly adversarial -- 2,500 mutations,
+        # 84 truncations, the props byte swept over all 256 values, hand-built
+        # streams for the three sides of the distance check, and window-wrap cases --
+        # because this decoder is what unarc and every SFX target run on hostile
+        # input with no exception handling.
+        LZMA_DEC_REQUIRE_RUST=1 rust/difftest/lzma-decode-check.sh
+        # The LZMA ENCODER. Not called from C_LZMA.cpp yet, but byte-identical to
+        # DArc's C across every configuration that wrapper accepts -- all five match
+        # finders and both parsers.
+        #
+        # This harness is a gate, not a report: it fails on any divergence, and also
+        # if no sliding-window comparison ran. The latter is not paranoia -- every
+        # input in the original corpus was smaller than the smallest dictionary, so
+        # the window never slid and a broken window passed 88/88.
+        rust/difftest/lzma-gap-check.sh
 
   # Debug profile, on purpose. Every other codec job builds --release, where
   # `debug_assert!` compiles to nothing -- so the crate's 19 assertions are dead

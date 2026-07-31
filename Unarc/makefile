@@ -11,13 +11,13 @@ linux: unarc arc.linux.sfx
 # the tree, which is the thing this port exists to remove.
 Extractor_DEFINES = -DFREEARC_DECOMPRESS_ONLY -D_NO_EXCEPTIONS -DUNARC -DDARC_RUST
 OBJDIR  = $(TEMPDIR)-unarc
-# LzmaDec.o and CpuArch.o are new here. C_LZMA.cpp used to carry the decoder
-# itself; the 7-Zip 24.09 SDK sources were split out into Compression/LZMA/7z24
-# and added to that directory's makefile, but nothing updated this one -- so
-# every SFX module has had an unresolved LzmaDec_* since, which no build noticed
-# because no build ran.
+# LZMA and LZMA2 decode in Rust now, out of libdarc_codecs.a, so no 7-Zip SDK
+# object is linked here at all. The comment this replaces recorded a real bug --
+# the SDK sources were split into Compression/LZMA/7z24 and this makefile was
+# never updated, leaving every SFX module with an unresolved LzmaDec_* that no
+# build noticed because no build ran. That whole class is gone with the C.
 LINKOBJ_FAR_PLUGIN = $(OBJDIR)/Environment.o $(OBJDIR)/Common.o $(OBJDIR)/CompressionLibrary.o \
-                     $(OBJDIR)/C_LZMA.o $(OBJDIR)/LzmaDec.o $(OBJDIR)/CpuArch.o
+                     $(OBJDIR)/C_LZMA.o
 LINKOBJ_TINY = $(LINKOBJ_FAR_PLUGIN) $(OBJDIR)/C_BCJ.o $(OBJDIR)/C_Dict.o $(OBJDIR)/C_Delta.o
 LINKOBJ_MINI = $(LINKOBJ_TINY) $(OBJDIR)/C_REP.o $(OBJDIR)/C_LZP.o $(OBJDIR)/C_PPMD.o
 # The full module gets every codec the archiver can put in a chain. Everything
@@ -29,7 +29,7 @@ LINKOBJ = $(LINKOBJ_MINI) $(OBJDIR)/C_MM.o $(OBJDIR)/C_TTA.o \
           $(OBJDIR)/C_Tornado.o $(OBJDIR)/C_External.o $(OBJDIR)/C_GRZip.o \
           $(OBJDIR)/C_DisPack.o $(OBJDIR)/C_4x4.o $(OBJDIR)/C_BSC.o \
           $(OBJDIR)/C_LZ4.o $(OBJDIR)/C_Zstd.o \
-          $(OBJDIR)/C_LZMA2.o $(OBJDIR)/Lzma2Dec.o \
+          $(OBJDIR)/C_LZMA2.o \
           $(OBJDIR)/C_Encryption.o
 HEADERS =  ../Compression/Compression.h ../Compression/Common.h
 
@@ -194,7 +194,7 @@ $(OBJDIR)/C_Zstd.o: ../Compression/Zstd/C_Zstd.cpp ../Compression/Zstd/C_Zstd.h 
 	$(GCC) -c $(CFLAGS) -o $*.o $<
 
 $(OBJDIR)/C_LZMA2.o: ../Compression/LZMA/C_LZMA2.cpp ../Compression/LZMA/C_LZMA2.h $(HEADERS)
-	$(GCC) -c $(CFLAGS) -I../Compression/LZMA/7z24 -o $*.o $<
+	$(GCC) -c $(CFLAGS) -o $*.o $<
 
 # No -Iheaders any more: that existed because C_Encryption.cpp used to reach
 # LibTomCrypt's headers by bare name. Under DARC_RUST it routes to darc-crypto and
@@ -203,19 +203,3 @@ $(OBJDIR)/C_LZMA2.o: ../Compression/LZMA/C_LZMA2.cpp ../Compression/LZMA/C_LZMA2
 $(OBJDIR)/C_Encryption.o: ../Compression/_Encryption/C_Encryption.cpp ../Compression/_Encryption/C_Encryption.h $(HEADERS)
 	$(GCC) -c $(CFLAGS) -o $*.o $<
 
-
-# --- 7-Zip 24.09 C sources (compile as C, not C++) ------------------------
-# Same recipe as Compression/LZMA/makefile, restricted to the decode side:
-# these builds define FREEARC_DECOMPRESS_ONLY, so LzmaEnc and the match
-# finders are never referenced.
-CC_C      ?= $(firstword $(CC) cc)
-C7Z_CFLAGS = -std=c11 -O2 -DNDEBUG -D_REENTRANT $(DEFINES)
-
-$(OBJDIR)/LzmaDec.o: ../Compression/LZMA/7z24/LzmaDec.c
-	$(CC_C) -c $(C7Z_CFLAGS) -o $@ $<
-
-$(OBJDIR)/CpuArch.o: ../Compression/LZMA/7z24/CpuArch.c
-	$(CC_C) -c $(C7Z_CFLAGS) -o $@ $<
-
-$(OBJDIR)/Lzma2Dec.o: ../Compression/LZMA/7z24/Lzma2Dec.c
-	$(CC_C) -c $(C7Z_CFLAGS) -o $@ $<

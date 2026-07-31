@@ -19,6 +19,9 @@ crate-type = ["staticlib", "rlib"]   # staticlib to link; rlib so tests can use 
 dropin = []
 
 [dependencies]
+# The LZMA encoder fork. Vendored rather than a crates.io dep -- see
+# rust/darc-lzma/PROVENANCE.md.
+darc-lzma = { path = "../darc-lzma" }
 # Replaces Compression/LZ4 (5,163 LOC). DArc uses the raw LZ4 BLOCK format --
 # LZ4_compress_default / LZ4_decompress_safe -- which is a fixed specification,
 # so any conformant implementation reads any other's blocks. The version byte

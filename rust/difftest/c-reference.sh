@@ -47,7 +47,16 @@ darc_c_reference() {
 
   # Rebuild the shim copy every time (cheap, and the shims are live source);
   # extract the pinned C only once.
-  if [ ! -d "$cref/Compression" ]; then
+  #
+  # The guard is a MARKER FILE, not the directory. It used to be `[ ! -d
+  # "$cref/Compression" ]`, and a partial extraction therefore persisted forever:
+  # a cache holding the subdirectories but none of Compression/LZMA/*.cpp survived
+  # every later run, and the harnesses failed with "file not found" for sources
+  # that exist perfectly well at the pinned revision. Worse than the failure is the
+  # near miss -- a partial cache silently changes what the oracle IS, and a harness
+  # comparing against a different C than it claims is a harness proving nothing.
+  # The marker is written last, so it exists only after tar has succeeded.
+  if [ ! -f "$cref/.extracted-ok" ]; then
     rm -rf "$cref"; mkdir -p "$cref"
     # CI checks out shallow (actions/checkout defaults to fetch-depth: 1), so
     # the pinned commit is usually absent. Fetch just that one commit rather
@@ -61,7 +70,16 @@ darc_c_reference() {
       return 1; }
     git -C "$root" archive "$sha" Compression | tar -x -C "$cref" || {
       echo "c-reference: could not extract Compression/ at $sha" >&2
+      rm -rf "$cref"
       return 1; }
+    # Cheap sanity check on the result before blessing it: one file that the
+    # pinned revision certainly has. Catches a truncated stream that tar still
+    # exited 0 on.
+    [ -f "$cref/Compression/LZMA/C_LZMA.cpp" ] || {
+      echo "c-reference: extraction at $sha looks incomplete" >&2
+      rm -rf "$cref"
+      return 1; }
+    : > "$cref/.extracted-ok"
   fi
 
   mkdir -p "$cref/rust/difftest"
@@ -107,10 +125,26 @@ darc_codec_cflags() {
     PPMD)                    echo "-O1 -fomit-frame-pointer -fno-strict-aliasing -funroll-loops" ;;
     GRZip)                   echo "-O2 -fomit-frame-pointer -fno-strict-aliasing -funroll-loops" ;;
     4x4|Dict)                echo "-O3 -fomit-frame-pointer -fno-strict-aliasing" ;;
+    # LZMA is the one codec with TWO flag sets. This is the C++ wrapper set
+    # (C_LZMA.cpp and friends). The vendored SDK under 7z24/ is compiled with
+    # `C7Z_CFLAGS = -std=c11 -O2 -DNDEBUG -D_REENTRANT` and NOTABLY WITHOUT
+    # -fno-strict-aliasing -- see darc_lzma_sdk_cflags below. Do not merge them:
+    # PPMd is the standing proof that an alias-analysis difference can change
+    # compressed bytes.
+    LZMA)                    echo "-O2 -fomit-frame-pointer -fno-strict-aliasing -funroll-loops" ;;
     BSC|Delta|DisPack|LZ4|LZP|MM|REP|Tornado|_Encryption)
                              echo "-O3 -fomit-frame-pointer -fno-strict-aliasing -funroll-loops" ;;
     *) echo "darc_codec_cflags: no flag set recorded for '$1' -- read it from" >&2
        echo "Compression/$1/makefile and add it here rather than guessing" >&2
        return 1 ;;
   esac
+}
+
+
+# The flags Compression/LZMA/makefile uses for the vendored 7-Zip SDK sources
+# (`C7Z_CFLAGS`), which differ from the wrapper's: C11, NDEBUG, _REENTRANT, and
+# no -fno-strict-aliasing. Kept separate so a harness cannot accidentally build
+# the SDK the way DArc builds the wrapper.
+darc_lzma_sdk_cflags() {
+  echo "-std=c11 -O2 -DNDEBUG -D_REENTRANT"
 }
