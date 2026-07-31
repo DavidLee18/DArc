@@ -139,7 +139,7 @@ pub fn compress_file(
         )?;
 
         let mut stat = Vec::new();
-        let res = compress::compress(&cp, origsize, &mut table, buf, &fence, &mut stat)?;
+        let res = compress::compress(&cp, origsize, &mut table, buf, data, &fence, &mut stat)?;
 
         blocks.push(Block {
             start: origsize,

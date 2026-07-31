@@ -64,13 +64,17 @@ fn record_match(
     block_start: u64,
     h: &HashTable,
     buf: &[u8],
+    whole: &[u8],
     stat: &mut Vec<u32>,
     last_match_end: usize,
     literal_bytes: &mut usize,
     i: usize,
     k: Chunk,
 ) -> Result<Option<usize>, MatchTooShort> {
-    let (mut mlen, add_len) = h.match_len(k, i, buf.len(), block_start, buf);
+    // min_p is `&buf[last_match_end]` in the C: a match may not be extended
+    // backwards past the end of the previous one.
+    let (mut mlen, add_len) =
+        h.match_len(k, last_match_end, i, buf.len(), block_start, buf, whole);
     if mlen < p.min_match {
         return Ok(None);
     }
@@ -102,6 +106,7 @@ pub fn compress(
     block_start: u64,
     h: &mut HashTable,
     buf: &[u8],
+    whole: &[u8],
     in_stat: &[u32],
     stat: &mut Vec<u32>,
 ) -> Result<Compressed, MatchTooShort> {
@@ -177,7 +182,7 @@ pub fn compress(
         let k = h.find_match(buf, i, hash2.value);
         if k != NOT_FOUND {
             match record_match(
-                p, block_start, h, buf, stat, last_match_end, &mut literal_bytes, i, k,
+                p, block_start, h, buf, whole, stat, last_match_end, &mut literal_bytes, i, k,
             )? {
                 Some(end) => last_match_end = end,
                 None => {}
@@ -323,7 +328,7 @@ pub fn compress(
                 let k = h.find_match(buf, pos, hsh);
                 if k != NOT_FOUND {
                     match record_match(
-                        p, block_start, h, buf, stat, last_match_end, &mut literal_bytes, pos, k,
+                        p, block_start, h, buf, whole, stat, last_match_end, &mut literal_bytes, pos, k,
                     )? {
                         Some(end) => {
                             last_match_end = end;
@@ -414,7 +419,7 @@ mod tests {
             let mut h = table(l, accel, buf.len() as u64);
             h.prepare_buffer(0, &buf);
             let mut stat = Vec::new();
-            let out = compress(&p, 0, &mut h, &buf, &fence(&p, buf.len()), &mut stat)
+            let out = compress(&p, 0, &mut h, &buf, &buf, &fence(&p, buf.len()), &mut stat)
                 .expect("compresses");
             assert!(!stat.is_empty(), "accel={accel}: no match in a duplicated buffer");
             assert!(out.literal_bytes < buf.len(), "accel={accel}: literals did not shrink");
@@ -431,7 +436,7 @@ mod tests {
             let mut h = table(l, accel, buf.len() as u64);
             h.prepare_buffer(0, &buf);
             let mut stat = Vec::new();
-            let out = compress(&p, 0, &mut h, &buf, &fence(&p, buf.len()), &mut stat).expect("ok");
+            let out = compress(&p, 0, &mut h, &buf, &buf, &fence(&p, buf.len()), &mut stat).expect("ok");
             assert!(stat.is_empty(), "accel={accel}: invented a match in noise");
             assert_eq!(out.literal_bytes, buf.len(), "accel={accel}");
         }
@@ -446,7 +451,7 @@ mod tests {
         let buf = prng(3, l);
         let mut h = table(l, 4, 4096);
         let mut stat = Vec::new();
-        let out = compress(&p, 0, &mut h, &buf, &fence(&p, buf.len()), &mut stat).expect("ok");
+        let out = compress(&p, 0, &mut h, &buf, &buf, &fence(&p, buf.len()), &mut stat).expect("ok");
         assert!(stat.is_empty());
         assert_eq!(out.literal_bytes, buf.len());
     }
@@ -461,7 +466,7 @@ mod tests {
         let mut h = table(l, 0, buf.len() as u64);
         h.prepare_buffer(0, &buf);
         let mut stat = Vec::new();
-        compress(&p, 0, &mut h, &buf, &fence(&p, buf.len()), &mut stat).expect("ok");
+        compress(&p, 0, &mut h, &buf, &buf, &fence(&p, buf.len()), &mut stat).expect("ok");
         assert!(stat.is_empty(), "the fence was treated as a real match");
     }
 }
