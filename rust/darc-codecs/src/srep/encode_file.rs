@@ -26,6 +26,7 @@
 //! different algorithms and `-mNo`/`-mN` are different framings; each is
 //! refused explicitly rather than silently mis-encoded.
 
+use super::cdc;
 use super::compress::{self, Params};
 use super::emit::{self, Block};
 use super::hash_table::{Config, HashTable};
@@ -78,8 +79,8 @@ pub fn compress_file(
     hash: HashChoice,
     bufsize: usize,
 ) -> Result<Vec<u8>, EncodeError> {
-    // -m1/-m2 are the content-defined-chunking pair, still unported.
-    if method.cdc() {
+    // -m5's exhaustive search needs SliceHash, which is only allocated there.
+    if method.exhaustive() {
         return Err(EncodeError::Unsupported);
     }
     let d = params::derive(method, layout, opt);
@@ -145,6 +146,10 @@ pub fn compress_file(
         Some(im) => im.set_bufsize(bufsize),
         None => {}
     }
+    // CDC indexes variable-length chunks, so its tables are sized differently.
+    if method.cdc() {
+        table.init_cdc(data.len() as u64);
+    }
 
     let mut blocks: Vec<Block> = Vec::new();
     let mut origsize = 0u64;
@@ -171,6 +176,15 @@ pub fn compress_file(
                 let marks = im.prepare_buffer(buf);
                 im.compress(data, origsize, len, &marks, &mut stat)?
             }
+            None if method.cdc() => cdc::compress_cdc(
+                method == Method::ZpaqCdc,
+                d.l as usize,
+                d.min_match as usize,
+                origsize,
+                &mut table,
+                buf,
+                &mut stat,
+            )?,
             None => {
                 compress::compress(&cp, origsize, &mut table, buf, data, &fence, &mut stat)?
                     .literal_bytes
@@ -354,13 +368,12 @@ mod tests {
 
     #[test]
     fn unported_methods_are_refused_rather_than_mis_encoded() {
-        // Only the content-defined-chunking pair is left. All three LAYOUTS are
-        // supported, for -m0, -m3 and -m4 alike.
+        // Only -m5 is left: its exhaustive search is the one path that actually
+        // allocates SliceHash, which is not ported.
         for (m, l) in [
-            (Method::Cdc, Layout::FutureLz),
-            (Method::Cdc, Layout::IoLz),
-            (Method::ZpaqCdc, Layout::IndexLz),
-            (Method::ZpaqCdc, Layout::FutureLz),
+            (Method::Exhaustive, Layout::FutureLz),
+            (Method::Exhaustive, Layout::IoLz),
+            (Method::Exhaustive, Layout::IndexLz),
         ] {
             let r = compress_file(b"x", m, l, Options::default(), HashChoice::MD5, 0);
             assert_eq!(r, Err(EncodeError::Unsupported), "{m:?}/{l:?}");
@@ -375,7 +388,13 @@ mod tests {
         let half = prng(21, 40_000);
         let data: Vec<u8> = half.iter().chain(half.iter()).copied().collect();
         for layout in [Layout::FutureLz, Layout::IoLz, Layout::IndexLz] {
-            for method in [Method::Digests, Method::Reread, Method::InMemory] {
+            for method in [
+                Method::Digests,
+                Method::Reread,
+                Method::InMemory,
+                Method::Cdc,
+                Method::ZpaqCdc,
+            ] {
                 let packed = compress_file(
                     &data, method, layout, Options::default(), HashChoice::MD5, 16_384,
                 )

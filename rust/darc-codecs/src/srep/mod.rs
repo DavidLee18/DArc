@@ -49,6 +49,7 @@
 
 #![allow(dead_code)] // WIP: the format layer lands before the block loop
 
+pub mod cdc;
 pub mod compress;
 pub mod decode;
 pub mod emit;

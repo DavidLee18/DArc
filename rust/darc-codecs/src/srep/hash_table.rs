@@ -6,8 +6,9 @@
 //! * **`SliceHash`** is only consulted when `COMPARE_DIGESTS` is false. `-m3`
 //!   sets it true, so `slicehash.check()` is unreachable there and porting it
 //!   would be dead code with no oracle. `-m5` needs it.
-//! * **`CONTENT_DEFINED_CHUNKING`** (`-m1`/`-m2`) uses `startarr` and
-//!   `find_match_CDC` instead of `hasharr`, and is multithreaded.
+//! `CONTENT_DEFINED_CHUNKING` (`-m1`/`-m2`) is supported through
+//! [`HashTable::find_match_cdc`]: it indexes variable-length chunks by
+//! `startarr` and never touches `hasharr`.
 //!
 //! # The chunk digest is NOT part of the format
 //!
@@ -125,6 +126,11 @@ pub struct HashTable {
     digestarr: Vec<[u8; DIGEST_LEN]>,
     /// `bitarr[]` — a Bloom-ish pre-filter; empty when the accelerator is off.
     bitarr: Vec<u8>,
+    /// `startarr[]` — CDC only: where each variable-length chunk begins.
+    startarr: Vec<u64>,
+    /// `curchunk` — CDC only: chunks are numbered as they are seen, not derived
+    /// from a position, because they have no fixed size.
+    curchunk: Chunk,
 }
 
 impl HashTable {
@@ -170,7 +176,118 @@ impl HashTable {
                 false => Vec::new(),
             },
             bitarr: vec![0u8; bitarrsize as usize],
+            startarr: Vec::new(),
+            curchunk: 0,
         }
+    }
+
+    /// Re-size everything for CDC.
+    ///
+    /// `hash_table.cpp:144` adds 10% headroom to `total_chunks` because
+    /// content-defined chunks have no fixed size — and it does so **before**
+    /// deriving `chunknum_mask` and `hs` from it. Raising the count afterwards
+    /// leaves the masks sized for the smaller number, and once a chunk index
+    /// exceeds `chunknum_mask` the `chunkarr_value` addition CARRIES INTO THE
+    /// HASH BITS, so every later lookup compares a corrupted tag and silently
+    /// finds nothing.
+    ///
+    /// That is not hypothetical: with the masks left alone, `-m2 -b16kb` on the
+    /// `runs` corpus missed a match between two adjacent identical 145-byte
+    /// chunks in block 48 of 55 — the point where the running chunk index first
+    /// passed the stale 255 limit.
+    pub fn init_cdc(&mut self, filesize: u64) {
+        let base = filesize.max(self.cfg.l as u64) / self.cfg.l as u64;
+        let extra = base / match base > 1024 {
+            true => 10,
+            false => 1,
+        };
+        self.total_chunks = base + extra;
+
+        // Redo exactly the derivation `new()` performs, on the new count.
+        self.chunknum_mask = (roundup_to_power_of_2(self.total_chunks + 2) - 1) as Chunk;
+        self.hash_mask = !self.chunknum_mask;
+        let hs = roundup_to_power_of_2(min_hash_size(self.total_chunks));
+        self.hashsize1 = hs - 1;
+        self.chunkarr = vec![0; hs as usize];
+
+        // One extra slot each so `chunksize_CDC` can read `[chunk+1]`.
+        self.startarr = vec![0u64; self.total_chunks as usize + 2];
+        self.digestarr = vec![[0u8; DIGEST_LEN]; self.total_chunks as usize + 2];
+        self.curchunk = 0;
+    }
+
+    /// `chunksize_CDC()` (`:372`).
+    fn chunksize_cdc(&self, chunk: Chunk) -> u64 {
+        self.startarr[chunk as usize + 1] - self.startarr[chunk as usize]
+    }
+
+    /// `find_match_CDC()` (`:378`) — index one content-defined chunk and return
+    /// the distance back to an identical earlier one, or 0.
+    ///
+    /// `hash32` is the chunk's 32-byte hash: the first 20 bytes are its digest
+    /// and bytes 20..28 are the hash-table index. In the C those come from two
+    /// VMAC tags under a RANDOM key -- and the C's output is stable across runs
+    /// regardless, which proves the result does not depend on the function. This
+    /// port supplies the same 32 bytes from a keyless hash; see the module docs.
+    pub fn find_match_cdc(&mut self, offset: u64, size: u64, hash32: &[u8; 32]) -> u64 {
+        self.curchunk += 1;
+        if u64::from(self.curchunk) >= self.total_chunks {
+            return 0;
+        }
+        let ci = self.curchunk as usize;
+        self.startarr[ci] = offset;
+        // The next chunk's start is not known yet; record the end so
+        // chunksize_CDC is right for THIS chunk when a later one probes it.
+        self.startarr[ci + 1] = offset + size;
+        self.digestarr[ci].copy_from_slice(&hash32[..DIGEST_LEN]);
+        let index = u64::from_le_bytes([
+            hash32[20], hash32[21], hash32[22], hash32[23],
+            hash32[24], hash32[25], hash32[26], hash32[27],
+        ]);
+
+        let chunk = self.add_hash_cdc(self.curchunk, index);
+        match chunk != NOT_FOUND && self.chunksize_cdc(chunk) == size {
+            true => offset - self.startarr[chunk as usize],
+            false => 0,
+        }
+    }
+
+    /// `add_hash0<true>()` — the CDC specialisation. It never writes `hasharr`
+    /// (the `CDC ||` short-circuit at `:226`) and confirms purely on the digest.
+    fn add_hash_cdc(&mut self, curchunk: Chunk, index: u64) -> Chunk {
+        if curchunk == NOT_FOUND {
+            return NOT_FOUND;
+        }
+        let mut h = index;
+        let mut limit = MAX_HASH_CHAIN;
+        let mut found = NOT_FOUND;
+        let saved_hash = self.chunkarr_value(index, 0);
+
+        loop {
+            let value = self.chunkarr[self.hash_index(h)];
+            limit -= 1;
+            if value == NOT_FOUND || limit == 0 {
+                break;
+            }
+            if value & self.hash_mask == saved_hash {
+                let chunk = value & self.chunknum_mask;
+                let (a, b) = (chunk as usize, curchunk as usize);
+                if a < self.digestarr.len()
+                    && b < self.digestarr.len()
+                    && self.digestarr[a] == self.digestarr[b]
+                {
+                    found = chunk;
+                    break;
+                }
+            }
+            h += 1;
+            if limit & 3 == 0 {
+                h = Self::next_hash_slot(h);
+            }
+        }
+        let slot = self.hash_index(h);
+        self.chunkarr[slot] = self.chunkarr_value(index, curchunk);
+        found
     }
 
     /// How many chunks the table can hold — the C silently stops indexing past

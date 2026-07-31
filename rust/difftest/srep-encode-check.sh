@@ -82,6 +82,28 @@ PY
 #
 # Small block sizes are not decoration: at the default 8 MB every corpus input
 # fits in one block and no cross-block path is reached.
+# -m1's chunk boundaries are CPU-DEPENDENT IN THE C. compress_cdc.cpp:136 picks
+# CrcRollingHash when crc32c() is true and PolynomialRollingHash otherwise, and
+# crc32c() (hashes.cpp:214) compiles to a CPUID SSE4.2 test on x86 and to a
+# literal `false` everywhere else. So an x86-64 reference cuts chunks one way and
+# an ARM64 one cuts them another, from the same input.
+#
+# This port implements the POLYNOMIAL variant only, by decision -- it stays
+# deterministic on every host. So -m1 can only be gated where the reference
+# agrees, and the rows are skipped LOUDLY elsewhere rather than silently passing
+# or silently failing.
+M1_ROWS='"-m1" "-m1f" "-m1o" "-m1 -b16kb"'
+case "$(uname -m)" in
+  x86_64|amd64)
+    M1_ROWS=""
+    echo "  NOTE: skipping every -m1 row -- this host's reference srep uses"
+    echo "        CRC32c chunk boundaries (crc32c() is true on x86-64), while the"
+    echo "        port implements the portable polynomial variant. -m1 is still"
+    echo "        covered by the decoder round-trip in the Rust test suite."
+    ;;
+esac
+eval "set -- $M1_ROWS"; M1_ROWS="$*"
+
 total=0 checked=0 tie=0
 for opt in "-m3f" \
            "-m3f -b64kb" "-m3f -b16kb" \
@@ -90,7 +112,9 @@ for opt in "-m3f" \
            "-m3f -b16kb -a1/1" "-m3f -b16kb -a8/8" \
            "-m3o" "-m3" \
            "-m4f" "-m4o" \
-           "-m0" "-m0f" "-m0o" "-m0 -b16kb"; do
+           "-m0" "-m0f" "-m0o" "-m0 -b16kb" \
+           "-m2" "-m2f" "-m2o" "-m2 -b16kb" \
+           $M1_ROWS; do
   fail=0; n=0
   for f in "$W"/in/*; do
     n=$((n+1)); checked=$((checked+1)); name=$(basename "$f")
