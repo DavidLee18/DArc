@@ -323,6 +323,69 @@ impl HashTable {
         self.chunkarr[slot] = self.chunkarr_value(index, curchunk);
         found
     }
+
+    /// `match_len()` (`:303`) — how far a candidate match actually extends.
+    ///
+    /// `-m3` only (`COMPARE_DIGESTS`). `start_i` is where the match begins in
+    /// `buf`, `last_i` is the exclusive limit it may not run past, and `offset`
+    /// is the block's start position in the file.
+    ///
+    /// Returns `(match_len, add_len)`. `add_len` is always 0 here: the C only
+    /// ever sets it in the `-m4`/`-m5` branches, which extend a match
+    /// *backwards* by re-reading the input file. Digest comparison works on
+    /// whole `L`-byte chunks, so there is nothing to extend backwards into, and
+    /// the value is returned anyway to keep the caller's shape identical to the
+    /// C's for when those branches land.
+    ///
+    /// The C walks with `while (p += L, (old_offset += L) < offset)` — a comma
+    /// expression, so both advance *before* the test and the first old chunk is
+    /// skipped deliberately: `find_match()` already compared it.
+    pub fn match_len(
+        &self,
+        start_chunk: Chunk,
+        start_i: usize,
+        last_i: usize,
+        offset: u64,
+        buf: &[u8],
+    ) -> (usize, usize) {
+        debug_assert!(self.cfg.compare_digests, "match_len: -m3 path only");
+        let l = self.cfg.l;
+        let add_len = 0usize;
+        let mut p = start_i;
+        let mut old_offset = u64::from(start_chunk) * l as u64;
+
+        // Phase 1: the old data lies before this block, so compare digests.
+        loop {
+            p += l;
+            old_offset += l as u64;
+            if old_offset >= offset {
+                break;
+            }
+            // "We have no L-byte chunk to digest" -- stop, do not digest short.
+            if last_i.saturating_sub(p) < l {
+                return (p - start_i + add_len, add_len);
+            }
+            let want = (old_offset / l as u64) as usize;
+            if want >= self.digestarr.len() {
+                return (p - start_i + add_len, add_len);
+            }
+            if Self::digest(&buf[p..p + l]) != self.digestarr[want] {
+                return (p - start_i + add_len, add_len);
+            }
+        }
+
+        // Phase 2: the old data is inside this block, so compare bytes.
+        //
+        // `old_offset - offset` is an index into buf, and is >= 0 here because
+        // the loop above only exits once old_offset has reached offset.
+        let mut q = (old_offset - offset) as usize;
+        while p < last_i && q < buf.len() && p < buf.len() && buf[p] == buf[q] {
+            p += 1;
+            q += 1;
+        }
+
+        (p - start_i + add_len, add_len)
+    }
 }
 
 #[cfg(test)]
@@ -423,6 +486,54 @@ mod tests {
         assert!(!on.check_match_possibility(hash), "unmarked must be absent");
         on.mark_match_possibility(hash);
         assert!(on.check_match_possibility(hash), "marked must be present");
+    }
+
+    #[test]
+    fn match_len_extends_within_the_block_byte_by_byte() {
+        // Old data inside the current block: phase 1 exits immediately (the
+        // first `old_offset += L` already reaches offset) and the byte compare
+        // decides the length.
+        let l = 16usize;
+        let h = HashTable::new(cfg(l), 4096);
+        let mut buf = vec![0u8; 256];
+        for (i, b) in buf.iter_mut().enumerate() {
+            *b = (i % 7) as u8;
+        }
+        // chunk 0 is at buf[0..], the candidate at buf[16..] repeats it for 48
+        // bytes because the pattern has period 7 and 48 is not a multiple of 7.
+        let (len, add) = h.match_len(0, l, buf.len(), 0, &buf);
+        assert_eq!(add, 0, "add_len is never set on the -m3 path");
+        // buf[16+k] == buf[k] iff (16+k)%7 == k%7, which never holds, so the
+        // very first byte differs and the match is exactly L.
+        assert_eq!(len, l);
+    }
+
+    #[test]
+    fn match_len_stops_where_the_bytes_stop_agreeing() {
+        let l = 8usize;
+        let h = HashTable::new(cfg(l), 4096);
+        // Two identical runs, then a divergence 5 bytes in.
+        let mut buf = vec![0xAAu8; 64];
+        buf[8 + 5] = 0xBB;
+        let (len, _) = h.match_len(0, 8, buf.len(), 0, &buf);
+        // Phase 1 advances p by L and reaches offset, then bytes agree until
+        // the planted difference.
+        assert_eq!(len, l + 5);
+    }
+
+    #[test]
+    fn match_len_refuses_to_digest_a_short_tail() {
+        // The C's `if (last_p-p < L) goto stop` -- with the old data before the
+        // block, a candidate that runs out of room must stop rather than digest
+        // a partial chunk and compare it against a full one.
+        let l = 64usize;
+        let mut h = HashTable::new(cfg(l), 64 * 100);
+        let buf = vec![3u8; l * 2];
+        h.prepare_buffer(0, &buf);
+        // offset far ahead of the chunk, so phase 1 runs; last_i leaves less
+        // than L bytes after the first advance.
+        let (len, _) = h.match_len(0, 0, l + 4, 1 << 20, &buf);
+        assert_eq!(len, l, "stopped at the chunk boundary, not past it");
     }
 
     #[test]
