@@ -1,7 +1,9 @@
 //! SREP decoder, ported from `Compression/SREP/` (SREP 3.93a beta, 2014).
 //!
-//! **Work in progress.** The format layer and the match decoder are ported; the
-//! block loop and the four per-version decode strategies are not.
+//! **The decoder is complete and gated.** All four format versions decode
+//! byte-identically to the C across `rust/difftest/srep-check.sh`'s matrix (19
+//! mode/block-size combinations plus a VMAC layout pass). The COMPRESSOR is not
+//! ported — see `rust/difftest/srep-encode-check.sh` for the scope of that.
 //!
 //! ## SREP is not like the other codecs here
 //!
@@ -52,6 +54,7 @@ pub mod future_lz;
 pub mod hashes;
 pub mod io_lz;
 pub mod matches;
+pub mod rolling;
 
 /// `BULAT_ZIGANSHIN_SIGNATURE` -- note this is defined in
 /// `srep/Compression/Compression.h` and nowhere else in the repo, which is part
