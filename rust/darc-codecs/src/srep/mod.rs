@@ -56,6 +56,7 @@ pub mod hash_table;
 pub mod hashes;
 pub mod io_lz;
 pub mod matches;
+pub mod params;
 pub mod rolling;
 
 /// `BULAT_ZIGANSHIN_SIGNATURE` -- note this is defined in
