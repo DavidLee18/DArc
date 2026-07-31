@@ -35,9 +35,6 @@ pub mod lzma2_dec;
 pub mod lzma2_enc;
 pub mod lzma2_mt;
 
-#[cfg(any(test, feature = "decode"))]
-mod decoder;
-
 pub mod decode_stream;
 
 #[cfg(test)]
@@ -86,11 +83,27 @@ pub fn decoder_props(props: &LzmaProps) -> [u8; 5] {
     props.decoder_props()
 }
 
-/// Decode a raw LZMA stream (no header, no end marker) of known output length.
+/// Decode a raw LZMA stream (no header) of known output length, for round-trip
+/// self-tests.
 ///
-/// A port of `LzmaDec` provided for round-trip self-tests. Available to external
-/// consumers only with the `decode` feature enabled.
+/// A thin wrapper over [`decode_stream`], which is the real decoder. It used to be a
+/// second, separate `LzmaDec` port kept only for tests — that one required a known
+/// output length, held all output rather than a bounded window, and had panics
+/// reachable from archive input (an unvalidated props byte indexing a 16-entry table,
+/// unchecked match distances, truncated input fed zeros). Keeping a defective decoder
+/// compiled next to a hardened one is how the defective one ends up called, so it is
+/// gone; this preserves only the test-facing shape.
+///
+/// `out_len` is retained for the callers' assertions and is not needed to decode: the
+/// stream ends at its end-of-payload marker, or at the end of the input.
 #[cfg(any(test, feature = "decode"))]
-pub fn decode_raw(input: &[u8], props: &[u8; 5], out_len: usize) -> Vec<u8> {
-    decoder::decode_raw(input, props, out_len)
+pub fn decode_raw(input: &[u8], props: &[u8; 5], _out_len: usize) -> Vec<u8> {
+    let mut source = SliceIn::new(input);
+    let mut sink = VecOut::default();
+    match decode_stream::decode_stream(&mut source, &mut sink, props) {
+        Ok(_) => sink.data,
+        // The callers compare against the original input, so a failure surfaces as a
+        // mismatch with a diff rather than as a silent truncation.
+        Err(_) => sink.data,
+    }
 }

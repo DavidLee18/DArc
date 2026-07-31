@@ -190,7 +190,10 @@ pub fn decompress(io: &Io, block_size: u32) -> c_int {
         if in_size < 0 {
             // Stored block: copied through unchanged.
             let n = (-(in_size as i64)) as usize;
-            let mut raw = vec![0u8; n];
+            let mut raw = match crate::ffi::archive_sized_buffer(n, block_size as u32) {
+                Ok(b) => b,
+                Err(e) => return e,
+            };
             if io.read(&mut raw) as usize != n {
                 return FREEARC_ERRCODE_IO;
             }
@@ -204,7 +207,10 @@ pub fn decompress(io: &Io, block_size: u32) -> c_int {
         }
 
         let n = in_size as usize;
-        let mut packed = vec![0u8; n];
+        let mut packed = match crate::ffi::archive_sized_buffer(n, block_size as u32) {
+            Ok(b) => b,
+            Err(e) => return e,
+        };
         if n != 0 {
             let got = io.read(&mut packed);
             if got < 0 {

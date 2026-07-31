@@ -309,7 +309,10 @@ pub fn decompress(io: &Io, block_size: u32, min_len: c_int, hash_size_log: c_int
         let in_size = i32::from_le_bytes(hdr);
         if in_size < 0 {
             let n = (-(in_size as i64)) as usize;
-            let mut raw = vec![0u8; n];
+            let mut raw = match crate::ffi::archive_sized_buffer(n, block_size) {
+                Ok(b) => b,
+                Err(e) => return e,
+            };
             if io.read(&mut raw) as usize != n {
                 return FREEARC_ERRCODE_IO;
             }
@@ -322,11 +325,13 @@ pub fn decompress(io: &Io, block_size: u32, min_len: c_int, hash_size_log: c_int
             continue;
         }
         let n = in_size as usize;
-        let mut packed = vec![0u8; n];
+        let mut packed = match crate::ffi::archive_sized_buffer(n, block_size) {
+            Ok(b) => b,
+            Err(e) => return e,
+        };
         if n != 0 && io.read(&mut packed) as usize != n {
             return FREEARC_ERRCODE_IO;
         }
-        let _ = block_size;
         match decode(&packed, &mut out, min_len, hash_size, barrier, smallest_len) {
             Ok(_) => {
                 if !out.is_empty() {

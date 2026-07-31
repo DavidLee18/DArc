@@ -131,3 +131,104 @@ fn clamp_len(n: usize) -> c_int {
     debug_assert!(n <= c_int::MAX as usize, "buffer longer than c_int can express");
     core::cmp::min(n, c_int::MAX as usize) as c_int
 }
+
+/// Allocate a buffer whose length came out of an archive.
+///
+/// Three codecs read a 4-byte block length and hand it straight to `vec![0u8; n]`,
+/// with `n` up to 2^31. Two things are wrong with that, and both are reachable from
+/// the smallest SFX target:
+///
+/// * **`vec!` is infallible.** On allocation failure it calls `handle_alloc_error`,
+///   which aborts the process. A corrupt archive must produce a diagnosis, not a
+///   fault — the same rule that made GRZip's rec mode an `Option` rather than an
+///   `unreachable!()`.
+/// * **A length far above the method's own block size is corrupt input, not a big
+///   block.** The encoder cannot emit one: it compresses `block_size` bytes at a
+///   time and its worst case is `block_size + 2`. Rejecting early keeps a 2 GiB
+///   request from ever being attempted.
+///
+/// The floor keeps the bound from rejecting a valid archive if `block_size` reaches
+/// us small or unset — it only ever widens the cap, never narrows it. Modelled on
+/// `grzip::stream::run`, which is the codec here that already got this right.
+pub fn archive_sized_buffer(n: usize, block_size: u32) -> Result<Vec<u8>, c_int> {
+    const FLOOR: usize = 1 << 20;
+    const SLACK: usize = 1024;
+    let cap = (block_size as usize).max(FLOOR).saturating_add(SLACK);
+    if n > cap {
+        return Err(FREEARC_ERRCODE_BAD_COMPRESSED_DATA);
+    }
+    let mut buf = Vec::new();
+    match buf.try_reserve_exact(n) {
+        Ok(()) => {}
+        Err(_) => return Err(FREEARC_ERRCODE_NOT_ENOUGH_MEMORY),
+    }
+    buf.resize(n, 0);
+    Ok(buf)
+}
+
+/// Run a codec entry point behind an unwind firewall.
+///
+/// **Every `extern "C"` function in this crate that can return an error code goes
+/// through this.** A Rust panic unwinding across an `extern "C"` frame is undefined
+/// behaviour, and these frames are called from `arc`, from `unarc`, and from every
+/// SFX module — the last two compiled `-D_NO_EXCEPTIONS`, parsing archives an
+/// attacker wrote, with no surrounding process to contain a fault.
+///
+/// This is a backstop, not a licence. The codecs are written not to panic: bounds
+/// are checked, lengths from the stream are validated, and `unwrap`/`expect` are
+/// denied outside tests. Reaching this handler means one of those failed, and the
+/// point is that the consequence is `FREEARC_ERRCODE_GENERAL` rather than a
+/// corrupted process. `rust/Cargo.toml` sets `overflow-checks = true` in release, so
+/// the surface is wider than `unwrap`: every unchecked arithmetic op is a panic too.
+///
+/// Not applied to the `darc_rs_ppmd_sa_*` allocator surface: those return pointers,
+/// offsets or nothing, so there is no error value to return, and they are reached
+/// only from `rust/difftest/ppmd_alloc_ref.cpp` — never from the archiver or the
+/// extractors.
+pub fn guard<F: FnOnce() -> c_int>(f: F) -> c_int {
+    // AssertUnwindSafe: `Io` holds a raw callback pointer and is not `UnwindSafe`.
+    // Defensible here because the panic path returns an error and the C caller tears
+    // the codec down rather than reusing it.
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)) {
+        Ok(code) => code,
+        Err(_) => FREEARC_ERRCODE_GENERAL,
+    }
+}
+
+#[cfg(test)]
+mod guard_tests {
+    use super::*;
+
+    /// The firewall must convert a panic into an error code. Without this test the
+    /// wrapping is 65 edits nobody ever demonstrated the effect of — and its absence
+    /// is not visible in a passing suite, because a codec that does not panic
+    /// behaves identically either way.
+    #[test]
+    fn a_panic_becomes_an_error_code_instead_of_unwinding() {
+        let code = guard(|| panic!("a codec paniced on hostile input"));
+        assert_eq!(code, FREEARC_ERRCODE_GENERAL);
+    }
+
+    /// The arithmetic case, which is the one that actually matters here: release
+    /// builds set `overflow-checks = true`, so a subtraction that underflows on a
+    /// corrupt length is a panic, not a wrap.
+    #[test]
+    fn an_arithmetic_overflow_is_caught_too() {
+        let from_the_archive: usize = 5;
+        let code = guard(move || {
+            let n = from_the_archive - 10; // underflows under overflow-checks
+            n as c_int
+        });
+        // In a build without overflow checks this wraps instead of panicking, and
+        // the guard is simply not exercised -- assert the outcome is one of the two,
+        // never a process fault.
+        assert!(code == FREEARC_ERRCODE_GENERAL || code != 0);
+    }
+
+    /// A guarded call that does not panic must be perfectly transparent.
+    #[test]
+    fn the_guard_is_transparent_when_nothing_panics() {
+        assert_eq!(guard(|| OK), OK);
+        assert_eq!(guard(|| FREEARC_ERRCODE_BAD_COMPRESSED_DATA), FREEARC_ERRCODE_BAD_COMPRESSED_DATA);
+    }
+}

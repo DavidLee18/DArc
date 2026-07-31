@@ -84,78 +84,80 @@ pub unsafe extern "C" fn darc_lzma_compress(
     callback: crate::ffi::CALLBACK_FUNC,
     auxdata: *mut c_void,
 ) -> c_int {
-    // Refuse the configurations this encoder does not implement, before touching
-    // the stream. `_hash_size` is ignored deliberately: the pinned C_LZMA.cpp does
-    // not forward it into CLzmaEncProps either.
-    //
-    // `algorithm != 1` is the fast parser, which is not ported. An unrecognized
-    // matchFinder id is refused rather than defaulted to BT4 the way the C does
-    // (`C_LZMA.cpp:107`) -- silently encoding with a different finder than asked for
-    // would produce an archive that no other build reproduces.
-    // `algorithm` selects the parser: 0 is the fast one, 1 the optimal one
-    // (`LzmaEnc.c:568`). Both are implemented. DArc reaches 0 through the method
-    // words `fast`/`fastest` (`C_LZMA.cpp:361`), which its own `3binary` preset uses.
-    let fast_mode = match algorithm {
-        0 => true,
-        1 => false,
-        _ => return FREEARC_ERRCODE_NOT_IMPLEMENTED,
-    };
-    let mf = match MatchFinderKind::from_stream(match_finder) {
-        Some(k) => k,
-        None => return FREEARC_ERRCODE_NOT_IMPLEMENTED,
-    };
-    if dictionary_size <= 0 || num_fast_bytes <= 0 {
-        return FREEARC_ERRCODE_NOT_IMPLEMENTED;
-    }
+    crate::ffi::guard(move || {
+        // Refuse the configurations this encoder does not implement, before touching
+        // the stream. `_hash_size` is ignored deliberately: the pinned C_LZMA.cpp does
+        // not forward it into CLzmaEncProps either.
+        //
+        // `algorithm != 1` is the fast parser, which is not ported. An unrecognized
+        // matchFinder id is refused rather than defaulted to BT4 the way the C does
+        // (`C_LZMA.cpp:107`) -- silently encoding with a different finder than asked for
+        // would produce an archive that no other build reproduces.
+        // `algorithm` selects the parser: 0 is the fast one, 1 the optimal one
+        // (`LzmaEnc.c:568`). Both are implemented. DArc reaches 0 through the method
+        // words `fast`/`fastest` (`C_LZMA.cpp:361`), which its own `3binary` preset uses.
+        let fast_mode = match algorithm {
+            0 => true,
+            1 => false,
+            _ => return FREEARC_ERRCODE_NOT_IMPLEMENTED,
+        };
+        let mf = match MatchFinderKind::from_stream(match_finder) {
+            Some(k) => k,
+            None => return FREEARC_ERRCODE_NOT_IMPLEMENTED,
+        };
+        if dictionary_size <= 0 || num_fast_bytes <= 0 {
+            return FREEARC_ERRCODE_NOT_IMPLEMENTED;
+        }
 
-    let io = match Io::new(callback, auxdata) {
-        Some(io) => io,
-        None => return FREEARC_ERRCODE_NOT_IMPLEMENTED,
-    };
+        let io = match Io::new(callback, auxdata) {
+            Some(io) => io,
+            None => return FREEARC_ERRCODE_NOT_IMPLEMENTED,
+        };
 
-    // `mc == 0` is DArc's "auto" sentinel, resolved by the SDK at LzmaEnc.c:99 as
-    // `(16 + (fb >> 1)) >> (btMode ? 0 : 1)`. darc_lzma takes mc literally, so 0
-    // would make the search's cut counter underflow -- and the shift means the
-    // answer differs per finder, which is why this asks `mf` instead of inlining
-    // the BT form.
-    let fb = num_fast_bytes as u32;
-    let mc = if match_finder_cycles <= 0 {
-        mf.auto_mc(fb)
-    } else {
-        match_finder_cycles as u32
-    };
+        // `mc == 0` is DArc's "auto" sentinel, resolved by the SDK at LzmaEnc.c:99 as
+        // `(16 + (fb >> 1)) >> (btMode ? 0 : 1)`. darc_lzma takes mc literally, so 0
+        // would make the search's cut counter underflow -- and the shift means the
+        // answer differs per finder, which is why this asks `mf` instead of inlining
+        // the BT form.
+        let fb = num_fast_bytes as u32;
+        let mc = if match_finder_cycles <= 0 {
+            mf.auto_mc(fb)
+        } else {
+            match_finder_cycles as u32
+        };
 
-    let props = darc_lzma::LzmaProps {
-        lc: lit_context_bits as u8,
-        lp: lit_pos_bits as u8,
-        pb: pos_state_bits as u8,
-        dict_size: dictionary_size as u32,
-        fb,
-        mc,
-        mf,
-        fast_mode,
-        // `C_LZMA.cpp:111`: `GetCompressionThreads() > 1 ? 2 : 1`. Passed in rather
-        // than read here so this crate keeps no link dependency on the archiver.
-        // Byte-neutral -- it selects the multi-threaded match finder, which produces
-        // the same match lists faster (measured 12/12 identical against the C).
-        num_threads: num_threads.max(1) as u32,
-        // DArc always sets it: "FreeArc streams with EOPM (unknown size)".
-        // rust/difftest/lzma-gap-check.sh is what pins that this reproduces the
-        // C's bytes exactly, over a corpus that includes inputs many times the
-        // dictionary so the sliding window is actually exercised.
-        write_end_mark: true,
-    };
+        let props = darc_lzma::LzmaProps {
+            lc: lit_context_bits as u8,
+            lp: lit_pos_bits as u8,
+            pb: pos_state_bits as u8,
+            dict_size: dictionary_size as u32,
+            fb,
+            mc,
+            mf,
+            fast_mode,
+            // `C_LZMA.cpp:111`: `GetCompressionThreads() > 1 ? 2 : 1`. Passed in rather
+            // than read here so this crate keeps no link dependency on the archiver.
+            // Byte-neutral -- it selects the multi-threaded match finder, which produces
+            // the same match lists faster (measured 12/12 identical against the C).
+            num_threads: num_threads.max(1) as u32,
+            // DArc always sets it: "FreeArc streams with EOPM (unknown size)".
+            // rust/difftest/lzma-gap-check.sh is what pins that this reproduces the
+            // C's bytes exactly, over a corpus that includes inputs many times the
+            // dictionary so the sliding window is actually exercised.
+            write_end_mark: true,
+        };
 
-    let mut source = CallbackIn { io: &io };
-    let mut sink = CallbackOut { io: &io };
-    match darc_lzma::encode_stream(&mut source, &mut sink, &props) {
-        Ok(()) => OK,
-        // darc_lzma reports an unported configuration as the C SDK's
-        // SZ_ERROR_UNSUPPORTED; translate that one into DArc's vocabulary. Every
-        // other error came from the callback and is already a FreeArc code.
-        Err(e) if e == darc_lzma::ERR_UNSUPPORTED => FREEARC_ERRCODE_NOT_IMPLEMENTED,
-        Err(StreamError(code)) => code,
-    }
+        let mut source = CallbackIn { io: &io };
+        let mut sink = CallbackOut { io: &io };
+        match darc_lzma::encode_stream(&mut source, &mut sink, &props) {
+            Ok(()) => OK,
+            // darc_lzma reports an unported configuration as the C SDK's
+            // SZ_ERROR_UNSUPPORTED; translate that one into DArc's vocabulary. Every
+            // other error came from the callback and is already a FreeArc code.
+            Err(e) if e == darc_lzma::ERR_UNSUPPORTED => FREEARC_ERRCODE_NOT_IMPLEMENTED,
+            Err(StreamError(code)) => code,
+        }
+    })
 }
 
 /// Decode via [`darc_lzma`]'s hardened decoder.
@@ -295,59 +297,61 @@ pub unsafe extern "C" fn darc_lzma2_compress(
     callback: crate::ffi::CALLBACK_FUNC,
     auxdata: *mut c_void,
 ) -> c_int {
-    let io = match Io::new(callback, auxdata) {
-        Some(io) => io,
-        None => return FREEARC_ERRCODE_NOT_IMPLEMENTED,
-    };
+    crate::ffi::guard(move || {
+        let io = match Io::new(callback, auxdata) {
+            Some(io) => io,
+            None => return FREEARC_ERRCODE_NOT_IMPLEMENTED,
+        };
 
-    // `C_LZMA2.cpp:63-89` sets these explicitly rather than leaning on the level
-    // defaults, so they are built the same way here. The (btMode, numHashBytes)
-    // mapping is that file's own switch at `:75-82`.
-    let mut props = darc_lzma::Lzma2EncProps::init();
-    props.lzma.dict_size = dictionary_size as u32;
-    props.lzma.lc = lit_context_bits;
-    props.lzma.lp = lit_pos_bits;
-    props.lzma.pb = pos_state_bits;
-    props.lzma.fb = num_fast_bytes;
-    props.lzma.mc = match_finder_cycles.max(0) as u32;
-    props.lzma.algo = algorithm;
-    let (bt_mode, num_hash_bytes) = match match_finder {
-        0 => (1, 2),
-        1 => (1, 3),
-        2 => (1, 4),
-        3 => (0, 4),
-        4 => (0, 5),
-        // The C's `default:` arm picks BT4 silently (`C_LZMA2.cpp:82`). Refusing
-        // instead, for the same reason as in `darc_lzma_compress`: two builds must
-        // not disagree about what a malformed method string means.
-        _ => return FREEARC_ERRCODE_NOT_IMPLEMENTED,
-    };
-    props.lzma.bt_mode = bt_mode;
-    props.lzma.num_hash_bytes = num_hash_bytes;
-    // `C_LZMA2.cpp:86-87` takes both from `GetCompressionThreads()`, which
-    // `Cmdline.hs:295` defaults to the processor count. It is passed in rather than
-    // called from here so this crate keeps no link dependency on the archiver -- the
-    // difftest drivers build it standalone.
-    //
-    // This is not a tuning knob. Above one block thread `Lzma2EncProps_Normalize`
-    // (`Lzma2Enc.c:305-324`) abandons the SOLID block and splits the input into
-    // blocks of `clamp(dictSize * 4, 1 MiB, 256 MiB)`, each opening with a dictionary
-    // reset, so the STREAM ITSELF differs. Forcing 1 here, as this did before the
-    // multi-block port, silently produced the single-threaded stream on every
-    // multicore machine.
-    props.num_total_threads = num_threads.max(1);
-    props.num_block_threads_max = num_threads.max(1);
-    props.normalize();
+        // `C_LZMA2.cpp:63-89` sets these explicitly rather than leaning on the level
+        // defaults, so they are built the same way here. The (btMode, numHashBytes)
+        // mapping is that file's own switch at `:75-82`.
+        let mut props = darc_lzma::Lzma2EncProps::init();
+        props.lzma.dict_size = dictionary_size as u32;
+        props.lzma.lc = lit_context_bits;
+        props.lzma.lp = lit_pos_bits;
+        props.lzma.pb = pos_state_bits;
+        props.lzma.fb = num_fast_bytes;
+        props.lzma.mc = match_finder_cycles.max(0) as u32;
+        props.lzma.algo = algorithm;
+        let (bt_mode, num_hash_bytes) = match match_finder {
+            0 => (1, 2),
+            1 => (1, 3),
+            2 => (1, 4),
+            3 => (0, 4),
+            4 => (0, 5),
+            // The C's `default:` arm picks BT4 silently (`C_LZMA2.cpp:82`). Refusing
+            // instead, for the same reason as in `darc_lzma_compress`: two builds must
+            // not disagree about what a malformed method string means.
+            _ => return FREEARC_ERRCODE_NOT_IMPLEMENTED,
+        };
+        props.lzma.bt_mode = bt_mode;
+        props.lzma.num_hash_bytes = num_hash_bytes;
+        // `C_LZMA2.cpp:86-87` takes both from `GetCompressionThreads()`, which
+        // `Cmdline.hs:295` defaults to the processor count. It is passed in rather than
+        // called from here so this crate keeps no link dependency on the archiver -- the
+        // difftest drivers build it standalone.
+        //
+        // This is not a tuning knob. Above one block thread `Lzma2EncProps_Normalize`
+        // (`Lzma2Enc.c:305-324`) abandons the SOLID block and splits the input into
+        // blocks of `clamp(dictSize * 4, 1 MiB, 256 MiB)`, each opening with a dictionary
+        // reset, so the STREAM ITSELF differs. Forcing 1 here, as this did before the
+        // multi-block port, silently produced the single-threaded stream on every
+        // multicore machine.
+        props.num_total_threads = num_threads.max(1);
+        props.num_block_threads_max = num_threads.max(1);
+        props.normalize();
 
-    let mut source = CallbackIn { io: &io };
-    let mut sink = CallbackOut { io: &io };
-    match darc_lzma::lzma2_enc::compress_stream(&mut source, &mut sink, &props) {
-        Ok(()) => OK,
-        Err(darc_lzma::Lzma2Error::Stream(StreamError(code))) => code,
-        // Everything else is a parameter fault, which is what `C_LZMA2.cpp:92-93`
-        // reports for a rejected `Lzma2Enc_SetProps`.
-        Err(_) => crate::ffi::FREEARC_ERRCODE_INVALID_COMPRESSOR,
-    }
+        let mut source = CallbackIn { io: &io };
+        let mut sink = CallbackOut { io: &io };
+        match darc_lzma::lzma2_enc::compress_stream(&mut source, &mut sink, &props) {
+            Ok(()) => OK,
+            Err(darc_lzma::Lzma2Error::Stream(StreamError(code))) => code,
+            // Everything else is a parameter fault, which is what `C_LZMA2.cpp:92-93`
+            // reports for a rejected `Lzma2Enc_SetProps`.
+            Err(_) => crate::ffi::FREEARC_ERRCODE_INVALID_COMPRESSOR,
+        }
+    })
 }
 
 /// Decode via `darc_lzma`'s LZMA2, mirroring `lzma2_decompress`

@@ -139,7 +139,7 @@ fn read_u32_le(b: &[u8]) -> u32 {
 /// `block_size` and `extended_tables` are accepted to match the C signature but
 /// are unused on this path, exactly as in the original: the block layout is
 /// taken entirely from the stream.
-pub fn decompress(io: &Io, _block_size: u32, _extended_tables: c_int) -> c_int {
+pub fn decompress(io: &Io, block_size: u32, _extended_tables: c_int) -> c_int {
     let mut data: Vec<u8> = Vec::new();
     let mut tskip: Vec<u8> = Vec::new();
     let mut ttype: Vec<u8> = Vec::new();
@@ -175,8 +175,13 @@ pub fn decompress(io: &Io, _block_size: u32, _extended_tables: c_int) -> c_int {
             (&mut trows, table_size),
             (&mut data, data_size),
         ] {
-            buf.clear();
-            buf.resize(len, 0);
+            // `len` is a raw u32 straight out of the archive; bound it against the
+            // method's own block size and allocate fallibly, so a corrupt header is
+            // an error rather than a multi-gigabyte request or an abort.
+            match crate::ffi::archive_sized_buffer(len, block_size) {
+                Ok(b) => *buf = b,
+                Err(e) => return e,
+            }
             if len != 0 {
                 let got = io.read(&mut buf[..]);
                 if got < 0 {
