@@ -332,10 +332,12 @@ pub unsafe extern "C" fn darc_rs_bcj_x86_compress(
     callback: CALLBACK_FUNC,
     auxdata: *mut c_void,
 ) -> c_int {
-    match Io::new(callback, auxdata) {
-        Some(io) => de_compress(&io, Direction::Encode),
-        None => FREEARC_ERRCODE_GENERAL,
-    }
+    crate::ffi::guard(move || {
+        match Io::new(callback, auxdata) {
+            Some(io) => de_compress(&io, Direction::Encode),
+            None => FREEARC_ERRCODE_GENERAL,
+        }
+    })
 }
 
 /// # Safety
@@ -345,10 +347,12 @@ pub unsafe extern "C" fn darc_rs_bcj_x86_decompress(
     callback: CALLBACK_FUNC,
     auxdata: *mut c_void,
 ) -> c_int {
-    match Io::new(callback, auxdata) {
-        Some(io) => de_compress(&io, Direction::Decode),
-        None => FREEARC_ERRCODE_GENERAL,
-    }
+    crate::ffi::guard(move || {
+        match Io::new(callback, auxdata) {
+            Some(io) => de_compress(&io, Direction::Decode),
+            None => FREEARC_ERRCODE_GENERAL,
+        }
+    })
 }
 
 /// # Safety
@@ -358,7 +362,9 @@ pub unsafe extern "C" fn bcj_x86_compress(
     callback: CALLBACK_FUNC,
     auxdata: *mut c_void,
 ) -> c_int {
-    darc_rs_bcj_x86_compress(callback, auxdata)
+    crate::ffi::guard(move || {
+        darc_rs_bcj_x86_compress(callback, auxdata)
+    })
 }
 
 /// # Safety
@@ -368,7 +374,9 @@ pub unsafe extern "C" fn bcj_x86_decompress(
     callback: CALLBACK_FUNC,
     auxdata: *mut c_void,
 ) -> c_int {
-    darc_rs_bcj_x86_decompress(callback, auxdata)
+    crate::ffi::guard(move || {
+        darc_rs_bcj_x86_decompress(callback, auxdata)
+    })
 }
 
 #[cfg(test)]

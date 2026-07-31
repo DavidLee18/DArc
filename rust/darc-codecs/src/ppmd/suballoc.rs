@@ -207,6 +207,14 @@ impl SubAllocator {
 
     /// `StartSubAllocator`. Returns false when the allocation fails, as the C's
     /// `malloc` check does.
+    ///
+    /// It really does return false now. It used to end in a bare `true` with
+    /// `self.heap = vec![0u8; t]` above it, so the documented failure return did not
+    /// exist and the `FREEARC_ERRCODE_NOT_ENOUGH_MEMORY` branch in `ppmd::decompress`
+    /// was dead code. That mattered: `t` is the `-mppmd:mem` parameter carried in the
+    /// archive's method string, so `ppmd:4000mb` asked for a 4 GiB **zeroed**
+    /// allocation on the DECODE path, and `vec!` aborts the process on failure
+    /// instead of returning.
     pub fn start(&mut self, t: usize) -> bool {
         if self.sub_allocator_size == t {
             return true;
@@ -214,7 +222,13 @@ impl SubAllocator {
         self.stop();
         // The C mallocs without zeroing; the model never reads an uninitialised
         // byte, but zeroing keeps this port deterministic under a debugger.
-        self.heap = vec![0u8; t];
+        let mut heap = Vec::new();
+        match heap.try_reserve_exact(t) {
+            Ok(()) => {}
+            Err(_) => return false,
+        }
+        heap.resize(t, 0);
+        self.heap = heap;
         self.sub_allocator_size = t;
         true
     }

@@ -909,7 +909,7 @@ include!("optimum_fast.rs");
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::decoder::decode_raw;
+    use crate::decode_raw;
 
     fn roundtrip(input: &[u8]) {
         let props = LzmaProps::for_level(8, (input.len() as u32).max(1));

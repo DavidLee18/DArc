@@ -21,10 +21,12 @@ pub unsafe extern "C" fn darc_rs_delta_compress(
     callback: CALLBACK_FUNC,
     auxdata: *mut c_void,
 ) -> c_int {
-    match Io::new(callback, auxdata) {
-        Some(io) => delta::compress(&io, block_size, extended_tables),
-        None => FREEARC_ERRCODE_GENERAL,
-    }
+    crate::ffi::guard(move || {
+        match Io::new(callback, auxdata) {
+            Some(io) => delta::compress(&io, block_size, extended_tables),
+            None => FREEARC_ERRCODE_GENERAL,
+        }
+    })
 }
 
 /// # Safety
@@ -36,13 +38,15 @@ pub unsafe extern "C" fn darc_rs_delta_decompress(
     callback: CALLBACK_FUNC,
     auxdata: *mut c_void,
 ) -> c_int {
-    // A null callback is representable in the ABI; calling through it would be
-    // undefined behaviour. bindgen types this as Option<fn> precisely so the
-    // case has to be handled.
-    match Io::new(callback, auxdata) {
-        Some(io) => delta::decompress(&io, block_size, extended_tables),
-        None => FREEARC_ERRCODE_GENERAL,
-    }
+    crate::ffi::guard(move || {
+        // A null callback is representable in the ABI; calling through it would be
+        // undefined behaviour. bindgen types this as Option<fn> precisely so the
+        // case has to be handled.
+        match Io::new(callback, auxdata) {
+            Some(io) => delta::decompress(&io, block_size, extended_tables),
+            None => FREEARC_ERRCODE_GENERAL,
+        }
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -68,7 +72,9 @@ pub unsafe extern "C" fn delta_compress(
     callback: CALLBACK_FUNC,
     auxdata: *mut c_void,
 ) -> c_int {
-    darc_rs_delta_compress(block_size, extended_tables, callback, auxdata)
+    crate::ffi::guard(move || {
+        darc_rs_delta_compress(block_size, extended_tables, callback, auxdata)
+    })
 }
 
 /// # Safety
@@ -83,7 +89,9 @@ pub unsafe extern "C" fn delta_decompress(
     callback: CALLBACK_FUNC,
     auxdata: *mut c_void,
 ) -> c_int {
-    darc_rs_delta_decompress(block_size, extended_tables, callback, auxdata)
+    crate::ffi::guard(move || {
+        darc_rs_delta_decompress(block_size, extended_tables, callback, auxdata)
+    })
 }
 
 /// # Safety
@@ -271,10 +279,12 @@ pub unsafe extern "C" fn darc_rs_tta_decompress(
     callback: CALLBACK_FUNC,
     auxdata: *mut c_void,
 ) -> c_int {
-    match Io::new(callback, auxdata) {
-        Some(io) => tta::decompress(&io),
-        None => FREEARC_ERRCODE_GENERAL,
-    }
+    crate::ffi::guard(move || {
+        match Io::new(callback, auxdata) {
+            Some(io) => tta::decompress(&io),
+            None => FREEARC_ERRCODE_GENERAL,
+        }
+    })
 }
 
 /// Drop-in under the archiver's own symbol name; the switch is an exclusion in
@@ -288,7 +298,9 @@ pub unsafe extern "C" fn tta_decompress(
     callback: CALLBACK_FUNC,
     auxdata: *mut c_void,
 ) -> c_int {
-    darc_rs_tta_decompress(callback, auxdata)
+    crate::ffi::guard(move || {
+        darc_rs_tta_decompress(callback, auxdata)
+    })
 }
 
 /// TTA encoder. `level` 0 stores; 1-3 select the adaptive filter set. The
@@ -349,10 +361,12 @@ pub unsafe extern "C" fn darc_rs_mm_decompress(
     callback: CALLBACK_FUNC,
     auxdata: *mut c_void,
 ) -> c_int {
-    match Io::new(callback, auxdata) {
-        Some(io) => mm::decompress(&io),
-        None => FREEARC_ERRCODE_GENERAL,
-    }
+    crate::ffi::guard(move || {
+        match Io::new(callback, auxdata) {
+            Some(io) => mm::decompress(&io),
+            None => FREEARC_ERRCODE_GENERAL,
+        }
+    })
 }
 
 /// Drop-in under the archiver's own symbol name; the switch is an exclusion in
@@ -366,7 +380,9 @@ pub unsafe extern "C" fn mm_decompress(
     callback: CALLBACK_FUNC,
     auxdata: *mut c_void,
 ) -> c_int {
-    darc_rs_mm_decompress(callback, auxdata)
+    crate::ffi::guard(move || {
+        darc_rs_mm_decompress(callback, auxdata)
+    })
 }
 
 /// MM encoder. Unlike the decoder this takes the full parameter set, because
@@ -466,10 +482,12 @@ pub unsafe extern "C" fn darc_rs_tor_decompress(
     callback: CALLBACK_FUNC,
     auxdata: *mut c_void,
 ) -> c_int {
-    match Io::new(callback, auxdata) {
-        Some(io) => tornado::decode::decompress(&io),
-        None => FREEARC_ERRCODE_GENERAL,
-    }
+    crate::ffi::guard(move || {
+        match Io::new(callback, auxdata) {
+            Some(io) => tornado::decode::decompress(&io),
+            None => FREEARC_ERRCODE_GENERAL,
+        }
+    })
 }
 
 /// Drop-in under the archiver's own symbol name; the switch is an exclusion in
@@ -483,7 +501,9 @@ pub unsafe extern "C" fn tor_decompress(
     callback: CALLBACK_FUNC,
     auxdata: *mut c_void,
 ) -> c_int {
-    darc_rs_tor_decompress(callback, auxdata)
+    crate::ffi::guard(move || {
+        darc_rs_tor_decompress(callback, auxdata)
+    })
 }
 
 /// Tornado encoder, for the differential harness only.
@@ -505,10 +525,12 @@ pub unsafe extern "C" fn darc_rs_tor_compress(
     callback: CALLBACK_FUNC,
     auxdata: *mut c_void,
 ) -> c_int {
-    match Io::new(callback, auxdata) {
-        Some(io) => tornado::encode::compress(m, &io, all_at_once != 0),
-        None => FREEARC_ERRCODE_GENERAL,
-    }
+    crate::ffi::guard(move || {
+        match Io::new(callback, auxdata) {
+            Some(io) => tornado::encode::compress(m, &io, all_at_once != 0),
+            None => FREEARC_ERRCODE_GENERAL,
+        }
+    })
 }
 
 /// GRZip block decoder, for the differential harness only.
@@ -530,15 +552,17 @@ pub unsafe extern "C" fn darc_rs_grzip_decompress_block(
     output: *mut u8,
     out_cap: c_int,
 ) -> c_int {
-    if input.is_null() || output.is_null() || in_size < 0 || out_cap < 0 {
-        return FREEARC_ERRCODE_GENERAL;
-    }
-    let inp = core::slice::from_raw_parts(input, in_size as usize);
-    let out = core::slice::from_raw_parts_mut(output, out_cap as usize);
-    match grzip::block::decompress_block(inp, out) {
-        Ok(n) => n as c_int,
-        Err(e) => e,
-    }
+    crate::ffi::guard(move || {
+        if input.is_null() || output.is_null() || in_size < 0 || out_cap < 0 {
+            return FREEARC_ERRCODE_GENERAL;
+        }
+        let inp = core::slice::from_raw_parts(input, in_size as usize);
+        let out = core::slice::from_raw_parts_mut(output, out_cap as usize);
+        match grzip::block::decompress_block(inp, out) {
+            Ok(n) => n as c_int,
+            Err(e) => e,
+        }
+    })
 }
 
 /// GRZip decoder. Like TTA, MM and Tornado it takes no tuning parameters --
@@ -551,10 +575,12 @@ pub unsafe extern "C" fn darc_rs_grzip_decompress(
     callback: CALLBACK_FUNC,
     auxdata: *mut c_void,
 ) -> c_int {
-    match Io::new(callback, auxdata) {
-        Some(io) => grzip::stream::decompress(&io),
-        None => FREEARC_ERRCODE_GENERAL,
-    }
+    crate::ffi::guard(move || {
+        match Io::new(callback, auxdata) {
+            Some(io) => grzip::stream::decompress(&io),
+            None => FREEARC_ERRCODE_GENERAL,
+        }
+    })
 }
 
 /// Drop-in under the archiver's own symbol name; the switch is an exclusion in
@@ -568,7 +594,9 @@ pub unsafe extern "C" fn grzip_decompress(
     callback: CALLBACK_FUNC,
     auxdata: *mut c_void,
 ) -> c_int {
-    darc_rs_grzip_decompress(callback, auxdata)
+    crate::ffi::guard(move || {
+        darc_rs_grzip_decompress(callback, auxdata)
+    })
 }
 
 /// DisPack decoder. `block_size` bounds the untrusted chunk lengths.
@@ -581,10 +609,12 @@ pub unsafe extern "C" fn darc_rs_dispack_decompress(
     callback: CALLBACK_FUNC,
     auxdata: *mut c_void,
 ) -> c_int {
-    match Io::new(callback, auxdata) {
-        Some(io) => dispack::decode::decompress(&io, block_size),
-        None => FREEARC_ERRCODE_GENERAL,
-    }
+    crate::ffi::guard(move || {
+        match Io::new(callback, auxdata) {
+            Some(io) => dispack::decode::decompress(&io, block_size),
+            None => FREEARC_ERRCODE_GENERAL,
+        }
+    })
 }
 
 /// Drop-in under the archiver's own symbol name.
@@ -601,7 +631,9 @@ pub unsafe extern "C" fn dispack_decompress(
     callback: CALLBACK_FUNC,
     auxdata: *mut c_void,
 ) -> c_int {
-    darc_rs_dispack_decompress(block_size, callback, auxdata)
+    crate::ffi::guard(move || {
+        darc_rs_dispack_decompress(block_size, callback, auxdata)
+    })
 }
 
 /// BSC QLFC coder-level decode, for the differential harness.
@@ -620,21 +652,23 @@ pub unsafe extern "C" fn darc_rs_bsc_qlfc_decode(
     out_cap: c_int,
     coder: c_int,
 ) -> c_int {
-    if input.is_null() || output.is_null() || in_size < 0 || out_cap < 0 {
-        return FREEARC_ERRCODE_GENERAL;
-    }
-    let inp = core::slice::from_raw_parts(input, in_size as usize);
-    let out = core::slice::from_raw_parts_mut(output, out_cap as usize);
-    let r = match coder {
-        1 => bsc::qlfc::static_decode(inp, out),
-        2 => bsc::qlfc::adaptive_decode(inp, out),
-        3 => bsc::qlfc::fast_decode(inp, out),
-        _ => return FREEARC_ERRCODE_GENERAL,
-    };
-    match r {
-        Ok(n) => n as c_int,
-        Err(e) => e,
-    }
+    crate::ffi::guard(move || {
+        if input.is_null() || output.is_null() || in_size < 0 || out_cap < 0 {
+            return FREEARC_ERRCODE_GENERAL;
+        }
+        let inp = core::slice::from_raw_parts(input, in_size as usize);
+        let out = core::slice::from_raw_parts_mut(output, out_cap as usize);
+        let r = match coder {
+            1 => bsc::qlfc::static_decode(inp, out),
+            2 => bsc::qlfc::adaptive_decode(inp, out),
+            3 => bsc::qlfc::fast_decode(inp, out),
+            _ => return FREEARC_ERRCODE_GENERAL,
+        };
+        match r {
+            Ok(n) => n as c_int,
+            Err(e) => e,
+        }
+    })
 }
 
 /// BSC inverse-BWT, for the differential harness. Mirrors `bsc_bwt_decode`:
@@ -651,16 +685,18 @@ pub unsafe extern "C" fn darc_rs_bsc_bwt_decode(
     num_indexes: u8,
     indexes: *const i32,
 ) -> c_int {
-    if data.is_null() || n < 0 {
-        return FREEARC_ERRCODE_GENERAL;
-    }
-    let buf = core::slice::from_raw_parts_mut(data, n as usize);
-    let idx: &[i32] = if indexes.is_null() || num_indexes == 0 {
-        &[]
-    } else {
-        core::slice::from_raw_parts(indexes, num_indexes as usize)
-    };
-    bsc::bwt::bwt_decode(buf, n as usize, index, num_indexes, idx)
+    crate::ffi::guard(move || {
+        if data.is_null() || n < 0 {
+            return FREEARC_ERRCODE_GENERAL;
+        }
+        let buf = core::slice::from_raw_parts_mut(data, n as usize);
+        let idx: &[i32] = if indexes.is_null() || num_indexes == 0 {
+            &[]
+        } else {
+            core::slice::from_raw_parts(indexes, num_indexes as usize)
+        };
+        bsc::bwt::bwt_decode(buf, n as usize, index, num_indexes, idx)
+    })
 }
 
 /// BSC inverse sort-transform (ST3..ST8), for the differential harness. Mirrors
@@ -671,11 +707,13 @@ pub unsafe extern "C" fn darc_rs_bsc_bwt_decode(
 /// `data` must be valid for `n` bytes.
 #[no_mangle]
 pub unsafe extern "C" fn darc_rs_bsc_st_decode(data: *mut u8, n: c_int, k: c_int, index: c_int) -> c_int {
-    if data.is_null() || n < 0 || k < 0 {
-        return FREEARC_ERRCODE_GENERAL;
-    }
-    let buf = core::slice::from_raw_parts_mut(data, n as usize);
-    bsc::st::st_decode(buf, n as usize, k as u32, index)
+    crate::ffi::guard(move || {
+        if data.is_null() || n < 0 || k < 0 {
+            return FREEARC_ERRCODE_GENERAL;
+        }
+        let buf = core::slice::from_raw_parts_mut(data, n as usize);
+        bsc::st::st_decode(buf, n as usize, k as u32, index)
+    })
 }
 
 /// BSC block dispatcher, for the whole-codec differential harness. Mirrors
@@ -691,12 +729,14 @@ pub unsafe extern "C" fn darc_rs_bsc_decompress_block(
     output: *mut u8,
     out_cap: c_int,
 ) -> c_int {
-    if input.is_null() || output.is_null() || in_size < 0 || out_cap < 0 {
-        return FREEARC_ERRCODE_GENERAL;
-    }
-    let inp = core::slice::from_raw_parts(input, in_size as usize);
-    let out = core::slice::from_raw_parts_mut(output, out_cap as usize);
-    bsc::dispatch::decompress(inp, out)
+    crate::ffi::guard(move || {
+        if input.is_null() || output.is_null() || in_size < 0 || out_cap < 0 {
+            return FREEARC_ERRCODE_GENERAL;
+        }
+        let inp = core::slice::from_raw_parts(input, in_size as usize);
+        let out = core::slice::from_raw_parts_mut(output, out_cap as usize);
+        bsc::dispatch::decompress(inp, out)
+    })
 }
 
 /// `bsc_qlfc_static_encode_block`: entropy-code one block with the QLFC static
@@ -712,12 +752,14 @@ pub unsafe extern "C" fn darc_rs_bsc_qlfc_static_encode(
     output: *mut u8,
     out_size: c_int,
 ) -> c_int {
-    if input.is_null() || output.is_null() || in_size <= 0 || out_size <= 0 {
-        return FREEARC_ERRCODE_GENERAL;
-    }
-    let inp = core::slice::from_raw_parts(input, in_size as usize);
-    let out = core::slice::from_raw_parts_mut(output, out_size as usize);
-    bsc::qlfc_enc::static_encode(inp, out)
+    crate::ffi::guard(move || {
+        if input.is_null() || output.is_null() || in_size <= 0 || out_size <= 0 {
+            return FREEARC_ERRCODE_GENERAL;
+        }
+        let inp = core::slice::from_raw_parts(input, in_size as usize);
+        let out = core::slice::from_raw_parts_mut(output, out_size as usize);
+        bsc::qlfc_enc::static_encode(inp, out)
+    })
 }
 
 /// `bsc_qlfc_adaptive_encode_block`: entropy-code one block with the QLFC
@@ -732,12 +774,14 @@ pub unsafe extern "C" fn darc_rs_bsc_qlfc_adaptive_encode(
     output: *mut u8,
     out_size: c_int,
 ) -> c_int {
-    if input.is_null() || output.is_null() || in_size <= 0 || out_size <= 0 {
-        return FREEARC_ERRCODE_GENERAL;
-    }
-    let inp = core::slice::from_raw_parts(input, in_size as usize);
-    let out = core::slice::from_raw_parts_mut(output, out_size as usize);
-    bsc::qlfc_enc::adaptive_encode(inp, out)
+    crate::ffi::guard(move || {
+        if input.is_null() || output.is_null() || in_size <= 0 || out_size <= 0 {
+            return FREEARC_ERRCODE_GENERAL;
+        }
+        let inp = core::slice::from_raw_parts(input, in_size as usize);
+        let out = core::slice::from_raw_parts_mut(output, out_size as usize);
+        bsc::qlfc_enc::adaptive_encode(inp, out)
+    })
 }
 
 /// `bsc_qlfc_fast_encode_block`: entropy-code one block with the QLFC fast
@@ -752,12 +796,14 @@ pub unsafe extern "C" fn darc_rs_bsc_qlfc_fast_encode(
     output: *mut u8,
     out_size: c_int,
 ) -> c_int {
-    if input.is_null() || output.is_null() || in_size <= 0 || out_size <= 0 {
-        return FREEARC_ERRCODE_GENERAL;
-    }
-    let inp = core::slice::from_raw_parts(input, in_size as usize);
-    let out = core::slice::from_raw_parts_mut(output, out_size as usize);
-    bsc::qlfc_enc::fast_encode(inp, out)
+    crate::ffi::guard(move || {
+        if input.is_null() || output.is_null() || in_size <= 0 || out_size <= 0 {
+            return FREEARC_ERRCODE_GENERAL;
+        }
+        let inp = core::slice::from_raw_parts(input, in_size as usize);
+        let out = core::slice::from_raw_parts_mut(output, out_size as usize);
+        bsc::qlfc_enc::fast_encode(inp, out)
+    })
 }
 
 /// `bsc_coder_compress`: split a block and entropy-code each piece, producing
@@ -773,12 +819,14 @@ pub unsafe extern "C" fn darc_rs_bsc_coder_compress(
     out_size: c_int,
     coder: c_int,
 ) -> c_int {
-    if input.is_null() || output.is_null() || in_size <= 0 || out_size <= 0 {
-        return FREEARC_ERRCODE_GENERAL;
-    }
-    let inp = core::slice::from_raw_parts(input, in_size as usize);
-    let out = core::slice::from_raw_parts_mut(output, out_size as usize);
-    bsc::qlfc_enc::coder_compress(inp, out, coder as u32)
+    crate::ffi::guard(move || {
+        if input.is_null() || output.is_null() || in_size <= 0 || out_size <= 0 {
+            return FREEARC_ERRCODE_GENERAL;
+        }
+        let inp = core::slice::from_raw_parts(input, in_size as usize);
+        let out = core::slice::from_raw_parts_mut(output, out_size as usize);
+        bsc::qlfc_enc::coder_compress(inp, out, coder as u32)
+    })
 }
 
 /// `bsc_st_encode` for `k == 3`: the forward sort-transform of order 3.
@@ -789,11 +837,13 @@ pub unsafe extern "C" fn darc_rs_bsc_coder_compress(
 /// past the end, exactly as the C does.
 #[no_mangle]
 pub unsafe extern "C" fn darc_rs_bsc_st3_encode(data: *mut u8, n: c_int) -> c_int {
-    if data.is_null() || n < 0 {
-        return FREEARC_ERRCODE_GENERAL;
-    }
-    let t = core::slice::from_raw_parts_mut(data, n as usize + 28);
-    bsc::qlfc_enc::st_encode(t, n as usize, 3)
+    crate::ffi::guard(move || {
+        if data.is_null() || n < 0 {
+            return FREEARC_ERRCODE_GENERAL;
+        }
+        let t = core::slice::from_raw_parts_mut(data, n as usize + 28);
+        bsc::qlfc_enc::st_encode(t, n as usize, 3)
+    })
 }
 
 /// `bsc_st_encode`: the forward sort-transform at order `k` (3..6; 7 and 8 have
@@ -803,11 +853,13 @@ pub unsafe extern "C" fn darc_rs_bsc_st3_encode(data: *mut u8, n: c_int) -> c_in
 /// `data` must be valid for `n + 28` bytes.
 #[no_mangle]
 pub unsafe extern "C" fn darc_rs_bsc_st_encode(data: *mut u8, n: c_int, k: c_int) -> c_int {
-    if data.is_null() || n < 0 || k < 0 {
-        return FREEARC_ERRCODE_GENERAL;
-    }
-    let t = core::slice::from_raw_parts_mut(data, n as usize + 28);
-    bsc::qlfc_enc::st_encode(t, n as usize, k as u32)
+    crate::ffi::guard(move || {
+        if data.is_null() || n < 0 || k < 0 {
+            return FREEARC_ERRCODE_GENERAL;
+        }
+        let t = core::slice::from_raw_parts_mut(data, n as usize + 28);
+        bsc::qlfc_enc::st_encode(t, n as usize, k as u32)
+    })
 }
 
 /// `bsc_store` (`libbsc.cpp:120`): frame `input` as an uncompressed block.
@@ -819,12 +871,14 @@ pub unsafe extern "C" fn darc_rs_bsc_st_encode(data: *mut u8, n: c_int, k: c_int
 pub unsafe extern "C" fn darc_rs_bsc_store(
     input: *const u8, output: *mut u8, n: c_int,
 ) -> c_int {
-    if input.is_null() || output.is_null() || n < 0 {
-        return FREEARC_ERRCODE_GENERAL;
-    }
-    let inp = core::slice::from_raw_parts(input, n as usize);
-    let out = core::slice::from_raw_parts_mut(output, n as usize + bsc::HEADER_SIZE);
-    bsc::qlfc_enc::store(inp, out)
+    crate::ffi::guard(move || {
+        if input.is_null() || output.is_null() || n < 0 {
+            return FREEARC_ERRCODE_GENERAL;
+        }
+        let inp = core::slice::from_raw_parts(input, n as usize);
+        let out = core::slice::from_raw_parts_mut(output, n as usize + bsc::HEADER_SIZE);
+        bsc::qlfc_enc::store(inp, out)
+    })
 }
 
 /// `bsc_block_info` (`libbsc.cpp:340`): validate a block header and report the
@@ -841,21 +895,23 @@ pub unsafe extern "C" fn darc_rs_bsc_block_info(
     header: *const u8, header_size: c_int,
     block_size: *mut c_int, data_size: *mut c_int,
 ) -> c_int {
-    if header.is_null() || header_size < 0 {
-        return FREEARC_ERRCODE_GENERAL;
-    }
-    let h = core::slice::from_raw_parts(header, header_size as usize);
-    let parsed = match bsc::header::parse(h) {
-        Ok(p) => p,
-        Err(e) => return e,
-    };
-    if !block_size.is_null() {
-        *block_size = parsed.block_size;
-    }
-    if !data_size.is_null() {
-        *data_size = parsed.data_size;
-    }
-    0 // LIBBSC_NO_ERROR
+    crate::ffi::guard(move || {
+        if header.is_null() || header_size < 0 {
+            return FREEARC_ERRCODE_GENERAL;
+        }
+        let h = core::slice::from_raw_parts(header, header_size as usize);
+        let parsed = match bsc::header::parse(h) {
+            Ok(p) => p,
+            Err(e) => return e,
+        };
+        if !block_size.is_null() {
+            *block_size = parsed.block_size;
+        }
+        if !data_size.is_null() {
+            *data_size = parsed.data_size;
+        }
+        0 // LIBBSC_NO_ERROR
+    })
 }
 
 /// `libsais_bwt`: the forward BWT, in libsais's packed output convention --
@@ -868,12 +924,14 @@ pub unsafe extern "C" fn darc_rs_bsc_block_info(
 pub unsafe extern "C" fn darc_rs_bsc_bwt_encode(
     input: *const u8, output: *mut u8, n: c_int,
 ) -> c_int {
-    if input.is_null() || output.is_null() || n < 0 {
-        return FREEARC_ERRCODE_GENERAL;
-    }
-    let inp = core::slice::from_raw_parts(input, n as usize);
-    let out = core::slice::from_raw_parts_mut(output, n as usize);
-    bsc::bwt_enc::bwt_encode(inp, out)
+    crate::ffi::guard(move || {
+        if input.is_null() || output.is_null() || n < 0 {
+            return FREEARC_ERRCODE_GENERAL;
+        }
+        let inp = core::slice::from_raw_parts(input, n as usize);
+        let out = core::slice::from_raw_parts_mut(output, n as usize);
+        bsc::bwt_enc::bwt_encode(inp, out)
+    })
 }
 
 /// `libsais_bwt_aux`: as [`darc_rs_bsc_bwt_encode`], plus the sampled indexes
@@ -887,14 +945,16 @@ pub unsafe extern "C" fn darc_rs_bsc_bwt_encode(
 pub unsafe extern "C" fn darc_rs_bsc_bwt_aux_encode(
     input: *const u8, output: *mut u8, n: c_int, r: c_int, i_out: *mut c_int,
 ) -> c_int {
-    if input.is_null() || output.is_null() || i_out.is_null() || n < 0 || r < 2 {
-        return FREEARC_ERRCODE_GENERAL;
-    }
-    let inp = core::slice::from_raw_parts(input, n as usize);
-    let out = core::slice::from_raw_parts_mut(output, n as usize);
-    let cnt = if n <= 1 { 1 } else { (n as usize - 1) / (r as usize) + 1 };
-    let ia = core::slice::from_raw_parts_mut(i_out, cnt);
-    bsc::bwt_enc::bwt_aux_encode(inp, out, r as usize, ia)
+    crate::ffi::guard(move || {
+        if input.is_null() || output.is_null() || i_out.is_null() || n < 0 || r < 2 {
+            return FREEARC_ERRCODE_GENERAL;
+        }
+        let inp = core::slice::from_raw_parts(input, n as usize);
+        let out = core::slice::from_raw_parts_mut(output, n as usize);
+        let cnt = if n <= 1 { 1 } else { (n as usize - 1) / (r as usize) + 1 };
+        let ia = core::slice::from_raw_parts_mut(i_out, cnt);
+        bsc::bwt_enc::bwt_aux_encode(inp, out, r as usize, ia)
+    })
 }
 
 /// `bsc_bwt_encode` (`bwt.cpp:178`): the in-place forward BWT plus the sampled
@@ -907,15 +967,17 @@ pub unsafe extern "C" fn darc_rs_bsc_bwt_aux_encode(
 pub unsafe extern "C" fn darc_rs_bsc_bwt_encode_full(
     data: *mut u8, n: c_int, num_indexes: *mut u8, indexes: *mut c_int,
 ) -> c_int {
-    if data.is_null() || num_indexes.is_null() || indexes.is_null() || n < 0 {
-        return FREEARC_ERRCODE_GENERAL;
-    }
-    let d = core::slice::from_raw_parts_mut(data, n as usize);
-    let idx = core::slice::from_raw_parts_mut(indexes, 256);
-    let mut ni: u8 = 0;
-    let r = bsc::bwt_enc::bsc_bwt_encode(d, n as usize, &mut ni, idx);
-    *num_indexes = ni;
-    r
+    crate::ffi::guard(move || {
+        if data.is_null() || num_indexes.is_null() || indexes.is_null() || n < 0 {
+            return FREEARC_ERRCODE_GENERAL;
+        }
+        let d = core::slice::from_raw_parts_mut(data, n as usize);
+        let idx = core::slice::from_raw_parts_mut(indexes, 256);
+        let mut ni: u8 = 0;
+        let r = bsc::bwt_enc::bsc_bwt_encode(d, n as usize, &mut ni, idx);
+        *num_indexes = ni;
+        r
+    })
 }
 
 /// `bsc_compress`: build one framed BSC block. Supports the ST3..ST6 block
@@ -929,13 +991,15 @@ pub unsafe extern "C" fn darc_rs_bsc_compress(
     input: *const u8, in_size: c_int, output: *mut u8, out_size: c_int,
     lzp_hash_size: c_int, lzp_min_len: c_int, block_sorter: c_int, coder: c_int,
 ) -> c_int {
-    if input.is_null() || output.is_null() || in_size < 0 || out_size < 0 {
-        return FREEARC_ERRCODE_GENERAL;
-    }
-    let inp = core::slice::from_raw_parts(input, in_size as usize);
-    let out = core::slice::from_raw_parts_mut(output, out_size as usize);
-    bsc::qlfc_enc::compress(inp, out, lzp_hash_size as u32, lzp_min_len as u32,
-                            block_sorter as u32, coder as u32)
+    crate::ffi::guard(move || {
+        if input.is_null() || output.is_null() || in_size < 0 || out_size < 0 {
+            return FREEARC_ERRCODE_GENERAL;
+        }
+        let inp = core::slice::from_raw_parts(input, in_size as usize);
+        let out = core::slice::from_raw_parts_mut(output, out_size as usize);
+        bsc::qlfc_enc::compress(inp, out, lzp_hash_size as u32, lzp_min_len as u32,
+                                block_sorter as u32, coder as u32)
+    })
 }
 
 /// `bsc_qlfc_transform`: the QLFC forward transform. Writes the rank array into
@@ -954,13 +1018,15 @@ pub unsafe extern "C" fn darc_rs_bsc_qlfc_transform(
     buffer: *mut u8,
     mtf: *mut u8,
 ) -> c_int {
-    if input.is_null() || buffer.is_null() || mtf.is_null() || n <= 0 {
-        return FREEARC_ERRCODE_GENERAL;
-    }
-    let inp = core::slice::from_raw_parts(input, n as usize);
-    let buf = core::slice::from_raw_parts_mut(buffer, n as usize);
-    let mtf = &mut *(mtf as *mut [u8; 256]);
-    bsc::qlfc_enc::transform(inp, buf, mtf) as c_int
+    crate::ffi::guard(move || {
+        if input.is_null() || buffer.is_null() || mtf.is_null() || n <= 0 {
+            return FREEARC_ERRCODE_GENERAL;
+        }
+        let inp = core::slice::from_raw_parts(input, n as usize);
+        let buf = core::slice::from_raw_parts_mut(buffer, n as usize);
+        let mtf = &mut *(mtf as *mut [u8; 256]);
+        bsc::qlfc_enc::transform(inp, buf, mtf) as c_int
+    })
 }
 
 /// `bsc_lzp_compress`: LZP-encode `input` into `output`. Returns the number of
@@ -981,15 +1047,17 @@ pub unsafe extern "C" fn darc_rs_bsc_lzp_compress(
     hash_size: c_int,
     min_len: c_int,
 ) -> c_int {
-    if input.is_null() || output.is_null() || in_size < 0 || out_cap < 0 {
-        return FREEARC_ERRCODE_GENERAL;
-    }
-    if !(10..=28).contains(&hash_size) || !(4..=255).contains(&min_len) {
-        return bsc::LIBBSC_BAD_PARAMETER;
-    }
-    let inp = core::slice::from_raw_parts(input, in_size as usize);
-    let out = core::slice::from_raw_parts_mut(output, out_cap as usize);
-    bsc::lzp_enc::compress(inp, out, hash_size as u32, min_len as u32)
+    crate::ffi::guard(move || {
+        if input.is_null() || output.is_null() || in_size < 0 || out_cap < 0 {
+            return FREEARC_ERRCODE_GENERAL;
+        }
+        if !(10..=28).contains(&hash_size) || !(4..=255).contains(&min_len) {
+            return bsc::LIBBSC_BAD_PARAMETER;
+        }
+        let inp = core::slice::from_raw_parts(input, in_size as usize);
+        let out = core::slice::from_raw_parts_mut(output, out_cap as usize);
+        bsc::lzp_enc::compress(inp, out, hash_size as u32, min_len as u32)
+    })
 }
 
 /// LZ4 raw-block decode, mirroring `LZ4_decompress_safe`: returns the number of
@@ -1010,15 +1078,17 @@ pub unsafe extern "C" fn darc_rs_lz4_decompress_block(
     dst: *mut u8,
     dst_cap: c_int,
 ) -> c_int {
-    if src.is_null() || dst.is_null() || src_size < 0 || dst_cap < 0 {
-        return FREEARC_ERRCODE_GENERAL;
-    }
-    let s = core::slice::from_raw_parts(src, src_size as usize);
-    let d = core::slice::from_raw_parts_mut(dst, dst_cap as usize);
-    match lz4::decompress_block(s, d) {
-        Ok(n) => n as c_int,
-        Err(e) => e,
-    }
+    crate::ffi::guard(move || {
+        if src.is_null() || dst.is_null() || src_size < 0 || dst_cap < 0 {
+            return FREEARC_ERRCODE_GENERAL;
+        }
+        let s = core::slice::from_raw_parts(src, src_size as usize);
+        let d = core::slice::from_raw_parts_mut(dst, dst_cap as usize);
+        match lz4::decompress_block(s, d) {
+            Ok(n) => n as c_int,
+            Err(e) => e,
+        }
+    })
 }
 
 /// LZ4 raw-block encode, mirroring `LZ4_compress_default`: returns the
@@ -1038,12 +1108,14 @@ pub unsafe extern "C" fn darc_rs_lz4_compress_block(
     dst: *mut u8,
     dst_cap: c_int,
 ) -> c_int {
-    if src.is_null() || dst.is_null() || src_size < 0 || dst_cap < 0 {
-        return FREEARC_ERRCODE_GENERAL;
-    }
-    let s = core::slice::from_raw_parts(src, src_size as usize);
-    let d = core::slice::from_raw_parts_mut(dst, dst_cap as usize);
-    lz4::compress_block(s, d).map_or(0, |n| n as c_int)
+    crate::ffi::guard(move || {
+        if src.is_null() || dst.is_null() || src_size < 0 || dst_cap < 0 {
+            return FREEARC_ERRCODE_GENERAL;
+        }
+        let s = core::slice::from_raw_parts(src, src_size as usize);
+        let d = core::slice::from_raw_parts_mut(dst, dst_cap as usize);
+        lz4::compress_block(s, d).map_or(0, |n| n as c_int)
+    })
 }
 
 /// DisPack forward filter, mirroring `DisFilter` (`DisPack.cpp:600`).
@@ -1065,16 +1137,18 @@ pub unsafe extern "C" fn darc_rs_dispack_filter(
     dst: *mut u8,
     dst_cap: c_int,
 ) -> c_int {
-    if src.is_null() || dst.is_null() || src_size < 0 || dst_cap < 0 {
-        return FREEARC_ERRCODE_GENERAL;
-    }
-    let s = core::slice::from_raw_parts(src, src_size as usize);
-    let out = dispack::encode::dis_filter(s, origin);
-    if out.len() > dst_cap as usize {
-        return FREEARC_ERRCODE_GENERAL;
-    }
-    core::ptr::copy_nonoverlapping(out.as_ptr(), dst, out.len());
-    out.len() as c_int
+    crate::ffi::guard(move || {
+        if src.is_null() || dst.is_null() || src_size < 0 || dst_cap < 0 {
+            return FREEARC_ERRCODE_GENERAL;
+        }
+        let s = core::slice::from_raw_parts(src, src_size as usize);
+        let out = dispack::encode::dis_filter(s, origin);
+        if out.len() > dst_cap as usize {
+            return FREEARC_ERRCODE_GENERAL;
+        }
+        core::ptr::copy_nonoverlapping(out.as_ptr(), dst, out.len());
+        out.len() as c_int
+    })
 }
 
 /// DisPack compress driver, mirroring `DISPACK_METHOD::compress`
@@ -1091,10 +1165,12 @@ pub unsafe extern "C" fn darc_rs_dispack_compress(
     callback: CALLBACK_FUNC,
     auxdata: *mut c_void,
 ) -> c_int {
-    match Io::new(callback, auxdata) {
-        Some(io) => dispack::encode::compress(&io, block_size),
-        None => FREEARC_ERRCODE_GENERAL,
-    }
+    crate::ffi::guard(move || {
+        match Io::new(callback, auxdata) {
+            Some(io) => dispack::encode::compress(&io, block_size),
+            None => FREEARC_ERRCODE_GENERAL,
+        }
+    })
 }
 
 /// DisPack executable detection, mirroring `detect` (`C_DisPack.cpp:151`).
@@ -1106,14 +1182,16 @@ pub unsafe extern "C" fn darc_rs_dispack_compress(
 /// `buf` must be valid for `len` bytes.
 #[no_mangle]
 pub unsafe extern "C" fn darc_rs_dispack_detect(buf: *const u8, len: c_int) -> c_int {
-    if buf.is_null() || len < 0 {
-        return FREEARC_ERRCODE_GENERAL;
-    }
-    let b = core::slice::from_raw_parts(buf, len as usize);
-    match dispack::encode::detect(b) {
-        dispack::encode::ExeType::Exe => 2,
-        dispack::encode::ExeType::Data => 1,
-    }
+    crate::ffi::guard(move || {
+        if buf.is_null() || len < 0 {
+            return FREEARC_ERRCODE_GENERAL;
+        }
+        let b = core::slice::from_raw_parts(buf, len as usize);
+        match dispack::encode::detect(b) {
+            dispack::encode::ExeType::Exe => 2,
+            dispack::encode::ExeType::Data => 1,
+        }
+    })
 }
 
 /// LZ4 high-compression encode, mirroring `LZ4_compress_HC`: returns the
@@ -1135,12 +1213,14 @@ pub unsafe extern "C" fn darc_rs_lz4_compress_hc_block(
     dst_cap: c_int,
     level: c_int,
 ) -> c_int {
-    if src.is_null() || dst.is_null() || src_size < 0 || dst_cap < 0 {
-        return FREEARC_ERRCODE_GENERAL;
-    }
-    let s = core::slice::from_raw_parts(src, src_size as usize);
-    let d = core::slice::from_raw_parts_mut(dst, dst_cap as usize);
-    lz4hc::compress_hc(s, d, level) as c_int
+    crate::ffi::guard(move || {
+        if src.is_null() || dst.is_null() || src_size < 0 || dst_cap < 0 {
+            return FREEARC_ERRCODE_GENERAL;
+        }
+        let s = core::slice::from_raw_parts(src, src_size as usize);
+        let d = core::slice::from_raw_parts_mut(dst, dst_cap as usize);
+        lz4hc::compress_hc(s, d, level) as c_int
+    })
 }
 
 /// zstd streaming decompress, replacing `zstd_stream_decompress` in
@@ -1155,10 +1235,12 @@ pub unsafe extern "C" fn darc_rs_zstd_stream_decompress(
     callback: CALLBACK_FUNC,
     auxdata: *mut c_void,
 ) -> c_int {
-    match Io::new(callback, auxdata) {
-        Some(io) => zstd::decompress_stream(&io),
-        None => FREEARC_ERRCODE_GENERAL,
-    }
+    crate::ffi::guard(move || {
+        match Io::new(callback, auxdata) {
+            Some(io) => zstd::decompress_stream(&io),
+            None => FREEARC_ERRCODE_GENERAL,
+        }
+    })
 }
 
 /// zstd streaming compress, replacing `zstd_stream_compress`.
@@ -1173,16 +1255,18 @@ pub unsafe extern "C" fn darc_rs_zstd_stream_compress(
     callback: CALLBACK_FUNC,
     auxdata: *mut c_void,
 ) -> c_int {
-    let io = match Io::new(callback, auxdata) {
-        Some(io) => io,
-        None => return FREEARC_ERRCODE_GENERAL,
-    };
-    let params = zstd::Params {
-        level,
-        window_log: window_log.max(0) as u32,
-        workers: workers.max(0) as u32,
-    };
-    zstd::compress_stream(&io, params)
+    crate::ffi::guard(move || {
+        let io = match Io::new(callback, auxdata) {
+            Some(io) => io,
+            None => return FREEARC_ERRCODE_GENERAL,
+        };
+        let params = zstd::Params {
+            level,
+            window_log: window_log.max(0) as u32,
+            workers: workers.max(0) as u32,
+        };
+        zstd::compress_stream(&io, params)
+    })
 }
 
 /// `ZSTD_minCLevel` / `ZSTD_maxCLevel`, for `parse_ZSTD`'s level clamping.
@@ -1215,7 +1299,9 @@ pub unsafe extern "C" fn zstd_stream_decompress(
     callback: CALLBACK_FUNC,
     auxdata: *mut c_void,
 ) -> c_int {
-    darc_rs_zstd_stream_decompress(callback, auxdata)
+    crate::ffi::guard(move || {
+        darc_rs_zstd_stream_decompress(callback, auxdata)
+    })
 }
 
 /// Exported unconditionally, unlike the other drop-ins: the vendored libzstd is
@@ -1232,7 +1318,9 @@ pub unsafe extern "C" fn zstd_stream_compress(
     callback: CALLBACK_FUNC,
     auxdata: *mut c_void,
 ) -> c_int {
-    darc_rs_zstd_stream_compress(level, window_log, workers, callback, auxdata)
+    crate::ffi::guard(move || {
+        darc_rs_zstd_stream_compress(level, window_log, workers, callback, auxdata)
+    })
 }
 
 /// GRZip's LZP stage, forward direction. Exposed for the differential harness
@@ -1250,15 +1338,17 @@ pub unsafe extern "C" fn darc_rs_grzip_lzp_encode(
     min_match_len: c_int,
     ht_size: c_int,
 ) -> c_int {
-    if input.is_null() || output.is_null() || size < 0 || out_size < 0 {
-        return FREEARC_ERRCODE_GENERAL;
-    }
-    let inp = core::slice::from_raw_parts(input, size as usize);
-    let out = core::slice::from_raw_parts_mut(output, out_size as usize);
-    match grzip::lzp::encode(inp, out, min_match_len as u32, ht_size as u32) {
-        Ok(n) => n as c_int,
-        Err(e) => e,
-    }
+    crate::ffi::guard(move || {
+        if input.is_null() || output.is_null() || size < 0 || out_size < 0 {
+            return FREEARC_ERRCODE_GENERAL;
+        }
+        let inp = core::slice::from_raw_parts(input, size as usize);
+        let out = core::slice::from_raw_parts_mut(output, out_size as usize);
+        match grzip::lzp::encode(inp, out, min_match_len as u32, ht_size as u32) {
+            Ok(n) => n as c_int,
+            Err(e) => e,
+        }
+    })
 }
 
 /// GRZip's ST4 stage, forward direction. Harness-only, like the LZP one.
@@ -1271,16 +1361,18 @@ pub unsafe extern "C" fn darc_rs_grzip_st4_encode(
     size: c_int,
     output: *mut u8,
 ) -> c_int {
-    if input.is_null() || output.is_null() || size <= 0 {
-        return FREEARC_ERRCODE_GENERAL;
-    }
-    let n = size as usize;
-    let inp = core::slice::from_raw_parts(input, n);
-    let out = core::slice::from_raw_parts_mut(output, n);
-    match grzip::st4::encode(inp, n, out) {
-        Ok(fbp) => fbp,
-        Err(e) => e,
-    }
+    crate::ffi::guard(move || {
+        if input.is_null() || output.is_null() || size <= 0 {
+            return FREEARC_ERRCODE_GENERAL;
+        }
+        let n = size as usize;
+        let inp = core::slice::from_raw_parts(input, n);
+        let out = core::slice::from_raw_parts_mut(output, n);
+        match grzip::st4::encode(inp, n, out) {
+            Ok(fbp) => fbp,
+            Err(e) => e,
+        }
+    })
 }
 
 /// GRZip's record filter: the mode decision and the forward transform.
@@ -1295,21 +1387,23 @@ pub unsafe extern "C" fn darc_rs_grzip_rec_encode(
     size: c_int,
     output: *mut u8,
 ) -> c_int {
-    if input.is_null() || output.is_null() || size <= 0 {
-        return FREEARC_ERRCODE_GENERAL;
-    }
-    let n = size as usize;
-    let inp = core::slice::from_raw_parts(input, n);
-    let out = core::slice::from_raw_parts_mut(output, n);
-    // Returns the mode NUMBER, because the harness compares it against what the
-    // C's `GRZip_Rec_Test` returned; 0 for "no filter".
-    match grzip::rec::test(inp, n) {
-        Some(mode) => {
-            grzip::rec::encode(inp, n, out, mode);
-            mode.to_i32()
+    crate::ffi::guard(move || {
+        if input.is_null() || output.is_null() || size <= 0 {
+            return FREEARC_ERRCODE_GENERAL;
         }
-        None => 0,
-    }
+        let n = size as usize;
+        let inp = core::slice::from_raw_parts(input, n);
+        let out = core::slice::from_raw_parts_mut(output, n);
+        // Returns the mode NUMBER, because the harness compares it against what the
+        // C's `GRZip_Rec_Test` returned; 0 for "no filter".
+        match grzip::rec::test(inp, n) {
+            Some(mode) => {
+                grzip::rec::encode(inp, n, out, mode);
+                mode.to_i32()
+            }
+            None => 0,
+        }
+    })
 }
 
 /// GRZip's MTF + arithmetic coder, forward direction. Harness-only.
@@ -1326,21 +1420,23 @@ pub unsafe extern "C" fn darc_rs_grzip_mtf_ari_encode(
     output: *mut u8,
     out_size: c_int,
 ) -> c_int {
-    if input.is_null() || output.is_null() || size <= 0 || out_size <= 0 {
-        return FREEARC_ERRCODE_GENERAL;
-    }
-    let inp = core::slice::from_raw_parts(input, size as usize);
-    match grzip::mtf_ari::encode(inp) {
-        Ok(v) => {
-            if v.len() > out_size as usize {
-                return FREEARC_ERRCODE_GENERAL;
-            }
-            let out = core::slice::from_raw_parts_mut(output, v.len());
-            out.copy_from_slice(&v);
-            v.len() as c_int
+    crate::ffi::guard(move || {
+        if input.is_null() || output.is_null() || size <= 0 || out_size <= 0 {
+            return FREEARC_ERRCODE_GENERAL;
         }
-        Err(e) => e,
-    }
+        let inp = core::slice::from_raw_parts(input, size as usize);
+        match grzip::mtf_ari::encode(inp) {
+            Ok(v) => {
+                if v.len() > out_size as usize {
+                    return FREEARC_ERRCODE_GENERAL;
+                }
+                let out = core::slice::from_raw_parts_mut(output, v.len());
+                out.copy_from_slice(&v);
+                v.len() as c_int
+            }
+            Err(e) => e,
+        }
+    })
 }
 
 /// GRZip's WFC + arithmetic coder, forward direction. Harness-only.
@@ -1354,21 +1450,23 @@ pub unsafe extern "C" fn darc_rs_grzip_wfc_ari_encode(
     output: *mut u8,
     out_size: c_int,
 ) -> c_int {
-    if input.is_null() || output.is_null() || size <= 0 || out_size <= 0 {
-        return FREEARC_ERRCODE_GENERAL;
-    }
-    let inp = core::slice::from_raw_parts(input, size as usize);
-    match grzip::wfc_ari::encode(inp) {
-        Ok(v) => {
-            if v.len() > out_size as usize {
-                return FREEARC_ERRCODE_GENERAL;
-            }
-            let out = core::slice::from_raw_parts_mut(output, v.len());
-            out.copy_from_slice(&v);
-            v.len() as c_int
+    crate::ffi::guard(move || {
+        if input.is_null() || output.is_null() || size <= 0 || out_size <= 0 {
+            return FREEARC_ERRCODE_GENERAL;
         }
-        Err(e) => e,
-    }
+        let inp = core::slice::from_raw_parts(input, size as usize);
+        match grzip::wfc_ari::encode(inp) {
+            Ok(v) => {
+                if v.len() > out_size as usize {
+                    return FREEARC_ERRCODE_GENERAL;
+                }
+                let out = core::slice::from_raw_parts_mut(output, v.len());
+                out.copy_from_slice(&v);
+                v.len() as c_int
+            }
+            Err(e) => e,
+        }
+    })
 }
 
 /// GRZip's strong BWT, forward direction. Harness-only. Returns the first-byte
@@ -1382,16 +1480,18 @@ pub unsafe extern "C" fn darc_rs_grzip_strong_bwt_encode(
     size: c_int,
     output: *mut u8,
 ) -> c_int {
-    if input.is_null() || output.is_null() || size <= 0 {
-        return FREEARC_ERRCODE_GENERAL;
-    }
-    let n = size as usize;
-    let inp = core::slice::from_raw_parts(input, n);
-    let out = core::slice::from_raw_parts_mut(output, n);
-    match grzip::bwt::strong_encode(inp, n, out) {
-        Ok(fbp) => fbp,
-        Err(e) => e,
-    }
+    crate::ffi::guard(move || {
+        if input.is_null() || output.is_null() || size <= 0 {
+            return FREEARC_ERRCODE_GENERAL;
+        }
+        let n = size as usize;
+        let inp = core::slice::from_raw_parts(input, n);
+        let out = core::slice::from_raw_parts_mut(output, n);
+        match grzip::bwt::strong_encode(inp, n, out) {
+            Ok(fbp) => fbp,
+            Err(e) => e,
+        }
+    })
 }
 
 /// GRZip's BWT, forward direction, with the fast/strong selection. Harness-only.
@@ -1407,16 +1507,18 @@ pub unsafe extern "C" fn darc_rs_grzip_bwt_encode(
     output: *mut u8,
     fast: c_int,
 ) -> c_int {
-    if input.is_null() || output.is_null() || size <= 0 {
-        return FREEARC_ERRCODE_GENERAL;
-    }
-    let n = size as usize;
-    let inp = core::slice::from_raw_parts(input, n);
-    let out = core::slice::from_raw_parts_mut(output, n);
-    match grzip::bwt::encode(inp, n, out, fast != 0) {
-        Ok(fbp) => fbp,
-        Err(e) => e,
-    }
+    crate::ffi::guard(move || {
+        if input.is_null() || output.is_null() || size <= 0 {
+            return FREEARC_ERRCODE_GENERAL;
+        }
+        let n = size as usize;
+        let inp = core::slice::from_raw_parts(input, n);
+        let out = core::slice::from_raw_parts_mut(output, n);
+        match grzip::bwt::encode(inp, n, out, fast != 0) {
+            Ok(fbp) => fbp,
+            Err(e) => e,
+        }
+    })
 }
 
 /// GRZip's block driver, forward direction. Returns bytes written to `output`.
@@ -1431,15 +1533,17 @@ pub unsafe extern "C" fn darc_rs_grzip_compress_block(
     out_cap: c_int,
     mode: c_int,
 ) -> c_int {
-    if input.is_null() || output.is_null() || size <= 0 || out_cap <= 0 {
-        return FREEARC_ERRCODE_GENERAL;
-    }
-    let inp = core::slice::from_raw_parts(input, size as usize);
-    let out = core::slice::from_raw_parts_mut(output, out_cap as usize);
-    match grzip::block::compress_block(inp, size as usize, out, mode) {
-        Ok(n) => n as c_int,
-        Err(e) => e,
-    }
+    crate::ffi::guard(move || {
+        if input.is_null() || output.is_null() || size <= 0 || out_cap <= 0 {
+            return FREEARC_ERRCODE_GENERAL;
+        }
+        let inp = core::slice::from_raw_parts(input, size as usize);
+        let out = core::slice::from_raw_parts_mut(output, out_cap as usize);
+        match grzip::block::compress_block(inp, size as usize, out, mode) {
+            Ok(n) => n as c_int,
+            Err(e) => e,
+        }
+    })
 }
 
 /// GRZip's stream compressor -- the archiver's entry point.
@@ -1623,10 +1727,12 @@ pub unsafe extern "C" fn darc_rs_ppmd_compress(
     order: c_int, mem: u32, mr_method: c_int,
     callback: CALLBACK_FUNC, auxdata: *mut c_void,
 ) -> c_int {
-    match Io::new(callback, auxdata) {
-        Some(io) => ppmd::compress(&io, order, mem, mr_method),
-        None => FREEARC_ERRCODE_GENERAL,
-    }
+    crate::ffi::guard(move || {
+        match Io::new(callback, auxdata) {
+            Some(io) => ppmd::compress(&io, order, mem, mr_method),
+            None => FREEARC_ERRCODE_GENERAL,
+        }
+    })
 }
 
 /// `ppmd_decompress`: PPMd var.H decode.
@@ -1638,8 +1744,10 @@ pub unsafe extern "C" fn darc_rs_ppmd_decompress(
     order: c_int, mem: u32, mr_method: c_int,
     callback: CALLBACK_FUNC, auxdata: *mut c_void,
 ) -> c_int {
-    match Io::new(callback, auxdata) {
-        Some(io) => ppmd::decompress(&io, order, mem, mr_method),
-        None => FREEARC_ERRCODE_GENERAL,
-    }
+    crate::ffi::guard(move || {
+        match Io::new(callback, auxdata) {
+            Some(io) => ppmd::decompress(&io, order, mem, mr_method),
+            None => FREEARC_ERRCODE_GENERAL,
+        }
+    })
 }

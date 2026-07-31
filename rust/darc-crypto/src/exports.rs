@@ -42,31 +42,33 @@ pub unsafe extern "C" fn darc_rs_docrypt(
     callback: CALLBACK_FUNC,
     auxdata: *mut c_void,
 ) -> c_int {
-    let io = match Io::new(callback, auxdata) {
-        Some(io) => io,
-        None => return FREEARC_ERRCODE_GENERAL,
-    };
-    if key.is_null() || iv.is_null() || key_len < 0 {
-        return FREEARC_ERRCODE_GENERAL;
-    }
-    let key = std::slice::from_raw_parts(key, key_len as usize);
-    let encrypting = do_encryption == ENCRYPT;
+    guard(move || {
+        let io = match Io::new(callback, auxdata) {
+            Some(io) => io,
+            None => return FREEARC_ERRCODE_GENERAL,
+        };
+        if key.is_null() || iv.is_null() || key_len < 0 {
+            return FREEARC_ERRCODE_GENERAL;
+        }
+        let key = std::slice::from_raw_parts(key, key_len as usize);
+        let encrypting = do_encryption == ENCRYPT;
 
-    // Dispatch cipher x (aes key length) into a concrete type, then run the
-    // chosen mode over the callback loop. `_rounds` is unused: DArc always
-    // passes 0 (cipher default), the only case the fixed-round crates cover.
-    match cipher {
-        0 => match key.len() {
-            16 => run::<aes::Aes128>(key, iv, mode, encrypting, &io),
-            24 => run::<aes::Aes192>(key, iv, mode, encrypting, &io),
-            32 => run::<aes::Aes256>(key, iv, mode, encrypting, &io),
+        // Dispatch cipher x (aes key length) into a concrete type, then run the
+        // chosen mode over the callback loop. `_rounds` is unused: DArc always
+        // passes 0 (cipher default), the only case the fixed-round crates cover.
+        match cipher {
+            0 => match key.len() {
+                16 => run::<aes::Aes128>(key, iv, mode, encrypting, &io),
+                24 => run::<aes::Aes192>(key, iv, mode, encrypting, &io),
+                32 => run::<aes::Aes256>(key, iv, mode, encrypting, &io),
+                _ => FREEARC_ERRCODE_INVALID_COMPRESSOR,
+            },
+            1 => run::<blowfish::Blowfish>(key, iv, mode, encrypting, &io),
+            2 => run::<serpent::Serpent>(key, iv, mode, encrypting, &io),
+            3 => run::<twofish::Twofish>(key, iv, mode, encrypting, &io),
             _ => FREEARC_ERRCODE_INVALID_COMPRESSOR,
-        },
-        1 => run::<blowfish::Blowfish>(key, iv, mode, encrypting, &io),
-        2 => run::<serpent::Serpent>(key, iv, mode, encrypting, &io),
-        3 => run::<twofish::Twofish>(key, iv, mode, encrypting, &io),
-        _ => FREEARC_ERRCODE_INVALID_COMPRESSOR,
-    }
+        }
+    })
 }
 
 fn run<C>(key: &[u8], iv: *const u8, mode: c_int, encrypting: bool, io: &Io) -> c_int
@@ -135,20 +137,22 @@ pub unsafe extern "C" fn darc_rs_pbkdf2_hmac_sha512(
     out: *mut u8,
     out_len: c_int,
 ) -> c_int {
-    if pwd.is_null() || salt.is_null() || out.is_null()
-        || pwd_len < 0 || salt_len < 0 || out_len < 0 || iterations < 0
-    {
-        return FREEARC_ERRCODE_GENERAL;
-    }
-    let pwd = std::slice::from_raw_parts(pwd, pwd_len as usize);
-    let salt = std::slice::from_raw_parts(salt, salt_len as usize);
-    let out = std::slice::from_raw_parts_mut(out, out_len as usize);
-    match pbkdf2_hmac_sha512(pwd, salt, iterations as u32, out) {
-        Ok(()) => OK,
-        // Only reachable for an out_len the KDF refuses; the C caller sees an
-        // error code instead of a panic crossing the ABI.
-        Err(()) => FREEARC_ERRCODE_GENERAL,
-    }
+    guard(move || {
+        if pwd.is_null() || salt.is_null() || out.is_null()
+            || pwd_len < 0 || salt_len < 0 || out_len < 0 || iterations < 0
+        {
+            return FREEARC_ERRCODE_GENERAL;
+        }
+        let pwd = std::slice::from_raw_parts(pwd, pwd_len as usize);
+        let salt = std::slice::from_raw_parts(salt, salt_len as usize);
+        let out = std::slice::from_raw_parts_mut(out, out_len as usize);
+        match pbkdf2_hmac_sha512(pwd, salt, iterations as u32, out) {
+            Ok(()) => OK,
+            // Only reachable for an out_len the KDF refuses; the C caller sees an
+            // error code instead of a panic crossing the ABI.
+            Err(()) => FREEARC_ERRCODE_GENERAL,
+        }
+    })
 }
 
 /// Fill `buf` with cryptographically secure random bytes. Backs the fortuna_*
@@ -159,12 +163,25 @@ pub unsafe extern "C" fn darc_rs_pbkdf2_hmac_sha512(
 /// `buf` must reference `len` bytes.
 #[no_mangle]
 pub unsafe extern "C" fn darc_rs_random_fill(buf: *mut u8, len: c_int) -> c_int {
-    if buf.is_null() || len < 0 {
-        return FREEARC_ERRCODE_GENERAL;
-    }
-    let buf = std::slice::from_raw_parts_mut(buf, len as usize);
-    match random::fill_secure(buf) {
-        Ok(()) => OK,
+    guard(move || {
+        if buf.is_null() || len < 0 {
+            return FREEARC_ERRCODE_GENERAL;
+        }
+        let buf = std::slice::from_raw_parts_mut(buf, len as usize);
+        match random::fill_secure(buf) {
+            Ok(()) => OK,
+            Err(_) => FREEARC_ERRCODE_GENERAL,
+        }
+    })
+}
+
+/// Run an entry point behind an unwind firewall — see the twin in
+/// `darc-codecs`'s `ffi` module for the reasoning. A panic crossing an
+/// `extern "C"` frame is undefined behaviour, and these are reached from `unarc`
+/// and the SFX modules, compiled `-D_NO_EXCEPTIONS`.
+fn guard<F: FnOnce() -> c_int>(f: F) -> c_int {
+    match std::panic::catch_unwind(std::panic::AssertUnwindSafe(f)) {
+        Ok(code) => code,
         Err(_) => FREEARC_ERRCODE_GENERAL,
     }
 }
