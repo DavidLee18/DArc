@@ -469,8 +469,8 @@ impl HashTable {
                 if from + BUFSIZE > whole.len() {
                     return (p - start_i + add_len, add_len);
                 }
-                for q in from..from + BUFSIZE {
-                    if p == last_i || p >= buf.len() || buf[p] != whole[q] {
+                for &old_byte in &whole[from..from + BUFSIZE] {
+                    if p == last_i || p >= buf.len() || buf[p] != old_byte {
                         return (p - start_i + add_len, add_len);
                     }
                     p += 1;

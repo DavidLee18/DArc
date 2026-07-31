@@ -32,7 +32,10 @@ use super::hash_table::{Config, HashTable};
 use super::hashes::Hash;
 use super::matches::MatchTooShort;
 use super::params::{self, Layout, Method, Options, DEFAULT_BUFSIZE};
-use super::{BULAT_ZIGANSHIN_SIGNATURE, SREP_SIGNATURE};
+use super::{BULAT_ZIGANSHIN_SIGNATURE, FOOTER_VERSION1, SREP_SIGNATURE};
+
+/// `INDEX_LZ_FOOTER_SIZE` (`srep.cpp:583`) -- six `STAT` words.
+const INDEX_LZ_FOOTER_BYTES: usize = 6 * 4;
 
 /// Why a compression request could not be served.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -74,8 +77,9 @@ pub fn compress_file(
     hash: HashChoice,
     bufsize: usize,
 ) -> Result<Vec<u8>, EncodeError> {
-    // The only shapes this port can produce byte-exactly so far.
-    if layout != Layout::FutureLz || method.cdc() || method == Method::InMemory {
+    // -m0 is a different algorithm entirely and -m1/-m2 are the multithreaded
+    // CDC pair, whose output may depend on thread count.
+    if method.cdc() || method == Method::InMemory {
         return Err(EncodeError::Unsupported);
     }
     let d = params::derive(method, layout, opt);
@@ -150,22 +154,86 @@ pub fn compress_file(
         origsize += len as u64;
     }
 
-    // -- pass two: redistribute by source (`:727-830`) ----------------------
-    let sorted = emit::collect_and_sort(&blocks, d.round_matches, d.base_len);
-    let per_block = emit::redistribute(&blocks, &sorted, d.futurelz_base_len)?;
+    // -- what each block's written record list is ---------------------------
+    //
+    // Future-LZ needs the second pass (`:727-830`): matches are re-anchored to
+    // the block containing their SOURCE, so they must all be collected and
+    // sorted first.
+    //
+    // I/O-LZ does not. `single_pass_compression` (`:477`) is true for it, and
+    // `save_data` (io.cpp:172) writes each block's own statbuf verbatim --
+    // destination-anchored, still in the ROUND_MATCHES encoding compress()
+    // produced, which is exactly what the v1/v2 decoder expects because
+    // header[3] carries BASE_LEN rather than 0 for this layout.
+    let per_block: Vec<Vec<u32>> = match layout {
+        Layout::FutureLz => {
+            let sorted = emit::collect_and_sort(&blocks, d.round_matches, d.base_len);
+            emit::redistribute(&blocks, &sorted, d.futurelz_base_len)?
+        }
+        Layout::IoLz => blocks.iter().map(|b| b.stat.clone()).collect(),
+        // Index-LZ re-anchors exactly like Future-LZ; only where the records
+        // LAND differs -- they go to a footer instead of beside their block.
+        Layout::IndexLz => {
+            let sorted = emit::collect_and_sort(&blocks, d.round_matches, d.base_len);
+            emit::redistribute(&blocks, &sorted, d.futurelz_base_len)?
+        }
+    };
+
+    let index_lz = layout == Layout::IndexLz;
+    let mut statsizes: Vec<u32> = Vec::with_capacity(blocks.len());
+    let mut all_stats: Vec<u8> = Vec::new();
 
     for (block, stat) in blocks.iter().zip(per_block.iter()) {
         let body = &data[block.start as usize..block.start as usize + block.size];
         let stat_bytes: Vec<u8> = stat.iter().flat_map(|w| w.to_le_bytes()).collect();
 
-        // block header: literal_bytes, len, stat_size -- then the block hash.
+        // Block header: literal_bytes, len, stat_size -- then the block hash,
+        // which io.cpp:153 writes at `header[i]+3`, immediately after the three
+        // words.
+        //
+        // Under Index-LZ the stat_size field is ZERO here (`:626`): pass one
+        // writes the header before the records exist, and they never join it.
         put_u32(&mut out, block.literal_bytes as u32);
         put_u32(&mut out, block.size as u32);
-        put_u32(&mut out, stat_bytes.len() as u32);
+        put_u32(&mut out, match index_lz {
+            true => 0,
+            false => stat_bytes.len() as u32,
+        });
         out.extend_from_slice(&hasher.digest(body));
 
-        out.extend_from_slice(&stat_bytes);
-        out.extend_from_slice(&emit::literals(block, body, d.round_matches, d.base_len));
+        match index_lz {
+            // Future-LZ and I/O-LZ interleave: records then literals, per block.
+            false => {
+                out.extend_from_slice(&stat_bytes);
+                out.extend_from_slice(&emit::literals(block, body, d.round_matches, d.base_len));
+            }
+            // Index-LZ writes only literals here; every block's records are held
+            // back and concatenated after the last block.
+            true => {
+                out.extend_from_slice(&emit::literals(block, body, d.round_matches, d.base_len));
+                statsizes.push(stat_bytes.len() as u32);
+                all_stats.extend_from_slice(&stat_bytes);
+            }
+        }
+    }
+
+    // -- Index-LZ footer (`:862-874`) ---------------------------------------
+    if index_lz {
+        let total_stat_size = all_stats.len() as u64;
+        out.extend_from_slice(&all_stats);
+        for n in &statsizes {
+            put_u32(&mut out, *n);
+        }
+        // Six words, and note the two signatures are BITWISE COMPLEMENTS of the
+        // archive header's -- that is what lets a reader find the footer by
+        // scanning back from the end.
+        let statsize_bytes = statsizes.len() * 4;
+        put_u32(&mut out, total_stat_size as u32);
+        put_u32(&mut out, (total_stat_size >> 32) as u32);
+        put_u32(&mut out, (INDEX_LZ_FOOTER_BYTES + statsize_bytes) as u32);
+        put_u32(&mut out, FOOTER_VERSION1);
+        put_u32(&mut out, !SREP_SIGNATURE);
+        put_u32(&mut out, !BULAT_ZIGANSHIN_SIGNATURE);
     }
 
     Ok(out)
@@ -253,15 +321,39 @@ mod tests {
     }
 
     #[test]
-    fn unsupported_shapes_are_refused_rather_than_mis_encoded() {
+    fn unported_methods_are_refused_rather_than_mis_encoded() {
+        // -m0 is a different algorithm; -m1/-m2 are the multithreaded CDC pair.
+        // All three LAYOUTS are supported now, for both -m3 and -m4.
         for (m, l) in [
-            (Method::Digests, Layout::IoLz),
-            (Method::Digests, Layout::IndexLz),
             (Method::Cdc, Layout::FutureLz),
+            (Method::ZpaqCdc, Layout::IndexLz),
             (Method::InMemory, Layout::FutureLz),
+            (Method::InMemory, Layout::IoLz),
         ] {
             let r = compress_file(b"x", m, l, Options::default(), HashChoice::MD5, 0);
             assert_eq!(r, Err(EncodeError::Unsupported), "{m:?}/{l:?}");
+        }
+    }
+
+    #[test]
+    fn every_layout_round_trips_through_the_gated_decoder() {
+        // Index-LZ in particular has a completely different file shape -- the
+        // records live in a footer -- so its framing needs its own check.
+        use std::io::Cursor;
+        let half = prng(21, 40_000);
+        let data: Vec<u8> = half.iter().chain(half.iter()).copied().collect();
+        for layout in [Layout::FutureLz, Layout::IoLz, Layout::IndexLz] {
+            for method in [Method::Digests, Method::Reread] {
+                let packed = compress_file(
+                    &data, method, layout, Options::default(), HashChoice::MD5, 16_384,
+                )
+                .unwrap_or_else(|e| panic!("{method:?}/{layout:?}: {e:?}"));
+                let mut fin = Cursor::new(packed);
+                let mut fout = Cursor::new(Vec::new());
+                crate::srep::decode::decompress(&mut fin, &mut fout)
+                    .unwrap_or_else(|e| panic!("{method:?}/{layout:?}: decode failed: {e:?}"));
+                assert_eq!(fout.into_inner(), data, "{method:?}/{layout:?}");
+            }
         }
     }
 

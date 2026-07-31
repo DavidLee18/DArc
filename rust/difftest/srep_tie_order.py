@@ -49,31 +49,69 @@ def parse(path):
     hash_size = ((hdr[2] >> 24) + 16) & 255
     base_len = hdr[3]
 
+    version = hdr[2] & 255
     off = 16 + hash_seed_size
+
+    # Index-LZ (v4) puts every block's records in a FOOTER instead of beside the
+    # block, so the block region has to be bounded before it can be walked. The
+    # six-word footer is at the very end: word 2 is its own size including the
+    # statsize table, so the table length gives the block count and words 0-1
+    # give the total record bytes.
+    index_lz = version == 4
+    stat_region = None
+    if index_lz:
+        if len(d) < 24:
+            raise ValueError(f"{path}: too short for an Index-LZ footer")
+        f = [struct.unpack_from("<I", d, len(d) - 24 + 4 * i)[0] for i in range(6)]
+        total_stat, footer_size = f[0] | (f[1] << 32), f[2]
+        nblocks = (footer_size - 24) // 4
+        stats_at = len(d) - footer_size - total_stat
+        sizes_at = len(d) - 24 - nblocks * 4
+        sizes = [struct.unpack_from("<I", d, sizes_at + 4 * i)[0] for i in range(nblocks)]
+        stat_region = (stats_at, sizes)
+        block_area_end = stats_at
+    else:
+        block_area_end = len(d)
+
     blocks = []
     start = 0
-    while off < len(d):
+    bi = 0
+    while off < block_area_end:
         if off + 12 + hash_size > len(d):
             raise ValueError(f"{path}: truncated block header at {off}")
         literal_bytes, blen, stat_size = w(off), w(off + 4), w(off + 8)
         bh = (literal_bytes, blen, stat_size, d[off + 12 : off + 12 + hash_size])
         off += 12 + hash_size
 
-        # Records are 4 words each: lit_len, offset_lo, offset_hi, len.
-        # Future-LZ records are SOURCE-anchored: src = block_pos + lit_len.
-        end = off + stat_size
-        pos = start
-        recs = []
-        while off < end:
-            lit, lo, hi, ln = w(off), w(off + 4), w(off + 8), w(off + 12)
-            off += 16
-            src = pos + lit
-            recs.append((src, src + (lo | (hi << 32)), ln * 1 + base_len))
-            pos = src
+        # Records are 4 words each: lit_len, offset_lo, offset_hi, len, and are
+        # SOURCE-anchored under both Future-LZ and Index-LZ.
+        def read_recs(at, nbytes):
+            pos, out, o = start, [], at
+            stop = at + nbytes
+            while o < stop:
+                lit, lo, hi, ln = w(o), w(o + 4), w(o + 8), w(o + 12)
+                o += 16
+                src = pos + lit
+                out.append((src, src + (lo | (hi << 32)), ln + base_len))
+                pos = src
+            return out
+
+        if index_lz:
+            # stat_size in the block header is 0; the real records live in the
+            # footer region, one run per block in block order.
+            at, sizes = stat_region
+            for k in range(bi):
+                at += sizes[k]
+            recs = read_recs(at, sizes[bi] if bi < len(sizes) else 0)
+        else:
+            recs = read_recs(off, stat_size)
+            off += stat_size
+
         literals = d[off : off + literal_bytes]
         off += literal_bytes
         blocks.append((bh, recs, literals))
         start += blen
+        bi += 1
     return hdr, blocks
 
 

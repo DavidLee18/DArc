@@ -1212,6 +1212,22 @@ jobs:
         ( cd srep && ./compile )
         test -x Tests/srep || { echo "::error::srep/compile produced no Tests/srep"; exit 1; }
         rust/difftest/srep-check.sh
+    # The SREP COMPRESSOR, which the decoder harness above cannot judge: it only
+    # proves the port READS what the C wrote. This requires the port to WRITE
+    # what the C writes, byte for byte, across both ported methods (-m3/-m4),
+    # all three layouts (Future-LZ, I/O-LZ, Index-LZ), both small block sizes and
+    # all eight ACCELERATOR instantiations -- 187 comparisons.
+    #
+    # It tolerates exactly one difference, and reports the count separately:
+    # records sharing a source position may come out in either order, because
+    # srep.cpp:756 sorts them with an UNSTABLE std::sort keyed on src alone. That
+    # is a property of the C++ standard library, not of the format -- a libstdc++
+    # build can differ from a libc++ one on the same input -- so it cannot be
+    # reproduced, only bounded. srep_tie_order.py accepts it only when the
+    # archive header, every block header and hash, every literal byte and the
+    # per-block record MULTISET are all identical.
+    - name: SREP compressor differential test
+      run: rust/difftest/srep-encode-check.sh
 
   # The C-vs-Rust crypto comparison. It compiles C_Encryption.cpp twice -- the
   # pinned copy without -DDARC_RUST so vendored LibTomCrypt runs, and the
