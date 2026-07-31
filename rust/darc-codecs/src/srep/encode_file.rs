@@ -354,13 +354,13 @@ mod tests {
 
     #[test]
     fn unported_methods_are_refused_rather_than_mis_encoded() {
-        // -m0 is a different algorithm; -m1/-m2 are the multithreaded CDC pair.
-        // All three LAYOUTS are supported now, for both -m3 and -m4.
+        // Only the content-defined-chunking pair is left. All three LAYOUTS are
+        // supported, for -m0, -m3 and -m4 alike.
         for (m, l) in [
             (Method::Cdc, Layout::FutureLz),
+            (Method::Cdc, Layout::IoLz),
             (Method::ZpaqCdc, Layout::IndexLz),
-            (Method::InMemory, Layout::FutureLz),
-            (Method::InMemory, Layout::IoLz),
+            (Method::ZpaqCdc, Layout::FutureLz),
         ] {
             let r = compress_file(b"x", m, l, Options::default(), HashChoice::MD5, 0);
             assert_eq!(r, Err(EncodeError::Unsupported), "{m:?}/{l:?}");
@@ -375,7 +375,7 @@ mod tests {
         let half = prng(21, 40_000);
         let data: Vec<u8> = half.iter().chain(half.iter()).copied().collect();
         for layout in [Layout::FutureLz, Layout::IoLz, Layout::IndexLz] {
-            for method in [Method::Digests, Method::Reread] {
+            for method in [Method::Digests, Method::Reread, Method::InMemory] {
                 let packed = compress_file(
                     &data, method, layout, Options::default(), HashChoice::MD5, 16_384,
                 )
