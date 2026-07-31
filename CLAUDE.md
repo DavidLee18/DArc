@@ -98,7 +98,7 @@ Exercise the specific codec you touched via `-m` (e.g. `-m4x`, `-m9`), and test 
 
 `Command` (`Options.hs:39`) is a large record carrying both the parsed command and every relevant option (`opt_*` fields). It is threaded through essentially the entire codebase, and drivers pass modified copies downward (see `findArchives` at `Arc.hs:149`, which rewrites `cmd_arcname`/`opt_disk_basedir` per matched archive). Options are declared in `Options.hs` and parsed generically by `Cmdline.hs`. Learn this record early.
 
-Two dispatch escapes sit ahead of the main table: `.7z` archives are detected by `is7zArchive` and diverted to `Arc7z.hs` (native read via the vendored 7-Zip SDK; *writing* shells out to the system `7zz`/`7z`), and under `FREEARC_GUI` an invocation with fewer than two arguments launches the file manager instead of running a command.
+Two dispatch escapes sit ahead of the main table: `.7z` archives are detected by `is7zArchive` and diverted to `Arc7z.hs` (native read via the `darc-sevenz` crate, which replaced the vendored 7-Zip SDK; *writing* shells out to the system `7zz`/`7z`), and under `FREEARC_GUI` an invocation with fewer than two arguments launches the file manager instead of running a command.
 
 ### The process pipeline (the core abstraction)
 
@@ -224,5 +224,6 @@ These build separately from the main binary and are not covered by `./compile-O2
 ## Conventions
 
 - Commit messages are plain English, imperative, occasionally prefixed with a gitmoji on merges. Recent history uses a `Component: what changed` shape (`Win64 build: add LZMA/7z/zstd SDK sources, fix link`).
-- Codecs vendored from upstream projects (LZMA/7-Zip SDK, libbsc, Lua) are kept close to pristine so they can be re-synced. (zstd and LZ4 are no longer vendored: zstd comes from the `zstd-safe` crate, and LZ4 from `lz4_flex` plus DArc's own LZ4-HC port in `rust/darc-codecs/src/lz4hc.rs`.) Prefer adapting DArc's wrapper (`Compression/C_*.cpp`) over patching vendored sources.
+- Codecs vendored from upstream projects (libbsc, Lua) are kept close to pristine so they can be re-synced. Several are no longer vendored at all: zstd comes from the `zstd-safe` crate, LZ4 from `lz4_flex` plus DArc's own LZ4-HC port in `rust/darc-codecs/src/lz4hc.rs`, and the `.7z` reader from `sevenz-rust2` via `rust/darc-sevenz`. Prefer adapting DArc's wrapper (`Compression/C_*.cpp`) over patching vendored sources.
+- **The project is GPLv3-or-later.** It was GPLv2 until the `.7z` reader moved to `sevenz-rust2`, which is Apache-2.0 — a licence compatible with GPLv3 and not with GPLv2. Adding a dependency therefore has a licence dimension: check it against `THIRD-PARTY.md`, which also records why the change was permissible (FreeArc 0.67 ships no licence file or headers, so the GPLv2 text was DArc's own choice rather than an inherited constraint).
 - Haskell here predates AMP and modern `base`, and is compiled with a long list of `-X` flags (`NoMonomorphismRestriction`, `OverlappingInstances`, `NondecreasingIndentation`, …) plus `-w` to accept it. Match the surrounding style rather than modernizing — a "cleanup" that assumes `Applicative f => Monad f` will break the build.

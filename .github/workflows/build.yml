@@ -943,7 +943,12 @@ jobs:
     - name: Install packages
       run: |
         sudo apt-get update
-        sudo apt-get install -y liblua5.1-dev libncurses-dev libcurl4-openssl-dev cpphs
+        # p7zip-full supplies `7z`, which sevenz-check.sh uses to AUTHOR its
+        # corpus -- the archives under test must come from the reference
+        # implementation, not from either reader being compared. The harness
+        # fails rather than passing if no 7z binary is found, so this is a hard
+        # dependency and not a nice-to-have.
+        sudo apt-get install -y liblua5.1-dev libncurses-dev libcurl4-openssl-dev cpphs p7zip-full
     - name: Per-codec differential tests (REP, TTA, MM, LZP, Dict, LZ4-HC)
       run: |
         chmod +x rust/difftest/*.sh
@@ -963,6 +968,23 @@ jobs:
         # byte-identical to the C for every level DArc can select (1-9), and
         # decodes each block with the C decoder rather than lz4_flex.
         rust/difftest/lz4hc-check.sh
+        # The .7z READER, which replaced Compression/7z (13,789 lines, 13,563 of
+        # them a vendored 7-Zip SDK) with the darc-sevenz crate.
+        #
+        # Nothing in CI has ever exercised .7z before this: no workflow named it,
+        # and no test opened one. So the reader was replaced wholesale with the
+        # only evidence being that it compiled. This harness builds BOTH readers
+        # from one driver source and runs them over archives written by the
+        # system 7-Zip, so the inputs come from neither implementation.
+        #
+        # It is asymmetric on purpose -- the vendored C was compiled with PPMd
+        # and the ARM64/ARMT filters switched off, so demanding equal return
+        # codes would fail on any corpus that included them. The port failing
+        # where the C succeeded is always a failure; the reverse is recorded.
+        #
+        # It refuses to pass without a 7z binary rather than reporting success
+        # over an empty corpus.
+        rust/difftest/sevenz-check.sh
         # BCJ's x86 branch filter, which C_BCJ.cpp now routes to Rust. The corpus
         # deliberately includes real x86 binaries: random data almost never contains
         # the E8/E9 opcodes the filter acts on, so a random-only corpus passes with

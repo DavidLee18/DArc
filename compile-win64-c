@@ -137,23 +137,7 @@ done
 
 # LZMA 7-Zip 24.09 C SDK sources
 CC_C="$triple-gcc$cc_suffix"
-C7Z_FLAGS=(
-  -std=c11 -c -O2 -fno-strict-aliasing -DNDEBUG -D_REENTRANT
-  -DFREEARC_WIN -DFREEARC_INTEL_BYTE_ORDER -DFREEARC_64BIT
-  $MHS_DEF
-  -D_WIN32_WINNT=$win_ver -DWINVER=$win_ver
-  -Wno-unknown-pragmas -Wno-sign-compare -Wno-deprecated-declarations
-)
 # zstd is the zstd-safe crate now; the vendored libzstd tree is gone.
-# 7z native reader: C_7z.c + its own SDK sources, merged and symbol-localized.
-for src in Compression/7z/C_7z.c; do
-  echo "  $src"
-  $CC_C "${C7Z_FLAGS[@]}" -ICompression/7z/sdk "$src" -o "$WINOUT/C_7z.o"
-done
-for src in Compression/7z/sdk/*.c; do
-  base=$(basename "$src" .c)
-  echo "  $src"
-  $CC_C "${C7Z_FLAGS[@]}" -ICompression/7z/sdk "$src" -o "$WINOUT/sdk_$base.o"
-done
+# The .7z reader is the darc-sevenz crate now; Compression/7z is gone.
 
 echo "Built: $(ls "$WINOUT"/*.o | wc -l) objects in $WINOUT/"

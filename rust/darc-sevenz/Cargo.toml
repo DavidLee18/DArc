@@ -1,0 +1,60 @@
+[package]
+name = "darc-sevenz"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+
+# Replaces Compression/7z -- 13,789 lines, of which 13,563 were a vendored copy
+# of the 7-Zip SDK (LZMA SDK 26.00, the .7z reader subset).
+#
+# This is the one codec directory where "delete the C, add a dependency" is
+# unambiguously right, and it is worth writing down why, because the rule
+# everywhere else in this port is the opposite.
+#
+# Every other codec had a byte-identity bar: DArc *emits* those bytes, so a port
+# that merely produces a valid stream still produces archives no other build
+# reproduces. .7z is different -- DArc has never written one. Arc7z.hs shells
+# out to `7zz`/`7z` for a/u/d and only reads natively. The acceptance test here
+# is therefore "the same files come out", which a maintained crate satisfies at
+# least as well as a hand port, and hand-porting a 1,786-line foreign container
+# parser would buy a second chance to get it wrong and nothing else.
+#
+# WHY A SEPARATE CRATE rather than a module in darc-codecs: Unarc and every SFX
+# module link the same libdarc_codecs.a (see Unarc/makefile). Putting the reader
+# there would either grow every self-extracting archive by a .7z parser they can
+# never use, or -- if feature-gated -- make `compile` and Unarc's makefile
+# disagree about darc-codecs' feature set and thrash cargo rebuilds through the
+# shared rust/target. A separate staticlib is linked only by the archiver.
+[lib]
+name = "darc_sevenz"
+# staticlib so the archiver links the three exported symbols; rlib so the
+# crate's own tests can use it.
+crate-type = ["staticlib", "rlib"]
+
+[dependencies]
+# default-features = false drops aes256, bzip2, compress and util:
+#
+#   compress  encoder only; we are read-only, and writing still shells out.
+#   util      convenience wrappers over ArchiveReader, which we use directly.
+#   bzip2     pulls a -sys crate. This tree cross-compiles to mingw x86_64 and
+#             to win-ARM64 under llvm-mingw, where a native dependency is
+#             exactly what breaks; the vendored C could not read bzip2 .7z
+#             either, so dropping it costs nothing today.
+#   aes256    encrypted .7z needs a password, which means prompting through
+#             UI.hs and plumbing it down Arc7z.hs. The vendored C could not
+#             read those either. Worth doing, but as its own change.
+#
+# `ppmd` is kept because .7z files in the wild use it and it costs one pure-Rust
+# crate. Note it is a capability GAIN, not parity: 7zDec.c ships
+# `/* #define Z7_PPMD_SUPPORT */` commented out and the makefile never defined
+# it, so `k_PPMD` was absent from IS_MAIN_METHOD and every PPMd .7z was refused
+# with SZ_ERROR_UNSUPPORTED -- while Ppmd7.c and Ppmd7Dec.c were still compiled
+# and linked into the binary as dead weight.
+#
+# Measured, not assumed: rust/difftest/sevenz-check.sh runs both readers over the
+# same archives, and the C refuses PPMd, the ARM64 and ARMT filters (both behind
+# `Z7_USE_FILTER_*` defines it never set) and Delta+BCJ2 folder shapes. This
+# crate reads all of them, and its output on those archives was verified against
+# originals neither reader produced.
+sevenz-rust2 = { version = "0.21.3", default-features = false, features = ["ppmd"] }

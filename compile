@@ -82,15 +82,19 @@ rust_lib=""
 command -v cargo >/dev/null 2>&1 || {
   echo "error: cargo not found in PATH -- it is required to build DArc" >&2; exit 1; }
 
-echo "building Rust codecs and crypto"
-( cd rust && cargo build --release -p darc-codecs -p darc-crypto --features darc-codecs/dropin ) || {
+echo "building Rust codecs, crypto and the .7z reader"
+( cd rust && cargo build --release -p darc-codecs -p darc-crypto -p darc-sevenz --features darc-codecs/dropin ) || {
   echo "error: cargo build failed" >&2; exit 1; }
 
 # rust/ is a cargo workspace, so build output lands in the WORKSPACE target
-# directory, not each member's. Both staticlibs are linked: codecs supply the
+# directory, not each member's. Three staticlibs are linked: codecs supply the
 # ported compression methods, darc-crypto the encryption (docrypt, PBKDF2,
-# random) that C_Encryption.cpp forwards to under -DDARC_RUST.
-rust_lib="$PWD/rust/target/release/libdarc_codecs.a $PWD/rust/target/release/libdarc_crypto.a"
+# random) that C_Encryption.cpp forwards to under -DDARC_RUST, and darc-sevenz
+# the native .7z reader (darc_7z_list/extract/test) Arc7z.hs imports.
+#
+# darc-sevenz is deliberately NOT part of darc-codecs: Unarc and every SFX
+# module link libdarc_codecs.a, and none of them can open a .7z.
+rust_lib="$PWD/rust/target/release/libdarc_codecs.a $PWD/rust/target/release/libdarc_crypto.a $PWD/rust/target/release/libdarc_sevenz.a"
 for l in $rust_lib; do
   [ -f "$l" ] || { echo "error: cargo produced no $l" >&2; exit 1; }
 done
@@ -124,7 +128,7 @@ for src in HsLua/src/*.c; do
   clang -std=c99 -O2 -w -c "$src" -IHsLua/src -o "$obj"
   lua_objs="$lua_objs $obj"
 done
-c_objs="$ctempdir/Environment.o $ctempdir/URL.o $ctempdir/Common.o $ctempdir/CompressionLibrary.o $ctempdir/C_PPMD.o $ctempdir/C_LZP.o $ctempdir/C_LZMA.o $ctempdir/C_LZMA2.o $ctempdir/C_LZ4.o $ctempdir/C_BCJ.o $ctempdir/C_GRZip.o $ctempdir/C_BSC.o $ctempdir/C_DisPack.o $ctempdir/C_Zstd.o $ctempdir/C_7z.o $ctempdir/C_Dict.o $ctempdir/C_REP.o $ctempdir/C_MM.o $ctempdir/C_TTA.o $ctempdir/C_Tornado.o $ctempdir/C_4x4.o $ctempdir/C_Delta.o $ctempdir/C_External.o $ctempdir/C_Encryption.o"
+c_objs="$ctempdir/Environment.o $ctempdir/URL.o $ctempdir/Common.o $ctempdir/CompressionLibrary.o $ctempdir/C_PPMD.o $ctempdir/C_LZP.o $ctempdir/C_LZMA.o $ctempdir/C_LZMA2.o $ctempdir/C_LZ4.o $ctempdir/C_BCJ.o $ctempdir/C_GRZip.o $ctempdir/C_BSC.o $ctempdir/C_DisPack.o $ctempdir/C_Zstd.o $ctempdir/C_Dict.o $ctempdir/C_REP.o $ctempdir/C_MM.o $ctempdir/C_TTA.o $ctempdir/C_Tornado.o $ctempdir/C_4x4.o $ctempdir/C_Delta.o $ctempdir/C_External.o $ctempdir/C_Encryption.o"
 # -lgomp is GNU's OpenMP runtime and does not exist on macOS. Nothing in this
 # build actually uses OpenMP (see the note in unix-common.mak), so it is simply
 # omitted there rather than substituting Apple's -lomp.

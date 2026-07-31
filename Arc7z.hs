@@ -4,10 +4,11 @@
 -- .7z support for DArc.
 --
 -- Read-only operations (list / extract / test) are handled natively by the
--- 7zip C SDK vendored under Compression/7z/sdk and linked as libdarc7z (see
--- C_7z.c). Creation and in-place update fall back to the system '7zz' (or
--- '7z') binary, since writing the .7z container would pull in the p7zip C++
--- encoder — out of scope for the lite integration.
+-- darc-sevenz crate (rust/darc-sevenz), linked as libdarc_sevenz.a. It replaced
+-- the vendored 7zip C SDK that used to live under Compression/7z/sdk; the three
+-- entry points below are unchanged. Creation and in-place update still fall
+-- back to the system '7zz' (or '7z') binary — DArc has never written the .7z
+-- container, which is why a crate could stand in for the reader at all.
 ----------------------------------------------------------------------------------------------------
 module Arc7z (is7zArchive, run7z) where
 

@@ -14,7 +14,7 @@ cd "$HERE"
 
 CODECS=(
   External LZP REP Delta MM Tornado 4x4 Dict PPMD
-  GRZip BSC DisPack Zstd 7z LZMA LZ4 _Encryption
+  GRZip BSC DisPack Zstd LZMA LZ4 _Encryption
 )
 
 fail () { echo "ERROR: $*" >&2; exit 1; }
