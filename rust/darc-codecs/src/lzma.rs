@@ -317,10 +317,24 @@ pub unsafe extern "C" fn darc_lzma2_compress(
     };
     props.lzma.bt_mode = bt_mode;
     props.lzma.num_hash_bytes = num_hash_bytes;
-    // `C_LZMA2.cpp:86-87` takes both from GetCompressionThreads(). darc_lzma
-    // implements the single-threaded, SOLID-block path only and REFUSES the rest
-    // rather than silently encoding a different stream, so ask for one thread and
-    // let a caller that wanted more get an explicit error.
+    // `C_LZMA2.cpp:86-87` takes both from GetCompressionThreads(), which
+    // `Cmdline.hs:295` defaults to the processor count. This forces 1 instead, and
+    // that is a KNOWN, MEASURED DIVERGENCE, not a no-op:
+    //
+    // With more than one block thread, `Lzma2EncProps_Normalize`
+    // (`Lzma2Enc.c:305-324`) abandons the SOLID block and splits the input into
+    // blocks of `clamp(dictSize * 4, 1 MiB, 256 MiB)`, each starting with a
+    // dictionary reset. Measured on a 10 MB input at `dictSize = 1m` (so a 4 MB
+    // block): the C emits 622,707 bytes at one thread and 624,589 at two or more.
+    // This path always produces the one-thread answer.
+    //
+    // So for an input larger than that block size, on a multicore machine, `-mlzma2`
+    // no longer reproduces the bytes DArc's C produced. The output is smaller (one
+    // solid block keeps the cross-block matches) and every reader accepts it, but it
+    // is not the same archive. Closing it means encoding the blocks sequentially --
+    // `MtCoder` assigns and writes them in order, so sequential encoding of the same
+    // split is byte-identical to the threaded C, just slower. Refusing instead would
+    // break `-mlzma2` outright on any multicore box, which is worse.
     props.num_total_threads = 1;
     props.num_block_threads_max = 1;
     props.normalize();

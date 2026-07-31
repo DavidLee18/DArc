@@ -115,6 +115,37 @@ Ordered by what blocks a drop-in replacement:
    deleting C: **every `unarc` and SFX target links `LzmaDec.o`**, and those parse
    hostile archives compiled `-D_NO_EXCEPTIONS`.
 
+## The one place this port does NOT reproduce DArc's C
+
+**LZMA2 block splitting is not implemented, and the difference is measurable.**
+
+`C_LZMA2.cpp:86-87` sets both thread counts from `GetCompressionThreads()`, which
+`Cmdline.hs:295` defaults to the processor count. Above one block thread,
+`Lzma2EncProps_Normalize` (`Lzma2Enc.c:305-324`) stops using a SOLID block and
+splits the input into blocks of `clamp(dictSize * 4, 1 MiB, 256 MiB)`, each opening
+with a dictionary reset. `rust/darc-codecs/src/lzma.rs` forces one thread, so it
+always takes the SOLID path.
+
+Measured, 10 MB input at `dictSize = 1m` (4 MB blocks):
+
+| | bytes |
+|---|---|
+| C, 1 thread | 622,707 |
+| C, 2 or 8 threads | 624,589 |
+| Rust | 622,707 |
+
+So for an input larger than the block size, on a multicore machine, `-mlzma2` no
+longer reproduces the bytes DArc's C produced. The stream is smaller and every
+reader accepts it, but it is not the same archive. With the default 64 MiB
+dictionary the block is 256 MiB, so it takes a very large solid block to reach;
+with an explicit small dictionary (`-mlzma2:d1m`) it takes 4 MB.
+
+Closing it does **not** require threads: `MtCoder` assigns and writes blocks in
+order, so encoding the same split sequentially is byte-identical to the threaded C.
+`lzma2-check.sh` stubs `GetCompressionThreads()` to 1 and exposes
+`DARC_LZMA2_THREADS` for measuring this axis deliberately — which is how the numbers
+above were obtained.
+
 ## Two harness traps worth keeping
 
 * **`mc = 0` is DArc's "auto" sentinel**, resolved by the SDK
