@@ -82,7 +82,7 @@ PY
 #
 # Small block sizes are not decoration: at the default 8 MB every corpus input
 # fits in one block and no cross-block path is reached.
-total=0 checked=0
+total=0 checked=0 tie=0
 for opt in "-m3f" \
            "-m3f -b64kb" "-m3f -b16kb" \
            "-m3f -a0/0" "-m3f -a1/1" "-m3f -a2/2" "-m3f -a4/4" \
@@ -105,9 +105,27 @@ for opt in "-m3f" \
     "$RS" $opt -hash=md5 "$f" "$W/r.srep" >/dev/null 2>&1 \
       || { echo "  [$opt] $name: RUST-compress FAILED"; fail=$((fail+1)); continue; }
 
-    cmp -s "$W/c.srep" "$W/r.srep" || {
-      echo "  [$opt] $name: compressed streams differ ($(wc -c <"$W/c.srep") vs $(wc -c <"$W/r.srep") bytes)"
-      fail=$((fail+1)); continue; }
+    if ! cmp -s "$W/c.srep" "$W/r.srep"; then
+      # `std::sort` at srep.cpp:756 is UNSTABLE and its comparator (:85) looks at
+      # `src` alone, so records sharing a source come out in an order the C++
+      # standard library picks. Measured: of five corpus inputs with a tied
+      # source, this libc++ preserved four and reversed one (`runs`, 240
+      # records) -- introsort insertion-sorts small ranges, which is stable, and
+      # only perturbs ties once quicksort engages. A libstdc++ build can
+      # therefore produce a different archive from the same input, so this is not
+      # a property the C has to reproduce.
+      #
+      # The helper passes ONLY when the two streams are the same multiset of
+      # records per block with identical headers, hashes and literals. Any other
+      # difference is still a failure.
+      if python3 "$ROOT/rust/difftest/srep_tie_order.py" "$W/c.srep" "$W/r.srep"; then
+        tie=$((tie+1))
+      else
+        echo "  [$opt] $name: compressed streams differ ($(wc -c <"$W/c.srep") vs $(wc -c <"$W/r.srep") bytes)"
+        fail=$((fail+1))
+      fi
+      continue
+    fi
 
     # Identity is the gate; this catches the different failure where BOTH
     # implementations agree on something the decoder cannot read.
@@ -119,7 +137,7 @@ for opt in "-m3f" \
   total=$((total+fail))
 done
 
-echo "srep encode: $checked comparisons, $total differing"
+echo "srep encode: $checked comparisons, $total differing, $tie tie-order-only"
 [ "$total" -eq 0 ] || exit 1
 
 # The harness must be able to fail. Every input above is well-formed, so all the
