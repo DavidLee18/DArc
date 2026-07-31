@@ -79,10 +79,6 @@ pub fn compress_file(
     hash: HashChoice,
     bufsize: usize,
 ) -> Result<Vec<u8>, EncodeError> {
-    // -m5's exhaustive search needs SliceHash, which is only allocated there.
-    if method.exhaustive() {
-        return Err(EncodeError::Unsupported);
-    }
     let d = params::derive(method, layout, opt);
     let hasher = Hash::from_num(hash.hash_num, hash.hash_size);
 
@@ -113,6 +109,9 @@ pub fn compress_file(
             precompute_digests: method.precompute_digests(),
             round_matches: d.round_matches,
             bitarr_accelerator: u64::from(d.bitarr_accelerator),
+            min_match: d.min_match as usize,
+            // srep.cpp:233 -- 1 unless -ia- was given.
+            io_accelerator: 1,
         },
         data.len() as u64,
     );
@@ -367,16 +366,28 @@ mod tests {
     }
 
     #[test]
-    fn unported_methods_are_refused_rather_than_mis_encoded() {
-        // Only -m5 is left: its exhaustive search is the one path that actually
-        // allocates SliceHash, which is not ported.
-        for (m, l) in [
-            (Method::Exhaustive, Layout::FutureLz),
-            (Method::Exhaustive, Layout::IoLz),
-            (Method::Exhaustive, Layout::IndexLz),
+    fn every_method_and_layout_is_supported() {
+        // This replaced a test that asserted which shapes were REFUSED, and went
+        // stale four times as the port grew -- each time reporting a failure for
+        // work that had just succeeded. Stated as the invariant instead: all
+        // fifteen combinations must encode. A method that starts returning
+        // Unsupported is then a real regression rather than an expected result
+        // nobody updated.
+        let data = prng(31, 20_000);
+        for method in [
+            Method::InMemory,
+            Method::Cdc,
+            Method::ZpaqCdc,
+            Method::Digests,
+            Method::Reread,
+            Method::Exhaustive,
         ] {
-            let r = compress_file(b"x", m, l, Options::default(), HashChoice::MD5, 0);
-            assert_eq!(r, Err(EncodeError::Unsupported), "{m:?}/{l:?}");
+            for layout in [Layout::FutureLz, Layout::IoLz, Layout::IndexLz] {
+                let r = compress_file(
+                    &data, method, layout, Options::default(), HashChoice::MD5, 0,
+                );
+                assert!(r.is_ok(), "{method:?}/{layout:?} was refused: {r:?}");
+            }
         }
     }
 
@@ -394,6 +405,7 @@ mod tests {
                 Method::InMemory,
                 Method::Cdc,
                 Method::ZpaqCdc,
+                Method::Exhaustive,
             ] {
                 let packed = compress_file(
                     &data, method, layout, Options::default(), HashChoice::MD5, 16_384,

@@ -3,9 +3,10 @@
 //! Scoped to the `-m3`/`-m4` path, which is what `arc.ini` runs. Two branches of
 //! the C are therefore absent, deliberately:
 //!
-//! * **`SliceHash`** is only consulted when `COMPARE_DIGESTS` is false. `-m3`
-//!   sets it true, so `slicehash.check()` is unreachable there and porting it
-//!   would be dead code with no oracle. `-m5` needs it.
+//! [`SliceHash`] is consulted only when `COMPARE_DIGESTS` is false, and is only
+//! *allocated* when `check_slices > 0` — which needs `MIN_MATCH > L`. That holds
+//! for `-m5` alone, because every other method defaults `L` from `min_match` and
+//! makes them equal. So it is a `-m5` structure, and inert everywhere else.
 //! `CONTENT_DEFINED_CHUNKING` (`-m1`/`-m2`) is supported through
 //! [`HashTable::find_match_cdc`]: it indexes variable-length chunks by
 //! `startarr` and never touches `hasharr`.
@@ -49,6 +50,142 @@
 //! miscompilation that already degrades hash verification in the decoder.)
 
 use sha2::{Digest as _, Sha256};
+
+/// `SliceHash` (`hash_table.cpp:19`) — a coarse filter for `-m5`.
+///
+/// Each `L`-byte chunk is cut into `slices_in_block` slices, each hashed to
+/// [`SliceHash::BITS`] bits, and the lot packed into one `u32`. Before accepting
+/// a candidate, `-m5` compares the slices *around* it against the stored ones;
+/// if too few agree the match cannot reach `MIN_MATCH` and is rejected without
+/// touching the data.
+pub struct SliceHash {
+    /// One entry per `L` input bytes, or empty when the filter is disabled.
+    h: Vec<u32>,
+    l: usize,
+    slices_in_block: usize,
+    slice_size: usize,
+    check_slices: i64,
+}
+
+impl SliceHash {
+    const BITS: u32 = 4;
+    const ONES: u32 = (1 << Self::BITS) - 1;
+
+    /// `SliceHash::SliceHash()` (`:29`).
+    ///
+    /// `memreq` is `(filesize/L + 1)` entries — the `+1` matters: `filesize/L`
+    /// truncates, so a file whose size is not a multiple of `L` would leave its
+    /// final partial chunk without a slot and `prepare_buffer` would write one
+    /// past the end. The C carries a comment recording that exact heap overflow.
+    pub fn new(filesize: u64, l: usize, min_match: usize, io_accelerator: i64) -> Self {
+        let slices_in_block = (std::mem::size_of::<u32>() * 8) as usize / Self::BITS as usize;
+        let slice_size = l / slices_in_block;
+        let check_slices = match slice_size {
+            0 => 0,
+            _ => (min_match as i64 - l as i64) / slice_size as i64 - io_accelerator,
+        };
+        let enabled = io_accelerator >= 0 && check_slices > 0;
+        SliceHash {
+            h: match enabled {
+                true => vec![0u32; (filesize / l as u64) as usize + 1],
+                false => Vec::new(),
+            },
+            l,
+            slices_in_block,
+            slice_size,
+            check_slices,
+        }
+    }
+
+    /// `SliceHash::hash()` (`:60`) — a `BITS`-wide hash of one slice.
+    fn hash(buf: &[u8]) -> u32 {
+        let mut h: u32 = 111_222_341;
+        for &b in buf {
+            h = h.wrapping_mul(123_456_791).wrapping_add(u32::from(b));
+        }
+        h.wrapping_mul(123_456_791) >> (32 - Self::BITS)
+    }
+
+    /// `SliceHash::prepare_buffer()` (`:69`).
+    pub fn prepare_buffer(&mut self, offset: u64, buf: &[u8]) {
+        if self.h.is_empty() {
+            return;
+        }
+        let mut curchunk = (offset / self.l as u64) as usize;
+        let mut p = 0usize;
+        while p < buf.len() {
+            let mut checksum = 0u32;
+            for i in 0..self.slices_in_block {
+                let end = (p + self.slice_size).min(buf.len());
+                checksum =
+                    checksum.wrapping_add(Self::hash(&buf[p.min(buf.len())..end]) << (i as u32 * Self::BITS));
+                p += self.slice_size;
+            }
+            if curchunk >= self.h.len() {
+                return;
+            }
+            self.h[curchunk] = checksum;
+            curchunk += 1;
+        }
+    }
+
+    /// `SliceHash::check()` (`:83`) — `true` when the match MAY be long enough.
+    ///
+    /// Returns `true` unconditionally when the filter is off or when there is not
+    /// enough data around the candidate to compare, so it can only ever reject.
+    pub fn check(&self, chunk: usize, buf: &[u8], i: usize, block_size: usize) -> bool {
+        if self.h.is_empty() {
+            return true;
+        }
+        if i < self.l || block_size.saturating_sub(i) < 2 * self.l {
+            return true;
+        }
+        // Forward: slices after the chunk, taken from h[chunk+1].
+        let mut j = 0i64;
+        let fwd = match self.h.get(chunk + 1) {
+            Some(v) => *v,
+            None => return true,
+        };
+        loop {
+            if j == self.check_slices {
+                return true;
+            }
+            let at = i + self.l + (j as usize) * self.slice_size;
+            if at + self.slice_size > buf.len() {
+                return true;
+            }
+            if (fwd >> (j as u32 * Self::BITS)) & Self::ONES
+                != Self::hash(&buf[at..at + self.slice_size])
+            {
+                break;
+            }
+            j += 1;
+        }
+        // Backward: slices before it, taken from h[chunk-1], read from the TOP
+        // of the packed word downwards.
+        let back = match chunk.checked_sub(1).and_then(|c| self.h.get(c)) {
+            Some(v) => *v,
+            None => return true,
+        };
+        let mut k = 0i64;
+        loop {
+            if k + j == self.check_slices {
+                return true;
+            }
+            let off = (k as usize + 1) * self.slice_size;
+            if off > i {
+                return true;
+            }
+            let shift = (self.slices_in_block - (k as usize + 1)) as u32 * Self::BITS;
+            if (back >> shift) & Self::ONES != Self::hash(&buf[i - off..i - off + self.slice_size])
+            {
+                break;
+            }
+            k += 1;
+        }
+        false
+    }
+}
 
 /// `Chunk` — an index into the file's `L`-byte chunks.
 pub type Chunk = u32;
@@ -108,6 +245,11 @@ pub struct Config {
     /// `BITARR_ACCELERATOR` = `accel * 8` (`srep.cpp:505`). Zero disables the
     /// bit-array pre-filter entirely.
     pub bitarr_accelerator: u64,
+    /// `MIN_MATCH`, which SliceHash needs to size its check.
+    pub min_match: usize,
+    /// `io_accelerator` (`srep.cpp:233`), 1 by default; negative disables
+    /// SliceHash outright.
+    pub io_accelerator: i64,
 }
 
 /// `HashTable` (`:110`), `-m3`/`-m4` subset.
@@ -131,6 +273,8 @@ pub struct HashTable {
     /// `curchunk` — CDC only: chunks are numbered as they are seen, not derived
     /// from a position, because they have no fixed size.
     curchunk: Chunk,
+    /// `-m5`'s coarse pre-filter; empty for every other method.
+    slicehash: SliceHash,
 }
 
 impl HashTable {
@@ -139,6 +283,7 @@ impl HashTable {
     /// `filesize` is `max(filesize, L)` as in the C, so a file shorter than one
     /// chunk still sizes its arrays for one.
     pub fn new(cfg: Config, filesize: u64) -> Self {
+        let slicehash = SliceHash::new(filesize, cfg.l, cfg.min_match, cfg.io_accelerator);
         let filesize = filesize.max(cfg.l as u64);
         let total_chunks = filesize / cfg.l as u64;
 
@@ -178,6 +323,7 @@ impl HashTable {
             bitarr: vec![0u8; bitarrsize as usize],
             startarr: Vec::new(),
             curchunk: 0,
+            slicehash,
         }
     }
 
@@ -365,6 +511,7 @@ impl HashTable {
     /// The loop condition is `(buf+size)-p >= L`, so a trailing partial chunk is
     /// skipped rather than digested short.
     pub fn prepare_buffer(&mut self, offset: u64, buf: &[u8]) {
+        self.slicehash.prepare_buffer(offset, buf);
         if !self.cfg.precompute_digests {
             return;
         }
@@ -481,9 +628,12 @@ impl HashTable {
                                 }
                             }
                         }
-                        // -m4: `slicehash.check()` is vacuously true with no
-                        // SliceHash allocated, so the stored hash is accepted.
-                        false => return chunk,
+                        // -m4/-m5: `speed_opt` makes a failed slice check end
+                        // the search rather than continue it (`:284`).
+                        false => match self.slicehash.check(ci, buf, i, buf.len()) {
+                            true => return chunk,
+                            false => return NOT_FOUND,
+                        },
                     }
                 }
             }
@@ -666,6 +816,8 @@ mod tests {
             precompute_digests: true,
             round_matches: true,
             bitarr_accelerator: 0,
+            min_match: l,
+            io_accelerator: 1,
         }
     }
 

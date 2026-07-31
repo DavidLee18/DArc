@@ -104,7 +104,7 @@ case "$(uname -m)" in
 esac
 eval "set -- $M1_ROWS"; M1_ROWS="$*"
 
-total=0 checked=0 tie=0
+total=0 checked=0 tie=0 oracle=0
 for opt in "-m3f" \
            "-m3f -b64kb" "-m3f -b16kb" \
            "-m3f -a0/0" "-m3f -a1/1" "-m3f -a2/2" "-m3f -a4/4" \
@@ -114,6 +114,7 @@ for opt in "-m3f" \
            "-m4f" "-m4o" \
            "-m0" "-m0f" "-m0o" "-m0 -b16kb" \
            "-m2" "-m2f" "-m2o" "-m2 -b16kb" \
+           "-m5f" "-m5o" "-m5" "-m5f -b16kb" \
            $M1_ROWS; do
   fail=0; n=0
   for f in "$W"/in/*; do
@@ -121,8 +122,14 @@ for opt in "-m3f" \
     rm -f "$W/c.srep" "$W/r.srep" "$W/back"
 
     # shellcheck disable=SC2086
-    "$SREP" $opt -hash=md5 "$f" "$W/c.srep" >/dev/null 2>&1 \
-      || { echo "  [$opt] $name: C-compress FAILED (harness)"; fail=$((fail+1)); continue; }
+    if ! "$SREP" $opt -hash=md5 "$f" "$W/c.srep" >/dev/null 2>&1; then
+      # The reference itself refused. That is not a port failure and there is
+      # nothing to compare against, so it is counted and printed separately --
+      # -m5's match finder is known to abort on some inputs under
+      # Linux/glibc-x86-64 (see srep-check.sh).
+      echo "  [$opt] $name: ORACLE REFUSED (reference srep exited nonzero)"
+      oracle=$((oracle+1)); continue
+    fi
     [ -s "$W/c.srep" ] || [ ! -s "$f" ] \
       || { echo "  [$opt] $name: C produced an empty archive (harness)"; fail=$((fail+1)); continue; }
 
@@ -162,7 +169,7 @@ for opt in "-m3f" \
   total=$((total+fail))
 done
 
-echo "srep encode: $checked comparisons, $total differing, $tie tie-order-only"
+echo "srep encode: $checked comparisons, $total differing, $tie tie-order-only, $oracle oracle-refused"
 [ "$total" -eq 0 ] || exit 1
 
 # The harness must be able to fail. Every input above is well-formed, so all the

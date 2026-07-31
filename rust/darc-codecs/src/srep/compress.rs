@@ -391,6 +391,8 @@ mod tests {
                 round_matches: true,
                 // BITARR_ACCELERATOR = accel*8 (srep.cpp:505).
                 bitarr_accelerator: (accel * 8) as u64,
+                min_match: l,
+                io_accelerator: 1,
             },
             filesize,
         )
