@@ -95,6 +95,16 @@ echo "building Rust codecs, crypto and the .7z reader"
 # darc-sevenz is deliberately NOT part of darc-codecs: Unarc and every SFX
 # module link libdarc_codecs.a, and none of them can open a .7z.
 rust_lib="$PWD/rust/target/release/libdarc_codecs.a $PWD/rust/target/release/libdarc_crypto.a $PWD/rust/target/release/libdarc_sevenz.a"
+
+# SREP is an EXTERNAL compressor: arc.ini's [External compressor:srep] spawns a
+# `srep` binary rather than calling a symbol. That binary used to be built from
+# Compression/SREP by srep/compile; both are gone, and the Rust port is the
+# implementation now, so install it where the archiver looks.
+( cd rust && cargo build --release -p darc-codecs --bin srep ) || {
+  echo "error: cargo build failed for the srep binary" >&2; exit 1; }
+mkdir -p Tests
+cp "$PWD/rust/target/release/srep" Tests/srep || {
+  echo "error: could not install Tests/srep" >&2; exit 1; }
 for l in $rust_lib; do
   [ -f "$l" ] || { echo "error: cargo produced no $l" >&2; exit 1; }
 done

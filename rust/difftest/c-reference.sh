@@ -148,3 +148,55 @@ darc_codec_cflags() {
 darc_lzma_sdk_cflags() {
   echo "-std=c11 -O2 -DNDEBUG -D_REENTRANT"
 }
+
+# ── SREP's oracle has its own, LATER pin ────────────────────────────────────
+#
+# SREP is not an in-process codec: its oracle is a `srep` BINARY built from
+# source, not a shim linked against a pinned .cpp. And the shared pin above is
+# too old to serve as ground truth for it -- two genuine C-side bugs were fixed
+# in Compression/SREP AFTER 5c2c6ce:
+#
+#   fb32a20  a heap overflow that intermittently produced corrupt archives
+#            (SliceHash allocated filesize/L entries, one short for a file whose
+#            size is not a multiple of L)
+#   1f8f8a2  a block header copied out AFTER its buffer was released, so a block
+#            could carry the hash of the block two positions later
+#
+# Building the oracle at the old pin reproduces both. It was measurably wrong:
+# `-m3f -b16kb` on the `runs` corpus produced a block whose stored hash did not
+# match its own contents, which the harness correctly reported as a divergence
+# from a port that is right.
+#
+# So SREP pins separately, to the last revision on main that touched it. The
+# shared pin is deliberately left alone: bumping it would redefine "correct" for
+# every other harness at once, which is not what a SREP fix warrants.
+DARC_SREP_REF_SHA="1f8f8a21ea9f986c241406484e5414e1fad32af2"
+
+# Materialise Compression/SREP + srep/ at the SREP pin and echo the tree's path.
+darc_srep_reference() {
+  local root="$1"
+  local sha="$DARC_SREP_REF_SHA"
+  local ref="${TMPDIR:-/tmp}/darc-srep-ref-$sha"
+
+  if [ ! -f "$ref/.extracted-ok" ]; then
+    rm -rf "$ref"; mkdir -p "$ref" || return 1
+    if ! git -C "$root" cat-file -e "$sha^{commit}" 2>/dev/null; then
+      git -C "$root" fetch --quiet --depth=1 origin "$sha" 2>/dev/null || {
+        echo "srep-reference: revision $sha is not available" >&2
+        rm -rf "$ref"; return 1
+      }
+    fi
+    git -C "$root" archive "$sha" Compression/SREP srep | tar -x -C "$ref" || {
+      echo "srep-reference: could not extract the SREP sources at $sha" >&2
+      rm -rf "$ref"; return 1
+    }
+    mkdir -p "$ref/Tests"
+    # Same guard as the shared reference: a partial extraction must not persist.
+    [ -f "$ref/Compression/SREP/srep.cpp" ] && [ -f "$ref/srep/compile" ] || {
+      echo "srep-reference: extraction at $sha looks incomplete" >&2
+      rm -rf "$ref"; return 1
+    }
+    : > "$ref/.extracted-ok"
+  fi
+  echo "$ref"
+}

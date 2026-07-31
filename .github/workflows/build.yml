@@ -1206,11 +1206,13 @@ jobs:
       run: |
         sudo apt-get update
         sudo apt-get install -y liblua5.1-dev libncurses-dev libcurl4-openssl-dev cpphs
+    # Both SREP harnesses build their own oracle from the PINNED revision now --
+    # Compression/SREP and srep/ are deleted from the working tree, so there is
+    # no C here to build. c-reference.sh extracts both and runs srep/compile
+    # inside that tree.
     - name: SREP decoder differential test
       run: |
-        chmod +x srep/compile rust/difftest/*.sh
-        ( cd srep && ./compile )
-        test -x Tests/srep || { echo "::error::srep/compile produced no Tests/srep"; exit 1; }
+        chmod +x rust/difftest/*.sh
         rust/difftest/srep-check.sh
     # The SREP COMPRESSOR, which the decoder harness above cannot judge: it only
     # proves the port READS what the C wrote. This requires the port to WRITE
