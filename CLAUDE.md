@@ -4,12 +4,16 @@ DArc ("Distended Arc") is a fork of FreeArc 0.67 — a solid-compression archive
 Console binary `arc`, optional GTK binary `freearc`. Archive format is
 wire-compatible with [DArc86](https://github.com/YadeWira/DArc86).
 
-**It is mid-port from C to Rust, codec by codec.** Rust ~48,800 lines (every
-codec, the crypto, the `.7z` reader); Haskell ~20,300 (application logic,
-archive format, UI — untouched by the port); C/C++ ~57,700, of which only
-~18,700 is still a codec *engine* and 16,000 of that is SREP's encoder. After
-SREP the remaining work is the Haskell layer, which is harder: every codec had a
-byte-exact C oracle to test against and the application layer has none.
+**It is mid-port from C to Rust, codec by codec, and the codec half is done.**
+Rust ~53,000 lines (every codec, the crypto, the `.7z` reader, SREP);
+Haskell ~20,300 (application logic, archive format, UI — untouched by the port);
+C/C++ ~41,600, of which only ~2,600 is still a codec *engine* — `mmdet.cpp`,
+`4x4`, and a Tornado remnant. Everything else is vendored Lua, `Unarc/`, the FFI
+wrappers, the framework, and `rust/difftest`'s C oracles.
+
+**The remaining work is the Haskell layer**, and it is the harder half: every
+codec had a byte-exact C oracle to differential-test against, and the application
+layer has none.
 
 ## Deeper references — load when the work calls for it
 

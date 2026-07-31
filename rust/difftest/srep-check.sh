@@ -35,14 +35,24 @@
 # block silently tests nothing that matters.
 set -uo pipefail
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
-# No c-reference.sh here: SREP's oracle is the `srep` BINARY built from
-# srep/compile, not sources under Compression/, and srep/ is not being deleted.
+. "$ROOT/rust/difftest/c-reference.sh"
+CREF="$(darc_srep_reference "$ROOT")" || exit 1
+
 W="${TMPDIR:-/tmp}/srep-check.$$"; mkdir -p "$W"
 trap 'rm -rf "$W"' EXIT
 
-SREP="$ROOT/Tests/srep"
+# The reference binary is built from SREP's OWN pin, not the shared one and not
+# the working tree (where the C is deleted). The shared pin predates two genuine
+# SREP bug fixes and reproduces both -- see darc_srep_reference in
+# c-reference.sh for what they were and how they showed up.
+SREP="$CREF/Tests/srep"
+if [ ! -x "$SREP" ]; then
+  chmod +x "$CREF/srep/compile" 2>/dev/null || true
+  ( cd "$CREF/srep" && ./compile ) >/dev/null 2>&1 || {
+    echo "could not build the reference srep from the pinned tree" >&2; exit 1; }
+fi
+[ -x "$SREP" ] || { echo "pinned srep/compile produced no $SREP" >&2; exit 1; }
 [ -x "$SREP" ] || { (cd "$ROOT/srep" && ./compile) >/dev/null 2>&1; }
-[ -x "$SREP" ] || { echo "no Tests/srep -- run srep/compile" >&2; exit 1; }
 
 ( cd "$ROOT/rust" && cargo build --release -p darc-codecs --bin srep ) >/dev/null 2>&1 \
   || { echo "cargo build failed" >&2; exit 1; }

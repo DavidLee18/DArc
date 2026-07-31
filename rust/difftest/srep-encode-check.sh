@@ -33,14 +33,26 @@
 # catches a different failure than identity does.
 set -uo pipefail
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+. "$ROOT/rust/difftest/c-reference.sh"
+CREF="$(darc_srep_reference "$ROOT")" || exit 1
+
 W="${TMPDIR:-/tmp}/srep-encode-check.$$"; mkdir -p "$W"
 trap 'rm -rf "$W"' EXIT
 
 # The oracle is the standalone C binary, built by srep/compile -- SREP is an
 # external compressor, not an in-process codec, so there is no staticlib to link
 # and no pinned-reference tree to extract.
-SREP="$ROOT/Tests/srep"
-[ -x "$SREP" ] || { echo "no Tests/srep -- run srep/compile" >&2; exit 1; }
+# The reference binary is built from SREP's OWN pin, not the shared one and not
+# the working tree (where the C is deleted). The shared pin predates two genuine
+# SREP bug fixes and reproduces both -- see darc_srep_reference in
+# c-reference.sh for what they were and how they showed up.
+SREP="$CREF/Tests/srep"
+if [ ! -x "$SREP" ]; then
+  chmod +x "$CREF/srep/compile" 2>/dev/null || true
+  ( cd "$CREF/srep" && ./compile ) >/dev/null 2>&1 || {
+    echo "could not build the reference srep from the pinned tree" >&2; exit 1; }
+fi
+[ -x "$SREP" ] || { echo "pinned srep/compile produced no $SREP" >&2; exit 1; }
 
 ( cd "$ROOT/rust" && cargo build --release -p darc-codecs --bin srep ) >/dev/null 2>&1 \
   || { echo "cargo build failed" >&2; exit 1; }
@@ -82,22 +94,54 @@ PY
 #
 # Small block sizes are not decoration: at the default 8 MB every corpus input
 # fits in one block and no cross-block path is reached.
-total=0 checked=0
+# -m1's chunk boundaries are CPU-DEPENDENT IN THE C. compress_cdc.cpp:136 picks
+# CrcRollingHash when crc32c() is true and PolynomialRollingHash otherwise, and
+# crc32c() (hashes.cpp:214) compiles to a CPUID SSE4.2 test on x86 and to a
+# literal `false` everywhere else. So an x86-64 reference cuts chunks one way and
+# an ARM64 one cuts them another, from the same input.
+#
+# This port implements the POLYNOMIAL variant only, by decision -- it stays
+# deterministic on every host. So -m1 can only be gated where the reference
+# agrees, and the rows are skipped LOUDLY elsewhere rather than silently passing
+# or silently failing.
+M1_ROWS='"-m1" "-m1f" "-m1o" "-m1 -b16kb"'
+case "$(uname -m)" in
+  x86_64|amd64)
+    M1_ROWS=""
+    echo "  NOTE: skipping every -m1 row -- this host's reference srep uses"
+    echo "        CRC32c chunk boundaries (crc32c() is true on x86-64), while the"
+    echo "        port implements the portable polynomial variant. -m1 is still"
+    echo "        covered by the decoder round-trip in the Rust test suite."
+    ;;
+esac
+eval "set -- $M1_ROWS"; M1_ROWS="$*"
+
+total=0 checked=0 tie=0 oracle=0
 for opt in "-m3f" \
            "-m3f -b64kb" "-m3f -b16kb" \
            "-m3f -a0/0" "-m3f -a1/1" "-m3f -a2/2" "-m3f -a4/4" \
            "-m3f -a8/8" "-m3f -a16/16" "-m3f -a32/32" "-m3f -a64/64" \
            "-m3f -b16kb -a1/1" "-m3f -b16kb -a8/8" \
            "-m3o" "-m3" \
-           "-m4f" "-m4o"; do
+           "-m4f" "-m4o" \
+           "-m0" "-m0f" "-m0o" "-m0 -b16kb" \
+           "-m2" "-m2f" "-m2o" "-m2 -b16kb" \
+           "-m5f" "-m5o" "-m5" "-m5f -b16kb" \
+           $M1_ROWS; do
   fail=0; n=0
   for f in "$W"/in/*; do
     n=$((n+1)); checked=$((checked+1)); name=$(basename "$f")
     rm -f "$W/c.srep" "$W/r.srep" "$W/back"
 
     # shellcheck disable=SC2086
-    "$SREP" $opt -hash=md5 "$f" "$W/c.srep" >/dev/null 2>&1 \
-      || { echo "  [$opt] $name: C-compress FAILED (harness)"; fail=$((fail+1)); continue; }
+    if ! "$SREP" $opt -hash=md5 "$f" "$W/c.srep" >/dev/null 2>&1; then
+      # The reference itself refused. That is not a port failure and there is
+      # nothing to compare against, so it is counted and printed separately --
+      # -m5's match finder is known to abort on some inputs under
+      # Linux/glibc-x86-64 (see srep-check.sh).
+      echo "  [$opt] $name: ORACLE REFUSED (reference srep exited nonzero)"
+      oracle=$((oracle+1)); continue
+    fi
     [ -s "$W/c.srep" ] || [ ! -s "$f" ] \
       || { echo "  [$opt] $name: C produced an empty archive (harness)"; fail=$((fail+1)); continue; }
 
@@ -105,9 +149,27 @@ for opt in "-m3f" \
     "$RS" $opt -hash=md5 "$f" "$W/r.srep" >/dev/null 2>&1 \
       || { echo "  [$opt] $name: RUST-compress FAILED"; fail=$((fail+1)); continue; }
 
-    cmp -s "$W/c.srep" "$W/r.srep" || {
-      echo "  [$opt] $name: compressed streams differ ($(wc -c <"$W/c.srep") vs $(wc -c <"$W/r.srep") bytes)"
-      fail=$((fail+1)); continue; }
+    if ! cmp -s "$W/c.srep" "$W/r.srep"; then
+      # `std::sort` at srep.cpp:756 is UNSTABLE and its comparator (:85) looks at
+      # `src` alone, so records sharing a source come out in an order the C++
+      # standard library picks. Measured: of five corpus inputs with a tied
+      # source, this libc++ preserved four and reversed one (`runs`, 240
+      # records) -- introsort insertion-sorts small ranges, which is stable, and
+      # only perturbs ties once quicksort engages. A libstdc++ build can
+      # therefore produce a different archive from the same input, so this is not
+      # a property the C has to reproduce.
+      #
+      # The helper passes ONLY when the two streams are the same multiset of
+      # records per block with identical headers, hashes and literals. Any other
+      # difference is still a failure.
+      if python3 "$ROOT/rust/difftest/srep_tie_order.py" "$W/c.srep" "$W/r.srep"; then
+        tie=$((tie+1))
+      else
+        echo "  [$opt] $name: compressed streams differ ($(wc -c <"$W/c.srep") vs $(wc -c <"$W/r.srep") bytes)"
+        fail=$((fail+1))
+      fi
+      continue
+    fi
 
     # Identity is the gate; this catches the different failure where BOTH
     # implementations agree on something the decoder cannot read.
@@ -119,7 +181,7 @@ for opt in "-m3f" \
   total=$((total+fail))
 done
 
-echo "srep encode: $checked comparisons, $total differing"
+echo "srep encode: $checked comparisons, $total differing, $tie tie-order-only, $oracle oracle-refused"
 [ "$total" -eq 0 ] || exit 1
 
 # The harness must be able to fail. Every input above is well-formed, so all the

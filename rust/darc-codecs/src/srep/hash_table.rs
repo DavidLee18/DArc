@@ -3,11 +3,13 @@
 //! Scoped to the `-m3`/`-m4` path, which is what `arc.ini` runs. Two branches of
 //! the C are therefore absent, deliberately:
 //!
-//! * **`SliceHash`** is only consulted when `COMPARE_DIGESTS` is false. `-m3`
-//!   sets it true, so `slicehash.check()` is unreachable there and porting it
-//!   would be dead code with no oracle. `-m5` needs it.
-//! * **`CONTENT_DEFINED_CHUNKING`** (`-m1`/`-m2`) uses `startarr` and
-//!   `find_match_CDC` instead of `hasharr`, and is multithreaded.
+//! [`SliceHash`] is consulted only when `COMPARE_DIGESTS` is false, and is only
+//! *allocated* when `check_slices > 0` — which needs `MIN_MATCH > L`. That holds
+//! for `-m5` alone, because every other method defaults `L` from `min_match` and
+//! makes them equal. So it is a `-m5` structure, and inert everywhere else.
+//! `CONTENT_DEFINED_CHUNKING` (`-m1`/`-m2`) is supported through
+//! [`HashTable::find_match_cdc`]: it indexes variable-length chunks by
+//! `startarr` and never touches `hasharr`.
 //!
 //! # The chunk digest is NOT part of the format
 //!
@@ -48,6 +50,142 @@
 //! miscompilation that already degrades hash verification in the decoder.)
 
 use sha2::{Digest as _, Sha256};
+
+/// `SliceHash` (`hash_table.cpp:19`) — a coarse filter for `-m5`.
+///
+/// Each `L`-byte chunk is cut into `slices_in_block` slices, each hashed to
+/// [`SliceHash::BITS`] bits, and the lot packed into one `u32`. Before accepting
+/// a candidate, `-m5` compares the slices *around* it against the stored ones;
+/// if too few agree the match cannot reach `MIN_MATCH` and is rejected without
+/// touching the data.
+pub struct SliceHash {
+    /// One entry per `L` input bytes, or empty when the filter is disabled.
+    h: Vec<u32>,
+    l: usize,
+    slices_in_block: usize,
+    slice_size: usize,
+    check_slices: i64,
+}
+
+impl SliceHash {
+    const BITS: u32 = 4;
+    const ONES: u32 = (1 << Self::BITS) - 1;
+
+    /// `SliceHash::SliceHash()` (`:29`).
+    ///
+    /// `memreq` is `(filesize/L + 1)` entries — the `+1` matters: `filesize/L`
+    /// truncates, so a file whose size is not a multiple of `L` would leave its
+    /// final partial chunk without a slot and `prepare_buffer` would write one
+    /// past the end. The C carries a comment recording that exact heap overflow.
+    pub fn new(filesize: u64, l: usize, min_match: usize, io_accelerator: i64) -> Self {
+        let slices_in_block = (std::mem::size_of::<u32>() * 8) as usize / Self::BITS as usize;
+        let slice_size = l / slices_in_block;
+        let check_slices = match slice_size {
+            0 => 0,
+            _ => (min_match as i64 - l as i64) / slice_size as i64 - io_accelerator,
+        };
+        let enabled = io_accelerator >= 0 && check_slices > 0;
+        SliceHash {
+            h: match enabled {
+                true => vec![0u32; (filesize / l as u64) as usize + 1],
+                false => Vec::new(),
+            },
+            l,
+            slices_in_block,
+            slice_size,
+            check_slices,
+        }
+    }
+
+    /// `SliceHash::hash()` (`:60`) — a `BITS`-wide hash of one slice.
+    fn hash(buf: &[u8]) -> u32 {
+        let mut h: u32 = 111_222_341;
+        for &b in buf {
+            h = h.wrapping_mul(123_456_791).wrapping_add(u32::from(b));
+        }
+        h.wrapping_mul(123_456_791) >> (32 - Self::BITS)
+    }
+
+    /// `SliceHash::prepare_buffer()` (`:69`).
+    pub fn prepare_buffer(&mut self, offset: u64, buf: &[u8]) {
+        if self.h.is_empty() {
+            return;
+        }
+        let mut curchunk = (offset / self.l as u64) as usize;
+        let mut p = 0usize;
+        while p < buf.len() {
+            let mut checksum = 0u32;
+            for i in 0..self.slices_in_block {
+                let end = (p + self.slice_size).min(buf.len());
+                checksum =
+                    checksum.wrapping_add(Self::hash(&buf[p.min(buf.len())..end]) << (i as u32 * Self::BITS));
+                p += self.slice_size;
+            }
+            if curchunk >= self.h.len() {
+                return;
+            }
+            self.h[curchunk] = checksum;
+            curchunk += 1;
+        }
+    }
+
+    /// `SliceHash::check()` (`:83`) — `true` when the match MAY be long enough.
+    ///
+    /// Returns `true` unconditionally when the filter is off or when there is not
+    /// enough data around the candidate to compare, so it can only ever reject.
+    pub fn check(&self, chunk: usize, buf: &[u8], i: usize, block_size: usize) -> bool {
+        if self.h.is_empty() {
+            return true;
+        }
+        if i < self.l || block_size.saturating_sub(i) < 2 * self.l {
+            return true;
+        }
+        // Forward: slices after the chunk, taken from h[chunk+1].
+        let mut j = 0i64;
+        let fwd = match self.h.get(chunk + 1) {
+            Some(v) => *v,
+            None => return true,
+        };
+        loop {
+            if j == self.check_slices {
+                return true;
+            }
+            let at = i + self.l + (j as usize) * self.slice_size;
+            if at + self.slice_size > buf.len() {
+                return true;
+            }
+            if (fwd >> (j as u32 * Self::BITS)) & Self::ONES
+                != Self::hash(&buf[at..at + self.slice_size])
+            {
+                break;
+            }
+            j += 1;
+        }
+        // Backward: slices before it, taken from h[chunk-1], read from the TOP
+        // of the packed word downwards.
+        let back = match chunk.checked_sub(1).and_then(|c| self.h.get(c)) {
+            Some(v) => *v,
+            None => return true,
+        };
+        let mut k = 0i64;
+        loop {
+            if k + j == self.check_slices {
+                return true;
+            }
+            let off = (k as usize + 1) * self.slice_size;
+            if off > i {
+                return true;
+            }
+            let shift = (self.slices_in_block - (k as usize + 1)) as u32 * Self::BITS;
+            if (back >> shift) & Self::ONES != Self::hash(&buf[i - off..i - off + self.slice_size])
+            {
+                break;
+            }
+            k += 1;
+        }
+        false
+    }
+}
 
 /// `Chunk` — an index into the file's `L`-byte chunks.
 pub type Chunk = u32;
@@ -107,6 +245,11 @@ pub struct Config {
     /// `BITARR_ACCELERATOR` = `accel * 8` (`srep.cpp:505`). Zero disables the
     /// bit-array pre-filter entirely.
     pub bitarr_accelerator: u64,
+    /// `MIN_MATCH`, which SliceHash needs to size its check.
+    pub min_match: usize,
+    /// `io_accelerator` (`srep.cpp:233`), 1 by default; negative disables
+    /// SliceHash outright.
+    pub io_accelerator: i64,
 }
 
 /// `HashTable` (`:110`), `-m3`/`-m4` subset.
@@ -125,6 +268,13 @@ pub struct HashTable {
     digestarr: Vec<[u8; DIGEST_LEN]>,
     /// `bitarr[]` — a Bloom-ish pre-filter; empty when the accelerator is off.
     bitarr: Vec<u8>,
+    /// `startarr[]` — CDC only: where each variable-length chunk begins.
+    startarr: Vec<u64>,
+    /// `curchunk` — CDC only: chunks are numbered as they are seen, not derived
+    /// from a position, because they have no fixed size.
+    curchunk: Chunk,
+    /// `-m5`'s coarse pre-filter; empty for every other method.
+    slicehash: SliceHash,
 }
 
 impl HashTable {
@@ -133,6 +283,7 @@ impl HashTable {
     /// `filesize` is `max(filesize, L)` as in the C, so a file shorter than one
     /// chunk still sizes its arrays for one.
     pub fn new(cfg: Config, filesize: u64) -> Self {
+        let slicehash = SliceHash::new(filesize, cfg.l, cfg.min_match, cfg.io_accelerator);
         let filesize = filesize.max(cfg.l as u64);
         let total_chunks = filesize / cfg.l as u64;
 
@@ -170,7 +321,119 @@ impl HashTable {
                 false => Vec::new(),
             },
             bitarr: vec![0u8; bitarrsize as usize],
+            startarr: Vec::new(),
+            curchunk: 0,
+            slicehash,
         }
+    }
+
+    /// Re-size everything for CDC.
+    ///
+    /// `hash_table.cpp:144` adds 10% headroom to `total_chunks` because
+    /// content-defined chunks have no fixed size — and it does so **before**
+    /// deriving `chunknum_mask` and `hs` from it. Raising the count afterwards
+    /// leaves the masks sized for the smaller number, and once a chunk index
+    /// exceeds `chunknum_mask` the `chunkarr_value` addition CARRIES INTO THE
+    /// HASH BITS, so every later lookup compares a corrupted tag and silently
+    /// finds nothing.
+    ///
+    /// That is not hypothetical: with the masks left alone, `-m2 -b16kb` on the
+    /// `runs` corpus missed a match between two adjacent identical 145-byte
+    /// chunks in block 48 of 55 — the point where the running chunk index first
+    /// passed the stale 255 limit.
+    pub fn init_cdc(&mut self, filesize: u64) {
+        let base = filesize.max(self.cfg.l as u64) / self.cfg.l as u64;
+        let extra = base / match base > 1024 {
+            true => 10,
+            false => 1,
+        };
+        self.total_chunks = base + extra;
+
+        // Redo exactly the derivation `new()` performs, on the new count.
+        self.chunknum_mask = (roundup_to_power_of_2(self.total_chunks + 2) - 1) as Chunk;
+        self.hash_mask = !self.chunknum_mask;
+        let hs = roundup_to_power_of_2(min_hash_size(self.total_chunks));
+        self.hashsize1 = hs - 1;
+        self.chunkarr = vec![0; hs as usize];
+
+        // One extra slot each so `chunksize_CDC` can read `[chunk+1]`.
+        self.startarr = vec![0u64; self.total_chunks as usize + 2];
+        self.digestarr = vec![[0u8; DIGEST_LEN]; self.total_chunks as usize + 2];
+        self.curchunk = 0;
+    }
+
+    /// `chunksize_CDC()` (`:372`).
+    fn chunksize_cdc(&self, chunk: Chunk) -> u64 {
+        self.startarr[chunk as usize + 1] - self.startarr[chunk as usize]
+    }
+
+    /// `find_match_CDC()` (`:378`) — index one content-defined chunk and return
+    /// the distance back to an identical earlier one, or 0.
+    ///
+    /// `hash32` is the chunk's 32-byte hash: the first 20 bytes are its digest
+    /// and bytes 20..28 are the hash-table index. In the C those come from two
+    /// VMAC tags under a RANDOM key -- and the C's output is stable across runs
+    /// regardless, which proves the result does not depend on the function. This
+    /// port supplies the same 32 bytes from a keyless hash; see the module docs.
+    pub fn find_match_cdc(&mut self, offset: u64, size: u64, hash32: &[u8; 32]) -> u64 {
+        self.curchunk += 1;
+        if u64::from(self.curchunk) >= self.total_chunks {
+            return 0;
+        }
+        let ci = self.curchunk as usize;
+        self.startarr[ci] = offset;
+        // The next chunk's start is not known yet; record the end so
+        // chunksize_CDC is right for THIS chunk when a later one probes it.
+        self.startarr[ci + 1] = offset + size;
+        self.digestarr[ci].copy_from_slice(&hash32[..DIGEST_LEN]);
+        let index = u64::from_le_bytes([
+            hash32[20], hash32[21], hash32[22], hash32[23],
+            hash32[24], hash32[25], hash32[26], hash32[27],
+        ]);
+
+        let chunk = self.add_hash_cdc(self.curchunk, index);
+        match chunk != NOT_FOUND && self.chunksize_cdc(chunk) == size {
+            true => offset - self.startarr[chunk as usize],
+            false => 0,
+        }
+    }
+
+    /// `add_hash0<true>()` — the CDC specialisation. It never writes `hasharr`
+    /// (the `CDC ||` short-circuit at `:226`) and confirms purely on the digest.
+    fn add_hash_cdc(&mut self, curchunk: Chunk, index: u64) -> Chunk {
+        if curchunk == NOT_FOUND {
+            return NOT_FOUND;
+        }
+        let mut h = index;
+        let mut limit = MAX_HASH_CHAIN;
+        let mut found = NOT_FOUND;
+        let saved_hash = self.chunkarr_value(index, 0);
+
+        loop {
+            let value = self.chunkarr[self.hash_index(h)];
+            limit -= 1;
+            if value == NOT_FOUND || limit == 0 {
+                break;
+            }
+            if value & self.hash_mask == saved_hash {
+                let chunk = value & self.chunknum_mask;
+                let (a, b) = (chunk as usize, curchunk as usize);
+                if a < self.digestarr.len()
+                    && b < self.digestarr.len()
+                    && self.digestarr[a] == self.digestarr[b]
+                {
+                    found = chunk;
+                    break;
+                }
+            }
+            h += 1;
+            if limit & 3 == 0 {
+                h = Self::next_hash_slot(h);
+            }
+        }
+        let slot = self.hash_index(h);
+        self.chunkarr[slot] = self.chunkarr_value(index, curchunk);
+        found
     }
 
     /// How many chunks the table can hold — the C silently stops indexing past
@@ -248,6 +511,7 @@ impl HashTable {
     /// The loop condition is `(buf+size)-p >= L`, so a trailing partial chunk is
     /// skipped rather than digested short.
     pub fn prepare_buffer(&mut self, offset: u64, buf: &[u8]) {
+        self.slicehash.prepare_buffer(offset, buf);
         if !self.cfg.precompute_digests {
             return;
         }
@@ -296,18 +560,26 @@ impl HashTable {
             }
             if value & self.hash_mask == saved_hash {
                 let chunk = value & self.chunknum_mask;
-                let same = match self.cfg.compare_digests {
-                    // -m3: the whole chunk's 160-bit digest must match.
-                    true => {
-                        let (a, b) = (chunk as usize, curchunk as usize);
-                        a < self.digestarr.len()
-                            && b < self.digestarr.len()
-                            && self.digestarr[a] == self.digestarr[b]
-                    }
-                    // -m4: `speed_opt` short-circuits the slicehash check to
-                    // true, so the stored hash match is taken as sufficient.
-                    false => self.hasharr[chunk as usize] == stored_value,
-                };
+                // The C's OUTER precondition, which applies to both methods:
+                // `if (CDC || hasharr[chunk] == stored_value)`.
+                let ci = chunk as usize;
+                let hash_ok = ci < self.hasharr.len() && self.hasharr[ci] == stored_value;
+                let same = hash_ok
+                    && match self.cfg.compare_digests {
+                        // -m3: the whole chunk's 160-bit digest must match.
+                        true => {
+                            let b = curchunk as usize;
+                            ci < self.digestarr.len()
+                                && b < self.digestarr.len()
+                                && self.digestarr[ci] == self.digestarr[b]
+                        }
+                        // -m4: `speed_opt` short-circuits slicehash.check() to
+                        // true, so the stored hash alone is sufficient. (Slice-
+                        // Hash is not even allocated here -- check_slices is
+                        // <= 0 whenever MIN_MATCH == L, which is the -m4
+                        // default; it is a -m5 structure.)
+                        false => true,
+                    };
                 if same {
                     found = chunk;
                     break;
@@ -324,9 +596,57 @@ impl HashTable {
         found
     }
 
+    /// `find_match()` -> `find_match0()` (`:205`, `:263`).
+    ///
+    /// Unlike [`Self::add_hash`] this does not insert; it only probes. `i` is
+    /// the candidate position in `buf`, whose fresh digest is compared against
+    /// the stored one.
+    pub fn find_match(&self, buf: &[u8], i: usize, hash2: u64) -> Chunk {
+        let stored_value = Self::stored_hash(hash2);
+        let index = hash2;
+        let mut h = index;
+        let mut limit = MAX_HASH_CHAIN;
+        let saved_hash = self.chunkarr_value(index, 0);
+
+        loop {
+            let value = self.chunkarr[self.hash_index(h)];
+            limit -= 1;
+            if value == NOT_FOUND || limit == 0 {
+                return NOT_FOUND;
+            }
+            if value & self.hash_mask == saved_hash {
+                let chunk = value & self.chunknum_mask;
+                let ci = chunk as usize;
+                if ci < self.hasharr.len() && self.hasharr[ci] == stored_value {
+                    match self.cfg.compare_digests {
+                        // -m3: confirm with the full chunk digest.
+                        true => {
+                            if i + self.cfg.l <= buf.len() && ci < self.digestarr.len() {
+                                let dig = Self::digest(&buf[i..i + self.cfg.l]);
+                                if dig == self.digestarr[ci] {
+                                    return chunk;
+                                }
+                            }
+                        }
+                        // -m4/-m5: `speed_opt` makes a failed slice check end
+                        // the search rather than continue it (`:284`).
+                        false => match self.slicehash.check(ci, buf, i, buf.len()) {
+                            true => return chunk,
+                            false => return NOT_FOUND,
+                        },
+                    }
+                }
+            }
+            h += 1;
+            if limit & 3 == 0 {
+                h = Self::next_hash_slot(h);
+            }
+        }
+    }
+
     /// `match_len()` (`:303`) — how far a candidate match actually extends.
     ///
-    /// `-m3` only (`COMPARE_DIGESTS`). `start_i` is where the match begins in
+    /// `start_i` is where the match begins in
     /// `buf`, `last_i` is the exclusive limit it may not run past, and `offset`
     /// is the block's start position in the file.
     ///
@@ -340,38 +660,100 @@ impl HashTable {
     /// The C walks with `while (p += L, (old_offset += L) < offset)` — a comma
     /// expression, so both advance *before* the test and the first old chunk is
     /// skipped deliberately: `find_match()` already compared it.
+    #[allow(clippy::too_many_arguments)]
     pub fn match_len(
         &self,
         start_chunk: Chunk,
+        min_i: usize,
         start_i: usize,
         last_i: usize,
         offset: u64,
         buf: &[u8],
+        whole: &[u8],
     ) -> (usize, usize) {
-        debug_assert!(self.cfg.compare_digests, "match_len: -m3 path only");
         let l = self.cfg.l;
-        let add_len = 0usize;
+        let mut add_len = 0usize;
         let mut p = start_i;
         let mut old_offset = u64::from(start_chunk) * l as u64;
 
-        // Phase 1: the old data lies before this block, so compare digests.
-        loop {
-            p += l;
-            old_offset += l as u64;
-            if old_offset >= offset {
-                break;
+        // How far back a match may be extended: bounded by the old data
+        // available, by one chunk, and by the end of the previous match.
+        let back_limit = |avail: u64| -> usize {
+            avail.min(l as u64).min((start_i - min_i) as u64) as usize
+        };
+
+        if self.cfg.compare_digests {
+            // Phase 1, -m3: the old data lies before this block, so compare
+            // precomputed digests, one chunk at a time.
+            loop {
+                p += l;
+                old_offset += l as u64;
+                if old_offset >= offset {
+                    break;
+                }
+                // "We have no L-byte chunk to digest" -- stop, do not digest
+                // short.
+                if last_i.saturating_sub(p) < l {
+                    return (p - start_i + add_len, add_len);
+                }
+                let want = (old_offset / l as u64) as usize;
+                if want >= self.digestarr.len() {
+                    return (p - start_i + add_len, add_len);
+                }
+                if Self::digest(&buf[p..p + l]) != self.digestarr[want] {
+                    return (p - start_i + add_len, add_len);
+                }
             }
-            // "We have no L-byte chunk to digest" -- stop, do not digest short.
-            if last_i.saturating_sub(p) < l {
-                return (p - start_i + add_len, add_len);
+        } else if old_offset < offset {
+            // -m4/-m5: the old data is before this block, so RE-READ it. The C
+            // pulls it from the input file through mmap_infile; the whole input
+            // is already in memory here, so `whole` is the same bytes.
+            //
+            // First, extend BACKWARDS from the match start, which is rounded to
+            // a chunk boundary and so usually starts mid-run.
+            let n = back_limit(old_offset);
+            if n > 0 && !self.cfg.round_matches {
+                let from = (old_offset - n as u64) as usize;
+                match from + n <= whole.len() {
+                    // "if (len != n) goto stop"
+                    false => return (p - start_i + add_len, add_len),
+                    true => {
+                        let old = &whole[from..from + n];
+                        let mut i = 1usize;
+                        while i <= n && buf[start_i - i] == old[n - i] {
+                            i += 1;
+                        }
+                        add_len = i - 1;
+                    }
+                }
             }
-            let want = (old_offset / l as u64) as usize;
-            if want >= self.digestarr.len() {
-                return (p - start_i + add_len, add_len);
+
+            // Second, compare forwards, in the C's 4096-byte reads. A short
+            // read ends the match.
+            const BUFSIZE: usize = 4096;
+            while old_offset < offset {
+                let from = old_offset as usize;
+                if from + BUFSIZE > whole.len() {
+                    return (p - start_i + add_len, add_len);
+                }
+                for &old_byte in &whole[from..from + BUFSIZE] {
+                    if p == last_i || p >= buf.len() || buf[p] != old_byte {
+                        return (p - start_i + add_len, add_len);
+                    }
+                    p += 1;
+                }
+                old_offset += BUFSIZE as u64;
             }
-            if Self::digest(&buf[p..p + l]) != self.digestarr[want] {
-                return (p - start_i + add_len, add_len);
+        } else if !self.cfg.round_matches {
+            // -m4/-m5 with the old data already inside this block: only the
+            // backward extension is needed, and it can read `buf` directly.
+            let n = back_limit(old_offset - offset);
+            let base = (old_offset - offset) as usize;
+            let mut i = 1usize;
+            while i <= n && base >= i && buf[start_i - i] == buf[base - i] {
+                i += 1;
             }
+            add_len = i - 1;
         }
 
         // Phase 2: the old data is inside this block, so compare bytes.
@@ -434,6 +816,8 @@ mod tests {
             precompute_digests: true,
             round_matches: true,
             bitarr_accelerator: 0,
+            min_match: l,
+            io_accelerator: 1,
         }
     }
 
@@ -501,7 +885,7 @@ mod tests {
         }
         // chunk 0 is at buf[0..], the candidate at buf[16..] repeats it for 48
         // bytes because the pattern has period 7 and 48 is not a multiple of 7.
-        let (len, add) = h.match_len(0, l, buf.len(), 0, &buf);
+        let (len, add) = h.match_len(0, 0, l, buf.len(), 0, &buf, &buf);
         assert_eq!(add, 0, "add_len is never set on the -m3 path");
         // buf[16+k] == buf[k] iff (16+k)%7 == k%7, which never holds, so the
         // very first byte differs and the match is exactly L.
@@ -515,7 +899,7 @@ mod tests {
         // Two identical runs, then a divergence 5 bytes in.
         let mut buf = vec![0xAAu8; 64];
         buf[8 + 5] = 0xBB;
-        let (len, _) = h.match_len(0, 8, buf.len(), 0, &buf);
+        let (len, _) = h.match_len(0, 0, 8, buf.len(), 0, &buf, &buf);
         // Phase 1 advances p by L and reaches offset, then bytes agree until
         // the planted difference.
         assert_eq!(len, l + 5);
@@ -532,7 +916,7 @@ mod tests {
         h.prepare_buffer(0, &buf);
         // offset far ahead of the chunk, so phase 1 runs; last_i leaves less
         // than L bytes after the first advance.
-        let (len, _) = h.match_len(0, 0, l + 4, 1 << 20, &buf);
+        let (len, _) = h.match_len(0, 0, 0, l + 4, 1 << 20, &buf, &buf);
         assert_eq!(len, l, "stopped at the chunk boundary, not past it");
     }
 
