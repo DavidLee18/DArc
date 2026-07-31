@@ -52,7 +52,7 @@ LZMA2_METHOD::LZMA2_METHOD()
 // The Rust LZMA2 in rust/darc-lzma. Same ABI as the C entry points below.
 // rust/difftest/lzma2-check.sh gates it at 157/157 byte-identical streams and
 // 72/72 decode cases, with cross-decode clean in both directions.
-extern "C" int darc_lzma2_compress   (int, int, int, int, int, int, int, int,
+extern "C" int darc_lzma2_compress   (int, int, int, int, int, int, int, int, int,
                                       CALLBACK_FUNC*, void*);
 extern "C" int darc_lzma2_decompress (CALLBACK_FUNC*, void*);
 
@@ -65,9 +65,12 @@ int LZMA2_METHOD::decompress (CALLBACK_FUNC *callback, void *auxdata)
 
 int LZMA2_METHOD::compress (CALLBACK_FUNC *callback, void *auxdata)
 {
+  // GetCompressionThreads() is passed rather than read on the Rust side, so the
+  // codec crate keeps no link dependency on CompressionLibrary.cpp. Above one thread
+  // this selects the multi-block stream, exactly as the C SDK did.
   return darc_lzma2_compress (dictionarySize, algorithm, numFastBytes, matchFinder,
                               matchFinderCycles, posStateBits, litContextBits, litPosBits,
-                              callback, auxdata);
+                              GetCompressionThreads(), callback, auxdata);
 }
 
 MemSize LZMA2_METHOD::GetCompressionMem (void)

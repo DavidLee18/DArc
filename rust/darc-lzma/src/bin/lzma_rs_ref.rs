@@ -109,6 +109,7 @@ fn main() {
         mc,
         mf,
         fast_mode,
+        num_threads: 1,
         write_end_mark: true,
     };
 

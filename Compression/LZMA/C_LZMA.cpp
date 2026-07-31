@@ -56,7 +56,7 @@ LZMA_METHOD::LZMA_METHOD()
 
 // The Rust codec in rust/darc-lzma. Same 11-argument ABI the C entry points had, so
 // the LoadFromDLL overrides below still work unchanged.
-extern "C" int darc_lzma_compress   (int, int, int, int, int, int, int, int, int,
+extern "C" int darc_lzma_compress   (int, int, int, int, int, int, int, int, int, int,
                                      CALLBACK_FUNC*, void*);
 extern "C" int darc_lzma_decompress (int, int, int, int, int, int, int, int, int,
                                      CALLBACK_FUNC*, void*);
@@ -81,9 +81,14 @@ int LZMA_METHOD::compress (CALLBACK_FUNC *callback, void *auxdata)
   // parsers -- gated by rust/difftest/lzma-gap-check.sh at 222/222, which is why
   // switching it on changed no archive bytes.
   if (!f) f = (FARPROC) darc_lzma_compress;
-  return ((int (*)(int,int,int,int,int,int,int,int,int, CALLBACK_FUNC*, void*)) f)
+  // The trailing int is C_LZMA.cpp's own `GetCompressionThreads() > 1 ? 2 : 1`,
+  // passed rather than read on the Rust side so the codec crate keeps no link
+  // dependency on CompressionLibrary.cpp. It selects the multi-threaded match
+  // finder, which is byte-neutral: same match lists, found faster.
+  return ((int (*)(int,int,int,int,int,int,int,int,int,int, CALLBACK_FUNC*, void*)) f)
            (dictionarySize, hashSize, algorithm, numFastBytes, matchFinder,
             matchFinderCycles, posStateBits, litContextBits, litPosBits,
+            GetCompressionThreads() > 1 ? 2 : 1,
             callback, auxdata);
 }
 

@@ -92,7 +92,7 @@ const CONTROL_COPY_NO_RESET: u8 = 2;
 /// `LZMA2_CONTROL_COPY_RESET_DIC` (`Lzma2Enc.c:20`).
 const CONTROL_COPY_RESET_DIC: u8 = 1;
 /// `LZMA2_CONTROL_EOF` (`Lzma2Enc.c:21`) — the stream terminator.
-const CONTROL_EOF: u8 = 0;
+pub(crate) const CONTROL_EOF: u8 = 0;
 /// `LZMA2_LCLP_MAX` (`Lzma2Enc.c:23`).
 const LCLP_MAX: i32 = 4;
 /// `LZMA2_PACK_SIZE_MAX` (`Lzma2Enc.c:27`) — `desiredPackSize` per chunk.
@@ -550,6 +550,12 @@ impl Lzma2Enc {
     /// `threads * 2 * blockSize` — several gigabytes on an ordinary machine. The C
     /// has the same appetite and no such cap.
     ///
+    /// What it counts is `block_size + destBlockSize` per block in flight. What it
+    /// does **not** count is the LZMA encoder each worker builds: a window of about
+    /// `dictSize` plus the hash and tree, which for the 5-byte hash finder alone is
+    /// 64 MiB whatever the dictionary (`LzFind.c:371` floors that mask). Budget for
+    /// it separately if the machine is tight; the figure here is the block buffers.
+    ///
     /// At least one block is always in flight, whatever the budget.
     pub fn with_mt_memory_budget(mut self, bytes: u64) -> Self {
         self.mt_memory_budget = bytes;
@@ -915,10 +921,12 @@ fn resolve_lzma_props(raw: &RawLzmaProps) -> Result<LzmaProps, Lzma2Error> {
     // LzmaEnc.c:2695: mtMode = multiThread && !fastMode && btMode. The MT match
     // finder emits a different parse and is not ported.
     let fast_mode = p.algo == 0;
-    if p.num_threads > 1 && !fast_mode && bt {
-        return Err(Lzma2Error::MultiThreadedMatchFinder);
-    }
-
+    // The multi-threaded match finder is implemented now (matchfinder/mt.rs) and is
+    // byte-neutral, so this no longer refuses. On DArc's path it is moot anyway:
+    // `Lzma2EncProps_Normalize` derives the inner count as `t1 = t3 / t2`
+    // (Lzma2Enc.c:274-279) and `C_LZMA2.cpp:86-87` sets both thread fields from the
+    // same `GetCompressionThreads()`, so `t1` is always 1 -- the parallelism goes
+    // into blocks, not into the finder.
     Ok(LzmaProps {
         lc: p.lc as u8,
         lp: p.lp as u8,
@@ -926,6 +934,7 @@ fn resolve_lzma_props(raw: &RawLzmaProps) -> Result<LzmaProps, Lzma2Error> {
         dict_size,
         fb,
         mc: p.mc,
+        num_threads: p.num_threads.max(1) as u32,
         mf,
         fast_mode,
         // LzmaEnc.c:2967 clears it anyway; setting it false here means the value is
@@ -1176,10 +1185,15 @@ mod tests {
         p
     }
 
-    /// The claim the whole scope of this module rests on, checked rather than
-    /// assumed: DArc's configuration resolves to SOLID **only** at one thread. At
-    /// more, `Lzma2EncProps_Normalize` computes a real block size and the MT coder
-    /// takes over — so refusing is the correct behaviour, not a gap to paper over.
+    /// The fact the whole module is shaped around: DArc's configuration resolves to
+    /// SOLID **only** at one thread. Above one, `Lzma2EncProps_Normalize` computes a
+    /// real block size, the MT coder takes over, and `-mlzma2` on a multi-core
+    /// machine produces a different stream for input larger than a block.
+    ///
+    /// `numThreads` staying 1 in both cases is checked too, because it is what keeps
+    /// the unported multi-threaded *match finder* out of reach: it is derived as
+    /// `numTotalThreads / numBlockThreads` (`Lzma2Enc.c:276`), and DArc sets those
+    /// two equal.
     #[test]
     fn darc_resolves_to_solid_only_at_one_thread() {
         let mut one = darc_default_props(1);
@@ -1190,12 +1204,143 @@ mod tests {
 
         let mut many = darc_default_props(8);
         many.normalize();
-        assert_ne!(many.block_size, BLOCK_SIZE_SOLID);
-        assert!(many.num_block_threads_reduced > 1);
-        assert_eq!(
-            Lzma2Enc::new(&darc_default_props(8)).err(),
-            Some(Lzma2Error::MultiThreadedBlocks)
-        );
+        // dictSize 64 MiB -> blockSize = clamp(256 MiB, 1 MiB, 256 MiB) = 256 MiB.
+        assert_eq!(many.block_size, 256 << 20);
+        assert_eq!(many.num_block_threads_reduced, 8);
+        assert_eq!(many.lzma.num_threads, 1);
+        assert!(Lzma2Enc::new(&darc_default_props(8)).is_ok());
+    }
+
+    /// The AUTO block-size computation (`Lzma2Enc.c:312-323`) at each of its bounds,
+    /// including the `blockSize < dictSize` clause that fires *after* the ceiling and
+    /// so can push the result back above it — the reason those three bounds are not
+    /// a `clamp`.
+    #[test]
+    fn auto_block_size_is_the_dictionary_times_four_between_its_bounds() {
+        for (dict, expect) in [
+            (1u32 << 16, 1u64 << 20),        // 256 KiB -> floored at 1 MiB
+            (1 << 20, 4 << 20),              // 4 MiB, exactly the product
+            (3 << 19, 6 << 20),              // 1.5 MiB -> 6 MiB
+            (100 << 20, 256 << 20),          // 400 MiB -> capped at 256 MiB
+            (300 << 20, 300 << 20),          // over the cap: the dictionary wins
+            ((1 << 20) + 1, 5 << 20),        // rounded UP to a 1 MiB multiple
+        ] {
+            let mut p = darc_default_props(4);
+            p.lzma.dict_size = dict;
+            p.normalize();
+            assert_eq!(p.block_size, expect, "dict {dict}");
+        }
+    }
+
+    /// Every block is independently decodable: it opens with a dictionary reset and
+    /// the unpack sizes add up. Checked at a block size small enough to get several
+    /// blocks out of a test-sized input.
+    #[test]
+    fn every_block_opens_with_a_dictionary_reset() {
+        let data = corpus(5 << 19); // 2.5 MiB
+        let mut p = darc_default_props(4);
+        p.lzma.dict_size = 1 << 16; // 256 KiB * 4 -> floored at the 1 MiB minimum
+        let enc = match Lzma2Enc::new(&p) {
+            Ok(e) => e,
+            Err(e) => panic!("{e:?}"),
+        };
+        assert_eq!(enc.props.block_size, 1 << 20);
+        let mut src = SliceIn::new(&data);
+        let mut sink = VecOut::default();
+        assert_eq!(enc.encode_stream(&mut src, &mut sink), Ok(()));
+        // ceil(2.5 MiB / 1 MiB) = 3. The C would read a fourth, empty block only if
+        // the input were an exact multiple, and an empty block emits no chunks.
+        walk_chunks(&sink.data, &data, 3);
+    }
+
+    /// **The gate the parallelism has to pass.** Blocks are independent and written
+    /// in index order, so the number encoded at once cannot move a byte. Anything
+    /// else means the schedule leaked into the output.
+    #[test]
+    fn parallelism_does_not_change_a_byte() {
+        let data = corpus(5 << 19); // 2.5 MiB -> three 1 MiB blocks
+        let mut p = darc_default_props(8);
+        p.lzma.dict_size = 1 << 16;
+        let mut out = Vec::new();
+        for budget in [0u64, 4 << 20, u64::MAX] {
+            let enc = match Lzma2Enc::new(&p) {
+                Ok(e) => e.with_mt_memory_budget(budget),
+                Err(e) => panic!("{e:?}"),
+            };
+            let mut src = SliceIn::new(&data);
+            let mut sink = VecOut::default();
+            assert_eq!(enc.encode_stream(&mut src, &mut sink), Ok(()));
+            match out.is_empty() {
+                true => out = sink.data,
+                false => assert_eq!(
+                    out,
+                    sink.data,
+                    "budget {budget} ({} blocks in flight) changed the stream",
+                    enc.mt_blocks_in_flight()
+                ),
+            }
+        }
+        // And the budget really did move the schedule -- otherwise this test would
+        // pass by never having run anything concurrently.
+        let seq = match Lzma2Enc::new(&p) {
+            Ok(e) => e.with_mt_memory_budget(0),
+            Err(e) => panic!("{e:?}"),
+        };
+        let par = match Lzma2Enc::new(&p) {
+            Ok(e) => e.with_mt_memory_budget(u64::MAX),
+            Err(e) => panic!("{e:?}"),
+        };
+        assert_eq!(seq.mt_blocks_in_flight(), 1);
+        assert!(par.mt_blocks_in_flight() > 1);
+    }
+
+    /// Input that is an exact multiple of the block size. `MtCoder` reads a final,
+    /// *empty* block in that case (`MtCoder.c:140` -- the previous read returned a
+    /// full buffer, so it was not the last), and an empty block contributes no
+    /// chunks. The terminator must still appear exactly once.
+    #[test]
+    fn an_exact_multiple_of_the_block_size_ends_cleanly() {
+        let data = corpus(2 << 20);
+        let mut p = darc_default_props(4);
+        p.lzma.dict_size = 1 << 16; // 1 MiB blocks, so exactly two of them
+        let enc = match Lzma2Enc::new(&p) {
+            Ok(e) => e,
+            Err(e) => panic!("{e:?}"),
+        };
+        let mut src = SliceIn::new(&data);
+        let mut sink = VecOut::default();
+        assert_eq!(enc.encode_stream(&mut src, &mut sink), Ok(()));
+        walk_chunks(&sink.data, &data, 2);
+    }
+
+    /// Empty input on the blocked path, where the C still runs one (empty) block.
+    #[test]
+    fn empty_input_on_the_blocked_path_is_a_bare_terminator() {
+        let mut p = darc_default_props(4);
+        p.lzma.dict_size = 1 << 16;
+        let enc = match Lzma2Enc::new(&p) {
+            Ok(e) => e,
+            Err(e) => panic!("{e:?}"),
+        };
+        let mut src = SliceIn::new(b"");
+        let mut sink = VecOut::default();
+        assert_eq!(enc.encode_stream(&mut src, &mut sink), Ok(()));
+        assert_eq!(sink.data, vec![CONTROL_EOF]);
+    }
+
+    /// Mildly compressible bytes, deterministic, and structured enough that no chunk
+    /// falls back to a copy.
+    fn corpus(n: usize) -> Vec<u8> {
+        let mut data = Vec::with_capacity(n);
+        let mut s: u32 = 12345;
+        while data.len() < n {
+            s = s.wrapping_mul(1664525).wrapping_add(1013904223);
+            let k = 4 + (s >> 28) as usize;
+            let b = (s >> 20) as u8;
+            data.extend(std::iter::repeat_n(b, k));
+        }
+        data.truncate(n);
+        data
     }
 
     #[test]
@@ -1308,7 +1453,7 @@ mod tests {
         let mut sink = VecOut::default();
         assert_eq!(enc.encode_stream(&mut src, &mut sink), Ok(()));
 
-        let controls = walk_chunks(&sink.data, &data);
+        let controls = walk_chunks(&sink.data, &data, 1);
         assert!(
             controls.len() > 1,
             "only {} chunk(s); the 2 MiB cap never bound",
@@ -1341,7 +1486,7 @@ mod tests {
         // walk_chunks checks every copy payload against `data` at the right offset,
         // so a wrong `GetCurBuf - unpackSize` anchor fails here rather than silently
         // producing an archive that decodes to the wrong bytes.
-        let controls = walk_chunks(&sink.data, &data);
+        let controls = walk_chunks(&sink.data, &data, 1);
         assert_eq!(
             controls[0], CONTROL_COPY_RESET_DIC,
             "the first copy chunk must reset the dictionary"
@@ -1379,7 +1524,7 @@ mod tests {
         let mut sink = VecOut::default();
         assert_eq!(enc.encode_stream(&mut src, &mut sink), Ok(()));
 
-        let controls = walk_chunks(&sink.data, &data);
+        let controls = walk_chunks(&sink.data, &data, 1);
         assert_eq!(controls[0], CONTROL_COPY_RESET_DIC);
         let first_lzma = match controls.iter().position(|c| c & 0x80 != 0) {
             Some(i) => i,
@@ -1471,7 +1616,7 @@ mod tests {
     ///
     /// Modes 2 and 3 are *not* asserted here to be reachable; that is a property of
     /// the corpus, and the two tests that establish it name it in their own asserts.
-    fn walk_chunks(out: &[u8], data: &[u8]) -> Vec<u8> {
+    fn walk_chunks(out: &[u8], data: &[u8], expected_blocks: usize) -> Vec<u8> {
         let mut controls = Vec::new();
         let mut i = 0usize;
         let mut unpacked = 0usize;
@@ -1492,6 +1637,7 @@ mod tests {
                 );
                 if c == CONTROL_COPY_RESET_DIC {
                     dict_resets += 1;
+                    lzma_chunks = 0;
                 }
                 let u = ((out[i + 1] as usize) << 8 | out[i + 2] as usize) + 1;
                 assert!(u <= COPY_CHUNK_SIZE as usize, "copy chunk {u} over the cap");
@@ -1508,6 +1654,11 @@ mod tests {
             assert_ne!(mode, 1, "mode 1 must be unreachable");
             if mode == 3 {
                 dict_resets += 1;
+            }
+            if mode == 3 {
+                // A dictionary reset opens a block, so the "first LZMA chunk of the
+                // block" counter restarts here rather than only at the stream start.
+                lzma_chunks = 0;
             }
             if mode >= 2 {
                 block_inits += 1;
@@ -1533,11 +1684,18 @@ mod tests {
         }
         assert_eq!(i, out.len(), "stream did not end on its terminator");
         assert_eq!(unpacked, data.len(), "chunk unpack sizes do not sum to the input");
-        assert!(block_inits <= 1, "{block_inits} block-inits in one SOLID block");
+        assert!(
+            block_inits <= expected_blocks,
+            "{block_inits} block-inits across {expected_blocks} block(s)"
+        );
         // Both a mode-3 chunk and a COPY_RESET_DIC chunk are gated on `srcPos == 0`,
-        // so with one block there is exactly one -- unless the input was empty, in
-        // which case there are no chunks at all.
-        let expect_resets = usize::from(!data.is_empty());
+        // which `Lzma2EncInt_InitBlock` restores at every block boundary -- so there
+        // is exactly one reset per block, and none at all for empty input, which
+        // produces no chunks.
+        let expect_resets = match data.is_empty() {
+            true => 0,
+            false => expected_blocks,
+        };
         assert_eq!(dict_resets, expect_resets, "wrong number of dictionary resets");
         controls
     }

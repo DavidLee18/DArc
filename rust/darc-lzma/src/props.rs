@@ -150,6 +150,18 @@ pub struct LzmaProps {
     /// Which match finder to run. See [`MatchFinderKind`]; DArc's default is
     /// [`MatchFinderKind::Hc5`], not `Bt4`.
     pub mf: MatchFinderKind,
+    /// `props.numThreads` (`CLzmaEncProps`). Only ever 1 or 2 on DArc's path:
+    /// `C_LZMA.cpp:111` is `GetCompressionThreads() > 1 ? 2 : 1`.
+    ///
+    /// It selects the multi-threaded match finder, but only in combination —
+    /// `LzmaEnc.c:2695` is `mtMode = multiThread && !fastMode && btMode != 0`, so a
+    /// hash chain or the fast parser ignores it entirely. The gate lives in
+    /// `MatchFinder::new_mt`, which re-checks every conjunct rather than trusting
+    /// the caller.
+    ///
+    /// Byte-neutral: measured 12/12 identical against the C over BT2/BT3/BT4 x two
+    /// data shapes x two dictionary sizes.
+    pub num_threads: u32,
     /// `p->fastMode`, i.e. `algo == 0` (`LzmaEnc.c:568`) — the greedy/lazy parser
     /// instead of the optimal one.
     ///
@@ -223,6 +235,9 @@ impl LzmaProps {
             fb,
             mc,
             mf,
+            // `LzmaEncProps_Normalize` (LzmaEnc.c:104) derives it as
+            // `(btMode && algo) ? 2 : 1`; this constructor is BT4 + optimal parser.
+            num_threads: 2,
             // algo defaults to `level < 5 ? 0 : 1` (LzmaEnc.c:95); every level this
             // constructor is used with is >= 5, so the optimal parser.
             fast_mode: false,

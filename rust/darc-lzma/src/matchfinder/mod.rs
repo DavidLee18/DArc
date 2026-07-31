@@ -40,11 +40,9 @@
 pub mod bt4;
 pub mod hash;
 pub mod hc;
+mod mt;
 
-use hash::{
-    CRC_SHIFT_1, CRC_SHIFT_2, FIX3_HASH_SIZE, FIX4_HASH_SIZE, FIX5_HASH_SIZE, HASH2_SIZE,
-    HASH3_SIZE,
-};
+use hash::{CRC_SHIFT_2, FIX3_HASH_SIZE, FIX4_HASH_SIZE, FIX5_HASH_SIZE};
 
 use crate::props::{LzmaProps, MatchFinderKind};
 use crate::state::MATCH_LEN_MAX;
@@ -95,6 +93,11 @@ pub const KEEP_ADD_BUFFER_BEFORE: u32 = crate::optimum::NUM_OPTS as u32;
 /// `LZMA_MATCH_LEN_MAX + 1` (`LzmaEnc.c:2752`), the lookahead slack `LzmaEnc`
 /// requests on top of `numFastBytes`.
 const KEEP_ADD_BUFFER_AFTER: u32 = MATCH_LEN_MAX + 1;
+
+/// Latched when the hash worker stops before the encoder stops asking it for
+/// positions — see [`mt`]'s failure section. `SZ_ERROR_THREAD` (`7zTypes.h:40`),
+/// so a caller forwarding `SRes` codes stays consistent with the C.
+const ERR_HASH_WORKER: StreamError = StreamError(12);
 
 /// `MatchFinder_GetHashMask` (`LzFind.c:347`), all branches.
 ///
@@ -208,9 +211,23 @@ pub struct MatchFinder<'a> {
     match_max_len: u32,
     cut_value: u32,
     hash_mask: u32,
+    /// The hash tables — **empty when [`MatchFinder::mt`] is `Some`**, because the
+    /// worker owns them then. Nothing on this side may index it without first
+    /// establishing that no worker is running; every such site goes through
+    /// `*_heads` below, whose `None` arm is the only place that reads it.
     hash: Vec<u32>,
     son: Vec<u32>,
     crc: [u32; 256],
+    /// `kMaxValForNormalize` (`LzFind.c:19`) for this finder.
+    ///
+    /// A field rather than the constant only so that a test can move it within
+    /// reach; [`MatchFinder::new`] and [`MatchFinder::new_mt`] both set it to
+    /// [`K_MAX_VAL_FOR_NORMALIZE`], so nothing on a shipped path observes the
+    /// difference.
+    max_val_for_normalize: u32,
+    /// The hash worker, when one is running. `None` is the single-threaded
+    /// finder, unchanged.
+    mt: Option<mt::MtHash>,
 }
 
 impl<'a> MatchFinder<'a> {
@@ -226,31 +243,77 @@ impl<'a> MatchFinder<'a> {
     /// 2 MiB behind the cursor after `MoveBlock` has slid the window. It is a
     /// correctness parameter, not a tuning knob: too small and the copy chunk reads
     /// bytes `MoveBlock` has already discarded.
+    /// `expected_data_size` is `MFB.expectedDataSize`, which
+    /// `MatchFinder_Construct` leaves at `(UInt64)(Int64)-1` (`LzFind.c:245`) and
+    /// only `LzmaEnc_SetDataSize` (`LzmaEnc.c:610`) ever moves — from
+    /// `LzmaEnc_MemPrepare`'s `srcLen` (`:2896`) on LZMA2's blocked path, and
+    /// nowhere else. It is **not** a memory hint: `MatchFinder_Create` narrows the
+    /// hash *mask*, not just the allocation, when the declared size is smaller than
+    /// the dictionary (`LzFind.c:434-439`), so a smaller expectation genuinely
+    /// changes which positions collide and therefore which matches are found. Pass
+    /// `u64::MAX` for "unknown", which is what every path but that one declares.
     pub fn new(
         stream: &'a mut dyn InStream,
         props: &LzmaProps,
         keep_add_buffer_before: u32,
+        expected_data_size: u64,
     ) -> Self {
-        // `MatchFinder_Construct` leaves `expectedDataSize` at `(UInt64)(Int64)-1`
-        // (`LzFind.c:245`) and only `LzmaEnc_SetDataSize` (`LzmaEnc.c:610`) ever
-        // moves it. Every caller but LZMA2's blocked path leaves it there.
-        Self::new_with_expected(stream, props, keep_add_buffer_before, u64::MAX)
+        Self::new_inner(
+            stream,
+            props,
+            keep_add_buffer_before,
+            expected_data_size,
+            1,
+            K_MAX_VAL_FOR_NORMALIZE,
+        )
     }
 
-    /// [`MatchFinder::new`] with `MFB.expectedDataSize` set, as
-    /// `LzmaEnc_MemPrepare` sets it from `srcLen` (`LzmaEnc.c:2896`).
+    /// As [`MatchFinder::new`], but allowed to run the hash stage on a worker
+    /// thread when `num_threads > 1`.
     ///
-    /// It is **not** a memory hint: `MatchFinder_Create` narrows the hash *mask* —
-    /// not the allocation — when the declared data size is smaller than the
-    /// dictionary (`LzFind.c:434-439`), so a smaller expectation genuinely changes
-    /// which positions collide and therefore which matches the encoder finds. The
-    /// LZMA2 multi-block path reaches this: each block is encoded from memory with
-    /// `expectedDataSize` equal to that block's length.
-    pub fn new_with_expected(
+    /// This is `LzmaEnc.c:2695`'s decision, as a constructor:
+    ///
+    /// ```text
+    ///     mtMode = multiThread && !fastMode && btMode != 0
+    /// ```
+    ///
+    /// with `multiThread = (numThreads > 1)` (`:2694`). All three conjuncts are
+    /// re-checked here rather than trusted to the caller, plus one the C does not
+    /// need: `fb >= numHashBytes`. That last one is what makes `len_limit <
+    /// numHashBytes` mean "the stream has fewer than `numHashBytes` bytes left",
+    /// which is the invariant the worker uses to stop at the same position the
+    /// consumer stops asking about (see [`mt`]). `LzmaEnc_SetProps` clamps `fb`
+    /// into `5..=273` so it always holds in practice; falling back rather than
+    /// asserting keeps a caller that skipped that clamp correct instead of hung.
+    ///
+    /// **The output is identical either way** — that is the whole design
+    /// constraint, and `mt_matches_single_threaded_match_for_match` is the gate.
+    /// So a caller may pass a thread count straight through from
+    /// `GetCompressionThreads()` without it being an archive-format decision.
+    pub fn new_mt(
         stream: &'a mut dyn InStream,
         props: &LzmaProps,
         keep_add_buffer_before: u32,
         expected_data_size: u64,
+        num_threads: u32,
+    ) -> Self {
+        Self::new_inner(
+            stream,
+            props,
+            keep_add_buffer_before,
+            expected_data_size,
+            num_threads,
+            K_MAX_VAL_FOR_NORMALIZE,
+        )
+    }
+
+    fn new_inner(
+        stream: &'a mut dyn InStream,
+        props: &LzmaProps,
+        keep_add_buffer_before: u32,
+        expected_data_size: u64,
+        num_threads: u32,
+        max_val_for_normalize: u32,
     ) -> Self {
         let history_size = props.history_size();
         let cyclic_buffer_size = history_size + 1;
@@ -288,6 +351,23 @@ impl<'a> MatchFinder<'a> {
             *slot = r;
         }
 
+        // `LzmaEnc.c:2694-2695`, plus the `fb` guard documented on `new_mt`.
+        let mt_kind = match num_threads > 1 && !props.fast_mode && props.fb >= num_hash_bytes {
+            true => mt::BtKind::of(props.mf),
+            false => None,
+        };
+        let mt = match mt_kind {
+            Some(kind) => mt::MtHash::new(mt::HashConfig {
+                kind,
+                hash_len,
+                hash_mask,
+                history_size,
+                max_val_for_normalize,
+                crc,
+            }),
+            None => None,
+        };
+
         let mut mf = MatchFinder {
             stream,
             buf: vec![0u8; block_size],
@@ -313,7 +393,13 @@ impl<'a> MatchFinder<'a> {
             match_max_len: props.fb,
             cut_value: props.mc,
             hash_mask,
-            hash: vec![0u32; hash_len],
+            // The worker owns `hash` when there is one, so this side allocates
+            // nothing: total hash memory is the same as single-threaded, not
+            // double. Every read of it is guarded by `mt.is_none()`.
+            hash: match mt.is_some() {
+                true => Vec::new(),
+                false => vec![0u32; hash_len],
+            },
             // `numSons = cyclicBufferSize; if (btMode) numSons <<= 1;`
             // (MatchFinder_Create). The hash chains keep one link per slot, not two,
             // so allocating the tree's size for them would work but doubles memory
@@ -327,6 +413,8 @@ impl<'a> MatchFinder<'a> {
                 }
             ],
             crc,
+            max_val_for_normalize,
+            mt,
         };
         // MatchFinder_Init: hashes are already zero (kEmptyHashValue), so only the
         // first read and the limits remain.
@@ -387,6 +475,10 @@ impl<'a> MatchFinder<'a> {
     }
 
     /// `MatchFinder_ReadBlock` (`LzFind.c:123`): refill the window's tail.
+    //
+    // `single_match` would rewrite the three `self.mt` probes as `if let`, which
+    // this workspace bans outright.
+    #[allow(clippy::single_match)]
     fn read_block(&mut self) {
         if self.stream_end_was_reached || self.result.is_err() {
             return;
@@ -402,13 +494,30 @@ impl<'a> MatchFinder<'a> {
             match self.stream.read(&mut self.buf[dest..dest + size]) {
                 Err(e) => {
                     self.result = Err(e);
+                    // No more bytes will follow, so let the worker finish rather
+                    // than park in `recv` until the finder is dropped.
+                    match self.mt.as_mut() {
+                        Some(m) => m.end(),
+                        None => {}
+                    }
                     return;
                 }
                 Ok(0) => {
                     self.stream_end_was_reached = true;
+                    match self.mt.as_mut() {
+                        Some(m) => m.end(),
+                        None => {}
+                    }
                     return;
                 }
                 Ok(n) => {
+                    // The worker's whole view of the input, fed in stream order.
+                    // This is the only place bytes enter the window, so it is the
+                    // only place they can enter the worker.
+                    match self.mt.as_mut() {
+                        Some(m) => m.feed(&self.buf[dest..dest + n]),
+                        None => {}
+                    }
                     self.stream_pos = self.stream_pos.wrapping_add(n as u32);
                     if self.num_available() > self.keep_size_after {
                         return;
@@ -445,7 +554,7 @@ impl<'a> MatchFinder<'a> {
     /// `MatchFinder_SetLimits` (`LzFind.c:500`): recompute `len_limit` and the
     /// `pos_limit` at which the window next needs attention.
     fn set_limits(&mut self) {
-        let mut n = K_MAX_VAL_FOR_NORMALIZE.wrapping_sub(self.pos);
+        let mut n = self.max_val_for_normalize.wrapping_sub(self.pos);
         if n == 0 {
             // "we allow (pos == 0) at start even with (kMaxValForNormalize == 0)"
             n = u32::MAX;
@@ -489,14 +598,19 @@ impl<'a> MatchFinder<'a> {
             self.read_block();
         }
 
-        if self.pos == K_MAX_VAL_FOR_NORMALIZE && self.num_available() >= self.num_hash_bytes {
+        if self.pos == self.max_val_for_normalize && self.num_available() >= self.num_hash_bytes {
             // Unreachable below 4 GiB of input, since kMaxValForNormalize is 0 and
             // `pos` only gets there by wrapping. Ported for parity at that size;
-            // `normalize3` itself is covered directly by unit test.
-            let sub_value = self.pos - self.history_size - 1;
+            // `normalize3` itself is covered directly by unit test, and
+            // `normalization_is_output_neutral` drives this branch by moving the
+            // threshold down.
+            let sub_value = self.pos.wrapping_sub(self.history_size).wrapping_sub(1);
             // MatchFinder_REDUCE_OFFSETS (LzFind.h:112).
-            self.pos -= sub_value;
-            self.stream_pos -= sub_value;
+            self.pos = self.pos.wrapping_sub(sub_value);
+            self.stream_pos = self.stream_pos.wrapping_sub(sub_value);
+            // A no-op when a worker owns `hash` (this side's copy is empty); the
+            // worker runs the identical shift at the identical `pos`, so the two
+            // frames move together.
             normalize3(sub_value, &mut self.hash);
             normalize3(sub_value, &mut self.son);
         }
@@ -518,6 +632,103 @@ impl<'a> MatchFinder<'a> {
         }
     }
 
+    /// The hash worker stopped before the encoder stopped asking. Latch an error
+    /// so the caller refuses the archive.
+    ///
+    /// The finder keeps answering — with "no candidate", see the `*_heads`
+    /// callers — rather than stopping, because it is reached from a C ABI where an
+    /// unwind is undefined behaviour. `LzmaEnc`'s `CheckErrors` reads
+    /// [`MatchFinder::result`] and fails the encode, which is where this surfaces.
+    //
+    // `single_match` would rewrite the latch as `if let`, which this workspace
+    // bans outright (see the totality gate in `.github/workflows/build.yml`).
+    #[allow(clippy::single_match)]
+    fn hash_worker_failed(&mut self) {
+        match self.result {
+            Ok(()) => self.result = Err(ERR_HASH_WORKER),
+            Err(_) => {}
+        }
+    }
+
+    /// `curMatch` for BT2's tree walk.
+    ///
+    /// Single-threaded this is `Bt2_MatchFinder_GetMatches`'s two `hash` lines
+    /// (`LzFind.c:1155-1156`). With a worker it is `BtGetMatches`'s
+    /// `pos - p->hashBuf[p->hashBufPos++]` (`LzFindMt.c:672`), turning the
+    /// worker's distance back into a position in *this* thread's frame.
+    fn bt2_heads(&mut self, cur: usize, pos: u32) -> u32 {
+        // `Option<Option<RawHeads>>`: the outer layer is "is a worker running",
+        // the inner one is "did it answer". Taken in one step so the borrow of
+        // `self.mt` ends before the `None` arm below touches `self.hash`.
+        let from_worker = self.mt.as_mut().map(|m| m.next());
+        match from_worker {
+            Some(Some(r)) => pos.wrapping_sub(r.dm),
+            Some(None) => {
+                self.hash_worker_failed();
+                0
+            }
+            None => {
+                let hv = mt::bt2_index(&self.buf, cur);
+                let cur_match = self.hash[hv];
+                self.hash[hv] = pos;
+                cur_match
+            }
+        }
+    }
+
+    /// `(curMatch, d2)` for BT3 — `Bt3_MatchFinder_GetMatches`'s hash prologue
+    /// (`LzFind.c:1183-1189`).
+    fn bt3_heads(&mut self, cur: usize, pos: u32) -> (u32, u32) {
+        // `Option<Option<RawHeads>>`: the outer layer is "is a worker running",
+        // the inner one is "did it answer". Taken in one step so the borrow of
+        // `self.mt` ends before the `None` arm below touches `self.hash`.
+        let from_worker = self.mt.as_mut().map(|m| m.next());
+        match from_worker {
+            Some(Some(r)) => (pos.wrapping_sub(r.dm), r.d2),
+            Some(None) => {
+                self.hash_worker_failed();
+                // `d2 = pos` can never satisfy `d2 < mmm` (`mmm <= pos`), and
+                // `curMatch = 0` fails `GetMatchesSpec1`'s `cm_check < curMatch`.
+                // So this is "no candidate", not a wrong candidate.
+                (0, pos)
+            }
+            None => {
+                let (h2i, hvi) = mt::bt3_indices(&self.crc, &self.buf, cur, self.hash_mask);
+                let d2 = pos - self.hash[h2i];
+                let cur_match = self.hash[hvi];
+                self.hash[h2i] = pos;
+                self.hash[hvi] = pos;
+                (cur_match, d2)
+            }
+        }
+    }
+
+    /// `(curMatch, d2, d3)` for BT4 — `Bt4_MatchFinder_GetMatches`'s hash prologue
+    /// (`LzFind.c:1234-1246`).
+    fn bt4_heads(&mut self, cur: usize, pos: u32) -> (u32, u32, u32) {
+        // `Option<Option<RawHeads>>`: the outer layer is "is a worker running",
+        // the inner one is "did it answer". Taken in one step so the borrow of
+        // `self.mt` ends before the `None` arm below touches `self.hash`.
+        let from_worker = self.mt.as_mut().map(|m| m.next());
+        match from_worker {
+            Some(Some(r)) => (pos.wrapping_sub(r.dm), r.d2, r.d3),
+            Some(None) => {
+                self.hash_worker_failed();
+                (0, pos, pos)
+            }
+            None => {
+                let (h2i, h3i, h4i) = mt::bt4_indices(&self.crc, &self.buf, cur, self.hash_mask);
+                let d2 = pos - self.hash[h2i];
+                let d3 = pos - self.hash[h3i];
+                let cur_match = self.hash[h4i];
+                self.hash[h2i] = pos;
+                self.hash[h3i] = pos;
+                self.hash[h4i] = pos;
+                (cur_match, d2, d3)
+            }
+        }
+    }
+
     /// `Bt2_MatchFinder_GetMatches` (`LzFind.c:1151`).
     ///
     /// The whole function, which is the point: BT2 has **no** short-match pre-check,
@@ -535,9 +746,7 @@ impl<'a> MatchFinder<'a> {
         let cur = self.buffer_offset;
         let pos = self.pos;
 
-        let hv = self.hash2_calc(cur);
-        let cur_match = self.hash[hv];
-        self.hash[hv] = pos;
+        let cur_match = self.bt2_heads(cur, pos);
 
         bt4::get_matches_spec1(
             len_limit,
@@ -565,9 +774,7 @@ impl<'a> MatchFinder<'a> {
             }
             let cur = self.buffer_offset;
             let pos = self.pos;
-            let hv = self.hash2_calc(cur);
-            let cur_match = self.hash[hv];
-            self.hash[hv] = pos;
+            let cur_match = self.bt2_heads(cur, pos);
             bt4::skip_matches_spec(
                 len_limit,
                 cur_match,
@@ -581,18 +788,6 @@ impl<'a> MatchFinder<'a> {
             );
             self.move_pos();
         }
-    }
-
-    /// `HASH2_CALC` (`LzFind.c:35`): `hv = GetUi16(cur)`.
-    ///
-    /// A plain little-endian 16-bit load — **not** a CRC hash, and **not** masked
-    /// with `hash_mask`. It stays in range only because
-    /// [`get_hash_mask`] returns `0xFFFF` unconditionally for `numHashBytes == 2`, so
-    /// the table is exactly `1 << 16` entries. Deriving this from the 4-byte hash's
-    /// machinery, or masking it, assigns different buckets and changes the parse.
-    #[inline]
-    fn hash2_calc(&self, cur: usize) -> usize {
-        (self.buf[cur] as usize) | ((self.buf[cur + 1] as usize) << 8)
     }
 
     /// `Bt3_MatchFinder_GetMatches` (`LzFind.c:1177`).
@@ -623,17 +818,7 @@ impl<'a> MatchFinder<'a> {
         let cur = self.buffer_offset;
         let pos = self.pos;
 
-        // HASH3_CALC (LzFind.c:44). Note `hv` is masked with `hash_mask`, whereas
-        // BT4's `h3` is masked with `kHash3Size - 1`: different values from the same
-        // `temp`, so one cannot stand in for the other.
-        let temp = self.crc[self.buf[cur] as usize] ^ self.buf[cur + 1] as u32;
-        let h2 = (temp & (HASH2_SIZE as u32 - 1)) as usize;
-        let hv = ((temp ^ ((self.buf[cur + 2] as u32) << 8)) & self.hash_mask) as usize;
-
-        let d2 = pos - self.hash[h2];
-        let cur_match = self.hash[FIX3_HASH_SIZE + hv];
-        self.hash[h2] = pos;
-        self.hash[FIX3_HASH_SIZE + hv] = pos;
+        let (cur_match, d2) = self.bt3_heads(cur, pos);
 
         let mmm = self.cyclic_buffer_size.min(pos);
         let mut max_len = 2u32;
@@ -695,14 +880,11 @@ impl<'a> MatchFinder<'a> {
             let cur = self.buffer_offset;
             let pos = self.pos;
 
-            let temp = self.crc[self.buf[cur] as usize] ^ self.buf[cur + 1] as u32;
-            let h2 = (temp & (HASH2_SIZE as u32 - 1)) as usize;
-            let hv = ((temp ^ ((self.buf[cur + 2] as u32) << 8)) & self.hash_mask) as usize;
-
-            let cur_match = self.hash[FIX3_HASH_SIZE + hv];
-            // The C chains both assignments off `p->pos` (LzFind.c:1548).
-            self.hash[h2] = pos;
-            self.hash[FIX3_HASH_SIZE + hv] = pos;
+            // The C chains both assignments off `p->pos` (LzFind.c:1548); the
+            // shared prologue does the same, and additionally *reads* `hash[h2]`,
+            // which `Bt3_MatchFinder_Skip` has no use for. Reading a slot that is
+            // about to be written changes nothing.
+            let (cur_match, _d2) = self.bt3_heads(cur, pos);
 
             bt4::skip_matches_spec(
                 len_limit,
@@ -891,23 +1073,7 @@ impl<'a> MatchFinder<'a> {
         let cur = self.buffer_offset;
         let pos = self.pos;
 
-        // HASH4_CALC
-        let temp = self.crc[self.buf[cur] as usize] ^ self.buf[cur + 1] as u32;
-        let h2 = (temp & (HASH2_SIZE as u32 - 1)) as usize;
-        let temp = temp ^ ((self.buf[cur + 2] as u32) << 8);
-        let h3 = (temp & (HASH3_SIZE as u32 - 1)) as usize;
-        let hv = ((temp ^ (self.crc[self.buf[cur + 3] as usize] << CRC_SHIFT_1)) & self.hash_mask)
-            as usize;
-
-        let h2i = h2;
-        let h3i = FIX3_HASH_SIZE + h3;
-        let h4i = FIX4_HASH_SIZE + hv;
-        let d2 = pos - self.hash[h2i];
-        let d3 = pos - self.hash[h3i];
-        let cur_match = self.hash[h4i];
-        self.hash[h2i] = pos;
-        self.hash[h3i] = pos;
-        self.hash[h4i] = pos;
+        let (cur_match, d2, d3) = self.bt4_heads(cur, pos);
 
         let mmm = self.cyclic_buffer_size.min(pos);
         let mut max_len = 3u32;
@@ -995,17 +1161,7 @@ impl<'a> MatchFinder<'a> {
             let cur = self.buffer_offset;
             let pos = self.pos;
 
-            let temp = self.crc[self.buf[cur] as usize] ^ self.buf[cur + 1] as u32;
-            let h2 = (temp & (HASH2_SIZE as u32 - 1)) as usize;
-            let temp = temp ^ ((self.buf[cur + 2] as u32) << 8);
-            let h3 = (temp & (HASH3_SIZE as u32 - 1)) as usize;
-            let hv = ((temp ^ (self.crc[self.buf[cur + 3] as usize] << CRC_SHIFT_1))
-                & self.hash_mask) as usize;
-
-            let cur_match = self.hash[FIX4_HASH_SIZE + hv];
-            self.hash[h2] = pos;
-            self.hash[FIX3_HASH_SIZE + h3] = pos;
-            self.hash[FIX4_HASH_SIZE + hv] = pos;
+            let (cur_match, _d2, _d3) = self.bt4_heads(cur, pos);
 
             bt4::skip_matches_spec(
                 len_limit,
@@ -1115,10 +1271,11 @@ mod tests {
                 mc: 32,
                 mf: crate::props::MatchFinderKind::Hc5,
                 fast_mode: false,
+                num_threads: 1,
                 write_end_mark: true,
             };
             let mut src = crate::stream::SliceIn::new(&data);
-            let mf = MatchFinder::new(&mut src, &props, KEEP_ADD_BUFFER_BEFORE);
+            let mf = MatchFinder::new(&mut src, &props, KEEP_ADD_BUFFER_BEFORE, u64::MAX);
             assert_eq!(
                 mf.block_size(),
                 expect,
@@ -1127,7 +1284,7 @@ mod tests {
             // And the parameter is genuinely wired: a wider lookbehind must widen
             // the window, or the test above would pass on a hard-coded constant.
             let mut src2 = crate::stream::SliceIn::new(&data);
-            let wide = MatchFinder::new(&mut src2, &props, (1 << 21) - dict.min(1 << 21));
+            let wide = MatchFinder::new(&mut src2, &props, (1 << 21) - dict.min(1 << 21), u64::MAX);
             assert!(
                 wide.block_size() >= mf.block_size(),
                 "keep_add_buffer_before is ignored: dict {dict}, fb {fb}"
@@ -1153,10 +1310,11 @@ mod tests {
                 mc: 32,
                 mf: crate::props::MatchFinderKind::Hc5,
                 fast_mode: false,
+                num_threads: 1,
                 write_end_mark: false,
             };
             let mut src = crate::stream::SliceIn::new(&data);
-            let mf = MatchFinder::new(&mut src, &props, before);
+            let mf = MatchFinder::new(&mut src, &props, before, u64::MAX);
             assert!(
                 mf.keep_size_before as u64 >= keep_window as u64,
                 "dict {dict}: keepSizeBefore {} below the 2 MiB copy-chunk reach",
@@ -1213,6 +1371,355 @@ mod tests {
         assert_eq!(items, [0, 0, 0, 0, 1, u32::MAX - 6]);
     }
 
+    // ---- the multi-threaded hash worker ----
+
+    /// Deterministic pseudo-random bytes (xorshift32) — the incompressible half of
+    /// the corpus, where almost every position reaches the tree walk.
+    fn noise(n: usize, seed: u32) -> Vec<u8> {
+        let mut s = seed | 1;
+        (0..n)
+            .map(|_| {
+                s ^= s << 13;
+                s ^= s >> 17;
+                s ^= s << 5;
+                (s >> 24) as u8
+            })
+            .collect()
+    }
+
+    /// Text-like data with long repeats — the compressible half, where the short
+    /// (2-/3-byte) prologues and the `max_len == len_limit` early exits fire.
+    fn textish(n: usize, seed: u32) -> Vec<u8> {
+        const WORDS: [&str; 8] = [
+            "the ", "quick ", "brown ", "fox ", "jumps ", "over ", "lazy ", "dog\n",
+        ];
+        let mut s = seed | 1;
+        let mut v = Vec::with_capacity(n + 16);
+        while v.len() < n {
+            s ^= s << 13;
+            s ^= s >> 17;
+            s ^= s << 5;
+            v.extend_from_slice(WORDS[(s >> 28) as usize & 7].as_bytes());
+        }
+        v.truncate(n);
+        v
+    }
+
+    fn props_for(dict: u32, mf: MatchFinderKind) -> LzmaProps {
+        LzmaProps {
+            lc: 3,
+            lp: 0,
+            pb: 2,
+            dict_size: dict,
+            fb: 64,
+            mc: mf.auto_mc(64),
+            mf,
+            num_threads: 1,
+            fast_mode: false,
+            write_end_mark: true,
+        }
+    }
+
+    /// Every match the finder reports, flattened, plus the final `pos`.
+    ///
+    /// Match *lists*, not encoded bytes: the encoder consumes `get_matches`
+    /// positionally, so two finders that agree here produce the same stream by
+    /// construction, and a divergence is reported at the position it happens
+    /// rather than after the range coder has smeared it.
+    ///
+    /// `parse` mixes `skip` into the drive the way the parser does. Both callers
+    /// matter: `skip` and `get_matches` update the hash tables identically but
+    /// consume the worker's records the same way, and an off-by-one in only one of
+    /// them would desynchronize the queue.
+    fn trace(
+        props: &LzmaProps,
+        data: &[u8],
+        threads: u32,
+        norm: u32,
+        parse: bool,
+    ) -> (Vec<u32>, u32) {
+        let mut src = crate::stream::SliceIn::new(data);
+        let mut mf = MatchFinder::new_inner(
+            &mut src,
+            props,
+            KEEP_ADD_BUFFER_BEFORE,
+            u64::MAX,
+            threads,
+            norm,
+        );
+        // "A green test may not run your code": assert the branch was taken.
+        assert_eq!(
+            mf.mt.is_some(),
+            threads > 1 && props.mf.bt_mode(),
+            "hash worker not in the expected state for {:?} at {threads} threads",
+            props.mf
+        );
+        let mut out = Vec::new();
+        let mut buf = Vec::new();
+        while mf.num_available() != 0 {
+            mf.get_matches(&mut buf);
+            out.push(buf.len() as u32);
+            for m in &buf {
+                out.push(m.len);
+                out.push(m.dist);
+            }
+            if parse {
+                let longest = buf.last().map(|m| m.len).unwrap_or(0);
+                let adv = longest.saturating_sub(1).min(mf.num_available());
+                match adv {
+                    0 => {}
+                    n => mf.skip(n),
+                }
+            }
+        }
+        // A dead worker latches ERR_HASH_WORKER, so this also proves the queue
+        // never ran dry early.
+        assert_eq!(mf.result(), Ok(()), "finder latched an error");
+        (out, mf.pos)
+    }
+
+    fn assert_same(a: &[u32], b: &[u32], what: &str) {
+        for (i, (x, y)) in a.iter().zip(b.iter()).enumerate() {
+            assert_eq!(x, y, "{what}: first divergence at trace element {i}");
+        }
+        assert_eq!(a.len(), b.len(), "{what}: trace lengths differ");
+    }
+
+    /// **The gate.** The threaded hash stage must find exactly the matches the
+    /// single-threaded one does, at every position, for every binary-tree finder.
+    ///
+    /// Sizes are chosen so the window slides (`dict` 4 KiB gives a 64 KiB block,
+    /// 64 KiB gives 128 KiB) — the `MoveBlock` path is where a producer that held
+    /// an index across an advance would break, and it is the one the worker
+    /// deliberately does not participate in.
+    #[test]
+    fn mt_matches_single_threaded_match_for_match() {
+        let cases: [(u32, Vec<u8>, &str); 5] = [
+            (1 << 12, textish(200_000, 1), "textish/4K"),
+            (1 << 12, noise(200_000, 2), "noise/4K"),
+            (1 << 16, textish(200_000, 3), "textish/64K"),
+            (1 << 16, noise(120_000, 4), "noise/64K"),
+            // Shorter than numHashBytes at every position but the first: the
+            // boundary where the consumer stops asking and the worker stops
+            // producing, which nothing coordinates explicitly.
+            (1 << 12, textish(3, 5), "3 bytes"),
+        ];
+        let finders = [
+            MatchFinderKind::Bt2,
+            MatchFinderKind::Bt3,
+            MatchFinderKind::Bt4,
+        ];
+        for mf in finders {
+            for (dict, data, name) in &cases {
+                let props = props_for(*dict, mf);
+                for parse in [false, true] {
+                    let (st, _) = trace(&props, data, 1, K_MAX_VAL_FOR_NORMALIZE, parse);
+                    let (mt, _) = trace(&props, data, 2, K_MAX_VAL_FOR_NORMALIZE, parse);
+                    assert_same(&st, &mt, &format!("{mf:?} {name} parse={parse}"));
+                    assert!(!st.is_empty(), "{mf:?} {name}: empty trace proves nothing");
+                }
+            }
+        }
+
+        // The control. A sweep that cannot see a difference proves nothing, so
+        // check that this comparison can: BT4 and BT2 must disagree on data that
+        // has matches to disagree about.
+        let data = textish(200_000, 1);
+        let (bt2, _) = trace(&props_for(1 << 16, MatchFinderKind::Bt2), &data, 1, K_MAX_VAL_FOR_NORMALIZE, false);
+        let (bt4, _) = trace(&props_for(1 << 16, MatchFinderKind::Bt4), &data, 1, K_MAX_VAL_FOR_NORMALIZE, false);
+        assert!(
+            bt2 != bt4,
+            "BT2 and BT4 produced identical traces: assert_same cannot see a difference"
+        );
+    }
+
+    /// `MatchFinder_CheckLimits`'s normalization is unreachable below 4 GiB of
+    /// input, so it is driven here by moving `kMaxValForNormalize` down — the same
+    /// trick the C keeps commented out at `LzFindMt.c:287`
+    /// (`// #define kMtMaxValForNormalize ((1 << 21)) // for debug`).
+    ///
+    /// Two claims at once: the shift is output-neutral (it only saturates
+    /// references already out of `mmm`'s range), and the worker shifts its half of
+    /// the state in the same frame as the consumer shifts the other half. Get the
+    /// second wrong and every distance after the first shift is garbage.
+    #[test]
+    fn normalization_is_output_neutral_and_the_worker_stays_in_frame() {
+        let threshold: u32 = 1 << 17;
+        let data = textish(300_000, 7);
+        for mf in [
+            MatchFinderKind::Bt2,
+            MatchFinderKind::Bt3,
+            MatchFinderKind::Bt4,
+        ] {
+            let props = props_for(1 << 12, mf);
+            let (base, base_pos) = trace(&props, &data, 1, K_MAX_VAL_FOR_NORMALIZE, true);
+            let (st, st_pos) = trace(&props, &data, 1, threshold, true);
+            let (mt, mt_pos) = trace(&props, &data, 2, threshold, true);
+            // It has to have actually fired, or both runs are the same run.
+            assert!(
+                base_pos > threshold,
+                "{mf:?}: input too short to cross the threshold"
+            );
+            assert!(st_pos < threshold, "{mf:?}: single-threaded never normalized");
+            assert!(mt_pos < threshold, "{mf:?}: threaded never normalized");
+            assert_same(&base, &st, &format!("{mf:?} single-threaded normalization"));
+            assert_same(&base, &mt, &format!("{mf:?} threaded normalization"));
+        }
+    }
+
+    /// `LzmaEnc.c:2695` — `mtMode = multiThread && !fastMode && btMode != 0` — plus
+    /// the `fb >= numHashBytes` guard this port adds. Each conjunct on its own,
+    /// because a worker started for a hash chain would hash with the wrong
+    /// function and a worker started with `fb < numHashBytes` would stop at a
+    /// different position from the consumer and hang the queue.
+    #[test]
+    fn the_worker_starts_only_where_lzma_enc_would_start_one() {
+        let data = noise(4096, 11);
+        let started = |props: &LzmaProps, threads: u32| {
+            let mut src = crate::stream::SliceIn::new(&data);
+            let mf = MatchFinder::new_inner(
+                &mut src,
+                props,
+                KEEP_ADD_BUFFER_BEFORE,
+                u64::MAX,
+                threads,
+                K_MAX_VAL_FOR_NORMALIZE,
+            );
+            let on = mf.mt.is_some();
+            // The consumer's own table is allocated exactly when it owns it.
+            assert_eq!(mf.hash.is_empty(), on, "hash ownership disagrees with `mt`");
+            on
+        };
+
+        assert!(started(&props_for(1 << 16, MatchFinderKind::Bt4), 2));
+        assert!(!started(&props_for(1 << 16, MatchFinderKind::Bt4), 1));
+        // btMode == 0.
+        assert!(!started(&props_for(1 << 16, MatchFinderKind::Hc4), 2));
+        assert!(!started(&props_for(1 << 16, MatchFinderKind::Hc5), 2));
+        // fastMode.
+        let mut fast = props_for(1 << 16, MatchFinderKind::Bt4);
+        fast.fast_mode = true;
+        assert!(!started(&fast, 2));
+        // fb < numHashBytes.
+        let mut short_fb = props_for(1 << 16, MatchFinderKind::Bt4);
+        short_fb.fb = 3;
+        assert!(!started(&short_fb, 2));
+        // ... and BT2 with the same fb is fine, so the guard is per-finder.
+        let mut short_fb2 = props_for(1 << 16, MatchFinderKind::Bt2);
+        short_fb2.fb = 3;
+        assert!(started(&short_fb2, 2));
+    }
+
+    /// A finder can be dropped mid-stream — LZMA2 builds one per block, and any
+    /// error path abandons one — and the worker may be parked in *either* queue
+    /// when that happens. `Drop` has to release both, so this drops at three
+    /// points: before consuming anything (worker blocked writing, queue full),
+    /// part way through (worker blocked writing), and after the feed has ended
+    /// (worker blocked reading).
+    ///
+    /// A regression here hangs rather than fails, which is exactly why it needs a
+    /// test at all — the same shape as the partial-batch deadlock that the
+    /// flush-before-park comment in `mt.rs` records.
+    #[test]
+    fn dropping_mid_stream_shuts_the_worker_down() {
+        let data = textish(300_000, 9);
+        let props = props_for(1 << 12, MatchFinderKind::Bt4);
+        for consume in [0usize, 1000, 300_000] {
+            let mut src = crate::stream::SliceIn::new(&data);
+            let mut mf = MatchFinder::new_inner(
+                &mut src,
+                &props,
+                KEEP_ADD_BUFFER_BEFORE,
+                u64::MAX,
+                2,
+                K_MAX_VAL_FOR_NORMALIZE,
+            );
+            assert!(mf.mt.is_some());
+            let mut buf = Vec::new();
+            for _ in 0..consume {
+                match mf.num_available() {
+                    0 => break,
+                    _ => mf.get_matches(&mut buf),
+                }
+            }
+            drop(mf);
+        }
+    }
+
+    /// Not a gate — a measurement. Ignored by default because it takes tens of
+    /// seconds and because a timing assertion on a shared machine is a flaky test,
+    /// not a proof.
+    ///
+    /// ```text
+    ///     cargo test -p darc-lzma --release -- --ignored --nocapture hash_worker_speedup
+    /// ```
+    ///
+    /// It reports the *match finder* alone, which is an upper bound on the
+    /// end-to-end gain: the optimal parser's own work sits on the consumer thread
+    /// too, so it dilutes the ratio. The last line prints the whole-encode time for
+    /// the same input so the dilution can be applied.
+    #[test]
+    #[ignore = "measurement, not a gate"]
+    fn hash_worker_speedup() {
+        use std::time::Instant;
+        const N: usize = 24 << 20;
+        // Half repetitive, half not: a finder benchmarked only on text spends its
+        // time in the `max_len == len_limit` early exit and never shows the tree
+        // walk's real cost.
+        let mut data = textish(N / 2, 42);
+        data.extend_from_slice(&noise(N / 2, 43));
+        let props = props_for(1 << 24, MatchFinderKind::Bt4);
+
+        // Its own driver rather than `trace`: at 24 MB the recorded trace is
+        // hundreds of megabytes, which would measure the allocator as much as the
+        // finder. A 64-bit FNV fold keeps the "both paths did the same work"
+        // check without the memory.
+        let run = |threads: u32| {
+            let mut src = crate::stream::SliceIn::new(&data);
+            let mut mf = MatchFinder::new_inner(
+                &mut src,
+                &props,
+                KEEP_ADD_BUFFER_BEFORE,
+                u64::MAX,
+                threads,
+                K_MAX_VAL_FOR_NORMALIZE,
+            );
+            assert_eq!(mf.mt.is_some(), threads > 1);
+            let mut buf = Vec::new();
+            let mut fold: u64 = 0xcbf2_9ce4_8422_2325;
+            let t0 = Instant::now();
+            while mf.num_available() != 0 {
+                mf.get_matches(&mut buf);
+                for m in &buf {
+                    fold = (fold ^ u64::from(m.len)).wrapping_mul(0x100_0000_01b3);
+                    fold = (fold ^ u64::from(m.dist)).wrapping_mul(0x100_0000_01b3);
+                }
+            }
+            (t0.elapsed().as_secs_f64(), fold)
+        };
+        // Interleaved, so a machine that gets busier over the run does not read as
+        // a speedup (or hide one).
+        for i in 0..3 {
+            let (t1, n1) = run(1);
+            let (t2, n2) = run(2);
+            assert_eq!(n1, n2, "the two paths did not produce the same matches");
+            println!(
+                "round {i}: 1 thread {t1:.3}s, 2 threads {t2:.3}s, speedup {:.3}x",
+                t1 / t2
+            );
+        }
+        let t0 = Instant::now();
+        let enc = crate::encode(&data, &props);
+        let n = match enc {
+            Ok(v) => v.len(),
+            Err(e) => panic!("encode failed: {e:?}"),
+        };
+        println!(
+            "whole encode (1 thread): {:.3}s -> {n} bytes",
+            t0.elapsed().as_secs_f64()
+        );
+    }
+
     /// A window that must slide: the finder is asked for more bytes than the block
     /// holds, so `move_block` runs and `buffer_offset` moves backwards. The check is
     /// the invariant the encoder depends on — `win()[cur_index() + k]` is still
@@ -1229,11 +1736,12 @@ mod tests {
             fb: 32,
             mc: 32,
             mf: crate::props::MatchFinderKind::Bt4,
+            num_threads: 1,
             fast_mode: false,
             write_end_mark: true,
         };
         let mut src = crate::stream::SliceIn::new(&data);
-        let mut mf = MatchFinder::new(&mut src, &props, KEEP_ADD_BUFFER_BEFORE);
+        let mut mf = MatchFinder::new(&mut src, &props, KEEP_ADD_BUFFER_BEFORE, u64::MAX);
         let first_block = mf.block_size;
         assert!(first_block < n, "block must be smaller than the input to slide");
 

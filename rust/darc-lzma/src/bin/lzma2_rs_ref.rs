@@ -167,9 +167,18 @@ fn main() {
             props.lzma.bt_mode = bt;
             props.lzma.num_hash_bytes = nhb;
             props.lzma.algo = num(7) as i32;
-            // Single-threaded, matching the harness's stubbed GetCompressionThreads.
-            props.num_total_threads = 1;
-            props.num_block_threads_max = 1;
+            // The harness sets DARC_LZMA2_THREADS for both drivers; the C driver
+            // reads the same variable in its GetCompressionThreads() stub. Above 1
+            // this selects the multi-block stream, so it must be swept, not fixed.
+            let threads: i32 = match std::env::var("DARC_LZMA2_THREADS")
+                .ok()
+                .map(|v| v.parse::<i32>())
+            {
+                Some(Ok(v)) if v >= 1 => v,
+                _ => 1,
+            };
+            props.num_total_threads = threads;
+            props.num_block_threads_max = threads;
             props.normalize();
             match darc_lzma::lzma2_enc::compress_stream(&mut source, &mut sink, &props) {
                 Ok(()) => FREEARC_OK,

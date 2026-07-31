@@ -318,11 +318,12 @@ impl<'a> Encoder<'a> {
             },
             probs,
             prices: Prices::new(dist_table_size, props.fb),
-            mf: MatchFinder::new_with_expected(
+            mf: MatchFinder::new_mt(
                 source,
                 props,
                 before_size(props.history_size(), keep_window_size),
                 expected_data_size,
+                props.num_threads,
             ),
             opt: vec![Optimal::default(); NUM_OPTS],
             matches: Vec::with_capacity(MATCH_LEN_MAX as usize * 2 + 2),
@@ -361,25 +362,15 @@ impl<'a> Encoder<'a> {
     }
 
     /// `LzmaEnc_PrepareForLzma2` (`LzmaEnc.c:2879`): the bounded scratch sink, and a
-    /// caller-chosen minimum window.
+    /// caller-chosen minimum window, preceded by `LzmaEnc_SetDataSize`.
     ///
-    /// The SOLID LZMA2 path reaches this with the data size unknown, because
-    /// `Lzma2Enc_EncodeMt1` passes `LzmaEnc_SetDataSize` the sentinel whenever the
-    /// block is SOLID (`Lzma2Enc.c:557-566`).
-    pub(crate) fn new_for_lzma2(
-        source: &'a mut dyn InStream,
-        props: &LzmaProps,
-        keep_window_size: u32,
-    ) -> Self {
-        Self::new_for_lzma2_sized(source, props, keep_window_size, u64::MAX)
-    }
-
-    /// `LzmaEnc_MemPrepare` (`LzmaEnc.c:2889`) as the LZMA2 blocked path uses it:
-    /// same preparation, but with `LzmaEnc_SetDataSize(p, srcLen)` (`:2896`) ahead of
-    /// the allocation, which narrows the match finder's hash mask for a block
-    /// shorter than the dictionary. The source is still a stream here rather than
-    /// `directInput`; that difference is invisible in the output, the declared size
-    /// is not.
+    /// `expected_data_size` is the sentinel `u64::MAX` for a SOLID block, which is
+    /// what `Lzma2Enc_EncodeMt1` declares there (`Lzma2Enc.c:557-566`); the blocked
+    /// paths declare a real size, and `LzmaEnc_MemPrepare` (`:2889`) declares the
+    /// block's own length (`:2896`). It reaches the match finder's hash mask, so it
+    /// is not a tuning parameter. The blocked memory path keeps a stream source here
+    /// rather than the C's `directInput`; that difference is invisible in the
+    /// output, the declared size is not.
     pub(crate) fn new_for_lzma2_sized(
         source: &'a mut dyn InStream,
         props: &LzmaProps,

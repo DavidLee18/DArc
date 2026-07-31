@@ -80,6 +80,7 @@ pub unsafe extern "C" fn darc_lzma_compress(
     pos_state_bits: c_int,
     lit_context_bits: c_int,
     lit_pos_bits: c_int,
+    num_threads: c_int,
     callback: crate::ffi::CALLBACK_FUNC,
     auxdata: *mut c_void,
 ) -> c_int {
@@ -133,6 +134,11 @@ pub unsafe extern "C" fn darc_lzma_compress(
         mc,
         mf,
         fast_mode,
+        // `C_LZMA.cpp:111`: `GetCompressionThreads() > 1 ? 2 : 1`. Passed in rather
+        // than read here so this crate keeps no link dependency on the archiver.
+        // Byte-neutral -- it selects the multi-threaded match finder, which produces
+        // the same match lists faster (measured 12/12 identical against the C).
+        num_threads: num_threads.max(1) as u32,
         // DArc always sets it: "FreeArc streams with EOPM (unknown size)".
         // rust/difftest/lzma-gap-check.sh is what pins that this reproduces the
         // C's bytes exactly, over a corpus that includes inputs many times the
@@ -285,6 +291,7 @@ pub unsafe extern "C" fn darc_lzma2_compress(
     pos_state_bits: c_int,
     lit_context_bits: c_int,
     lit_pos_bits: c_int,
+    num_threads: c_int,
     callback: crate::ffi::CALLBACK_FUNC,
     auxdata: *mut c_void,
 ) -> c_int {
@@ -317,26 +324,19 @@ pub unsafe extern "C" fn darc_lzma2_compress(
     };
     props.lzma.bt_mode = bt_mode;
     props.lzma.num_hash_bytes = num_hash_bytes;
-    // `C_LZMA2.cpp:86-87` takes both from GetCompressionThreads(), which
-    // `Cmdline.hs:295` defaults to the processor count. This forces 1 instead, and
-    // that is a KNOWN, MEASURED DIVERGENCE, not a no-op:
+    // `C_LZMA2.cpp:86-87` takes both from `GetCompressionThreads()`, which
+    // `Cmdline.hs:295` defaults to the processor count. It is passed in rather than
+    // called from here so this crate keeps no link dependency on the archiver -- the
+    // difftest drivers build it standalone.
     //
-    // With more than one block thread, `Lzma2EncProps_Normalize`
+    // This is not a tuning knob. Above one block thread `Lzma2EncProps_Normalize`
     // (`Lzma2Enc.c:305-324`) abandons the SOLID block and splits the input into
-    // blocks of `clamp(dictSize * 4, 1 MiB, 256 MiB)`, each starting with a
-    // dictionary reset. Measured on a 10 MB input at `dictSize = 1m` (so a 4 MB
-    // block): the C emits 622,707 bytes at one thread and 624,589 at two or more.
-    // This path always produces the one-thread answer.
-    //
-    // So for an input larger than that block size, on a multicore machine, `-mlzma2`
-    // no longer reproduces the bytes DArc's C produced. The output is smaller (one
-    // solid block keeps the cross-block matches) and every reader accepts it, but it
-    // is not the same archive. Closing it means encoding the blocks sequentially --
-    // `MtCoder` assigns and writes them in order, so sequential encoding of the same
-    // split is byte-identical to the threaded C, just slower. Refusing instead would
-    // break `-mlzma2` outright on any multicore box, which is worse.
-    props.num_total_threads = 1;
-    props.num_block_threads_max = 1;
+    // blocks of `clamp(dictSize * 4, 1 MiB, 256 MiB)`, each opening with a dictionary
+    // reset, so the STREAM ITSELF differs. Forcing 1 here, as this did before the
+    // multi-block port, silently produced the single-threaded stream on every
+    // multicore machine.
+    props.num_total_threads = num_threads.max(1);
+    props.num_block_threads_max = num_threads.max(1);
     props.normalize();
 
     let mut source = CallbackIn { io: &io };
