@@ -6,7 +6,20 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 DArc ("Distended Arc") is a fork of FreeArc 0.67 — a solid-compression archiver. The console binary is `arc` (Unix) / `Arc.exe` (Windows); the optional GUI binary is `freearc` / `FreeArc.exe`. Archive format is wire-compatible with [DArc86](https://github.com/YadeWira/DArc86).
 
-The codebase is roughly half Haskell (application logic, archive format, UI) and half C/C++ (every compression codec, plus OS-level primitives). Most inherited comments are in Russian; new code and commit messages are in English.
+The codebase is three layers, and the proportions have moved a long way from FreeArc's:
+
+| | lines | what |
+|---|---|---|
+| **Rust** (`rust/`) | ~48,800 | every compression codec, the crypto, the `.7z` reader |
+| **Haskell** | ~20,300 | application logic, archive format, UI — untouched by the port so far |
+| **C/C++** | ~57,700 | but only ~18,700 is still a codec *engine*, and 16,000 of that is SREP's encoder. The rest is vendored Lua, `Unarc/`, the FFI wrappers, the framework, and `rust/difftest`'s C oracles. |
+
+**The port is codec-by-codec, and it is nearly done on that axis.** What remains is
+SREP's encoder and then the Haskell layer — which is the harder half, because every
+codec had a byte-exact C oracle to differential-test against and the application
+layer has nothing equivalent.
+
+Most inherited comments were Russian; new code and commit messages are in English.
 
 ## Building
 
@@ -30,7 +43,7 @@ Since Wine has no ARM64 emulation, the ARM64 binary cannot be exercised on the m
 
 Binaries land in `Tests/`, which despite the name is a build *output* directory, not a test suite — it holds the produced binaries (gitignored via `Tests/*arc`) alongside the committed `arc.groups` solid-ordering config.
 
-Prerequisites: `mhs`, `clang`, `make`, `cargo`, `liblua5.1-dev`, `libncurses-dev`. **The Rust codecs are mandatory** — `cargo` is required. The `DARC_NO_RUST=1` opt-out was removed once the codecs it compared against started being deleted; byte-identity is now proved per codec by the harnesses in `rust/difftest`, which compare against a *pinned* revision of the C rather than the working tree. `libcurl` is optional and auto-detected — its absence adds `-DFREEARC_NOURL` and drops URL-archive support. CI pins MicroHs to a specific commit SHA with a checksum (`.github/workflows/build.yml`); match that commit when reproducing CI failures locally.
+Prerequisites: `mhs`, `clang`, `make`, `cargo`, `liblua5.1-dev`, `libncurses-dev`. `rust/difftest/sevenz-check.sh` additionally needs a `7z`/`7zz` binary (`p7zip-full`) to author its corpus — it fails rather than passing without one. **The Rust codecs are mandatory** — `cargo` is required. The `DARC_NO_RUST=1` opt-out was removed once the codecs it compared against started being deleted; byte-identity is now proved per codec by the harnesses in `rust/difftest`, which compare against a *pinned* revision of the C rather than the working tree. `libcurl` is optional and auto-detected — its absence adds `-DFREEARC_NOURL` and drops URL-archive support. CI pins MicroHs to a specific commit SHA with a checksum (`.github/workflows/build.yml`); match that commit when reproducing CI failures locally.
 
 ### Build-system gotchas
 
@@ -76,7 +89,36 @@ The split existed because the Wine GHC build had to see `compat-oldtime/` but *n
 
 ## Testing
 
-There is no automated test suite. Verify changes by round-tripping real archives with the built binary:
+**The Haskell/archiver layer has no automated test suite. The Rust layer has a
+thorough one, and it is the gate.** Do not confuse the two — a change to
+`Arc*.hs` is covered by nothing but your own round-trip.
+
+### `rust/difftest` — 33 differential harnesses
+
+Each `<codec>-check.sh` builds the C original **from a pinned revision**
+(`DARC_C_REF_SHA` in `c-reference.sh`, currently `5c2c6ce`) alongside the Rust port
+and requires identical bytes. The C is taken from git history rather than the
+working tree so the oracle survives the C being deleted and cannot drift.
+
+```bash
+rust/difftest/lzma-decode-check.sh     # exit 0 or the port diverged
+cd rust && cargo nextest run --profile ci   # 356 unit tests
+```
+
+Two properties every harness here is expected to have, learned the hard way:
+
+* **It must be able to fail.** Sabotage the port and confirm it goes red. Four
+  harnesses once passed while never invoking the ported code at all.
+* **It must refuse to pass over an empty corpus.** A check that silently tests
+  nothing reads as coverage.
+
+`sevenz-check.sh` is the one deliberate exception to byte-identity: DArc never
+*writes* `.7z`, so it compares behaviour (same entries, same extracted bytes, same
+`SRes`) and is asymmetric — the port failing where the C succeeded is a failure,
+the reverse is recorded, because the vendored SDK was compiled with PPMd and the
+ARM64/ARMT filters switched off.
+
+### End-to-end
 
 ```bash
 ./compile-O2
@@ -134,7 +176,7 @@ Note the inherited misspelling "Arhive" (not "Archive") in these module names.
 
 ### Compression layer and the FFI boundary
 
-All actual compression is C/C++. The Haskell side never implements a codec.
+**All actual compression is now Rust, reached over the original C ABI.** The Haskell side never implements a codec, and the `Compression/C_*.cpp` files it calls are thin forwarding wrappers — the C engines behind almost all of them are deleted.
 
 **Compression configuration is a string that C parses, not a Haskell data type.** This surprises everyone. `type Method = String` (`CompressionLib.hs:370`); a method is a spec like `lzma:96m:normal:bt4` or `tor:8m:c3`. `Compression.hs` layers on `type Compressor = [CompressionMethod]` — a `+`-joined chain such as `rep+delta+lzma` (`join_compressor`/`split_compressor`, `:569`/`:572`) — and `type UserCompressor = [(String, Compressor)]`, mapping data-type groups to compressors (`$text->m3t`, `$exe->m3x`, `$compressed->m0`).
 
@@ -147,15 +189,58 @@ foreign import ccall safe "Compression.h Compress"
   c_compress :: CMethod -> FunPtr CALLBACK_FUNC -> FunPtr CALLBACK_FUNC -> ...
 ```
 
-Streaming is **callback-driven**: `type CALLBACK_FUNC = CString -> Ptr CChar -> CInt -> VoidPtr -> IO CInt` (`:332`). C drives the loop and calls back into Haskell with `"read"`/`"write"` requests. `CompressionLibrary.cpp` dispatches on the method name to the right `Compression/C_*.cpp` wrapper, each adapting a vendored codec (`LZMA/`, `DisPack/`, `GRZip/`, …) or, increasingly, forwarding to `rust/darc-codecs` (`BSC/`, `PPMD/` and `Tornado/` are now only wrappers — their C engines are deleted). `Compression/External/C_External.cpp` handles methods implemented by spawning external binaries (precomp, ecm, ppmonstr, srep).
+Streaming is **callback-driven**: `type CALLBACK_FUNC = CString -> Ptr CChar -> CInt -> VoidPtr -> IO CInt` (`:332`). C drives the loop and calls back into Haskell with `"read"`/`"write"` requests. `CompressionLibrary.cpp` dispatches on the method name to the right `Compression/C_*.cpp` wrapper, which forwards to `rust/darc-codecs` (or, for `-mlzma`/`-mlzma2`, to `rust/darc-lzma`). Only four directories under `Compression/` still hold a real C engine: `SREP/` (encoder only — the decoder is ported), `MM/mmdet.cpp` (the multimedia detector), `4x4/` (not ported, by decision), and `Tornado/Tornado.cpp` (a remnant still `#include`d by its wrapper). `Compression/External/C_External.cpp` handles methods implemented by spawning external binaries (precomp, ecm, ppmonstr, srep).
+
+Two directories look dead and are **not** — check before deleting: `Compression/LZMA/Common` and `Windows` (a 7-Zip portability layer that `Compression/MultiThreading.h` and `CompressionLibrary.cpp` still include), and `Compression/Tornado/Tornado.cpp` (`C_Tornado.cpp` does `#include "Tornado.cpp"`).
 
 > **MicroHs constraint worth knowing before you touch this.** GHC creates callbacks with `foreign import ccall "wrapper"`. MicroHs has no dynamic-wrapper FFI, so `CompressionLib.hs:334–360` substitutes a single `foreign export ccall darc_haskell_callback` plus a **global single-slot `IORef`** holding the current Haskell callback (the function pointer is fetched from C via `darc_get_haskell_callback_ptr` in `Environment.cpp`, to dodge a forward-declaration ordering bug in mhs-generated C). Single-slot means concurrent FFI compression calls are constrained on the MicroHs path — a real limit, not an implementation detail.
 
-`Encryption.hs` / `EncryptionLib.hs` follow the identical pattern: **encryption is just another method in the chain** (`isEncryption = compressionIs "encryption?"`), with PBKDF2-HMAC and a Fortuna PRNG imported from `Compression.h` and OS entropy via `systemRandomData` in `Environment.cpp`.
+`Encryption.hs` / `EncryptionLib.hs` follow the identical pattern: **encryption is just another method in the chain** (`isEncryption = compressionIs "encryption?"`), with PBKDF2-HMAC and a Fortuna PRNG imported from `Compression.h` and OS entropy via `systemRandomData` in `Environment.cpp`. AES/Blowfish/Serpent/Twofish now come from `rust/darc-crypto`; `Compression/_Encryption/` is the wrapper that forwards to it.
 
-`Encryption.hs` + `Compression/_Encryption/` follow the same shape for AES/Blowfish/Serpent/Twofish.
+`Environment.cpp` (62KB, 1,917 lines — the largest C++ file left) provides OS-level services to the Haskell side: file/console/memory primitives that differ across Windows and Unix. It goes with the Haskell layer, not with the codecs.
 
-`Environment.cpp` (58KB, the largest C++ file) provides OS-level services to the Haskell side — file/console/memory primitives that differ across Windows and Unix.
+### The Rust workspace
+
+`rust/` is a cargo workspace. Members are separate crates for link reasons, not
+taste:
+
+| crate | lines | linked by |
+|---|---|---|
+| `darc-codecs` | 33,700 | `arc` **and** `Unarc`/every SFX module |
+| `darc-lzma` | 13,200 | via `darc-codecs` |
+| `darc-crypto` | 1,350 | `arc` |
+| `darc-sevenz` | 570 | `arc` only |
+
+**Why `darc-sevenz` is not a module inside `darc-codecs`:** Unarc and every SFX
+module link `libdarc_codecs.a`, and none of them can open a `.7z`. Putting it
+there would grow every self-extracting archive; feature-gating it instead would
+make `compile` and `Unarc/makefile` disagree about features through the shared
+`rust/target` and thrash rebuilds. Weigh that before adding a member.
+
+**Link order is load-bearing, and it has bitten twice.** GNU ld resolves a static
+archive only against undefined symbols it has *already* seen; macOS ld rescans. So
+a staticlib placed before its callers links locally and fails on Linux and mingw.
+Both instances are worth recognising:
+
+* a library listed before the sources in a difftest script (three had never linked);
+* symbols referenced **only** by mhs-generated C, which lands after every `-optl`
+  argument — `compile` injects `-Wl,--undefined=` / `-Wl,-u,_` before the archive
+  for the `darc_7z_*` exports. `--whole-archive` is the wrong fix: it would force
+  in the copy of Rust `std` bundled in *every* staticlib.
+
+**Lint gates CI enforces**, so match them or the build goes red:
+
+* **No `if let` anywhere under `rust/`** — a CI grep, because no clippy lint
+  expresses it (the whole related family pushes the other way). Totality is
+  `deny(clippy::wildcard_enum_match_arm)` plus that grep, so every arm is named.
+* `deny(clippy::unwrap_used, clippy::expect_used)` outside tests.
+* `overflow-checks = true` in the release profile, so unchecked arithmetic
+  *traps* rather than wrapping.
+* Every `c_int`-returning `extern "C"` export is wrapped in a `catch_unwind`
+  firewall (`ffi::guard`) — unwinding across the C ABI is UB, and these frames are
+  reached from `unarc` and the SFX modules on archive input an attacker wrote.
+* Allocations sized from archive data go through `ffi::archive_sized_buffer`,
+  which caps against the method's block size and uses `try_reserve`.
 
 ### UI layer
 
@@ -223,7 +308,7 @@ These build separately from the main binary and are not covered by `./compile-O2
 
 ## Conventions
 
-- Commit messages are plain English, imperative, occasionally prefixed with a gitmoji on merges. Recent history uses a `Component: what changed` shape (`Win64 build: add LZMA/7z/zstd SDK sources, fix link`).
+- Commit messages are plain English, imperative, occasionally prefixed with a gitmoji on merges. Recent history uses a `Component: what changed` shape (`.7z: replace the vendored 7-Zip SDK with a crate, and move to GPLv3`). Bodies are long and explain *why*, including what was measured and what was ruled out.
 - Codecs vendored from upstream projects (libbsc, Lua) are kept close to pristine so they can be re-synced. Several are no longer vendored at all: zstd comes from the `zstd-safe` crate, LZ4 from `lz4_flex` plus DArc's own LZ4-HC port in `rust/darc-codecs/src/lz4hc.rs`, and the `.7z` reader from `sevenz-rust2` via `rust/darc-sevenz`. Prefer adapting DArc's wrapper (`Compression/C_*.cpp`) over patching vendored sources.
 - **The project is GPLv3-or-later.** It was GPLv2 until the `.7z` reader moved to `sevenz-rust2`, which is Apache-2.0 — a licence compatible with GPLv3 and not with GPLv2. Adding a dependency therefore has a licence dimension: check it against `THIRD-PARTY.md`, which also records why the change was permissible (FreeArc 0.67 ships no licence file or headers, so the GPLv2 text was DArc's own choice rather than an inherited constraint).
 - Haskell here predates AMP and modern `base`, and is compiled with a long list of `-X` flags (`NoMonomorphismRestriction`, `OverlappingInstances`, `NondecreasingIndentation`, …) plus `-w` to accept it. Match the surrounding style rather than modernizing — a "cleanup" that assumes `Applicative f => Monad f` will break the build.
