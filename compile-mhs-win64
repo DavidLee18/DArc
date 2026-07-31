@@ -268,7 +268,11 @@ case "$toolchain" in
     cc_quirks="-include errno.h -Wno-incompatible-function-pointer-types" ;;
 esac
 export MHSCCFLAGS="-O2 $cc_quirks -I. -ICompression -IHsLua/src $runtime_defs $defines $gui_flag"
-export MHSCCLIBS="$linker_inputs $rust_libs $win_libs"
+# Same GNU ld archive-ordering problem as in ./compile -- see the note there.
+# mingw ld is GNU ld, and PE-COFF on x86_64/aarch64 carries no leading
+# underscore, so the ELF spelling is the right one here.
+sevenz_undef="-Wl,--undefined=darc_7z_list -Wl,--undefined=darc_7z_extract -Wl,--undefined=darc_7z_test"
+export MHSCCLIBS="$linker_inputs $sevenz_undef $rust_libs $win_libs"
 # Neither MicroHs runtime config fits a mingw cross-build on its own, so use
 # "mingw" and supply what it is missing (see runtime_defs above).
 #

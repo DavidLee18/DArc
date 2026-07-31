@@ -170,8 +170,28 @@ fi
 # and -w already hid it there.
 optc_args="-optc -I. -optc -ICompression -optc -IHsLua/src -optc -Wno-incompatible-function-pointer-types"
 for f in $lua_cflags; do optc_args="$optc_args -optc $f"; done
+# The three darc_7z_* symbols are referenced ONLY by the mhs-generated C, which
+# the compiler places AFTER every -optl argument. GNU ld resolves a static
+# archive against the undefined symbols it has seen SO FAR, so by the time it
+# reaches libdarc_sevenz.a nothing needs those members and it drops all of them
+# -- "undefined reference to `darc_7z_list'" at the very end of the link.
+#
+# libdarc_codecs.a is not affected only by luck: C_LZMA.o and friends reference
+# it and appear earlier on the command line. macOS ld rescans archives, which is
+# why this links there and fails on Linux and mingw.
+#
+# -u/--undefined injects the reference before the archive is scanned, so exactly
+# those three members get pulled in. Preferred over --whole-archive, which would
+# force in the copy of the Rust std bundled in EVERY staticlib and collide with
+# the one in libdarc_codecs.a.
+case "$(uname -s)" in
+  Darwin) sevenz_undef="-Wl,-u,_darc_7z_list -Wl,-u,_darc_7z_extract -Wl,-u,_darc_7z_test" ;;
+  *)      sevenz_undef="-Wl,--undefined=darc_7z_list -Wl,--undefined=darc_7z_extract -Wl,--undefined=darc_7z_test" ;;
+esac
 optl_args=""
-for o in $c_objs $lua_objs $rust_lib; do optl_args="$optl_args -optl $o"; done
+for o in $c_objs $lua_objs; do optl_args="$optl_args -optl $o"; done
+for u in $sevenz_undef; do optl_args="$optl_args -optl $u"; done
+for o in $rust_lib; do optl_args="$optl_args -optl $o"; done
 for l in $c_libs; do optl_args="$optl_args -optl $l"; done
 mhs Arc \
   -iCompression -icompat-ghc -icompat-oldtime -iHsLua/src \
