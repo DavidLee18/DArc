@@ -26,15 +26,28 @@
 //! collision negligible answers that question identically, so the choice of
 //! function is not observable in the compressed stream.
 //!
-//! This port therefore uses SHA-1, which is already a dependency, is
-//! deterministic, and needs no key. That is a substitution the harness can
-//! falsify: if the digest did affect the output, `srep-encode-check.sh` would
-//! diverge immediately on the first compressible input.
+//! This port therefore uses **SHA-256 truncated to 20 bytes**: deterministic,
+//! keyless, already a dependency, and the same memory footprint per chunk as the
+//! C's `Digest`. The substitution is falsifiable — if the digest did affect the
+//! output, `srep-encode-check.sh` would diverge on the first compressible input.
+//!
+//! ## Why truncated SHA-256 and not SHA-1
+//!
+//! "Collisions are negligible" is true for random data and **false for crafted
+//! data**, and the difference matters here. A digest collision makes the encoder
+//! record a match between two chunks that are not identical, which produces a
+//! silently corrupt archive — the decoder reproduces the wrong bytes and the
+//! block hash catches it only at extract time.
+//!
+//! The C is not exposed to that: its VMAC key is random per run, so a collision
+//! cannot be precomputed against it. An unkeyed SHA-1 *is* exposed, because
+//! chosen-prefix SHA-1 collisions are practical. Truncated SHA-256 restores the
+//! property — no collision attack is known against it — without needing a key.
 //!
 //! (Reusing VMAC would additionally have imported the ARM64 `ulong32`
 //! miscompilation that already degrades hash verification in the decoder.)
 
-use sha1::{Digest as _, Sha1};
+use sha2::{Digest as _, Sha256};
 
 /// `Chunk` — an index into the file's `L`-byte chunks.
 pub type Chunk = u32;
@@ -218,14 +231,14 @@ impl HashTable {
 
     // -- digests ------------------------------------------------------------
 
-    /// The chunk digest. See the module docs for why this is SHA-1 and not the
-    /// C's keyed VDigest.
+    /// The chunk digest: SHA-256 truncated to `DIGEST_LEN`. See the module docs
+    /// for why this replaces the C's keyed `VDigest`, and why it is not SHA-1.
     fn digest(buf: &[u8]) -> [u8; DIGEST_LEN] {
-        let mut h = Sha1::new();
+        let mut h = Sha256::new();
         h.update(buf);
         let out = h.finalize();
         let mut d = [0u8; DIGEST_LEN];
-        d.copy_from_slice(&out);
+        d.copy_from_slice(&out[..DIGEST_LEN]);
         d
     }
 
