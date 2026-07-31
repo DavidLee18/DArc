@@ -56,6 +56,7 @@ pub mod encode_file;
 pub mod future_lz;
 pub mod hash_table;
 pub mod hashes;
+pub mod inmem;
 pub mod io_lz;
 pub mod matches;
 pub mod params;

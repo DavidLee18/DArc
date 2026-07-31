@@ -30,6 +30,7 @@ use super::compress::{self, Params};
 use super::emit::{self, Block};
 use super::hash_table::{Config, HashTable};
 use super::hashes::Hash;
+use super::inmem::{InMem, DEFAULT_DICTSIZE};
 use super::matches::MatchTooShort;
 use super::params::{self, Layout, Method, Options, DEFAULT_BUFSIZE};
 use super::{BULAT_ZIGANSHIN_SIGNATURE, FOOTER_VERSION1, SREP_SIGNATURE};
@@ -77,9 +78,8 @@ pub fn compress_file(
     hash: HashChoice,
     bufsize: usize,
 ) -> Result<Vec<u8>, EncodeError> {
-    // -m0 is a different algorithm entirely and -m1/-m2 are the multithreaded
-    // CDC pair, whose output may depend on thread count.
-    if method.cdc() || method == Method::InMemory {
+    // -m1/-m2 are the content-defined-chunking pair, still unported.
+    if method.cdc() {
         return Err(EncodeError::Unsupported);
     }
     let d = params::derive(method, layout, opt);
@@ -123,6 +123,29 @@ pub fn compress_file(
         accelerator: d.accelerator as usize,
     };
 
+    // -m0 replaces the chunk-indexed matcher entirely (`srep.cpp:603-607`):
+    // inmem.compress() writes straight to statbuf and compress<ACCELERATOR> is
+    // never called. srep.cpp:373 forces the dictionary to DEFAULT_DICTSIZE when
+    // -m0 is chosen without -d, and its parameters are the -d* ones.
+    let in_memory = method == Method::InMemory;
+    let mut inmem = match in_memory {
+        true => Some(InMem::new(
+            match opt.dictsize {
+                0 => DEFAULT_DICTSIZE,
+                n => n,
+            },
+            d.dict_chunk as usize,
+            d.dict_min_match as usize,
+            d.base_len,
+        )),
+        false => None,
+    };
+
+    match inmem.as_mut() {
+        Some(im) => im.set_bufsize(bufsize),
+        None => {}
+    }
+
     let mut blocks: Vec<Block> = Vec::new();
     let mut origsize = 0u64;
     while (origsize as usize) < data.len() {
@@ -143,12 +166,21 @@ pub fn compress_file(
         )?;
 
         let mut stat = Vec::new();
-        let res = compress::compress(&cp, origsize, &mut table, buf, data, &fence, &mut stat)?;
+        let literal_bytes = match inmem.as_mut() {
+            Some(im) => {
+                let marks = im.prepare_buffer(buf);
+                im.compress(data, origsize, len, &marks, &mut stat)?
+            }
+            None => {
+                compress::compress(&cp, origsize, &mut table, buf, data, &fence, &mut stat)?
+                    .literal_bytes
+            }
+        };
 
         blocks.push(Block {
             start: origsize,
             size: len,
-            literal_bytes: res.literal_bytes,
+            literal_bytes,
             stat,
         });
         origsize += len as u64;

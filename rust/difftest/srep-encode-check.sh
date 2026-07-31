@@ -89,7 +89,8 @@ for opt in "-m3f" \
            "-m3f -a8/8" "-m3f -a16/16" "-m3f -a32/32" "-m3f -a64/64" \
            "-m3f -b16kb -a1/1" "-m3f -b16kb -a8/8" \
            "-m3o" "-m3" \
-           "-m4f" "-m4o"; do
+           "-m4f" "-m4o" \
+           "-m0" "-m0f" "-m0o" "-m0 -b16kb"; do
   fail=0; n=0
   for f in "$W"/in/*; do
     n=$((n+1)); checked=$((checked+1)); name=$(basename "$f")
