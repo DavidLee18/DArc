@@ -141,7 +141,22 @@ const BATCH_QUEUE: usize = 2;
 ///
 /// Firing it costs a refused compression, never a wrong archive:
 /// [`MtHash::next`] returns `None` and the finder latches an error.
-const WATCHDOG: std::time::Duration = std::time::Duration::from_secs(120);
+/// Shorter under `cfg(test)`, and that shortening is the point rather than a
+/// convenience. A deadlock here does not fail the suite, it HANGS it — at 0% CPU,
+/// which CI reports as "slow" and finally as a job timeout, the least diagnosable
+/// signal available. Sabotaging the flush-before-park below and running
+/// `cargo test -p darc-lzma matchfinder::tests::mt` confirmed exactly that: still
+/// running past two minutes with nothing to show.
+///
+/// Twenty seconds is enormous headroom for a healthy run — the worker outruns the
+/// tree walk by orders of magnitude, so a batch is normally waiting before the
+/// consumer asks — while turning a reintroduced deadlock into a red test in twenty
+/// seconds instead of a hung job. The production value stays at two minutes, where
+/// the cost of a false positive is a refused compression rather than a flaky build.
+const WATCHDOG: std::time::Duration = match cfg!(test) {
+    true => std::time::Duration::from_secs(20),
+    false => std::time::Duration::from_secs(120),
+};
 
 /// The three binary-tree finders — the only ones the multi-threaded finder serves.
 ///
@@ -251,6 +266,10 @@ pub(super) struct MtHash {
     ended: bool,
     /// `Option` so [`Drop`] can take it to join.
     handle: Option<JoinHandle<()>>,
+    /// How long [`MtHash::next`] waits before declaring the worker lost. A field
+    /// rather than a constant so a test can drive the timeout path in about a
+    /// second instead of waiting out [`WATCHDOG`].
+    watchdog: std::time::Duration,
 }
 
 impl MtHash {
@@ -273,7 +292,16 @@ impl MtHash {
             next: 0,
             ended: false,
             handle: Some(handle),
+            watchdog: WATCHDOG,
         })
+    }
+
+    /// Override the watchdog. Tests only — production must not shorten it, because
+    /// a false positive there costs the user a refused compression.
+    #[cfg(test)]
+    pub(super) fn with_watchdog(mut self, d: std::time::Duration) -> Self {
+        self.watchdog = d;
+        self
     }
 
     /// Hand the worker the bytes just read into the window.
@@ -318,7 +346,7 @@ impl MtHash {
                 return None;
             }
             let got = match self.recs.as_ref() {
-                Some(rx) => rx.recv_timeout(WATCHDOG).map_err(|_| ()),
+                Some(rx) => rx.recv_timeout(self.watchdog).map_err(|_| ()),
                 None => Err(()),
             };
             match got {
@@ -525,4 +553,92 @@ pub(super) fn bt4_indices(
         FIX3_HASH_SIZE + h3,
         super::hash::FIX4_HASH_SIZE + hv,
     )
+}
+
+#[cfg(test)]
+mod watchdog_tests {
+    use super::*;
+    use std::time::{Duration, Instant};
+
+    fn cfg() -> HashConfig {
+        let mut crc = [0u32; 256];
+        for (i, slot) in crc.iter_mut().enumerate() {
+            let mut r = i as u32;
+            for _ in 0..8 {
+                r = (r >> 1) ^ (0xEDB8_8320u32 & 0u32.wrapping_sub(r & 1));
+            }
+            *slot = r;
+        }
+        HashConfig {
+            kind: BtKind::Bt4,
+            hash_len: (1 << 16) + (1 << 10) + 1,
+            hash_mask: 0xFFFF,
+            history_size: 1 << 16,
+            max_val_for_normalize: 0,
+            crc,
+        }
+    }
+
+    /// A worker that never gets bytes must make `next` RETURN, not block forever.
+    ///
+    /// This is the safety net the whole design leans on, and until now nothing
+    /// exercised it: every other test drives a healthy pipeline, where the watchdog
+    /// is never reached. Its absence would be invisible in a green suite and would
+    /// surface, in production, as `arc` wedged at 0% CPU inside a codec called
+    /// across a C ABI.
+    #[test]
+    fn a_worker_that_never_receives_bytes_times_out_rather_than_hanging() {
+        let mut mt = match MtHash::new(cfg()) {
+            Some(m) => m.with_watchdog(Duration::from_millis(300)),
+            None => return, // thread spawn refused; nothing to assert
+        };
+        let started = Instant::now();
+        // No `feed`, so the worker parks immediately and no batch can ever arrive.
+        let got = mt.next();
+        let waited = started.elapsed();
+        assert!(got.is_none(), "a starved worker must yield None, not a record");
+        assert!(
+            waited >= Duration::from_millis(250),
+            "returned in {waited:?}, before the watchdog could have fired -- the \
+             timeout is not what produced the None"
+        );
+        assert!(
+            waited < Duration::from_secs(10),
+            "took {waited:?}: the watchdog did not bound the wait"
+        );
+    }
+
+    /// Once it has fired, the finder stays stopped rather than retrying every call.
+    /// A per-call timeout would turn one stall into `positions * watchdog`.
+    #[test]
+    fn the_timeout_latches_instead_of_being_paid_again() {
+        let mut mt = match MtHash::new(cfg()) {
+            Some(m) => m.with_watchdog(Duration::from_millis(300)),
+            None => return,
+        };
+        assert!(mt.next().is_none());
+        let started = Instant::now();
+        for _ in 0..50 {
+            assert!(mt.next().is_none());
+        }
+        assert!(
+            started.elapsed() < Duration::from_millis(200),
+            "50 further calls took {:?}: the stop is not latched",
+            started.elapsed()
+        );
+    }
+
+    /// The production watchdog must stay long. A test-shortened value leaking into
+    /// a release build would turn a slow machine into a refused compression.
+    #[test]
+    fn the_shipped_watchdog_is_the_long_one() {
+        assert_eq!(
+            match cfg!(test) {
+                true => Duration::from_secs(20),
+                false => Duration::from_secs(120),
+            },
+            WATCHDOG
+        );
+        assert!(WATCHDOG >= Duration::from_secs(20));
+    }
 }
