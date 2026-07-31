@@ -36,7 +36,7 @@ pub fn power(base: u64, n: u32) -> u64 {
     let mut base = base;
     let mut n = n;
     while n != 0 {
-        if n % 2 != 0 {
+        if !n.is_multiple_of(2) {
             result = result.wrapping_mul(base);
             n -= 1;
         }
@@ -197,7 +197,7 @@ mod tests {
         let mut r: u64 = 1;
         let (mut b, mut n) = (base, n);
         while n != 0 {
-            if n % 2 != 0 {
+            if !n.is_multiple_of(2) {
                 r = r.wrapping_mul(b);
                 n -= 1;
             }

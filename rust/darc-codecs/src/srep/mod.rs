@@ -51,6 +51,7 @@
 
 pub mod decode;
 pub mod future_lz;
+pub mod hash_table;
 pub mod hashes;
 pub mod io_lz;
 pub mod matches;
