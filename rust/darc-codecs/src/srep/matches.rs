@@ -50,6 +50,53 @@ pub struct Record {
     pub lz_match: LzMatch,
 }
 
+/// Why `ENCODE_LZ_MATCH` can reject: the C calls `error(ERROR_COMPRESSION, ...)`
+/// and exits the process.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MatchTooShort {
+    pub len: u32,
+    pub base_len: u32,
+}
+
+/// `ENCODE_LZ_MATCH` (:108) — append one record to `stat`.
+///
+/// `l` is the macro's `L` parameter, which every call site binds to **`BASE_LEN`,
+/// not the chunk size**. `record_match` rounds the length by the chunk `L` and
+/// then encodes it divided by `BASE_LEN`; conflating the two silently rescales
+/// every offset in the stream.
+///
+/// The C aborts the process when `len < L` ("match len too small"). Returned as
+/// an error here instead, so a caller bug surfaces as a refusal rather than as a
+/// truncated subtraction.
+pub fn encode(
+    stat: &mut Vec<u32>,
+    round_matches: bool,
+    l: u32,
+    lit_len: u32,
+    match_offset: u64,
+    match_len: u32,
+) -> Result<(), MatchTooShort> {
+    if match_len < l {
+        return Err(MatchTooShort { len: match_len, base_len: l });
+    }
+    // `L1` — the same divisor `decode` reapplies as a multiplier.
+    let l1 = match round_matches {
+        true => u64::from(l),
+        false => 1,
+    };
+    let scaled = match_offset / l1;
+
+    stat.push(lit_len);
+    stat.push(scaled as u32);
+    // The high word exists only in the 4-word form; under ROUND_MATCHES the
+    // offset is pre-divided by L and assumed to fit in 32 bits.
+    if !round_matches {
+        stat.push((scaled >> 32) as u32);
+    }
+    stat.push(((u64::from(match_len) - u64::from(l)) / l1) as u32);
+    Ok(())
+}
+
 /// `DECODE_LZ_MATCH` (:117).
 ///
 /// `basic_pos` is the current position in the decompressed file. Under
@@ -161,5 +208,81 @@ mod tests {
         assert!(decode(&[1, 2], false, false, 32, 0).is_none());
         assert!(decode(&[1, 2, 3], false, false, 32, 0).is_none());
         assert!(decode(&[1, 2], false, true, 32, 0).is_none());
+    }
+}
+
+#[cfg(test)]
+mod encode_tests {
+    use super::*;
+
+    // decode() is byte-verified against the C by srep-check.sh across all four
+    // format versions, so it is a real oracle for its own inverse -- not a
+    // restatement of encode().
+
+    #[test]
+    fn encode_then_decode_recovers_the_record_future_lz() {
+        // -m3f: Future-LZ, so basic_pos anchors the match SOURCE.
+        let base_len = 32u32;
+        for &round in &[false, true] {
+            let l1 = match round { true => u64::from(base_len), false => 1 };
+            for &(lit, off_units, len_units) in &[
+                (0u32, 1u64, 1u64),
+                (7, 3, 5),
+                (1234, 1000, 2),
+                (0, 65_536, 40),
+            ] {
+                let offset = off_units * l1;
+                let len = (len_units * l1) as u32 + base_len;
+
+                let mut stat = Vec::new();
+                encode(&mut stat, round, base_len, lit, offset, len).expect("encodable");
+                assert_eq!(stat.len(), stats_per_match(round), "record width");
+
+                let basic_pos = 1_000_000u64;
+                let (rec, used) = decode(&stat, true, round, base_len, basic_pos).expect("decodes");
+                assert_eq!(used, stats_per_match(round));
+                assert_eq!(rec.lit_len, lit);
+                assert_eq!(rec.lz_match.len, len, "round={round}");
+                // Future-LZ: src = basic_pos + lit_len, dest = src + offset.
+                assert_eq!(rec.lz_match.src, basic_pos + u64::from(lit));
+                assert_eq!(rec.lz_match.dest - rec.lz_match.src, offset, "round={round}");
+            }
+        }
+    }
+
+    #[test]
+    fn the_high_offset_word_only_exists_when_not_rounding() {
+        // A >32-bit offset survives only via the 4-word form; that is exactly
+        // what STATS_PER_MATCH is about.
+        let base_len = 64u32;
+        let offset = (1u64 << 34) + 4096;
+        let mut stat = Vec::new();
+        encode(&mut stat, false, base_len, 0, offset, base_len + 128).expect("encodable");
+        assert_eq!(stat.len(), 4);
+        let (rec, _) = decode(&stat, true, false, base_len, 0).expect("decodes");
+        assert_eq!(rec.lz_match.dest - rec.lz_match.src, offset);
+    }
+
+    #[test]
+    fn a_match_shorter_than_base_len_is_refused_not_wrapped() {
+        // The C exits the process here. The subtraction would underflow, which
+        // under overflow-checks panics and under wrapping would encode a
+        // gigantic length -- both worse than a refusal.
+        let e = encode(&mut Vec::new(), false, 32, 0, 0, 31).unwrap_err();
+        assert_eq!(e, MatchTooShort { len: 31, base_len: 32 });
+        // Exactly BASE_LEN is the smallest legal match.
+        assert!(encode(&mut Vec::new(), false, 32, 0, 0, 32).is_ok());
+    }
+
+    #[test]
+    fn records_append_so_a_block_is_a_flat_stat_array() {
+        let mut stat = Vec::new();
+        encode(&mut stat, true, 32, 1, 32, 64).expect("ok");
+        encode(&mut stat, true, 32, 2, 64, 96).expect("ok");
+        assert_eq!(stat.len(), 6);
+        let (a, used) = decode(&stat, true, true, 32, 0).expect("first");
+        assert_eq!(a.lit_len, 1);
+        let (b, _) = decode(&stat[used..], true, true, 32, 0).expect("second");
+        assert_eq!(b.lit_len, 2);
     }
 }
