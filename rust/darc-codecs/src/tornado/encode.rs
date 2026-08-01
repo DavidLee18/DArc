@@ -304,7 +304,7 @@ fn compress_chunk(
                 // A slide moves every recorded position (:113-116).
                 match w.last_shift.take() {
                     Some(sh) => {
-                        let _ = before;
+                        drop(before);
                         if find_tables {
                             table_end = if table_end > sh { table_end - sh } else { 0 };
                             last_found = if last_found > sh { last_found - sh } else { 0 };

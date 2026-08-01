@@ -272,6 +272,15 @@ impl<'a> InStream<'a> {
         self.exactly(n, each)
     }
 
+    /// Advance past `n` bytes without materialising them.
+    ///
+    /// The alternative -- reading them into a `Vec` and discarding it -- both
+    /// allocates and hides the intent behind a discard.
+    pub fn skip(&mut self, n: usize) -> Result<()> {
+        self.take(n)?;
+        Ok(())
+    }
+
     /// `n` elements with no length prefix — the directory writes most of its
     /// fields this way, because the count was written once and shared.
     pub fn exactly<T, F>(&mut self, n: usize, mut each: F) -> Result<Vec<T>>
@@ -401,7 +410,11 @@ impl OutStream {
     where
         F: FnMut(&mut Self, &T),
     {
-        let _ = self.varint(items.len() as u64);
+        // The writer refuses a value at or above 256^8. A `Vec` length cannot
+        // reach that on any machine this runs on, so the refusal is
+        // unreachable -- assert it rather than discard the answer, because a
+        // silently unwritten length desynchronises every field after it.
+        assert!(self.varint(items.len() as u64), "list length is unrepresentable");
         for it in items {
             each(self, it);
         }

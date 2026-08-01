@@ -162,7 +162,7 @@ fn main() {
         Err(e) => (errcode(e), 0),
     };
 
-    let _ = sink.sink.flush();
+    drop(sink.sink.flush());
     // maxrss is reported by the C driver and gated C-side only; -1 says "not
     // measured here" rather than inventing a number.
     eprintln!(

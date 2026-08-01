@@ -437,7 +437,7 @@ fn ternary_sort(index: &mut [i32], group: &mut [u32], lo0: i32, hi0: i32, stack:
         push!(n2, m2, d + 2);
         push!(lo, n2 - 1, d);
         // `lo`/`hi` are reassigned at the top of the loop.
-        let _ = (&mut lo, &mut hi);
+        drop((&mut lo, &mut hi));
     }
 }
 

@@ -198,7 +198,7 @@ fn main() {
         }
     };
 
-    let _ = sink.sink.flush();
+    drop(sink.sink.flush());
     // `consumed` is only meaningful for an accepted stream; on a rejection the C
     // reports whatever its 64 KiB buffer had taken, which is an artefact of the
     // buffer rather than of the stream.

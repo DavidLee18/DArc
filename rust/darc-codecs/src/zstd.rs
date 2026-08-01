@@ -69,7 +69,7 @@ pub fn compress_stream(io: &Io, params: Params) -> c_int {
     if params.workers > 0 {
         // The C ignores the result too: a build without multithreading simply
         // stays single-threaded rather than failing the compression.
-        let _ = cctx.set_parameter(zstd_safe::CParameter::NbWorkers(params.workers));
+        drop(cctx.set_parameter(zstd_safe::CParameter::NbWorkers(params.workers)));
     }
 
     let mut in_buf = vec![0u8; IN_BUFSZ];
@@ -227,7 +227,7 @@ pub fn compress(src: &[u8], params: Params) -> Result<Vec<u8>, c_int> {
     if params.workers > 0 {
         // Not fatal if the build lacks multithreading: the C code likewise
         // ignores the result of this call.
-        let _ = cctx.set_parameter(zstd_safe::CParameter::NbWorkers(params.workers));
+        drop(cctx.set_parameter(zstd_safe::CParameter::NbWorkers(params.workers)));
     }
 
     let mut out: Vec<u8> = Vec::with_capacity(zstd_safe::compress_bound(src.len()));

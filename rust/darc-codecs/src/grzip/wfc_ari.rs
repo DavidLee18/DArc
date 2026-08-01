@@ -202,7 +202,7 @@ mod wfc_tests {
             .flat_map(|i| core::iter::repeat((i % 5) as u8).take(1 + (i as usize % 7)))
             .collect();
         let mut list = Wfc::new(input.len().max(1));
-        let _ = ari::encode(&input, &mut list, input.len().saturating_sub(24));
+        drop(ari::encode(&input, &mut list, input.len().saturating_sub(24)));
         assert!(list.pos > 1, "no symbols were coded");
         for i in 1..list.pos {
             assert_ne!(

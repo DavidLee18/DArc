@@ -1301,7 +1301,7 @@ mod tests {
                 // Accepted by the header check; the body was encoded for a
                 // different lc/lp/pb so it need not decode, but it must not be
                 // refused *by this rule* and must not panic.
-                let _ = res;
+                drop(res);
                 accepted += 1;
             }
         }

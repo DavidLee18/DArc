@@ -180,8 +180,8 @@ fn chunks(body: &[u8]) -> Result<Vec<Chunk>, bytestream::Error> {
             n => Some(n as usize),
         };
         out.push(Chunk { at: s.pos(), comp_size, orig_size });
-        // Skip the payload.
-        let _ = s.exactly(comp_size, |s| s.u8())?;
+        // Step over the payload; the decoder reads it from `body` directly.
+        s.skip(comp_size)?;
     }
 }
 

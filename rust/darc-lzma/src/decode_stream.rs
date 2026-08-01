@@ -1262,7 +1262,7 @@ impl Decoder {
                 // irrelevant to a dummy pass; only the bit count matters, so the
                 // decoded values are dropped.
                 if bit_chk!(P_IS_REP_G1 + state as usize) != 0 {
-                    let _ = bit_chk!(P_IS_REP_G2 + state as usize);
+                    drop(bit_chk!(P_IS_REP_G2 + state as usize));
                 }
             }
             // LzmaDec.c:821-822

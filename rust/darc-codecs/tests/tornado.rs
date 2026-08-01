@@ -130,7 +130,7 @@ fn truncation_at_every_header_position_is_survivable() {
     };
     for cut in 0..full.len() {
         let (rc, _) = decode(&full[..cut]);
-        let _ = rc; // any status is fine; not panicking or hanging is the test
+        drop(rc); // any status is fine; not panicking or hanging is the test
     }
 }
 
@@ -145,7 +145,7 @@ fn garbage_never_panics_on_any_back_end() {
                 let mut input = header(method, 4, 1 << 20);
                 input.extend_from_slice(&prng(seed, len));
                 let (rc, _) = decode_with(&input, 4 << 20);
-                let _ = rc;
+                drop(rc);
             }
         }
     }
@@ -159,7 +159,7 @@ fn zero_minlen_is_survivable() {
         let mut input = header(method, 0, 1 << 20);
         input.extend_from_slice(&prng(5, 8192));
         let (rc, _) = decode_with(&input, 4 << 20);
-        let _ = rc;
+        drop(rc);
     }
 }
 
@@ -171,7 +171,7 @@ fn a_write_error_is_propagated_not_ignored() {
         let mut input = header(method, 4, 1 << 20);
         input.extend_from_slice(&prng(9, 200_000));
         let (rc, _) = decode_with(&input, 16);
-        let _ = rc;
+        drop(rc);
     }
 }
 

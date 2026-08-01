@@ -403,7 +403,16 @@ mod tests {
     fn every_truncation_of_a_valid_directory_is_an_error_not_a_panic() {
         let body = encode(&sample());
         for n in 0..body.len() {
-            let _ = read_directory(10_000, &body[..n]);
+            // Any verdict is acceptable; the test is that it neither panics nor
+            // returns a directory built from bytes that were not there.
+            match read_directory(10_000, &body[..n]) {
+                Err(_) => {}
+                Ok(d) => assert!(
+                    d.entries.len() <= 3,
+                    "a {n}-byte prefix produced {} entries",
+                    d.entries.len()
+                ),
+            }
         }
     }
 }

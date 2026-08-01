@@ -809,6 +809,46 @@ jobs:
         fi
         echo 'no if let anywhere under rust/ (excluding target)'
 
+    # `let _ = expr;` throws a value away without saying so. It reads as a
+    # binding, so the eye slides over it, and it silences `unused_must_use` --
+    # the lint that exists to catch exactly this.
+    #
+    # It cost a real bug here: the 4x4 directory reader computed
+    # `tag == TAG_END` and then discarded the comparison, paying for a check and
+    # throwing away the answer. A malformed terminator read as valid.
+    #
+    # `drop(expr)` is the replacement. Same semantics, and it says "discarded on
+    # purpose" in a way a reader cannot mistake for a forgotten binding.
+    #
+    # HONEST LIMIT: this is a grep, and a discard re-spells trivially as
+    # `let _x = expr;` or `expr.ok();`. It cannot be a totality guarantee the way
+    # the `if let` rule is. What it does guarantee is that the ONE form that
+    # looks like a binding and is not, cannot come back. The lint below is the
+    # part that catches the actual hazard -- discarding a `Result`, an `Option`,
+    # or anything `#[must_use]` -- whatever it is spelled.
+    - name: no `let _ =` in the Rust workspace
+      run: |
+        set -uo pipefail
+        hits=$(grep -rnF 'let _ = ' rust --include='*.rs' --exclude-dir=target \
+                 | grep -Ev ':[0-9]+: *//' | grep -v '//!' || true)
+        if [ -n "$hits" ]; then
+          echo '::error::use drop(expr) to discard a value, not let _ = expr. Offenders:'
+          echo "$hits"
+          exit 1
+        fi
+        echo 'no let _ = anywhere under rust/ (excluding target)'
+
+    - name: discarding a must_use value is denied, however it is spelled
+      run: |
+        set -uo pipefail
+        cd rust
+        # let_underscore_must_use fires on `let _ = <must_use expr>` and
+        # drop_non_drop on `drop()` of a value with no destructor -- together
+        # they cover the re-spellings the grep above cannot see.
+        cargo clippy --workspace --all-targets \
+          -- -D clippy::let_underscore_must_use -D unused_must_use
+        echo 'no must_use value is discarded anywhere in the workspace'
+
   # ── Rust codec ports ────────────────────────────────────────────────────────
   # Two things are checked, and they are not the same thing:
   #

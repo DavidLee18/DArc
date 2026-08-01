@@ -125,7 +125,7 @@ mod tests {
     #[test]
     fn a_non_7z_file_is_refused_as_not_an_archive() {
         let dir = std::env::temp_dir().join("darc-sevenz-not-an-archive");
-        let _ = std::fs::create_dir_all(&dir);
+        drop(std::fs::create_dir_all(&dir));
         let file = dir.join("plain.7z");
         match std::fs::write(&file, b"this is not a 7z archive at all") {
             Ok(()) => {}
@@ -139,7 +139,7 @@ mod tests {
             Err(_) => return,
         };
         assert_eq!(unsafe { darc_7z_list(c.as_ptr()) }, sres::NO_ARCHIVE);
-        let _ = std::fs::remove_file(&file);
+        drop(std::fs::remove_file(&file));
     }
 
     #[test]

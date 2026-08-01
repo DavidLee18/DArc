@@ -65,7 +65,7 @@ fn garbage_blocks_never_panic() {
         let mut s = le(1 << 20).to_vec();
         s.extend((0..n).map(|i| ((seed >> (i % 24)) & 0xff) as u8));
         // Any outcome is acceptable except a panic / hang.
-        let _ = decompress(&s);
+        drop(decompress(&s));
     }
 }
 

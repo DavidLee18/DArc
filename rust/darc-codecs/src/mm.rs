@@ -621,7 +621,7 @@ fn encode(
     }
     // is_float only ever picks a default word size. It is NOT recorded in the
     // stream -- float samples are filtered as 32-bit integers.
-    let _ = is_float;
+    drop(is_float);
 
     if offset > bytes as c_int {
         offset = bytes as c_int; // else we would write a negative length

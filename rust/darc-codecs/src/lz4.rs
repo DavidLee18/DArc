@@ -105,7 +105,7 @@ mod tests {
         for seed in 0..64u32 {
             let junk: Vec<u8> = (0..200u32).map(|i| (i.wrapping_mul(seed).wrapping_add(11) % 256) as u8).collect();
             let mut out = vec![0u8; 4096];
-            let _ = decompress_block(&junk, &mut out);
+            drop(decompress_block(&junk, &mut out));
         }
     }
 }

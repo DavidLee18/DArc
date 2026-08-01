@@ -150,7 +150,6 @@ pub fn decompress_chain(
         return Ok(src.to_vec());
     }
     let mut buf = src.to_vec();
-    let last = chain.len().saturating_sub(1);
     for (i, method) in chain.iter().enumerate().rev() {
         // `if null algorithms then (origsize, mainPool) else (max compsize
         // (origsize*2+100kb), tempPool)` -- only the final step knows the real
@@ -161,7 +160,6 @@ pub fn decompress_chain(
             src.len().max(orig_size.saturating_mul(2).saturating_add(100 * 1024))
         };
         buf = undo(method, &buf, hint)?;
-        let _ = last;
     }
     Ok(buf)
 }

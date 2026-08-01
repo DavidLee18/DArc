@@ -184,7 +184,7 @@ mod tests {
         let mut d = RangeDecoder::new(&short_input);
         assert!(d.overrun() > 0, "init alone over-reads a 2-byte input");
         for _ in 0..1000 {
-            let _ = d.decode_bit();
+            drop(d.decode_bit());
         }
         // Still alive, still counting -- no panic, no out-of-bounds.
         assert!(d.overrun() > 0);

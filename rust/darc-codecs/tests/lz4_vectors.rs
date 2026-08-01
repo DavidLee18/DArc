@@ -96,13 +96,13 @@ fn rejects_corrupt_blocks_without_panicking() {
     let len = VECTORS[0].1;
     for cut in [0usize, 1, 2, 5, block.len() / 3, block.len() / 2, block.len() - 1] {
         let mut out = vec![0u8; len];
-        let _ = lz4::decompress_block(&block[..cut.min(block.len())], &mut out);
+        drop(lz4::decompress_block(&block[..cut.min(block.len())], &mut out));
     }
     for i in (0..block.len()).step_by(7) {
         let mut bad = block.clone();
         bad[i] ^= 0xff;
         let mut out = vec![0u8; len];
-        let _ = lz4::decompress_block(&bad, &mut out);
+        drop(lz4::decompress_block(&bad, &mut out));
     }
 }
 
