@@ -423,7 +423,7 @@ fn add(archive_name: &str, parsed: &options::Parsed) -> i32 {
                 let body = contents.get(&e.stored_name).cloned().unwrap_or_default();
                 e.block = data_blocks.len();
                 e.pos_in_block = 0;
-                let fitted = match darc_arc::memlimit::fit_to_data(chain, body.len() as u64) {
+                let fitted = match darc_arc::memlimit::fit_for_add(chain, body.len() as u64) {
                     Some(f) => f,
                     None => {
                         eprintln!("ERROR: cannot fit {chain} to {} bytes", body.len());
@@ -461,7 +461,7 @@ fn add(archive_name: &str, parsed: &options::Parsed) -> i32 {
                 reordered.push(e);
             }
             let chain = &chains[*ty];
-            let fitted = match darc_arc::memlimit::fit_to_data(chain, body.len() as u64) {
+            let fitted = match darc_arc::memlimit::fit_for_add(chain, body.len() as u64) {
                 Some(f) => f,
                 None => {
                     eprintln!("ERROR: cannot fit {chain} to {} bytes", body.len());

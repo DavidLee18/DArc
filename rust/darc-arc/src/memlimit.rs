@@ -265,3 +265,172 @@ mod tests {
         assert_eq!(got, "rep:434kb+exe+delta+lzma:434kb");
     }
 }
+
+
+// ---------------------------------------------------------------------------
+// Memory limits
+// ---------------------------------------------------------------------------
+
+/// `sizeof(BYTE*)`, which LZP's memory formula multiplies its hash by.
+///
+/// Eight here, unlike Tornado's `PtrVal`: LZP's hash really is an array of
+/// pointers, so it follows the machine's width.
+const PTR_SIZE: u64 = 8;
+
+/// `GetCompressionThreads()` — the thread count GRZip's memory formula scales
+/// by. Set from the processor count by default; only GRZip's arithmetic reads
+/// it, and only to divide the limit it is given.
+fn compression_threads() -> u64 {
+    std::thread::available_parallelism().map(|n| n.get() as u64).unwrap_or(1)
+}
+
+/// `GetDecompressionMem` — what each method needs to UNPACK, from `C_*.h`.
+pub fn get_decompression_mem(m: &Method) -> u64 {
+    match m {
+        Method::Lzma(p) => u64::from(p.dictionary_size) + 2 * MB,
+        Method::Ppmd(p) => u64::from(p.mem),
+        Method::Tornado(p) => u64::from(p.buffer),
+        Method::Rep(p) => u64::from(p.block_size),
+        // A flat 1 MB: the C comments out the BlockSize*2 it used to return.
+        Method::Dict(_) => MB,
+        Method::Lzp(p) => {
+            u64::from(p.block_size) * 2 + (1u64 << p.hash_size_log.clamp(0, 40)) * PTR_SIZE
+        }
+        Method::Grzip(p) => u64::from(p.block_size) * 5 * compression_threads(),
+        Method::Delta(p) => u64::from(p.block_size),
+        Method::Dispack(p) => {
+            2 * u64::from(p.block_size) + u64::from(p.block_size) / 4 + 1024
+        }
+        // LARGE_BUFFER_SIZE in C_BCJ.h.
+        Method::Exe => 8 * MB,
+        Method::FourX4(p) => {
+            let t = if p.num_threads == 0 { compression_threads() } else { u64::from(p.num_threads) };
+            let d = get_dictionary(&p.inner);
+            let bs = if p.block_size != 0 {
+                u64::from(p.block_size)
+            } else if d > 0 {
+                u64::from(d)
+            } else {
+                8 * MB
+            };
+            t * get_decompression_mem(&p.inner) + (t + 2) * 2 * bs
+        }
+        Method::Storing | Method::Unsupported(_) => 0,
+    }
+}
+
+/// `SetDecompressionMem` — each method's own, and several are NOT the inverse
+/// of the getter.
+pub fn set_decompression_mem(m: &mut Method, mem: u64) {
+    match m {
+        // `if (mem > 2mb) dictionarySize = mem - 2mb` -- silently does nothing
+        // below 2 MB rather than clamping.
+        Method::Lzma(p) => {
+            if mem > 2 * MB {
+                p.dictionary_size = (mem - 2 * MB).min(u64::from(u32::MAX)) as u32;
+            }
+        }
+        // PPMd adjusts its ORDER with its memory, which is why reducing memory
+        // changes the method string in two places at once.
+        Method::Ppmd(p) => set_ppmd_mem(p, mem),
+        Method::Tornado(p) => set_tornado_dictionary(p, mem.min(u64::from(u32::MAX)) as u32),
+        Method::Rep(p) => {
+            if mem > 0 {
+                p.block_size = mem.min(u64::from(u32::MAX)) as u32;
+            }
+        }
+        Method::Dict(p) => {
+            if mem > 0 {
+                p.block_size = (mem / 2).min(u64::from(u32::MAX)) as u32;
+            }
+        }
+        Method::Lzp(p) => set_lzp_mem(p, mem),
+        // `SetBlockSize (mem/5/threads)`, which also caps the hash.
+        Method::Grzip(p) => {
+            let bs = (mem / 5 / compression_threads()).min(u64::from(u32::MAX)) as u32;
+            if bs > 0 {
+                p.block_size = bs.min(GRZ_MAX_BLOCK_SIZE);
+                p.hash_size_log =
+                    p.hash_size_log.min(1 + lb(p.block_size.saturating_sub(1)));
+            }
+        }
+        Method::Delta(p) => {
+            if mem > 0 {
+                p.block_size = mem.min(u64::from(u32::MAX)) as u32;
+            }
+        }
+        // `virtual void SetDecompressionMem (MemSize) {}` -- 4x4 does nothing,
+        // so a limit never reaches its inner method this way.
+        Method::FourX4(_)
+        | Method::Dispack(_)
+        | Method::Exe
+        | Method::Storing
+        | Method::Unsupported(_) => {}
+    }
+}
+
+/// `PPMD_METHOD::SetCompressionMem` (`C_PPMD.cpp:111`).
+///
+/// The order moves with the memory: `order += int(log2(new/old) * 4)`,
+/// truncated toward zero, then clamped to 2..=128. Halving the memory therefore
+/// costs three or four orders, and BOTH numbers appear in the method string --
+/// which is why `ppmd:25:2047m` limited to 1 GB prints as `ppmd:22:1gb`.
+fn set_ppmd_mem(p: &mut crate::method::PpmdParams, mem: u64) {
+    if mem == 0 {
+        return;
+    }
+    let ratio = mem as f64 / f64::from(p.mem);
+    let delta = (ratio.ln() / 2f64.ln() * 4.0) as i32; // int() truncates toward zero
+    p.order = (p.order + delta).clamp(2, 128);
+    p.mem = mem.min(u64::from(u32::MAX)) as u32;
+}
+
+/// `LZP_METHOD::SetCompressionMem` (`C_LZP.cpp:88`).
+///
+/// Shrinks the HASH first and returns early if that alone is enough; only then
+/// does it touch the block size.
+fn set_lzp_mem(p: &mut crate::method::LzpParams, mem: u64) {
+    let mut hashsize = (1u64 << p.hash_size_log.clamp(0, 40)) * PTR_SIZE;
+    if hashsize > mem / 4 {
+        p.hash_size_log = lb((mem / 16).min(u64::from(u32::MAX)) as u32) as i32;
+        let now = u64::from(p.block_size) * 2
+            + (1u64 << p.hash_size_log.clamp(0, 40)) * PTR_SIZE;
+        if now <= mem {
+            return;
+        }
+        hashsize = (1u64 << p.hash_size_log.clamp(0, 40)) * PTR_SIZE;
+    }
+    let bs = mem.saturating_sub(hashsize) / 2;
+    p.block_size = bs.min(u64::from(u32::MAX)) as u32;
+    p.hash_size_log = p.hash_size_log.min(1 + lb(p.block_size.saturating_sub(1)) as i32);
+}
+
+/// `LimitDecompressionMem` over a chain — shrink only, method by method.
+///
+/// Each link is limited INDEPENDENTLY against the same figure; the C's
+/// `limitDecompressionMem = map . limitDecompressionMem` (`Compression.hs:198`)
+/// maps over the chain rather than budgeting across it.
+pub fn limit_decompression_mem(chain: &mut [Method], mem: u64) {
+    for m in chain.iter_mut() {
+        if get_decompression_mem(m) > mem {
+            set_decompression_mem(m, mem);
+        }
+    }
+}
+
+/// The `-ld` default for the ADD command: a flat 1 GB (`Cmdline.hs:300`).
+///
+/// Not a percentage of anything, so it is the same on every machine — and it is
+/// what reduces `-m9`'s `ppmd:25:2047m` to `ppmd:22:1gb`.
+pub const ADD_DECOMPRESSION_LIMIT: u64 = 1024 * MB;
+
+/// Fit a chain to the data AND to the decompression memory limit, in the order
+/// `Cmdline.hs` applies them: the memory limits run when the command line is
+/// parsed, the dictionary limit when the block's size is known.
+pub fn fit_for_add(chain: &str, total_bytes: u64) -> Option<String> {
+    let names: Vec<String> = chain.split('+').map(str::to_string).collect();
+    let mut methods = Method::parse_chain(&names)?;
+    limit_decompression_mem(&mut methods, ADD_DECOMPRESSION_LIMIT);
+    limit_dictionary(&mut methods, dictionary_limit(total_bytes));
+    Some(methods.iter().map(crate::canonize::show).collect::<Vec<_>>().join("+"))
+}

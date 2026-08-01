@@ -64,7 +64,7 @@ printf 'five' > "$W/shapes/a/b/c/d/deep.txt"
 fail=0 checked=0
 
 for corpus in corpus shapes; do
-  for m in -m0 -m1 -m2 -m3 -m4 -m5 -mtor -mppmd; do
+  for m in -m0 -m1 -m2 -m3 -m4 -m5 -m9 -mx -mtor -mppmd; do
     for extra in "" "-s-"; do
       checked=$((checked + 1))
       rm -f "$W/ref.arc" "$W/port.arc"
