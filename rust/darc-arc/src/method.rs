@@ -217,6 +217,9 @@ pub enum Method {
     Lzp(LzpParams),
     Delta(DeltaParams),
     Dispack(DeltaParams),
+    /// `4x4` — the chunking meta-codec every level from -m1 up wraps its real
+    /// compressor in. See [`crate::fourx4`].
+    FourX4(crate::fourx4::FourX4Params),
     /// A method this port does not decode yet. Carried rather than dropped so
     /// the caller can say *which* method it could not handle, which is the
     /// difference between a useful message and "archive is corrupt".
@@ -254,6 +257,7 @@ impl Method {
             "lzp" => parse_lzp(&params).map(Method::Lzp),
             "delta" => parse_delta(&params).map(Method::Delta),
             "dispack" | "dispack070" => parse_delta(&params).map(Method::Dispack),
+            "4x4" => crate::fourx4::parse(&params).map(Method::FourX4),
             _ => Some(Method::Unsupported(s.to_string())),
         }
     }

@@ -94,6 +94,20 @@ fn undo(method: &Method, src: &[u8], hint: usize) -> Result<Vec<u8>, Error> {
         Method::Dispack(p) => drive("dispack", src, hint, |io| {
             darc_codecs::dispack::decode::decompress(io, p.block_size)
         }),
+        // 4x4 recurses: its chunks are decoded by whatever inner method its
+        // parameters named, through this same function.
+        Method::FourX4(p) => crate::fourx4::decode(p, src, |inner, chunk, orig| {
+            undo(inner, chunk, orig)
+        })
+        .map_err(|e| match e {
+            crate::fourx4::Error::Inner(inner) => inner,
+            crate::fourx4::Error::ChunkSize { expected, got } => {
+                Error::WrongSize { expected, got }
+            }
+            crate::fourx4::Error::Framing(cause) => {
+                Error::Codec { method: "4x4".to_string(), detail: cause.to_string() }
+            }
+        }),
         Method::Unsupported(name) => Err(Error::Unsupported(name.clone())),
     }
 }

@@ -9,10 +9,9 @@
 # failure rather than as a decode error, which is why the corruption self-test
 # at the end matters: a checker that cannot fail would report the same "All OK".
 #
-# Only the methods the port can currently decode are covered. -m1 upwards nest
-# their real compressor inside `4x4`, the multithreaded chunking meta-codec,
-# which is still C and not yet ported -- those rows are SKIPPED and counted, not
-# quietly omitted.
+# Every method DArc ships is covered. That includes the full chains the higher
+# levels build -- dict+lzp+grzip, dict+lzp+ppmd, rep+exe+delta+4x4:lzma -- so a
+# parameter parsed wrong anywhere in a chain surfaces here.
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
@@ -38,7 +37,7 @@ fail=0 checked=0 skipped=0
 # The summary line is the whole verdict: file count, packed and unpacked totals,
 # and the ratio -- which is integer arithmetic in the Haskell (ratio3,
 # UIBase.hs:159) and truncates where a rounding formatter would not.
-for m in -m0 -mtor -mppmd; do
+for m in -m0 -m1 -m2 -m3 -m4 -m5 -m9 -mx -mtor -mppmd; do
   for s in -s -s-; do
     rm -f "$W/a.arc"
     ( cd "$W/corpus" && "$REF" a --nodates -r -y "$m" "$s" ../a.arc . ) >/dev/null 2>&1
@@ -62,18 +61,7 @@ for m in -m0 -mtor -mppmd; do
   done
 done
 
-# The methods the port cannot decode yet, named rather than skipped in silence.
-for m in -m1 -m4 -m9; do
-  rm -f "$W/a.arc"
-  ( cd "$W/corpus" && "$REF" a --nodates -r -y "$m" ../a.arc . ) >/dev/null 2>&1
-  if "$PORT" "$W/a.arc" >/dev/null 2>&1; then
-    echo "  NOTE [$m] now decodes -- move it into the compared set above"
-  else
-    skipped=$((skipped + 1))
-  fi
-done
-
-echo "arc t: $checked archives, $fail differing, $skipped not yet decodable"
+echo "arc t: $checked archives, $fail differing, $skipped skipped"
 [ "$fail" -eq 0 ] || exit 1
 [ "$checked" -gt 0 ] || { echo "nothing was compared" >&2; exit 1; }
 
