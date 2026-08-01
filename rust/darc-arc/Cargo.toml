@@ -1,0 +1,27 @@
+[package]
+name = "darc-arc"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+# The archive format layer: the Rust port of ByteStream.hs, ArhiveStructure.hs
+# and ArhiveDirectory.hs.
+#
+# Ported against the GHC semantics, not the MicroHs build's. Under __MHS__ a
+# data block is one darc_compress_solid_block_w call that bypasses the Haskell
+# pipeline entirely (ArcvProcessCompress.hs:106), and the uncaught-exception
+# handler is compiled out (Arc.hs:75) -- so `Tests/arc` is a sound reference for
+# archive BYTES and a poor one for behaviour. `./compile-ghc-probe` builds the
+# reference this crate is gated against; see docs/testing.md.
+
+[lib]
+name = "darc_arc"
+crate-type = ["staticlib", "rlib"]
+
+[dependencies]
+# Solid blocks are independent by construction -- ArcvProcessRead.hs:104 splits
+# them with splitToSolidBlocks, a PURE function (ArhiveFileList.hs:291), so the
+# boundaries are fixed before any concurrency exists. Measured: the threaded GHC
+# build is byte-identical to itself across -N1/-N2/-N8 x -mt1/-mt8. That is what
+# licenses decoding blocks in parallel.
+rayon = "1.10"
