@@ -360,6 +360,12 @@ pub struct TornadoParams {
     pub find_tables: u32,
     pub auxhash_size: u32,
     pub auxhash_row_width: u32,
+    /// The three fields `ShowCompressionMethod` never prints, and that no
+    /// method string can set. They come from the preset row alone, and the
+    /// ENCODER needs them: they pick which match-finder instantiation runs.
+    pub caching_finder: u32,
+    pub hash3: u32,
+    pub shift: u32,
 }
 
 /// `std_Tornado_method[]` (`Tornado.cpp:66`), the fields the printer compares
@@ -368,18 +374,18 @@ pub struct TornadoParams {
 /// measured against depend on the preset, not on a single global default.
 const TORNADO_PRESETS: [TornadoParams; 12] = [
     // number, buffer, hashsize, row, encoding, parser, update, tables, auxhash, auxrow
-    t(0, 1 << 20, 0, 0, 0, 0, 999, 0, 0, 0),
-    t(1, 1 << 20, 16 << 10, 1, 1, 1, 999, 0, 0, 0),
-    t(2, 2 << 20, 64 << 10, 1, 2, 1, 999, 0, 0, 0),
-    t(3, 4 << 20, 128 << 10, 2, 3, 1, 999, 1, 0, 0),
-    t(4, 8 << 20, 2 << 20, 2, 3, 1, 999, 1, 0, 0),
-    t(5, 16 << 20, 2 << 20, 4, 4, 2, 999, 1, 0, 0),
-    t(6, 64 << 20, 32 << 20, 8, 4, 2, 4, 1, 0, 0),
-    t(7, 256 << 20, 128 << 20, 32, 4, 2, 1, 1, 128 << 10, 4),
-    t(8, 1024 << 20, 512 << 20, 128, 4, 2, 1, 1, 128 << 10, 4),
-    t(9, 1024 << 20, 2048 << 20, 256, 4, 2, 1, 1, 512 << 10, 4),
-    t(10, 1024 << 20, 2048 << 20, 256, 4, 2, 1, 1, 2 << 20, 32),
-    t(11, 1024 << 20, 1600 << 20, 200, 4, 2, 1, 1, 512 << 20, 256),
+    t(0, 1 << 20, 0, 0, 0, 0, 999, 0, 0, 0, 0, 0, 0),
+    t(1, 1 << 20, 16 << 10, 1, 1, 1, 999, 0, 0, 0, 0, 0, 0),
+    t(2, 2 << 20, 64 << 10, 1, 2, 1, 999, 0, 0, 0, 0, 0, 0),
+    t(3, 4 << 20, 128 << 10, 2, 3, 1, 999, 1, 0, 0, 0, 0, 0),
+    t(4, 8 << 20, 2 << 20, 2, 3, 1, 999, 1, 0, 0, 1, 0, 0),
+    t(5, 16 << 20, 2 << 20, 4, 4, 2, 999, 1, 0, 0, 1, 1, 0),
+    t(6, 64 << 20, 32 << 20, 8, 4, 2, 4, 1, 0, 0, 1, 1, 0),
+    t(7, 256 << 20, 128 << 20, 32, 4, 2, 1, 1, 128 << 10, 4, 5, 2, 0),
+    t(8, 1024 << 20, 512 << 20, 128, 4, 2, 1, 1, 128 << 10, 4, 5, 2, 0),
+    t(9, 1024 << 20, 2048 << 20, 256, 4, 2, 1, 1, 512 << 10, 4, 5, 2, 0),
+    t(10, 1024 << 20, 2048 << 20, 256, 4, 2, 1, 1, 2 << 20, 32, 6, 2, 0),
+    t(11, 1024 << 20, 1600 << 20, 200, 4, 2, 1, 1, 512 << 20, 256, 7, 2, 0),
 ];
 
 #[allow(clippy::too_many_arguments)]
@@ -394,6 +400,9 @@ const fn t(
     find_tables: u32,
     auxhash_size: u32,
     auxhash_row_width: u32,
+    caching_finder: u32,
+    hash3: u32,
+    shift: u32,
 ) -> TornadoParams {
     TornadoParams {
         number,
@@ -406,6 +415,9 @@ const fn t(
         find_tables,
         auxhash_size,
         auxhash_row_width,
+        caching_finder,
+        hash3,
+        shift,
     }
 }
 

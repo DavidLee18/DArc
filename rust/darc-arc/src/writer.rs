@@ -261,6 +261,30 @@ impl Writer {
         }
     }
 
+    /// A data block whose bytes are COMPRESSED with `compressor`.
+    ///
+    /// `orig_size` is the unpacked length and `comp_size` the packed one; the
+    /// directory stores both, which is how a reader knows what to allocate.
+    pub fn write_compressed_data(
+        &mut self,
+        body: &[u8],
+        compressor: Vec<String>,
+        files: usize,
+    ) -> Result<ArchiveBlock, crate::decompress::Error> {
+        let packed = crate::decompress::compress_chain(&compressor, body)?;
+        let pos = self.pos();
+        self.out.extend_from_slice(&packed);
+        Ok(ArchiveBlock {
+            block_type: BlockType::Data,
+            compressor,
+            pos,
+            orig_size: body.len() as u64,
+            comp_size: packed.len() as u64,
+            crc: 0,
+            files: Some(files),
+        })
+    }
+
     /// The directory block, describing `blocks`.
     pub fn write_directory(&mut self, blocks: &[ArchiveBlock], entries: &[Entry]) {
         let body = directory_block(self.pos(), blocks, entries);

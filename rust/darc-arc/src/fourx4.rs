@@ -34,7 +34,7 @@
 //! can reach the bytes. The C's `num_threads` is therefore *not* honoured, and
 //! deliberately: it is a resource knob, and the archive is identical either way.
 
-use crate::bytestream::{self, InStream};
+use crate::bytestream::{self, InStream, OutStream};
 use crate::method::{parse_int, parse_mem, Method};
 use rayon::prelude::*;
 
@@ -235,6 +235,72 @@ where
         out.extend_from_slice(&chunk?);
     }
     Ok(out)
+}
+
+/// Encode a whole 4x4 stream — `do_compress` (`C_4x4.cpp:374`).
+///
+/// The chunk size is not free: it is `BlockSize`, or the INNER method's
+/// dictionary when that is unset, or 8 MB, floored at 64 KB. Choosing it
+/// differently changes every chunk boundary and so every byte of the output,
+/// while still decoding correctly.
+///
+/// A chunk whose compressed form is not SMALLER than its input is stored raw
+/// (`:206`) — `>=`, not `>`, so a chunk that compresses to exactly its own size
+/// is stored. The C also stores raw when the codec reports
+/// `FREEARC_ERRCODE_OUTBLOCK_TOO_SMALL`; here that arrives as any encoder
+/// failure on a chunk, which is the same observable outcome.
+///
+/// Chunks are compressed in PARALLEL and written in index order, for the same
+/// reason decoding is: the boundaries are decided before any of them runs.
+pub fn encode<F, E>(
+    params: &FourX4Params,
+    src: &[u8],
+    compress_one: F,
+) -> Result<Vec<u8>, E>
+where
+    F: Fn(&Method, &[u8]) -> Result<Vec<u8>, E> + Sync,
+    E: Send,
+{
+    let chunk_size = chunk_size(params) as usize;
+    let chunks: Vec<&[u8]> = if src.is_empty() {
+        Vec::new()
+    } else {
+        src.chunks(chunk_size).collect()
+    };
+
+    let packed: Vec<(bool, Vec<u8>)> = chunks
+        .par_iter()
+        .map(|chunk| match compress_one(&params.inner, chunk) {
+            // "If compression didn't help, store raw".
+            Ok(out) if out.len() < chunk.len() => (false, out),
+            Ok(_) => (true, chunk.to_vec()),
+            // The C's OUTBLOCK_TOO_SMALL arm: store raw rather than fail.
+            Err(_) => (true, chunk.to_vec()),
+        })
+        .collect();
+
+    let mut out = OutStream::new();
+    out.u32(VERSION);
+    for (i, (raw, payload)) in packed.iter().enumerate() {
+        let orig = chunks[i].len();
+        // -1 marks a raw chunk; otherwise the unpacked size.
+        out.u32(if *raw { (-1i32) as u32 } else { orig as u32 });
+        out.u32(payload.len() as u32);
+        for b in payload {
+            out.u8(*b);
+        }
+    }
+    Ok(out.into_bytes())
+}
+
+/// `do_compress`'s block-size choice (`C_4x4.cpp:376`).
+fn chunk_size(params: &FourX4Params) -> u32 {
+    let mut bs = params.block_size;
+    if bs == 0 {
+        let dict = crate::memlimit::get_dictionary(&params.inner);
+        bs = if dict > 0 { dict } else { 8 * 1024 * 1024 };
+    }
+    bs.max(64 * 1024)
 }
 
 /// What can go wrong decoding a 4x4 stream.

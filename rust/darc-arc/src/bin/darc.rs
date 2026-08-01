@@ -168,11 +168,38 @@ fn main() {
 /// written -- the failure mode this repo cares most about. Refusing is the
 /// honest behaviour until it is ported.
 fn add(archive_name: &str, parsed: &options::Parsed) -> i32 {
+    // The subset of builtinMethodSubsts (Compression.hs:428) this port can
+    // write. Each maps a -m level to its unfitted chain; the data-size fitting
+    // happens once the block's contents are known.
+    // Only -m0. The machinery for the compressed levels is here and verified --
+    // canonicalisation, dictionary fitting, 4x4 framing and the Tornado encoder
+    // all reproduce the reference byte for byte on the generated corpus -- but
+    // the FILE ORDER does not.
+    //
+    // Cmdline.hs:617 gives any non-trivial method aDEFAULT_SOLID_SORT_ORDER,
+    // "gerpn" (Options.hs:416): group by arc.groups, then extension, then the
+    // `reorder` similarity pass, then path, then name. -m0 alone gets "", which
+    // is why it is scan order and matches.
+    //
+    // The generated corpus happens to be in sorted order already, so -m1 and
+    // -mtor were byte-identical there and NOT on a corpus with a zero-length
+    // .bin among .txt files -- the .bin sorts into a different arc.groups group
+    // and moves to the front. An archive with the wrong file order decodes
+    // perfectly and is not what DArc wrote, which is the failure this repo
+    // cares most about, so this refuses rather than guesses.
     let method = parsed.arg("method", "");
-    if !matches!(method, "0" | "storing") {
-        eprintln!("ERROR: only -m0 is implemented in this port so far (asked for -m{method})");
-        return 2;
-    }
+    let chain: &str = match method {
+        "0" | "storing" => "storing",
+        other => {
+            eprintln!(
+                "ERROR: -m{other} is not implemented in this port yet -- it needs \
+                 the \"gerpn\" solid sort order (arc.groups grouping, extension, \
+                 the reorder pass, path, name), which is not ported. Only -m0 is \
+                 written, because it is the one level with sorting disabled."
+            );
+            return 2;
+        }
+    };
     let recursive = parsed.flag("recursive");
     let nodates = parsed.flag("nodates");
 
@@ -243,11 +270,29 @@ fn add(archive_name: &str, parsed: &options::Parsed) -> i32 {
     }
 
     // splitToSolidBlocks (ArhiveFileList.hs:291): directories go into their own
-    // block, and with aNO_COMPRESSION the file list is not split further.
+    // block, always stored, and the files into one more.
+    //
+    // The chain is fitted to THIS block's size (ArcvProcessRead.hs:122) before
+    // anything is compressed, which is what puts `434kb` into the descriptor.
+    let fitted = match darc_arc::memlimit::fit_to_data(chain, data.len() as u64) {
+        Some(f) => f,
+        None => {
+            eprintln!("ERROR: cannot fit {chain} to {} bytes", data.len());
+            return 2;
+        }
+    };
+    let compressor: Vec<String> = fitted.split('+').map(str::to_string).collect();
+
     let mut w = darc_arc::writer::Writer::new();
     w.write_header();
     let dir_block = w.write_data(&[], darc_arc::writer::no_compression(), dir_entries.len());
-    let file_block = w.write_data(&data, darc_arc::writer::no_compression(), file_entries.len());
+    let file_block = match w.write_compressed_data(&data, compressor, file_entries.len()) {
+        Ok(b) => b,
+        Err(e) => {
+            eprintln!("ERROR: {e}");
+            return 2;
+        }
+    };
     let mut entries = dir_entries;
     entries.extend(file_entries);
     w.write_directory(&[dir_block, file_block], &entries);

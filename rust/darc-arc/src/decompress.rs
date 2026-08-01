@@ -198,8 +198,48 @@ pub fn read_block(
 /// `lzma:1mb:mf=BT4` every archive's directory and footer block carries, so
 /// LZMA is required even to write an otherwise uncompressed `-m0` archive.
 pub fn compress_one(method: &Method, src: &[u8]) -> Result<Vec<u8>, Error> {
+    compress_one_with(method, src, false)
+}
+
+/// As [`compress_one`], but stating whether the caller is 4x4.
+///
+/// `compress_all_at_once` is a global the archiver sets, and `_4x4_METHOD::compress`
+/// forces it to 1 for the whole inner call (`C_4x4.cpp:571`) because a chunk is
+/// always a complete buffer. A TOP-LEVEL method sees the archiver's own value,
+/// which is 0 for a solid block.
+///
+/// It is not a performance knob: it changes Tornado's output. `-mtor` on a
+/// 438 KiB corpus differs by five bytes between the two settings, and the
+/// archive is valid either way.
+pub fn compress_one_with(method: &Method, src: &[u8], all_at_once: bool) -> Result<Vec<u8>, Error> {
     match method {
         Method::Storing => Ok(src.to_vec()),
+        Method::Tornado(p) => {
+            // PackMethod crosses the C ABI by value, so every field must be
+            // present -- including caching_finder/hash3/shift, which no method
+            // string can set and which come from the preset row alone.
+            let m = darc_codecs::tornado::encode::PackMethod {
+                number: p.number as core::ffi::c_int,
+                encoding_method: p.encoding_method as core::ffi::c_int,
+                find_tables: p.find_tables != 0,
+                hash_row_width: p.hash_row_width as core::ffi::c_int,
+                hashsize: p.hashsize,
+                caching_finder: p.caching_finder as core::ffi::c_int,
+                buffer: p.buffer,
+                match_parser: p.match_parser as core::ffi::c_int,
+                hash3: p.hash3 as core::ffi::c_int,
+                shift: p.shift as core::ffi::c_int,
+                update_step: p.update_step as core::ffi::c_int,
+                auxhash_size: p.auxhash_size,
+                auxhash_row_width: p.auxhash_row_width as core::ffi::c_int,
+            };
+            // `compress_all_at_once` is 1 inside 4x4 (C_4x4.cpp:571 sets it for
+            // the whole call) and 0 otherwise. A chunk handed to the inner
+            // method is always a whole buffer, so this is the 4x4 case.
+            drive_enc("tor", src, |io| {
+                darc_codecs::tornado::encode::compress(m, io, all_at_once)
+            })
+        }
         Method::Lzma(p) => {
             let props = darc_lzma::LzmaProps {
                 lc: p.lit_context_bits as u8,
@@ -225,8 +265,10 @@ pub fn compress_one(method: &Method, src: &[u8]) -> Result<Vec<u8>, Error> {
         // Named rather than a wildcard, per the crate's exhaustiveness rule: a
         // method added later must show up as a compile error here, not be
         // silently reported as unsupported for writing.
+        Method::FourX4(p) => {
+            crate::fourx4::encode(p, src, |m, chunk| compress_one_with(m, chunk, true))
+        }
         other @ (Method::Ppmd(_)
-        | Method::Tornado(_)
         | Method::Rep(_)
         | Method::Grzip(_)
         | Method::Exe
@@ -237,6 +279,15 @@ pub fn compress_one(method: &Method, src: &[u8]) -> Result<Vec<u8>, Error> {
         | Method::FourX4(_)
         | Method::Unsupported(_)) => Err(Error::Unsupported(format!("{other:?}"))),
     }
+}
+
+/// Run one `darc-codecs` ENCODER over a buffer, naming it if it fails.
+fn drive_enc<F>(name: &str, src: &[u8], f: F) -> Result<Vec<u8>, Error>
+where
+    F: FnOnce(&darc_codecs::ffi::Io) -> core::ffi::c_int,
+{
+    crate::codec_io::run(src, src.len(), f)
+        .map_err(|e| Error::Codec { method: name.to_string(), detail: e.to_string() })
 }
 
 /// The match-finder ids `parse_LZMA` stores, as the encoder's enum.
