@@ -16,7 +16,11 @@
 #
 # None of them is visible without comparing bytes.
 #
-# -m0, -m1 and -mtor are written. The rest need file-type grouping
+# -m0, -m1 and -mtor are written, solid and one-block-per-file. Note that -m0
+# ignores -s- entirely: splitOneType (ArhiveFileList.hs:313) returns a single
+# block for aNO_COMPRESSION whatever the grouping says.
+#
+# The rest need file-type grouping
 # ($text/$obj/$binary), which decides which files share a solid block; the port
 # refuses them and this harness checks that it refuses.
 #
@@ -61,7 +65,7 @@ fail=0 checked=0
 
 for corpus in corpus shapes; do
   for m in -m0 -m1 -mtor; do
-    for extra in ""; do
+    for extra in "" "-s-"; do
       checked=$((checked + 1))
       rm -f "$W/ref.arc" "$W/port.arc"
       # --nodates: without it the archive embeds mtimes and the two runs would

@@ -184,10 +184,17 @@ fn add(archive_name: &str, parsed: &options::Parsed) -> i32 {
             return 2;
         }
     };
+    // parseSolidOption (Cmdline.hs:757). Only the two forms this port needs:
+    // "-s-" is [GroupNone], one solid block per file; the default and a bare
+    // "-s" are the empty criteria list, which splits nothing.
+    let per_file = parsed.arg("solid", "") == "-";
+
     // sort_order (Cmdline.hs:617): "" when the main compressor is
-    // aNO_COMPRESSION, and aDEFAULT_SOLID_SORT_ORDER otherwise. -m0 is the one
-    // level with sorting disabled, which is why it packs in scan order.
-    let sort_order = if chain == "storing" { "" } else { "gerpn" };
+    // aNO_COMPRESSION, and ALSO "" when group_data is [GroupNone] -- there is
+    // nothing to gain from ordering files that do not share a block. -m0 is the
+    // one level where the first clause applies, which is why it packs in scan
+    // order.
+    let sort_order = if chain == "storing" || per_file { "" } else { "gerpn" };
     let recursive = parsed.flag("recursive");
     let nodates = parsed.flag("nodates");
 
@@ -274,32 +281,60 @@ fn add(archive_name: &str, parsed: &options::Parsed) -> i32 {
     }
 
     // splitToSolidBlocks (ArhiveFileList.hs:291): directories go into their own
-    // block, always stored, and the files into one more.
-    //
-    // The chain is fitted to THIS block's size (ArcvProcessRead.hs:122) before
-    // anything is compressed, which is what puts `434kb` into the descriptor.
-    let fitted = match darc_arc::memlimit::fit_to_data(chain, data.len() as u64) {
-        Some(f) => f,
-        None => {
-            eprintln!("ERROR: cannot fit {chain} to {} bytes", data.len());
-            return 2;
-        }
-    };
-    let compressor: Vec<String> = fitted.split('+').map(str::to_string).collect();
+    // block, always stored. The files are split by opt_group_data -- except for
+    // aNO_COMPRESSION, where splitOneType returns a single block whatever the
+    // grouping says, so -m0 -s- is still one block.
+    let one_block_per_file = per_file && chain != "storing";
 
     let mut w = darc_arc::writer::Writer::new();
     w.write_header();
     let dir_block = w.write_data(&[], darc_arc::writer::no_compression(), dir_entries.len());
-    let file_block = match w.write_compressed_data(&data, compressor, file_entries.len()) {
-        Ok(b) => b,
-        Err(e) => {
-            eprintln!("ERROR: {e}");
-            return 2;
+
+    // Each block's chain is fitted to THAT block's size (ArcvProcessRead.hs:122),
+    // so with one block per file every file gets its own dictionary.
+    let mut data_blocks = vec![dir_block];
+    if one_block_per_file {
+        for (i, e) in file_entries.iter_mut().enumerate() {
+            let body = contents.get(&e.stored_name).cloned().unwrap_or_default();
+            e.block = i + 1;
+            e.pos_in_block = 0;
+            let fitted = match darc_arc::memlimit::fit_to_data(chain, body.len() as u64) {
+                Some(f) => f,
+                None => {
+                    eprintln!("ERROR: cannot fit {chain} to {} bytes", body.len());
+                    return 2;
+                }
+            };
+            let compressor: Vec<String> = fitted.split('+').map(str::to_string).collect();
+            match w.write_compressed_data(&body, compressor, 1) {
+                Ok(b) => data_blocks.push(b),
+                Err(err) => {
+                    eprintln!("ERROR: {err}");
+                    return 2;
+                }
+            }
         }
-    };
+    } else {
+        let fitted = match darc_arc::memlimit::fit_to_data(chain, data.len() as u64) {
+            Some(f) => f,
+            None => {
+                eprintln!("ERROR: cannot fit {chain} to {} bytes", data.len());
+                return 2;
+            }
+        };
+        let compressor: Vec<String> = fitted.split('+').map(str::to_string).collect();
+        match w.write_compressed_data(&data, compressor, file_entries.len()) {
+            Ok(b) => data_blocks.push(b),
+            Err(e) => {
+                eprintln!("ERROR: {e}");
+                return 2;
+            }
+        }
+    }
+
     let mut entries = dir_entries;
     entries.extend(file_entries);
-    w.write_directory(&[dir_block, file_block], &entries);
+    w.write_directory(&data_blocks, &entries);
     let bytes = w.finish("", "", false);
 
     match std::fs::write(archive_name, &bytes) {
