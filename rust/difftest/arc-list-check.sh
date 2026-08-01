@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Differential-test the Rust `arc l` against the Haskell one.
+# Differential-test the Rust listing commands -- l, v, lt and lb -- against the
+# Haskell ones.
 #
 #   usage: arc-list-check.sh [reference-arc]
 #
@@ -50,19 +51,27 @@ for m in -m0 -m1 -m4 -m9 -mx -mtor -mppmd; do
       continue
     fi
     checked=$((checked + 1))
-    # Drop line 1 only: it is the banner, and it contains the sandbox path.
-    "$REF"  l "$W/a.arc" 2>/dev/null | tail -n +2 > "$W/ref.txt"
-    "$PORT" l "$W/a.arc" >"$W/port.txt" 2>"$W/port.err"
-    if ! cmp -s "$W/ref.txt" "$W/port.txt"; then
-      echo "  DIFF [$m $s]"
-      diff "$W/ref.txt" "$W/port.txt" | head -6 | sed 's/^/      /'
-      head -2 "$W/port.err" | sed 's/^/      /'
-      fail=$((fail + 1))
-    fi
+    for cmd in l v lt lb; do
+      # Drop line 1 only: it is the banner, and it contains the sandbox path.
+      # `lb` is the exception -- it prints no banner at all, the only listing
+      # command that does not, so stripping a line would remove a real name.
+      if [ "$cmd" = lb ]; then
+        "$REF" lb "$W/a.arc" 2>/dev/null > "$W/ref.txt"
+      else
+        "$REF" "$cmd" "$W/a.arc" 2>/dev/null | tail -n +2 > "$W/ref.txt"
+      fi
+      "$PORT" "$cmd" "$W/a.arc" >"$W/port.txt" 2>"$W/port.err"
+      if ! cmp -s "$W/ref.txt" "$W/port.txt"; then
+        echo "  DIFF [$m $s $cmd]"
+        diff "$W/ref.txt" "$W/port.txt" | head -6 | sed 's/^/      /'
+        head -2 "$W/port.err" | sed 's/^/      /'
+        fail=$((fail + 1))
+      fi
+    done
   done
 done
 
-echo "arc l: $checked archives, $fail differing, $skipped skipped"
+echo "arc l/v/lt/lb: $checked archives x 4 commands, $fail differing, $skipped skipped"
 [ "$fail" -eq 0 ] || exit 1
 [ "$checked" -gt 0 ] || { echo "no archives were compared at all" >&2; exit 1; }
 
@@ -80,4 +89,13 @@ if ! "$PORT" l "$W/a.arc" >/dev/null 2>&1; then
   exit 1
 fi
 
-echo "the Rust listing is byte-identical to the Haskell one"
+# The four commands must actually differ from each other, or three of them are
+# being compared as if they were one.
+a=$("$PORT" l "$W/a.arc" | shasum); b=$("$PORT" v "$W/a.arc" | shasum)
+c=$("$PORT" lt "$W/a.arc" | shasum); d=$("$PORT" lb "$W/a.arc" | shasum)
+if [ "$a" = "$b" ] || [ "$a" = "$c" ] || [ "$a" = "$d" ]; then
+  echo "SELF-TEST FAILED: two listing commands produced identical output" >&2
+  exit 1
+fi
+
+echo "the Rust listings are byte-identical to the Haskell ones"
