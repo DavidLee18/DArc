@@ -108,7 +108,7 @@ fn main() {
             let extracting = command != "t";
             run_blocks(&info, &data, &layout, extracting)
         }
-        "a" | "u" | "f" => add(&command, &archive_name, &parsed),
+        "a" | "u" | "f" | "d" => add(&command, &archive_name, &parsed),
         // Not an `arc` command: a probe, so the canonicaliser can be checked
         // against the method strings real archives contain. Prints the
         // canonical form of each argument, or "?" if it does not parse.
@@ -276,6 +276,10 @@ fn add(command: &str, archive_name: &str, parsed: &options::Parsed) -> i32 {
     let sort_order = if chain == "storing" || per_file { "" } else { "gerpn" };
     let recursive = parsed.flag("recursive");
     let nodates = parsed.flag("nodates");
+    // `runDelete = runArchiveAdd . setArcFilter ((not.) . fullFileFilter)`
+    // (Arc.hs:213): `d` is `a` with NO disk files and an archive filter that
+    // keeps everything the filespecs do NOT match.
+    let deleting = command == "d";
 
     // Everything after the archive name is a filespec.
     let specs: Vec<String> = parsed.free.iter().skip(1).cloned().collect();
@@ -289,7 +293,7 @@ fn add(command: &str, archive_name: &str, parsed: &options::Parsed) -> i32 {
     // exactly 3 bytes longer than one built without the prefix, which is
     // ".\0" plus "./" on the one subdirectory name.
     let mut found: Vec<(String, std::path::PathBuf, bool)> = Vec::new();
-    for spec in &specs {
+    for spec in if deleting { &[][..] } else { &specs[..] } {
         let root = spec.trim_end_matches('/');
         // A filespec that NAMES A DIRECTORY is scanned recursively even without
         // -r. find_filter_and_process_files (FileInfo.hs:403) rewrites it as the
@@ -361,7 +365,7 @@ fn add(command: &str, archive_name: &str, parsed: &options::Parsed) -> i32 {
     // preserves existing solid blocks under --keep-original
     // (ArhiveFileList.hs:297) -- so the merged list is packed exactly as a
     // fresh one would be.
-    if update_type != darc_arc::joinlist::UpdateType::Add
+    if (deleting || update_type != darc_arc::joinlist::UpdateType::Add)
         && std::path::Path::new(archive_name).exists()
     {
         let info = match archive::read_info(std::path::Path::new(archive_name)) {
@@ -378,9 +382,17 @@ fn add(command: &str, archive_name: &str, parsed: &options::Parsed) -> i32 {
                 return 2;
             }
         };
+        let full_names = parsed.flag("fullnames");
         let main: Vec<darc_arc::joinlist::Candidate> = info
             .entries
             .iter()
+            // The archive filter. For `d` it is the NEGATION of the filespec
+            // match; for u/f the filespecs select disk files, not archive ones,
+            // so everything is kept.
+            .filter(|e| {
+                !deleting
+                    || !darc_arc::sort::match_filespecs(&specs, &e.stored_name, full_names)
+            })
             .map(|e| darc_arc::joinlist::Candidate {
                 entry: e.clone(),
                 origin: darc_arc::joinlist::Origin::Archive,
@@ -463,6 +475,13 @@ fn add(command: &str, archive_name: &str, parsed: &options::Parsed) -> i32 {
             .collect();
         let split = darc_arc::filetype::split_file_types(&cands, &type_names);
         darc_arc::filetype::merge_by_type(&split, |t| chains[t].clone())
+    } else if file_entries.is_empty() {
+        // No files means no data block. `concatMap splitOneType (splitByType …)`
+        // over an empty list produces nothing, the same way the directories
+        // block is omitted when there are no directories. `arc d *.txt` on an
+        // -m0 archive leaves only directories, and an empty block made it one
+        // byte longer than the reference's.
+        Vec::new()
     } else {
         vec![(0, (0..file_entries.len()).collect())]
     };
@@ -584,6 +603,24 @@ fn add(command: &str, archive_name: &str, parsed: &options::Parsed) -> i32 {
     let mut entries = dir_entries;
     entries.extend(file_entries);
     w.write_directory(&data_blocks, &entries);
+    // An archive with nothing left in it is REMOVED, not written empty.
+    // Measured: `arc d a.arc "*"` leaves no file behind, because the basename
+    // match takes the directories too. Writing a 161-byte archive of nothing
+    // would be valid, listable, and not what the reference does.
+    if entries.is_empty() {
+        match std::fs::remove_file(archive_name) {
+            Ok(()) => {}
+            // Already absent is the same outcome.
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(e) => {
+                eprintln!("ERROR: {archive_name}: {e}");
+                return 2;
+            }
+        }
+        println!("All OK");
+        return 0;
+    }
+
     let bytes = w.finish("", "", false);
 
     match std::fs::write(archive_name, &bytes) {

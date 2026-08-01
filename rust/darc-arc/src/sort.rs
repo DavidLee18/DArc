@@ -112,6 +112,21 @@ fn match_fp(pattern: &str, stored_name: &str) -> bool {
     glob(&pattern.to_lowercase(), &target.to_lowercase())
 }
 
+/// `match_filespecs` (`FileInfo.hs:149`) — does the name match ANY of them?
+///
+/// `opt_match_with` decides what is matched: `fpBasename` by default and
+/// `fpFullname` under `--fullnames` (`Cmdline.hs:420`). So `arc d a.arc x.txt`
+/// deletes every `x.txt` in the archive, at any depth, unless `-fn` is given.
+pub fn match_filespecs(specs: &[String], stored_name: &str, full_names: bool) -> bool {
+    specs.iter().any(|spec| {
+        if full_names {
+            glob(&spec.to_lowercase(), &stored_name.to_lowercase())
+        } else {
+            match_fp(spec, stored_name)
+        }
+    })
+}
+
 /// `fpLCExtension` — the lowercase extension WITHOUT its dot, empty if none.
 pub fn lc_extension(stored_name: &str) -> String {
     let base = stored_name.rsplit('/').next().unwrap_or(stored_name);

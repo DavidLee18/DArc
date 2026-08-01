@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Differential-test the Rust `arc u` and `arc f` against the Haskell ones,
-# BYTE FOR BYTE.
+# Differential-test the Rust `arc u`, `arc f` and `arc d` against the Haskell
+# ones, BYTE FOR BYTE.
 #
 #   usage: arc-update-check.sh [reference-arc]
 #
@@ -11,6 +11,8 @@
 #
 #   u  take whichever copy is newer; add files the archive did not have
 #   f  take whichever copy is newer; add NOTHING new
+#   d  no disk files at all -- keep everything the filespecs do NOT match
+#      (runDelete = runArchiveAdd . setArcFilter ((not.) . fullFileFilter))
 #
 # and both keep the ARCHIVED copy when the timestamps are equal, so an unchanged
 # file is not repacked into a different position.
@@ -86,7 +88,33 @@ for m in -m0 -m1 -m4 -m9; do
   done
 done
 
-echo "arc u/f: $checked archives, $fail differing"
+# The delete command. Filespecs match on the BASE NAME by default, so "a.txt"
+# deletes every a.txt at any depth and "*" takes the directories too -- which
+# empties the archive, and an emptied archive is REMOVED rather than written.
+for m in -m0 -m1 -m4 -m9; do
+  for spec in a.txt newer.txt "sub/nested.txt" "*.txt" "*"; do
+    checked=$((checked + 1))
+    build_tree "$W/src"
+    printf 'nested a\n' > "$W/src/sub/a.txt"
+    rm -f "$W/ref.arc" "$W/port.arc"
+    ( cd "$W/src" && "$REF" a --nodates -r -y "$m" "$W/ref.arc" . ) >/dev/null 2>&1
+    cp "$W/ref.arc" "$W/port.arc"
+    ( cd "$W/src" && "$REF"  d --nodates -y "$m" "$W/ref.arc"  "$spec" ) >/dev/null 2>&1
+    ( cd "$W/src" && "$PORT" d --nodates -y "$m" "$W/port.arc" "$spec" ) >/dev/null 2>&1
+
+    r=present; [ -f "$W/ref.arc" ]  || r=gone
+    p=present; [ -f "$W/port.arc" ] || p=gone
+    if [ "$r" != "$p" ]; then
+      echo "  DIFF [$m d $spec]: reference $r, port $p"
+      fail=$((fail + 1))
+    elif [ "$r" = present ] && ! cmp -s "$W/ref.arc" "$W/port.arc"; then
+      echo "  DIFF [$m d $spec]: $(wc -c <"$W/ref.arc") vs $(wc -c <"$W/port.arc") bytes"
+      fail=$((fail + 1))
+    fi
+  done
+done
+
+echo "arc u/f/d: $checked archives, $fail differing"
 [ "$fail" -eq 0 ] || exit 1
 [ "$checked" -gt 0 ] || { echo "nothing was compared" >&2; exit 1; }
 
@@ -111,4 +139,17 @@ if cmp -s "$W/u.arc" "$W/f.arc"; then
   exit 1
 fi
 
-echo "the Rust arc u/f merges exactly as the Haskell one does"
+# `d "*"` must actually have emptied something, or the removal branch is
+# untested.
+build_tree "$W/src"
+rm -f "$W/d.arc"
+( cd "$W/src" && "$REF" a --nodates -r -y -m1 "$W/d.arc" . ) >/dev/null 2>&1
+[ -f "$W/d.arc" ] || { echo "SELF-TEST FAILED: no archive to delete from" >&2; exit 1; }
+( cd "$W/src" && "$PORT" d --nodates -y -m1 "$W/d.arc" "*" ) >/dev/null 2>&1
+if [ -f "$W/d.arc" ]; then
+  echo "SELF-TEST FAILED: deleting * left the archive behind, so the removal" >&2
+  echo "branch was never taken" >&2
+  exit 1
+fi
+
+echo "the Rust arc u/f/d merges exactly as the Haskell one does"
