@@ -42,6 +42,7 @@
 #![deny(unused_must_use)]
 #![allow(clippy::single_match)]
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used))]
+#![allow(dropping_copy_types, dropping_references, clippy::drop_non_drop)] // see darc-codecs/src/lib.rs
 
 pub mod archive;
 pub mod block;
@@ -54,3 +55,4 @@ pub mod extract;
 pub mod fourx4;
 pub mod method;
 pub mod options;
+pub mod writer;

@@ -14,6 +14,7 @@
 //! `InputByteStream` never checks how much the read callback delivered, and the
 //! port's own slow match path panicked on a `usize` underflow until an 11 MB
 //! input exposed it.
+#![allow(dropping_copy_types, dropping_references, clippy::drop_non_drop)] // see darc-codecs/src/lib.rs
 
 use darc_codecs::ffi::Io;
 use darc_codecs::tornado::decode;

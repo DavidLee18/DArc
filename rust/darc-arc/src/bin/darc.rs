@@ -82,7 +82,8 @@ fn main() {
     };
 
     let path = std::path::Path::new(&archive_name);
-    let info = match archive::read_info(path) {
+    // Only the read commands need an existing archive; `a` creates one.
+    let open_existing = || match archive::read_info(path) {
         Ok(i) => i,
         Err(e) => {
             eprintln!("ERROR: {e}");
@@ -91,8 +92,9 @@ fn main() {
     };
 
     let code = match command.as_str() {
-        "l" => list(&info),
+        "l" => list(&open_existing()),
         "t" | "x" | "e" => {
+            let info = open_existing();
             let data = match archive::open(path) {
                 Ok(d) => d,
                 Err(e) => {
@@ -103,7 +105,8 @@ fn main() {
             let extracting = command != "t";
             run_blocks(&info, &data, &layout, extracting)
         }
-        "a" | "c" | "d" | "f" | "u" | "m" | "j" | "ch" | "rr" | "k" | "v" | "lb" | "lt" => {
+        "a" => add(&archive_name, &parsed),
+        "c" | "d" | "f" | "u" | "m" | "j" | "ch" | "rr" | "k" | "v" | "lb" | "lt" => {
             eprintln!("ERROR: command {command:?} is not implemented in this port yet");
             2
         }
@@ -113,6 +116,179 @@ fn main() {
         }
     };
     std::process::exit(code);
+}
+
+/// `arc a` -- create an archive.
+///
+/// Only `-m0` (storing) so far. Every other method needs the method-string
+/// canonicalisation the C does in SetCompressionMem / LimitCompressionMem,
+/// which scales a chain like `dict:p:64m:85%` down to the `dict:56kb:85%:...`
+/// an archive actually contains. Getting that wrong writes an archive that is
+/// valid, decodes correctly, and is not the bytes the reference would have
+/// written -- the failure mode this repo cares most about. Refusing is the
+/// honest behaviour until it is ported.
+fn add(archive_name: &str, parsed: &options::Parsed) -> i32 {
+    let method = parsed.arg("method", "");
+    if !matches!(method, "0" | "storing") {
+        eprintln!("ERROR: only -m0 is implemented in this port so far (asked for -m{method})");
+        return 2;
+    }
+    let recursive = parsed.flag("recursive");
+    let nodates = parsed.flag("nodates");
+
+    // Everything after the archive name is a filespec.
+    let specs: Vec<String> = parsed.free.iter().skip(1).cloned().collect();
+    let specs = if specs.is_empty() { vec![".".to_string()] } else { specs };
+
+    // Names are stored WITH the filespec as the user wrote it: `arc a x.arc .`
+    // stores "./a.txt" and the directory name ".", not "a.txt" and "".
+    // remove_unsafe_dirs (Files.hs:143) strips the "." again on READ, so both
+    // list identically -- but the stored bytes differ, and this is a
+    // format-compatibility port. Measured: the reference's directory block is
+    // exactly 3 bytes longer than one built without the prefix, which is
+    // ".\0" plus "./" on the one subdirectory name.
+    let mut found: Vec<(String, std::path::PathBuf, bool)> = Vec::new();
+    for spec in &specs {
+        let root = spec.trim_end_matches('/');
+        match scan(std::path::Path::new(spec), root, recursive, &mut found) {
+            Ok(()) => {}
+            Err(e) => {
+                eprintln!("ERROR: {spec}: {e}");
+                return 2;
+            }
+        }
+    }
+
+    let mut dir_entries: Vec<Entry> = Vec::new();
+    let mut file_entries: Vec<Entry> = Vec::new();
+    let mut data = Vec::new();
+    for (stored, disk, is_dir) in &found {
+        let meta = match std::fs::symlink_metadata(disk) {
+            Ok(m) => m,
+            Err(e) => {
+                eprintln!("ERROR: {}: {e}", disk.display());
+                return 2;
+            }
+        };
+        let time = if nodates { 0 } else { mtime(&meta) };
+        if *is_dir {
+            dir_entries.push(Entry {
+                stored_name: stored.clone(),
+                size: 0,
+                time,
+                is_dir: true,
+                crc: 0,
+                block: 0,
+                pos_in_block: 0,
+            });
+            continue;
+        }
+        let body = match std::fs::read(disk) {
+            Ok(b) => b,
+            Err(e) => {
+                eprintln!("ERROR: {}: {e}", disk.display());
+                return 2;
+            }
+        };
+        file_entries.push(Entry {
+            stored_name: stored.clone(),
+            size: body.len() as u64,
+            time,
+            is_dir: false,
+            crc: crc::calc(&body),
+            block: 1,
+            pos_in_block: data.len() as u64,
+        });
+        data.extend_from_slice(&body);
+    }
+
+    // splitToSolidBlocks (ArhiveFileList.hs:291): directories go into their own
+    // block, and with aNO_COMPRESSION the file list is not split further.
+    let mut w = darc_arc::writer::Writer::new();
+    w.write_header();
+    let dir_block = w.write_data(&[], darc_arc::writer::no_compression(), dir_entries.len());
+    let file_block = w.write_data(&data, darc_arc::writer::no_compression(), file_entries.len());
+    let mut entries = dir_entries;
+    entries.extend(file_entries);
+    w.write_directory(&[dir_block, file_block], &entries);
+    let bytes = w.finish("", "", false);
+
+    match std::fs::write(archive_name, &bytes) {
+        Ok(()) => {}
+        Err(e) => {
+            eprintln!("ERROR: {archive_name}: {e}");
+            return 2;
+        }
+    }
+    println!("All OK");
+    0
+}
+
+fn mtime(meta: &std::fs::Metadata) -> i64 {
+    use std::time::UNIX_EPOCH;
+    match meta.modified().ok().and_then(|t| t.duration_since(UNIX_EPOCH).ok()) {
+        Some(d) => d.as_secs() as i64,
+        None => 0,
+    }
+}
+
+/// Collect files under `path`, with names stored relative to the spec.
+///
+/// The order is neither plain depth-first nor breadth-first, and getting it
+/// wrong writes an archive that reads back perfectly and is not the reference's
+/// bytes. `findFiles_FileInfo` (`FileInfo.hs:320`) drives `processDir` with
+/// `recursiveM`, and `processDir` hands the WHOLE of one directory's contents
+/// to `process_f` in a single chunk, then returns its subdirectories for the
+/// recursion. So:
+///
+/// > list a directory completely, THEN descend into its subdirectories in order.
+///
+/// On the test corpus that yields directories
+/// `binary edge many nested text` then `nested/a nested/a/b nested/a/b/c` --
+/// which looks breadth-first, because every level-1 directory is named in the
+/// first chunk -- while the files come out `binary/* edge/* many/*
+/// nested/a/shallow.txt nested/a/b/c/deep.txt text/*`, which looks
+/// depth-first. Both fall out of the one rule above. Emitting a directory and
+/// immediately descending into it (the obvious depth-first walk) misorders
+/// `text`; listing strictly level by level misorders the `nested` files.
+///
+/// Each directory's entries are sorted before use. Not tidiness: readdir order
+/// is filesystem order, and an archive built from it is not reproducible.
+fn scan(
+    dir: &std::path::Path,
+    prefix: &str,
+    recursive: bool,
+    out: &mut Vec<(String, std::path::PathBuf, bool)>,
+) -> std::io::Result<()> {
+    let mut names: Vec<std::ffi::OsString> =
+        std::fs::read_dir(dir)?.filter_map(|e| e.ok()).map(|e| e.file_name()).collect();
+    names.sort();
+
+    // One chunk: every entry of this directory, dirs and files together.
+    let mut subdirs = Vec::new();
+    for name in names {
+        let child = dir.join(&name);
+        let stored = if prefix.is_empty() {
+            name.to_string_lossy().into_owned()
+        } else {
+            format!("{prefix}/{}", name.to_string_lossy())
+        };
+        let meta = std::fs::symlink_metadata(&child)?;
+        if meta.is_dir() {
+            out.push((stored.clone(), child.clone(), true));
+            subdirs.push((child, stored));
+        } else if meta.is_file() {
+            out.push((stored, child, false));
+        }
+    }
+
+    // ...and only then descend.
+    if recursive {
+        for (child, stored) in subdirs {
+            scan(&child, &stored, recursive, out)?;
+        }
+    }
+    Ok(())
 }
 
 /// `arc l`.

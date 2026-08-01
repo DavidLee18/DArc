@@ -12,6 +12,7 @@
 //! Encoder output is deliberately NOT asserted to match the C library's. LZ4 is
 //! a match-finder and encoders differ legitimately; requiring byte-identity
 //! would fail for a reason that is not a bug.
+#![allow(dropping_copy_types, dropping_references, clippy::drop_non_drop)] // see darc-codecs/src/lib.rs
 
 use darc_codecs::lz4;
 

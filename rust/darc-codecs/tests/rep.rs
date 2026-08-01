@@ -2,6 +2,7 @@
 //! malformed streams must return an error, never panic, since the decoder runs
 //! on raw archive bytes via `arc t`. (Byte-for-byte equivalence to the C
 //! encoder's output is proven separately by rust/difftest/rep_ref.cpp.)
+#![allow(dropping_copy_types, dropping_references, clippy::drop_non_drop)] // see darc-codecs/src/lib.rs
 
 use darc_codecs::rep;
 use darc_codecs::ffi::Io;

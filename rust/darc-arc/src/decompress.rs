@@ -286,3 +286,67 @@ mod tests {
         assert_eq!(out, data);
     }
 }
+
+
+// ---------------------------------------------------------------------------
+// The encode side
+// ---------------------------------------------------------------------------
+
+/// Compress a buffer with one method — the inverse of [`undo`].
+///
+/// Only the methods the writer needs so far. `aDEFAULT_DIR_COMPRESSION` is
+/// `"lzma:bt4:1m"` (`Options.hs:376`), which canonicalises to the
+/// `lzma:1mb:mf=BT4` every archive's directory and footer block carries, so
+/// LZMA is required even to write an otherwise uncompressed `-m0` archive.
+pub fn compress_one(method: &Method, src: &[u8]) -> Result<Vec<u8>, Error> {
+    match method {
+        Method::Storing => Ok(src.to_vec()),
+        Method::Lzma(p) => {
+            let props = darc_lzma::LzmaProps {
+                lc: p.lit_context_bits as u8,
+                lp: p.lit_pos_bits as u8,
+                pb: p.pos_state_bits as u8,
+                dict_size: p.dictionary_size,
+                fb: p.num_fast_bytes,
+                // matchFinderCycles is 0 in the method string -- DArc's "auto"
+                // sentinel. Taking it literally underflows the search's cut
+                // counter, so it must be resolved from the match finder and fb.
+                mc: match_finder(p.match_finder).auto_mc(p.num_fast_bytes),
+                mf: match_finder(p.match_finder),
+                num_threads: 1,
+                // algorithm 1 is the optimal parser; 0 would be fast_mode.
+                fast_mode: p.algorithm == 0,
+                // parse_LZMA documents "eos" as ignored because the marker is
+                // always written, and the decoder expects it.
+                write_end_mark: true,
+            };
+            darc_lzma::encode(src, &props)
+                .map_err(|e| Error::Codec { method: "lzma".to_string(), detail: format!("{e:?}") })
+        }
+        other => Err(Error::Unsupported(format!("{other:?}"))),
+    }
+}
+
+/// The match-finder ids `parse_LZMA` stores, as the encoder's enum.
+fn match_finder(id: u32) -> darc_lzma::MatchFinderKind {
+    use darc_lzma::MatchFinderKind as M;
+    match id {
+        0 => M::Bt2,
+        1 => M::Bt3,
+        2 => M::Bt4,
+        3 => M::Hc4,
+        // kHT4 -- DArc's default, and Hc5 on the Rust side.
+        _ => M::Hc5,
+    }
+}
+
+/// Compress with a whole chain, in order.
+pub fn compress_chain(compressor: &[String], src: &[u8]) -> Result<Vec<u8>, Error> {
+    let chain = Method::parse_chain(compressor)
+        .ok_or_else(|| Error::BadMethod(compressor.join("+")))?;
+    let mut buf = src.to_vec();
+    for method in &chain {
+        buf = compress_one(method, &buf)?;
+    }
+    Ok(buf)
+}

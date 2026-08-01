@@ -14,6 +14,7 @@
 //! forever, which is the one place this port deliberately refuses to be
 //! bug-compatible. nextest's per-test process isolation is what keeps a panic
 //! reported as one failing test rather than taking the whole run down.
+#![allow(dropping_copy_types, dropping_references, clippy::drop_non_drop)] // see darc-codecs/src/lib.rs
 
 use darc_codecs::ffi::Io;
 use darc_codecs::mm;
