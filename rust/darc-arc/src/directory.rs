@@ -124,11 +124,27 @@ pub fn read_directory(arcpos: u64, body: &[u8]) -> Result<Directory, bytestream:
     let dir_flags = s.exactly(total_files, |s| s.bool())?;
     let crcs = s.exactly(total_files, |s| s.crc())?;
 
-    // 4. Optional fields. None are written yet, so the terminator should be
-    //    immediate; tolerate its absence in a stream that ends here.
+    // 4. Optional fields.
+    //
+    // `archiveWriteDir` writes aTAG_END and nothing else, and the READER's
+    // optional-field loop is commented out entirely (ArhiveDirectory.hs:275):
+    // the Haskell closes the stream without even reading the tag. So a
+    // directory carrying a real optional field would be silently ignored by
+    // both -- but by the same token, an unexpected tag here means the columns
+    // above did not end where they should have, which is worth refusing.
+    //
+    // Reading the tag and discarding the comparison, which this did first, is
+    // the worst of the three options: it pays for the check and then throws the
+    // answer away.
     if !s.is_eof() {
         let tag = s.varint()?;
-        let _ = tag == TAG_END;
+        if tag != TAG_END {
+            return Err(bytestream::Error::ImplausibleLength {
+                at: s.pos(),
+                len: tag,
+                remaining: s.remaining(),
+            });
+        }
     }
 
     // Rebuild the data blocks. blOrigSize is not stored: it is the sum of the
@@ -358,6 +374,17 @@ mod tests {
     }
 
     /// A corrupt count must be refused before it allocates, not after.
+    /// The terminator is checked, not merely consumed. A tag other than
+    /// aTAG_END means the columns did not end where the counts said they would.
+    #[test]
+    fn a_wrong_terminator_tag_is_refused() {
+        let mut body = encode(&sample());
+        // encode() writes TAG_END last, as a one-byte varint.
+        let last = body.len() - 1;
+        body[last] = 4; // varint for 2
+        assert!(read_directory(10_000, &body).is_err());
+    }
+
     #[test]
     fn an_implausible_file_count_is_refused() {
         let mut o = OutStream::new();

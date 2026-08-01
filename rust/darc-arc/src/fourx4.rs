@@ -160,13 +160,26 @@ fn chunks(body: &[u8]) -> Result<Vec<Chunk>, bytestream::Error> {
                 have: s.remaining(),
             });
         }
-        out.push(Chunk {
-            at: s.pos(),
-            comp_size,
-            // -1 is the raw marker. Any other negative value is corruption, and
-            // is caught below by the decoder refusing an absurd output size.
-            orig_size: if orig == -1 { None } else { Some(orig.max(0) as usize) },
-        });
+        // -1 is the raw marker. Any OTHER negative value is corruption and is
+        // refused here.
+        //
+        // This used to be `Some(orig.max(0) as usize)`, which silently turned
+        // -5 into "a chunk that unpacks to nothing" and left a comment claiming
+        // the decoder would catch it. It would not: a chunk whose inner method
+        // happens to produce zero bytes passes that check, and the corruption
+        // reaches the caller as a short solid block.
+        let orig_size = match orig {
+            -1 => None,
+            n if n < 0 => {
+                return Err(bytestream::Error::ImplausibleLength {
+                    at: s.pos(),
+                    len: n as u32 as u64,
+                    remaining: s.remaining(),
+                })
+            }
+            n => Some(n as usize),
+        };
+        out.push(Chunk { at: s.pos(), comp_size, orig_size });
         // Skip the payload.
         let _ = s.exactly(comp_size, |s| s.u8())?;
     }
@@ -200,9 +213,14 @@ where
                 None => Ok(payload.to_vec()),
                 Some(orig) => {
                     let out = decode_one(&params.inner, payload, orig).map_err(Error::Inner)?;
-                    // The chunk header states the unpacked size, so a mismatch
-                    // is detectable HERE, one chunk in, rather than as a CRC
-                    // failure over the whole solid block.
+                    // STRICTER THAN THE C, deliberately. `do_decompress` never
+                    // looks at orig_size again after the `== -1` test
+                    // (C_4x4.cpp:508) -- it decompresses the payload and writes
+                    // whatever comes out. The encoder always writes the true
+                    // size (:269), so checking it costs nothing on a valid
+                    // archive and turns a corrupt chunk into an error one
+                    // 8-byte header in, rather than a CRC failure over the whole
+                    // solid block with no indication of where it went wrong.
                     if out.len() != orig {
                         return Err(Error::ChunkSize { expected: orig, got: out.len() });
                     }
@@ -329,6 +347,29 @@ mod tests {
         let stream = encode(&[(Some(100), b"only ten..")]);
         let err = decode(&params(), &stream, identity).expect_err("refuses");
         assert_eq!(err, Error::ChunkSize { expected: 100, got: 10 });
+    }
+
+    /// A negative orig_size that is not the -1 raw marker is corruption, and
+    /// must be refused rather than clamped to zero.
+    #[test]
+    fn a_negative_chunk_size_other_than_the_raw_marker_is_refused() {
+        for bad in [-2i32, -5, i32::MIN] {
+            let mut o = OutStream::new();
+            o.u32(VERSION);
+            o.u32(bad as u32);
+            o.u32(3);
+            o.u8(b'a');
+            o.u8(b'b');
+            o.u8(b'c');
+            let stream = o.into_bytes();
+            match decode(&params(), &stream, identity) {
+                Err(Error::Framing(_)) => {}
+                other => panic!("orig_size {bad} was accepted: {other:?}"),
+            }
+        }
+        // ...while -1 remains the raw marker and is fine.
+        let stream = encode(&[(None, b"abc")]);
+        assert_eq!(decode(&params(), &stream, identity).expect("raw"), b"abc");
     }
 
     #[test]
