@@ -532,3 +532,243 @@ mod selection_tests {
         assert_eq!(best.result, 500);
     }
 }
+
+
+// ---------------------------------------------------------------------------
+// Data-type detection
+// ---------------------------------------------------------------------------
+
+/// The three `detect_mm*` entry points (`mmdet.cpp:799-818`).
+///
+/// Thin wrappers, but their parameter choices are archive-visible: `mode <= 2`
+/// picks the reduced channel and word-size sets, so a fast mode can conclude a
+/// different model from a thorough one on the same bytes.
+pub mod detect {
+    use super::{
+        autodetect_by_entropy, autodetect_wav_header, BITVALUES, CHANNELS, FAST_BITVALUES,
+        FAST_CHANNELS,
+    };
+    use core::ffi::c_int;
+
+    /// `detect_mm_bytes` — how much of a file to look at.
+    ///
+    /// `min(mode<=2 ? 64k : max(64k, min(filesize, 1mb)/2), filesize)`. All
+    /// integer arithmetic, and `min(filesize, 1mb)/2` truncates.
+    pub fn mm_bytes(mode: c_int, filesize: i64) -> i64 {
+        let want = if mode <= 2 {
+            64 * 1024
+        } else {
+            (64 * 1024).max(filesize.min(1024 * 1024) / 2)
+        };
+        want.min(filesize)
+    }
+
+    /// `detect_mm` — is this buffer multimedia data?
+    ///
+    /// The threshold is 0.80: the best model must beat the order-0 estimate by
+    /// at least 20%.
+    pub fn is_mm(mode: c_int, buf: &[u8]) -> bool {
+        let (chans, bits): (&[c_int], &[c_int]) = if mode <= 2 {
+            (&FAST_CHANNELS, &FAST_BITVALUES)
+        } else {
+            (&CHANNELS, &BITVALUES)
+        };
+        autodetect_by_entropy(buf, chans, bits, 0.80).is_some()
+    }
+
+    /// `detect_mm_header` — does the buffer start with a WAV header?
+    ///
+    /// `mode` is accepted and ignored, exactly as in the C.
+    pub fn is_mm_header(_mode: c_int, buf: &[u8]) -> bool {
+        autodetect_wav_header(buf).is_some()
+    }
+}
+
+/// What `detect_datatype` concluded.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DataType {
+    /// Compresses with neither an order-0 model nor LZ77.
+    Compressed,
+    /// A modest alphabet, few repeated distances, and LZ matches covering at
+    /// least a tenth of the data.
+    Text,
+    /// Anything else. The caller substitutes the file's own default for this.
+    Default,
+}
+
+impl DataType {
+    /// The strings the C writes, which the Haskell compares against by name.
+    pub fn name(self) -> &'static str {
+        match self {
+            DataType::Compressed => "$compressed",
+            DataType::Text => "$text",
+            DataType::Default => "default",
+        }
+    }
+}
+
+/// The list `detect_datatype(NULL, ...)` returns — the types it can recognise.
+///
+/// `splitFileTypes` asks for this to decide whether autodetection is worth
+/// running at all (`detectable_types`, `ArhiveFileList.hs:557`).
+pub const DETECTABLE_TYPES: &str = "$compressed $text";
+
+const TABLE_SIZE: usize = 16384;
+
+/// `detect_datatype` (`mmdet.cpp:826`).
+///
+/// Classifies a buffer as `$compressed`, `$text` or `default`, and the answer
+/// decides which solid block a file lands in — so it is archive-byte-visible,
+/// not a hint.
+///
+/// # The arithmetic is transliterated, and here it IS load-bearing
+///
+/// Three places where the obvious Rust would differ from the C:
+///
+/// * `log(double(bufsize/count[i]))` divides as **integers** before the
+///   logarithm. `bufsize/count[i]` for a byte occurring more than half the time
+///   is 1, and `log(1)` is 0 — that byte contributes nothing at all.
+/// * the base change is `log(x)/log(2)`, not `log2(x)`.
+/// * the three ratio tests use `double` throughout: `0.95*bufsize`,
+///   `0.10*bufsize`, `0.20*matches`.
+///
+/// Unlike `calc_results` above — where the same kind of truncation turned out
+/// not to matter — this one changes the verdict. Measured: replacing the
+/// integer division with a float one and `log(x)/log(2)` with `log2(x)` flips
+/// 400 KB of noise with one byte biased to ≈10.9% from `default` to
+/// `$compressed`, and `mmdet-check.sh` carries a dense sweep across that band
+/// for exactly that reason.
+///
+/// The band is narrow, and the reason is worth knowing: being near the order-0
+/// threshold forces a near-uniform distribution, which forces large
+/// `bufsize/count` ratios, where truncation is almost a no-op. It bites only
+/// where one biased byte drags a single ratio down into single digits while the
+/// rest stay uniform. A first corpus of "obviously near the gate" inputs missed
+/// it completely.
+///
+/// # The match scan
+///
+/// A 16 KiB hash table of the last position of each 2-byte value. On a hit the
+/// scan walks the match forward four bytes at a time, inserting every position
+/// into the table, and counts every byte it passes into the histogram. Only
+/// matches closer than 256 bytes are counted, and the four-entry `dist` array is
+/// a move-to-front list used to spot a *repeated* distance.
+pub fn detect_datatype(buf: &[u8]) -> DataType {
+    let bufsize = buf.len();
+    let mut count = [0i64; 256];
+    let mut matches: i64 = 0;
+    let mut repdists: i64 = 0;
+    let mut sumlen: i64 = 0;
+    let mut dist = [0i64; 4];
+    // `BYTE **table` starts as calloc'd NULLs, so 0 cannot be confused with a
+    // real position: index 0 is never stored, because the loop inserts p only
+    // after reading it. Use an Option to keep that distinction explicit.
+    let mut table: Vec<Option<usize>> = vec![None; TABLE_SIZE];
+
+    let value16 = |i: usize| -> usize {
+        usize::from(u16::from_le_bytes([buf[i], buf[i + 1]]))
+    };
+    let value32 = |i: usize| -> u32 {
+        u32::from_le_bytes([buf[i], buf[i + 1], buf[i + 2], buf[i + 3]])
+    };
+    let hash = |i: usize| -> usize { value16(i) % TABLE_SIZE };
+
+    if bufsize > 10 {
+        let end = bufsize - 10;
+        let mut p = 0usize;
+        while p < end {
+            let q = table[hash(p)];
+            match q {
+                Some(q0) if value16(p) == value16(q0) => {
+                    if p - q0 < 256 {
+                        matches += 1;
+                        // Move-to-front over four slots: if the distance is
+                        // already there it is a repeat.
+                        let mut x = (p - q0) as i64;
+                        for d in dist.iter_mut() {
+                            let y = *d;
+                            *d = x;
+                            x = y;
+                            if x == (p - q0) as i64 {
+                                repdists += 1;
+                                break;
+                            }
+                        }
+                    }
+                    // Walk the match, four bytes at a time.
+                    let o = p;
+                    let mut q = q0;
+                    while p + 4 <= bufsize && q + 4 <= bufsize && value32(p) == value32(q) && p < end
+                    {
+                        for k in 0..4 {
+                            count[usize::from(buf[p + k])] += 1;
+                            if p + k + 1 < bufsize {
+                                table[hash(p + k)] = Some(p + k);
+                            }
+                        }
+                        p += 4;
+                        q += 4;
+                    }
+                    while p < end && buf[p] == buf[q] {
+                        count[usize::from(buf[p])] += 1;
+                        table[hash(p)] = Some(p);
+                        p += 1;
+                        q += 1;
+                    }
+                    count[usize::from(buf[p])] += 1;
+                    // `o-q` -- q has advanced with p, so this is
+                    // (distance - matchlen), and it goes NEGATIVE when the
+                    // match is longer than the distance. Signed, deliberately.
+                    if (o as i64) - (q as i64) < 256 {
+                        sumlen += (p - o) as i64;
+                    }
+                }
+                Some(_) | None => {
+                    count[usize::from(buf[p])] += 1;
+                    table[hash(p)] = Some(p);
+                }
+            }
+            p += 1;
+        }
+    }
+
+    // Order-0 estimate, in bytes.
+    let mut order0 = 0f64;
+    for c in count.iter() {
+        if *c != 0 {
+            // INTEGER division, then log, then the base change by division.
+            let ratio = (bufsize as i64) / *c;
+            order0 += (*c as f64) * (ratio as f64).ln() / 2f64.ln() / 8.0;
+        }
+    }
+
+    // How many distinct characters make up 90% of the volume, ignoring any that
+    // alone exceed 20% of it.
+    let mut sorted = count;
+    sorted.sort_by(|a, b| b.cmp(a));
+    let mut sums: i64 = 0;
+    let mut total = bufsize as f64;
+    let mut normal_chars = 256usize;
+    for (i, c) in sorted.iter().enumerate() {
+        if (*c as f64) > bufsize as f64 * 0.20 {
+            total -= *c as f64;
+            continue;
+        }
+        sums += *c;
+        if (sums as f64) > total * 0.90 {
+            normal_chars = i;
+            break;
+        }
+    }
+
+    if order0 > 0.95 * bufsize as f64 && (sumlen as f64) < 0.10 * bufsize as f64 {
+        DataType::Compressed
+    } else if (17..=80).contains(&normal_chars)
+        && (repdists as f64) < 0.20 * matches as f64
+        && (sumlen as f64) > 0.10 * bufsize as f64
+    {
+        DataType::Text
+    } else {
+        DataType::Default
+    }
+}
