@@ -356,6 +356,7 @@ mod tests {
 
         let (base, footer) = archive::read_footer(&archive_bytes).expect("footer");
         assert_eq!(footer.sfx_size, 0, "no SFX stub");
+        assert_eq!(base, footer.blocks.last().map(|b| b.pos).unwrap_or(0), "the footer block's own position is what the block list is relative to");
         // header, dir, and the footer's own descriptor.
         assert_eq!(footer.blocks.len(), 3);
         let dir = footer
@@ -381,7 +382,6 @@ mod tests {
         assert_eq!(d.entries[2].pos_in_block, 15, "5 + 10");
         assert_eq!(d.blocks.len(), 1);
         assert_eq!(d.blocks[0].orig_size, 18);
-        let _ = base;
     }
 
     /// Directory numbers are assigned in FIRST-SEEN order, not sorted order --
