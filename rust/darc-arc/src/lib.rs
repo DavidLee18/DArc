@@ -54,6 +54,7 @@ pub mod decompress;
 pub mod directory;
 pub mod extract;
 pub mod fourx4;
+pub mod memlimit;
 pub mod method;
 pub mod options;
 pub mod writer;

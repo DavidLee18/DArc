@@ -59,7 +59,7 @@ fn main() {
     };
     let archive_name = match parsed.free.first() {
         Some(a) => a.clone(),
-        None if command == "canonize" => String::new(),
+        None if command == "canonize" || command == "fit" => String::new(),
         None => {
             eprintln!("ERROR: no archive name given");
             std::process::exit(2);
@@ -110,6 +110,29 @@ fn main() {
         // Not an `arc` command: a probe, so the canonicaliser can be checked
         // against the method strings real archives contain. Prints the
         // canonical form of each argument, or "?" if it does not parse.
+        // Another probe: `fit <bytes> <chain>...` prints each chain after the
+        // data-size limiting ArcvProcessRead.hs:122 applies.
+        "fit" => {
+            let mut it = parsed.free.iter();
+            let total: u64 = match it.next().and_then(|s| s.parse().ok()) {
+                Some(n) => n,
+                None => {
+                    eprintln!("usage: darc fit <total-bytes> <chain>...");
+                    std::process::exit(2);
+                }
+            };
+            let mut bad = 0;
+            for chain in it {
+                match darc_arc::memlimit::fit_to_data(chain, total) {
+                    Some(c) => println!("{c}"),
+                    None => {
+                        println!("?");
+                        bad += 1;
+                    }
+                }
+            }
+            if bad > 0 { 2 } else { 0 }
+        }
         "canonize" => {
             let mut bad = 0;
             for m in &parsed.free {
