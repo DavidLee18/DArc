@@ -16,13 +16,13 @@ set -uo pipefail
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 REF="${1:-$ROOT/Tests/arc-ghc}"
-PORT="$ROOT/rust/target/release/arctest"
+PORT="$ROOT/rust/target/release/darc"
 
 [ -x "$REF" ] || {
   echo "no reference binary at $REF -- build one with ./compile-ghc-probe" >&2
   exit 2
 }
-( cd "$ROOT/rust" && cargo build --release -q -p darc-arc --bin arctest ) || {
+( cd "$ROOT/rust" && cargo build --release -q -p darc-arc --bin darc ) || {
   echo "cargo build failed" >&2; exit 1; }
 [ -x "$PORT" ] || { echo "cargo produced no $PORT" >&2; exit 1; }
 
@@ -46,7 +46,7 @@ for m in -m0 -m1 -m2 -m3 -m4 -m5 -m9 -mx -mtor -mppmd; do
 
     "$REF" t "$W/a.arc" 2>&1 | tr '\r' '\n' | grep '^Tested' \
       | sed 's/[[:space:]]*$//' > "$W/ref.txt"
-    "$PORT" "$W/a.arc" 2>"$W/port.err" | grep '^Tested' > "$W/port.txt"
+    "$PORT" t "$W/a.arc" 2>"$W/port.err" | grep '^Tested' > "$W/port.txt"
     port_rc=${PIPESTATUS[0]}
 
     if [ "$port_rc" -ne 0 ]; then
@@ -76,7 +76,7 @@ cp "$W/a.arc" "$W/bad.arc"
 # the stored stream, and far from any descriptor.
 printf '\xff' | dd of="$W/bad.arc" bs=1 seek=4096 count=1 conv=notrunc 2>/dev/null
 
-if "$PORT" "$W/bad.arc" >/dev/null 2>&1; then
+if "$PORT" t "$W/bad.arc" >/dev/null 2>&1; then
   echo "SELF-TEST FAILED: the port accepted an archive with a corrupted byte" >&2
   exit 1
 fi

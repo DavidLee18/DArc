@@ -17,13 +17,13 @@ set -uo pipefail
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 REF="${1:-$ROOT/Tests/arc-ghc}"
-PORT="$ROOT/rust/target/release/arcx"
+PORT="$ROOT/rust/target/release/darc"
 
 [ -x "$REF" ] || {
   echo "no reference binary at $REF -- build one with ./compile-ghc-probe" >&2
   exit 2
 }
-( cd "$ROOT/rust" && cargo build --release -q -p darc-arc --bin arcx ) || {
+( cd "$ROOT/rust" && cargo build --release -q -p darc-arc --bin darc ) || {
   echo "cargo build failed" >&2; exit 1; }
 [ -x "$PORT" ] || { echo "cargo produced no $PORT" >&2; exit 1; }
 
@@ -47,11 +47,8 @@ for m in -m0 -m1 -m4 -m9 -mtor -mppmd; do
 
       ( cd "$W/ref" && "$REF" "$cmd" -y "$W/a.arc" ) >/dev/null 2>&1
       ref_rc=$?
-      if [ "$cmd" = e ]; then
-        "$PORT" -e "$W/a.arc" "$W/port" >/dev/null 2>"$W/port.err"
-      else
-        "$PORT" "$W/a.arc" "$W/port" >/dev/null 2>"$W/port.err"
-      fi
+      # -dp is the real option: the port takes the same command line as arc.
+      "$PORT" "$cmd" "-dp$W/port" "$W/a.arc" >/dev/null 2>"$W/port.err"
       port_rc=$?
 
       if [ "$ref_rc" -ne 0 ] || [ "$port_rc" -ne 0 ]; then
@@ -78,7 +75,7 @@ echo "arc x/e: $checked extractions, $fail differing"
 # if neither side extracted anything. Prove the tree is non-empty and that a
 # deliberate difference IS caught.
 rm -rf "$W/port"; mkdir -p "$W/port"
-"$PORT" "$W/a.arc" "$W/port" >/dev/null 2>&1
+"$PORT" x "-dp$W/port" "$W/a.arc" >/dev/null 2>&1
 files=$(find "$W/port" -type f | wc -l | tr -d ' ')
 if [ "$files" -lt 100 ]; then
   echo "SELF-TEST FAILED: the port extracted only $files files, so the tree" >&2

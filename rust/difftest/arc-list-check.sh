@@ -18,7 +18,7 @@ set -uo pipefail
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 REF="${1:-$ROOT/Tests/arc-ghc}"
-PORT="$ROOT/rust/target/release/arclist"
+PORT="$ROOT/rust/target/release/darc"
 
 [ -x "$REF" ] || {
   echo "no reference binary at $REF" >&2
@@ -26,7 +26,7 @@ PORT="$ROOT/rust/target/release/arclist"
   exit 2
 }
 
-( cd "$ROOT/rust" && cargo build --release -q -p darc-arc --bin arclist ) || {
+( cd "$ROOT/rust" && cargo build --release -q -p darc-arc --bin darc ) || {
   echo "cargo build failed" >&2; exit 1; }
 [ -x "$PORT" ] || { echo "cargo produced no $PORT" >&2; exit 1; }
 
@@ -52,7 +52,7 @@ for m in -m0 -m1 -m4 -m9 -mx -mtor -mppmd; do
     checked=$((checked + 1))
     # Drop line 1 only: it is the banner, and it contains the sandbox path.
     "$REF"  l "$W/a.arc" 2>/dev/null | tail -n +2 > "$W/ref.txt"
-    "$PORT"   "$W/a.arc" >"$W/port.txt" 2>"$W/port.err"
+    "$PORT" l "$W/a.arc" >"$W/port.txt" 2>"$W/port.err"
     if ! cmp -s "$W/ref.txt" "$W/port.txt"; then
       echo "  DIFF [$m $s]"
       diff "$W/ref.txt" "$W/port.txt" | head -6 | sed 's/^/      /'
@@ -71,11 +71,11 @@ echo "arc l: $checked archives, $fail differing, $skipped skipped"
 # of this comparison reported "10 differing" for the sole reason that the port
 # binary had been built into the wrong directory and did not exist.
 : > "$W/empty.arc"
-if "$PORT" "$W/empty.arc" >/dev/null 2>&1; then
+if "$PORT" l "$W/empty.arc" >/dev/null 2>&1; then
   echo "SELF-TEST FAILED: the port listed an empty file as a valid archive" >&2
   exit 1
 fi
-if ! "$PORT" "$W/a.arc" >/dev/null 2>&1; then
+if ! "$PORT" l "$W/a.arc" >/dev/null 2>&1; then
   echo "SELF-TEST FAILED: the port cannot list an archive it just matched" >&2
   exit 1
 fi
