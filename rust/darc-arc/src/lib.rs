@@ -53,6 +53,7 @@ pub mod crc;
 pub mod decompress;
 pub mod directory;
 pub mod extract;
+pub mod filetype;
 pub mod fourx4;
 pub mod memlimit;
 pub mod method;

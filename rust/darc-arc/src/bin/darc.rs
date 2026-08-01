@@ -59,7 +59,9 @@ fn main() {
     };
     let archive_name = match parsed.free.first() {
         Some(a) => a.clone(),
-        None if command == "canonize" || command == "fit" => String::new(),
+        None if command == "canonize" || command == "fit" || command == "types" => {
+            String::new()
+        }
         None => {
             eprintln!("ERROR: no archive name given");
             std::process::exit(2);
@@ -132,6 +134,73 @@ fn main() {
                 }
             }
             if bad > 0 { 2 } else { 0 }
+        }
+        // A probe: classify the files under a directory and print each
+        // resulting group's total size and type index, so the split can be
+        // compared with `arc lt` on a reference archive.
+        "types" => {
+            let dir = parsed.free.first().cloned().unwrap_or_else(|| ".".to_string());
+            let mut found = Vec::new();
+            match scan(std::path::Path::new(&dir), dir.trim_end_matches('/'), true, &mut found) {
+                Ok(()) => {}
+                Err(e) => {
+                    eprintln!("ERROR: {dir}: {e}");
+                    std::process::exit(2);
+                }
+            }
+            let mut entries: Vec<Entry> = Vec::new();
+            let mut bodies: Vec<Vec<u8>> = Vec::new();
+            for (stored, disk, is_dir) in &found {
+                if *is_dir {
+                    continue;
+                }
+                let body = std::fs::read(disk).unwrap_or_default();
+                entries.push(Entry {
+                    stored_name: stored.clone(),
+                    size: body.len() as u64,
+                    time: 0,
+                    is_dir: false,
+                    crc: 0,
+                    block: 0,
+                    pos_in_block: 0,
+                });
+                bodies.push(body);
+            }
+            let groups = load_groups(&parsed);
+            entries = darc_arc::sort::sort_files("gerpn", &groups, &entries);
+            // Re-associate the bodies after sorting.
+            let by_name: std::collections::HashMap<&str, &Vec<u8>> = found
+                .iter()
+                .filter(|(_, _, d)| !*d)
+                .map(|(n, _, _)| n.as_str())
+                .zip(bodies.iter())
+                .collect();
+            let cands: Vec<darc_arc::filetype::Candidate<'_>> = entries
+                .iter()
+                .map(|e| darc_arc::filetype::Candidate {
+                    stored_name: &e.stored_name,
+                    size: e.size,
+                    data: by_name.get(e.stored_name.as_str()).map(|v| v.as_slice()).unwrap_or(&[]),
+                    default_type: "$binary",
+                })
+                .collect();
+            let names: Vec<String> =
+                ["", "$obj", "$text"].iter().map(|s| s.to_string()).collect();
+            let split = darc_arc::filetype::split_file_types(&cands, &names);
+            // The -m4 chains, so the blocks come out in the order the reference
+            // writes them (sorted by chain, not by type index).
+            let chains = [
+                "rep+exe+delta+4x4:lzma".to_string(),
+                String::new(),
+                "dict+lzp+ppmd".to_string(),
+            ];
+            let merged =
+                darc_arc::filetype::merge_by_type(&split, |t| chains[t].clone());
+            for (ty, files) in &merged {
+                let size: u64 = files.iter().map(|&i| cands[i].size).sum();
+                println!("type {ty} ({}) {size} bytes", names[*ty]);
+            }
+            0
         }
         "canonize" => {
             let mut bad = 0;
