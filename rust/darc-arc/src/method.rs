@@ -155,11 +155,33 @@ impl Default for PpmdParams {
     }
 }
 
-/// `dict:BLOCK:...` (`C_Dict.cpp:86`). Only `BlockSize` reaches the decoder;
-/// the rest steer the encoder's dictionary selection and leave no trace.
+/// `dict:BLOCK:...` (`C_Dict.cpp:86`). Only `block_size` reaches the decoder,
+/// but every field is carried because `ShowCompressionMethod` prints them, and
+/// the printed form is what an archive stores.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DictParams {
     pub block_size: u32,
+    pub min_compression: u32,
+    pub min_weak_chars: u32,
+    pub min_large_cnt: u32,
+    pub min_medium_cnt: u32,
+    pub min_small_cnt: u32,
+    pub min_ratio: u32,
+}
+
+impl Default for DictParams {
+    /// `DICT_METHOD::DICT_METHOD()` (`C_Dict.cpp:31`).
+    fn default() -> Self {
+        DictParams {
+            block_size: 64 * 1024 * 1024,
+            min_compression: 100,
+            min_weak_chars: 20,
+            min_large_cnt: 2048,
+            min_medium_cnt: 100,
+            min_small_cnt: 50,
+            min_ratio: 4,
+        }
+    }
 }
 
 /// `lzp:BLOCK:...` (`C_LZP.cpp`). Five of the six parameters reach the decoder,
@@ -167,6 +189,7 @@ pub struct DictParams {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct LzpParams {
     pub block_size: u32,
+    pub min_compression: u32,
     pub min_match_len: i32,
     pub hash_size_log: i32,
     pub barrier: i32,
@@ -180,6 +203,7 @@ impl Default for LzpParams {
     fn default() -> Self {
         LzpParams {
             block_size: 8 * 1024 * 1024,
+            min_compression: 100,
             min_match_len: 64,
             hash_size_log: 18,
             barrier: i32::MAX,
@@ -202,14 +226,13 @@ pub enum Method {
     Storing,
     Lzma(LzmaParams),
     Ppmd(PpmdParams),
-    /// Tornado. Every parameter that matters to the decoder is in the stream
-    /// header, so the method string is parsed only to be accepted.
-    Tornado,
-    /// REP, likewise self-describing on decode (`rep.rs:164` ignores all eight
-    /// of its parameters and calls the parameterless decoder).
-    Rep,
-    /// GRZip, self-describing.
-    Grzip,
+    /// Tornado. The decoder reads everything it needs from the stream header;
+    /// the parameters here exist so the method string can be printed back.
+    Tornado(TornadoParams),
+    /// REP. The decoder ignores every parameter (`rep.rs:164`), but the printer
+    /// does not, so they are all carried.
+    Rep(RepParams),
+    Grzip(GrzipParams),
     /// `exe` — the x86 BCJ filter. Takes no parameters at all: `parse_BCJ_X86`
     /// requires `parameters[1] == NULL`.
     Exe,
@@ -242,9 +265,9 @@ impl Method {
             "storing" => Some(Method::Storing),
             "lzma" => parse_lzma(params.into_iter()).map(Method::Lzma),
             "ppmd" => parse_ppmd(&params).map(Method::Ppmd),
-            "tor" => Some(Method::Tornado),
-            "rep" => Some(Method::Rep),
-            "grzip" => Some(Method::Grzip),
+            "tor" => parse_tornado(&params).map(Method::Tornado),
+            "rep" => parse_rep(&params).map(Method::Rep),
+            "grzip" => parse_grzip(&params).map(Method::Grzip),
             // parse_BCJ_X86 accepts "exe" ONLY with no parameters.
             "exe" => {
                 if params.is_empty() {
@@ -266,6 +289,324 @@ impl Method {
     pub fn parse_chain(methods: &[String]) -> Option<Vec<Method>> {
         methods.iter().map(|m| Method::parse(m)).collect()
     }
+}
+
+/// `grzip:...` (`C_GRZip.cpp:143`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct GrzipParams {
+    pub method: u32,
+    pub block_size: u32,
+    pub enable_lzp: bool,
+    pub min_match_len: u32,
+    pub hash_size_log: u32,
+    pub alternative_bwt_sort: bool,
+    pub adaptive_block_size: bool,
+    pub delta_filter: bool,
+}
+
+impl Default for GrzipParams {
+    /// `GRZIP_METHOD::GRZIP_METHOD()` (`C_GRZip.cpp:70`).
+    fn default() -> Self {
+        GrzipParams {
+            method: 1,
+            block_size: 8 * 1024 * 1024,
+            enable_lzp: true,
+            min_match_len: 32,
+            hash_size_log: 15,
+            alternative_bwt_sort: false,
+            adaptive_block_size: false,
+            delta_filter: false,
+        }
+    }
+}
+
+/// `rep:...` (`C_REP.cpp:100`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RepParams {
+    pub block_size: u32,
+    pub min_compression: u32,
+    pub min_match_len: u32,
+    pub hash_size_log: u32,
+    pub barrier: u32,
+    pub smallest_len: u32,
+    pub amplifier: u32,
+}
+
+impl Default for RepParams {
+    /// `REP_METHOD::REP_METHOD()` (`C_REP.cpp:13`). `Barrier` is `INT_MAX`.
+    fn default() -> Self {
+        RepParams {
+            block_size: 64 * 1024 * 1024,
+            min_compression: 100,
+            min_match_len: 512,
+            hash_size_log: 0,
+            barrier: i32::MAX as u32,
+            smallest_len: 512,
+            amplifier: 1,
+        }
+    }
+}
+
+/// `tor:...` (`C_Tornado.cpp:85`) — a preset number plus overrides.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct TornadoParams {
+    pub number: u32,
+    pub buffer: u32,
+    pub hashsize: u32,
+    pub hash_row_width: u32,
+    pub encoding_method: u32,
+    pub match_parser: u32,
+    pub update_step: u32,
+    pub find_tables: u32,
+    pub auxhash_size: u32,
+    pub auxhash_row_width: u32,
+}
+
+/// `std_Tornado_method[]` (`Tornado.cpp:66`), the fields the printer compares
+/// against. The preset number selects a whole row, and any parameter after it
+/// overrides one field of that row -- so the defaults a printed method is
+/// measured against depend on the preset, not on a single global default.
+const TORNADO_PRESETS: [TornadoParams; 12] = [
+    // number, buffer, hashsize, row, encoding, parser, update, tables, auxhash, auxrow
+    t(0, 1 << 20, 0, 0, 0, 0, 999, 0, 0, 0),
+    t(1, 1 << 20, 16 << 10, 1, 1, 1, 999, 0, 0, 0),
+    t(2, 2 << 20, 64 << 10, 1, 2, 1, 999, 0, 0, 0),
+    t(3, 4 << 20, 128 << 10, 2, 3, 1, 999, 1, 0, 0),
+    t(4, 8 << 20, 2 << 20, 2, 3, 1, 999, 1, 0, 0),
+    t(5, 16 << 20, 2 << 20, 4, 4, 2, 999, 1, 0, 0),
+    t(6, 64 << 20, 32 << 20, 8, 4, 2, 4, 1, 0, 0),
+    t(7, 256 << 20, 128 << 20, 32, 4, 2, 1, 1, 128 << 10, 4),
+    t(8, 1024 << 20, 512 << 20, 128, 4, 2, 1, 1, 128 << 10, 4),
+    t(9, 1024 << 20, 2048 << 20, 256, 4, 2, 1, 1, 512 << 10, 4),
+    t(10, 1024 << 20, 2048 << 20, 256, 4, 2, 1, 1, 2 << 20, 32),
+    t(11, 1024 << 20, 1600 << 20, 200, 4, 2, 1, 1, 512 << 20, 256),
+];
+
+#[allow(clippy::too_many_arguments)]
+const fn t(
+    number: u32,
+    buffer: u32,
+    hashsize: u32,
+    hash_row_width: u32,
+    encoding_method: u32,
+    match_parser: u32,
+    update_step: u32,
+    find_tables: u32,
+    auxhash_size: u32,
+    auxhash_row_width: u32,
+) -> TornadoParams {
+    TornadoParams {
+        number,
+        buffer,
+        hashsize,
+        hash_row_width,
+        encoding_method,
+        match_parser,
+        update_step,
+        find_tables,
+        auxhash_size,
+        auxhash_row_width,
+    }
+}
+
+/// `default_Tornado_method` — "equivalent to option -5" (`Tornado.cpp:82`).
+pub const TORNADO_DEFAULT: usize = 5;
+
+impl TornadoParams {
+    /// The preset row this method's `number` came from, which is what
+    /// `ShowCompressionMethod` compares each field against.
+    pub fn preset(&self) -> TornadoParams {
+        TORNADO_PRESETS[(self.number as usize).min(TORNADO_PRESETS.len() - 1)]
+    }
+}
+
+impl Default for TornadoParams {
+    fn default() -> Self {
+        TORNADO_PRESETS[TORNADO_DEFAULT]
+    }
+}
+
+/// `parse_TORNADO` (`C_Tornado.cpp:85`).
+fn parse_tornado(params: &[&str]) -> Option<TornadoParams> {
+    let mut p = TornadoParams::default();
+    for param in params {
+        let param: &str = param;
+        if param.len() > 1 {
+            let (head, rest) = param.split_at(1);
+            let handled = match head {
+                "b" => {
+                    p.buffer = parse_mem(rest)?;
+                    true
+                }
+                "h" => {
+                    p.hashsize = parse_mem(rest)?;
+                    true
+                }
+                "l" => {
+                    p.hash_row_width = parse_int(rest)?;
+                    true
+                }
+                "c" => {
+                    p.encoding_method = parse_int(rest)?;
+                    true
+                }
+                "p" => {
+                    p.match_parser = parse_int(rest)?;
+                    true
+                }
+                "u" => {
+                    p.update_step = parse_int(rest)?;
+                    true
+                }
+                "t" => {
+                    p.find_tables = parse_int(rest)?;
+                    true
+                }
+                "a" => match param.get(1..2) {
+                    Some("h") => {
+                        p.auxhash_size = parse_mem(&param[2..])?;
+                        true
+                    }
+                    Some("l") => {
+                        p.auxhash_row_width = parse_int(&param[2..])?;
+                        true
+                    }
+                    Some(_) | None => false,
+                },
+                _ => false,
+            };
+            if handled {
+                continue;
+            }
+        }
+        // A bare integer selects a whole preset ROW, replacing everything set
+        // so far; anything else is the buffer size.
+        match parse_int(param) {
+            Some(n) => p = TORNADO_PRESETS[(n as usize).min(TORNADO_PRESETS.len() - 1)],
+            None => p.buffer = parse_mem(param)?,
+        }
+    }
+    Some(p)
+}
+
+/// `parse_GRZIP` (`C_GRZip.cpp:143`).
+fn parse_grzip(params: &[&str]) -> Option<GrzipParams> {
+    let mut p = GrzipParams::default();
+    for param in params {
+        let param: &str = param;
+        if param.len() == 1 {
+            match param {
+                "s" => {
+                    p.alternative_bwt_sort = true;
+                    continue;
+                }
+                "a" => {
+                    p.adaptive_block_size = true;
+                    continue;
+                }
+                "l" => {
+                    p.enable_lzp = false;
+                    continue;
+                }
+                "d" => {
+                    p.delta_filter = true;
+                    continue;
+                }
+                "p" => {
+                    p.adaptive_block_size = false;
+                    p.enable_lzp = false;
+                    p.delta_filter = true;
+                    continue;
+                }
+                _ => {}
+            }
+        } else {
+            let (head, rest) = param.split_at(1);
+            let handled = match head {
+                "m" => {
+                    p.method = parse_int(rest)?;
+                    true
+                }
+                "b" => {
+                    p.block_size = parse_mem(rest)?;
+                    true
+                }
+                "l" => {
+                    p.min_match_len = parse_int(rest)?;
+                    true
+                }
+                "h" => {
+                    p.hash_size_log = parse_int(rest)?;
+                    true
+                }
+                _ => false,
+            };
+            if handled {
+                continue;
+            }
+        }
+        match parse_int(param) {
+            Some(n) => p.min_match_len = n,
+            None => p.block_size = parse_mem(param)?,
+        }
+    }
+    Some(p)
+}
+
+/// `parse_REP` (`C_REP.cpp:100`).
+fn parse_rep(params: &[&str]) -> Option<RepParams> {
+    let mut p = RepParams::default();
+    for param in params {
+        let param: &str = param;
+        if param.len() > 1 {
+            let (head, rest) = param.split_at(1);
+            let handled = match head {
+                "b" => {
+                    p.block_size = parse_mem(rest)?;
+                    true
+                }
+                "l" => {
+                    p.min_match_len = parse_int(rest)?;
+                    true
+                }
+                "d" => {
+                    p.barrier = parse_mem(rest)?;
+                    true
+                }
+                "s" => {
+                    p.smallest_len = parse_int(rest)?;
+                    true
+                }
+                "h" => {
+                    p.hash_size_log = parse_int(rest)?;
+                    true
+                }
+                "a" => {
+                    p.amplifier = parse_int(rest)?;
+                    true
+                }
+                _ => false,
+            };
+            if handled {
+                continue;
+            }
+        }
+        match param.strip_suffix('%') {
+            Some(pct) => match parse_int(pct) {
+                Some(n) => {
+                    p.min_compression = n;
+                    continue;
+                }
+                None => {}
+            },
+            None => {}
+        }
+        match parse_int(param) {
+            Some(n) => p.min_match_len = n,
+            None => p.block_size = parse_mem(param)?,
+        }
+    }
+    Some(p)
 }
 
 /// `parse_PPMD` (`C_PPMD.cpp:130`).
@@ -322,45 +663,78 @@ fn parse_ppmd(params: &[&str]) -> Option<PpmdParams> {
 /// `parse_DICT` (`C_Dict.cpp:86`). Only BlockSize is kept: `dict::decompress`
 /// takes nothing else.
 fn parse_dict(params: &[&str]) -> Option<DictParams> {
-    let mut block_size = 64 * 1024 * 1024u32;
+    let mut p = DictParams::default();
     for param in params {
         let param: &str = param;
-        if param.len() == 1 && (param == "p" || param == "f") {
-            // Encoder presets; nothing the decoder sees.
-            continue;
-        }
-        if param.len() > 1 {
-            let (head, rest) = param.split_at(1);
-            match head {
-                "b" => {
-                    block_size = parse_mem(rest)?;
+        if param.len() == 1 {
+            // The two presets, which set four fields at once.
+            match param {
+                "p" => {
+                    p.min_large_cnt = 8192;
+                    p.min_medium_cnt = 400;
+                    p.min_small_cnt = 100;
+                    p.min_ratio = 4;
                     continue;
                 }
-                // c/l/m/s/r are encoder thresholds. They must still PARSE, or a
-                // valid method string would be rejected.
-                "c" | "l" | "m" | "s" | "r" => {
-                    parse_int(rest)?;
+                "f" => {
+                    p.min_large_cnt = 2048;
+                    p.min_medium_cnt = 100;
+                    p.min_small_cnt = 50;
+                    p.min_ratio = 0;
                     continue;
                 }
                 _ => {}
             }
+        } else {
+            let (head, rest) = param.split_at(1);
+            let handled = match head {
+                "b" => {
+                    p.block_size = parse_mem(rest)?;
+                    true
+                }
+                "c" => {
+                    p.min_weak_chars = parse_int(rest)?;
+                    true
+                }
+                "l" => {
+                    p.min_large_cnt = parse_int(rest)?;
+                    true
+                }
+                "m" => {
+                    p.min_medium_cnt = parse_int(rest)?;
+                    true
+                }
+                "s" => {
+                    p.min_small_cnt = parse_int(rest)?;
+                    true
+                }
+                "r" => {
+                    p.min_ratio = parse_int(rest)?;
+                    true
+                }
+                _ => false,
+            };
+            if handled {
+                continue;
+            }
         }
         match param.strip_suffix('%') {
-            Some(pct) => {
-                match parse_int(pct) {
-                    Some(_) => continue,
-                    None => {}
+            Some(pct) => match parse_int(pct) {
+                Some(n) => {
+                    p.min_compression = n;
+                    continue;
                 }
-            }
+                None => {}
+            },
             None => {}
         }
         // A bare integer is MinWeakChars; anything else is the block size.
         match parse_int(param) {
-            Some(_) => continue,
-            None => block_size = parse_mem(param)?,
+            Some(n) => p.min_weak_chars = n,
+            None => p.block_size = parse_mem(param)?,
         }
     }
-    Some(DictParams { block_size })
+    Some(p)
 }
 
 /// `parse_LZP` (`C_LZP.cpp:110`).
@@ -398,13 +772,13 @@ fn parse_lzp(params: &[&str]) -> Option<LzpParams> {
             }
         }
         match param.strip_suffix('%') {
-            Some(pct) => {
-                match parse_int(pct) {
-                    // MinCompression: encoder-only.
-                    Some(_) => continue,
-                    None => {}
+            Some(pct) => match parse_int(pct) {
+                Some(n) => {
+                    p.min_compression = n;
+                    continue;
                 }
-            }
+                None => {}
+            },
             None => {}
         }
         match parse_int(param) {

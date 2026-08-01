@@ -59,6 +59,7 @@ fn main() {
     };
     let archive_name = match parsed.free.first() {
         Some(a) => a.clone(),
+        None if command == "canonize" => String::new(),
         None => {
             eprintln!("ERROR: no archive name given");
             std::process::exit(2);
@@ -106,6 +107,22 @@ fn main() {
             run_blocks(&info, &data, &layout, extracting)
         }
         "a" => add(&archive_name, &parsed),
+        // Not an `arc` command: a probe, so the canonicaliser can be checked
+        // against the method strings real archives contain. Prints the
+        // canonical form of each argument, or "?" if it does not parse.
+        "canonize" => {
+            let mut bad = 0;
+            for m in &parsed.free {
+                match darc_arc::canonize::canonize_chain(m) {
+                    Some(c) => println!("{c}"),
+                    None => {
+                        println!("?");
+                        bad += 1;
+                    }
+                }
+            }
+            if bad > 0 { 2 } else { 0 }
+        }
         "c" | "d" | "f" | "u" | "m" | "j" | "ch" | "rr" | "k" | "v" | "lb" | "lt" => {
             eprintln!("ERROR: command {command:?} is not implemented in this port yet");
             2
