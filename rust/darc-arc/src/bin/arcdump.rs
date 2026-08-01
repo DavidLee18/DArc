@@ -48,24 +48,28 @@ fn main() {
         std::process::exit(1);
     }
 
-    // Only a stored footer can be decoded until the method-string dispatcher is
-    // ported; say so plainly rather than decoding garbage.
-    if !footer_descr.is_stored() {
-        println!("footer is compressed with {:?} -- not yet decodable", footer_descr.compressor);
-        return;
-    }
-
-    let mut body = vec![0u8; footer_descr.orig_size as usize];
+    // archiveBlockReadAll: read the packed bytes, run the chain backwards, and
+    // check both the length and the CRC before believing any of it.
+    let mut packed = vec![0u8; footer_descr.comp_size as usize];
     f.seek(SeekFrom::Start(footer_descr.pos)).expect("seek block");
-    f.read_exact(&mut body).expect("read block");
-    let got = darc_arc::crc::calc(&body);
-    println!("body crc:   {got:08x} (descriptor says {:08x})", footer_descr.crc);
-    if got != footer_descr.crc {
-        eprintln!("footer block failed its CRC");
-        std::process::exit(1);
-    }
+    f.read_exact(&mut packed).expect("read block");
+    let body = match darc_arc::decompress::read_block(
+        &footer_descr.compressor,
+        &packed,
+        footer_descr.orig_size as usize,
+        footer_descr.crc,
+    ) {
+        Ok(b) => b,
+        Err(e) => {
+            eprintln!("footer block: {e}");
+            std::process::exit(1);
+        }
+    };
+    println!("body:       {} bytes, CRC and length both check out", body.len());
 
-    match block::read_footer(at, &body, footer_descr) {
+    // blPos of the footer BLOCK, not `at` (its descriptor) -- see read_footer.
+    let footer_block_pos = footer_descr.pos;
+    match block::read_footer(footer_block_pos, &body, footer_descr) {
         Ok(footer) => {
             println!("locked {}  sfx {}  recovery {:?}", footer.locked, footer.sfx_size, footer.recovery);
             println!("comment {:?}", footer.comment);

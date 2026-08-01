@@ -43,6 +43,10 @@
 #![allow(clippy::single_match)]
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used))]
 
+pub mod archive;
 pub mod block;
 pub mod bytestream;
 pub mod crc;
+pub mod decompress;
+pub mod directory;
+pub mod method;

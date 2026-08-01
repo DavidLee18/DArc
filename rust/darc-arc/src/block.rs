@@ -270,8 +270,16 @@ pub struct FooterBlock {
 
 /// `archiveReadFooterBlock` — decode the *already decompressed* footer body.
 ///
-/// `arcpos` is the position of the footer block's descriptor, which every block
-/// position inside is stored relative to.
+/// `arcpos` is **`blPos` of the footer block itself** — where its packed data
+/// starts — not the position of its descriptor. `archiveReadFooterBlock`
+/// destructures `blPos = pos` from the footer block and passes that to
+/// `tupleToBlock`, and `archiveWriteFooterBlock` encodes against the same value.
+///
+/// Passing the descriptor's position instead shifts every block in the archive
+/// by the footer's packed size — here, 59 bytes. Nothing errors: the header
+/// block simply appears at 59 instead of 0, and `ftSFXSize`, which is
+/// `minimum (map blPos blocks)`, reports a 59-byte SFX stub on an archive that
+/// has none. It was caught by noticing that number, not by a check.
 ///
 /// The two `isEOFMemory` probes are format, not defensiveness: builds older than
 /// the recovery field wrote neither it nor the UTF-8 comment, and an archive

@@ -232,6 +232,7 @@ dependencies = [
 name = "darc-arc"
 version = "0.1.0"
 dependencies = [
+ "darc-lzma",
  "rayon",
 ]
 

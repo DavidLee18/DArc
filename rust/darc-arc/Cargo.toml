@@ -25,3 +25,7 @@ crate-type = ["staticlib", "rlib"]
 # build is byte-identical to itself across -N1/-N2/-N8 x -mt1/-mt8. That is what
 # licenses decoding blocks in parallel.
 rayon = "1.10"
+# The LZMA decoder, called directly rather than through the C ABI: DArc writes
+# no .lzma header, so the property bytes come only from the method string and
+# a buffer-to-buffer call is all this needs.
+darc-lzma = { path = "../darc-lzma" }
