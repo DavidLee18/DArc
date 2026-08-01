@@ -108,7 +108,7 @@ fn main() {
             let extracting = command != "t";
             run_blocks(&info, &data, &layout, extracting)
         }
-        "a" => add(&archive_name, &parsed),
+        "a" | "u" | "f" => add(&command, &archive_name, &parsed),
         // Not an `arc` command: a probe, so the canonicaliser can be checked
         // against the method strings real archives contain. Prints the
         // canonical form of each argument, or "?" if it does not parse.
@@ -236,7 +236,14 @@ fn main() {
 /// valid, decodes correctly, and is not the bytes the reference would have
 /// written -- the failure mode this repo cares most about. Refusing is the
 /// honest behaviour until it is ported.
-fn add(archive_name: &str, parsed: &options::Parsed) -> i32 {
+fn add(command: &str, archive_name: &str, parsed: &options::Parsed) -> i32 {
+    // opt_update_type (Cmdline.hs). --sync is not offered: it deletes, and the
+    // deletion path is not exercised by any harness here yet.
+    let update_type = match command {
+        "u" => darc_arc::joinlist::UpdateType::Update,
+        "f" => darc_arc::joinlist::UpdateType::Freshen,
+        _ => darc_arc::joinlist::UpdateType::Add,
+    };
     // The subset of builtinMethodSubsts (Compression.hs:428) this port can
     // write. Each maps a -m level to its unfitted chain; the data-size fitting
     // happens once the block's contents are known.
@@ -284,7 +291,17 @@ fn add(archive_name: &str, parsed: &options::Parsed) -> i32 {
     let mut found: Vec<(String, std::path::PathBuf, bool)> = Vec::new();
     for spec in &specs {
         let root = spec.trim_end_matches('/');
-        match scan(std::path::Path::new(spec), root, recursive, &mut found) {
+        // A filespec that NAMES A DIRECTORY is scanned recursively even without
+        // -r. find_filter_and_process_files (FileInfo.hs:403) rewrites it as the
+        // two wildcards "dir" and "dir/", and the trailing separator sets
+        // `dir_slash`, which is OR-ed into `recursive` (FileInfo.hs:461).
+        //
+        // Without this, `arc u -y archive .` silently misses every
+        // subdirectory -- 32 bytes on the update harness's tree, and an
+        // archive that lists as if the files had never existed.
+        let names_a_dir = spec.ends_with('/')
+            || std::path::Path::new(spec).is_dir();
+        match scan(std::path::Path::new(spec), root, recursive || names_a_dir, &mut found) {
             Ok(()) => {}
             Err(e) => {
                 eprintln!("ERROR: {spec}: {e}");
@@ -333,10 +350,84 @@ fn add(archive_name: &str, parsed: &options::Parsed) -> i32 {
             time,
             is_dir: false,
             crc: crc::calc(&body),
-            block: 1,
+            block: 0,
             pos_in_block: 0,
         });
         contents.insert(stored.clone(), body);
+    }
+
+    // For u/f: read what is already in the archive and merge. By DEFAULT the
+    // kept files are recompressed rather than copied -- splitToSolidBlocks only
+    // preserves existing solid blocks under --keep-original
+    // (ArhiveFileList.hs:297) -- so the merged list is packed exactly as a
+    // fresh one would be.
+    if update_type != darc_arc::joinlist::UpdateType::Add
+        && std::path::Path::new(archive_name).exists()
+    {
+        let info = match archive::read_info(std::path::Path::new(archive_name)) {
+            Ok(i) => i,
+            Err(e) => {
+                eprintln!("ERROR: {e}");
+                return 2;
+            }
+        };
+        let data = match archive::open(std::path::Path::new(archive_name)) {
+            Ok(d) => d,
+            Err(e) => {
+                eprintln!("ERROR: {e}");
+                return 2;
+            }
+        };
+        let main: Vec<darc_arc::joinlist::Candidate> = info
+            .entries
+            .iter()
+            .map(|e| darc_arc::joinlist::Candidate {
+                entry: e.clone(),
+                origin: darc_arc::joinlist::Origin::Archive,
+            })
+            .collect();
+        let mut added: Vec<darc_arc::joinlist::Candidate> = Vec::new();
+        for e in dir_entries.iter().chain(file_entries.iter()) {
+            added.push(darc_arc::joinlist::Candidate {
+                entry: e.clone(),
+                origin: darc_arc::joinlist::Origin::Disk,
+            });
+        }
+        let merged = darc_arc::joinlist::join_lists(
+            &main,
+            &added,
+            update_type,
+            parsed.flag("append"),
+            // The merge order only matters when a sort order is in effect, and
+            // the files are re-sorted below in any case.
+            "",
+            |a, b| {
+                let mut v = a.to_vec();
+                v.extend_from_slice(b);
+                v
+            },
+        );
+        // Pull the bytes of everything that came from the archive.
+        dir_entries.clear();
+        file_entries.clear();
+        for c in merged {
+            if c.origin == darc_arc::joinlist::Origin::Archive && !c.entry.is_dir {
+                match archive::read_entry(&data, &info, &c.entry) {
+                    Ok(body) => {
+                        contents.insert(c.entry.stored_name.clone(), body);
+                    }
+                    Err(e) => {
+                        eprintln!("ERROR: {}: {e}", c.entry.stored_name);
+                        return 2;
+                    }
+                }
+            }
+            if c.entry.is_dir {
+                dir_entries.push(c.entry);
+            } else {
+                file_entries.push(c.entry);
+            }
+        }
     }
 
     // sortFiles: the solid sort order decides the layout of the block, and so
@@ -344,6 +435,9 @@ fn add(archive_name: &str, parsed: &options::Parsed) -> i32 {
     let groups = load_groups(parsed);
     file_entries = darc_arc::sort::sort_files(sort_order, &groups, &file_entries);
     let mut data = Vec::new();
+    // `block` is assigned when the blocks are actually written, below: the
+    // directories block may or may not exist, so the first data block's index
+    // is not known here.
     for e in &mut file_entries {
         e.pos_in_block = data.len() as u64;
         match contents.get(&e.stored_name) {
@@ -405,11 +499,18 @@ fn add(archive_name: &str, parsed: &options::Parsed) -> i32 {
 
     let mut w = darc_arc::writer::Writer::new();
     w.write_header();
-    let dir_block = w.write_data(&[], darc_arc::writer::no_compression(), dir_entries.len());
 
-    // Each block's chain is fitted to THAT block's size (ArcvProcessRead.hs:122),
-    // so with one block per file every file gets its own dictionary.
-    let mut data_blocks = vec![dir_block];
+    // `dirs &&& [(aNO_COMPRESSION, dirs)]` (ArhiveFileList.hs:291): the
+    // directories block exists only when there ARE directories. Writing an
+    // empty one produces an archive that lists identically and is five bytes
+    // longer -- which is how `arc f` on a tree whose only subdirectory is not
+    // freshened first showed it.
+    let mut data_blocks: Vec<darc_arc::block::ArchiveBlock> = Vec::new();
+    if !dir_entries.is_empty() {
+        data_blocks
+            .push(w.write_data(&[], darc_arc::writer::no_compression(), dir_entries.len()));
+    }
+
     if one_block_per_file {
         // splitToSolidBlocks runs splitFileTypes FIRST and only then splits each
         // type's files by the grouping, so a file keeps ITS OWN type's chain
