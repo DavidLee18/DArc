@@ -16,15 +16,16 @@
 #
 # None of them is visible without comparing bytes.
 #
-# Only -m0 is written, and that is a deliberate limit rather than an unfinished
-# one. Every other level gets aDEFAULT_SOLID_SORT_ORDER = "gerpn"
-# (Cmdline.hs:617), which reorders the files before they are packed; -m0 is the
-# single level with sorting disabled. The rest of the machinery for compressed
-# levels IS verified -- see arc-canonize-check.sh and arc-fit-check.sh -- and
-# -m1 was byte-identical on the generated corpus precisely because that corpus
-# is already in sorted order. It was NOT on a corpus with a zero-length .bin
-# among .txt files. The port refuses those levels, and this harness checks that
-# it refuses.
+# -m0, -m1 and -mtor are written. The rest need file-type grouping
+# ($text/$obj/$binary), which decides which files share a solid block; the port
+# refuses them and this harness checks that it refuses.
+#
+# The SECOND corpus is what makes the -m1 rows mean anything. Every level except
+# -m0 sorts files with aDEFAULT_SOLID_SORT_ORDER = "gerpn" (Cmdline.hs:617), and
+# the generated corpus is already in sorted order -- so -m1 was byte-identical
+# there while the sort was not implemented at all. The shapes corpus has a
+# zero-length .bin among .txt files, which moves under the sort and does not
+# under scan order.
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
@@ -59,8 +60,8 @@ printf 'five' > "$W/shapes/a/b/c/d/deep.txt"
 fail=0 checked=0
 
 for corpus in corpus shapes; do
-  for m in -m0; do
-    for extra in "" "-s-"; do
+  for m in -m0 -m1 -mtor; do
+    for extra in ""; do
       checked=$((checked + 1))
       rm -f "$W/ref.arc" "$W/port.arc"
       # --nodates: without it the archive embeds mtimes and the two runs would
@@ -105,7 +106,7 @@ fi
 # archive that decodes correctly but is not the reference's bytes is the
 # failure this repo cares most about, so silence here would be worse than an
 # error.
-for m in -m1 -m2 -m4 -m9 -mx -mtor; do
+for m in -m2 -m4 -m9 -mx; do
   rm -f "$W/nope.arc"
   if ( cd "$W/corpus" && "$PORT" a --nodates -r -y "$m" "$W/nope.arc" . ) >/dev/null 2>&1; then
     echo "SELF-TEST FAILED: the port claimed to write $m, which it cannot yet" >&2

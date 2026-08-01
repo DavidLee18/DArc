@@ -171,35 +171,23 @@ fn add(archive_name: &str, parsed: &options::Parsed) -> i32 {
     // The subset of builtinMethodSubsts (Compression.hs:428) this port can
     // write. Each maps a -m level to its unfitted chain; the data-size fitting
     // happens once the block's contents are known.
-    // Only -m0. The machinery for the compressed levels is here and verified --
-    // canonicalisation, dictionary fitting, 4x4 framing and the Tornado encoder
-    // all reproduce the reference byte for byte on the generated corpus -- but
-    // the FILE ORDER does not.
-    //
-    // Cmdline.hs:617 gives any non-trivial method aDEFAULT_SOLID_SORT_ORDER,
-    // "gerpn" (Options.hs:416): group by arc.groups, then extension, then the
-    // `reorder` similarity pass, then path, then name. -m0 alone gets "", which
-    // is why it is scan order and matches.
-    //
-    // The generated corpus happens to be in sorted order already, so -m1 and
-    // -mtor were byte-identical there and NOT on a corpus with a zero-length
-    // .bin among .txt files -- the .bin sorts into a different arc.groups group
-    // and moves to the front. An archive with the wrong file order decodes
-    // perfectly and is not what DArc wrote, which is the failure this repo
-    // cares most about, so this refuses rather than guesses.
+    // The subset of builtinMethodSubsts (Compression.hs:428) this port writes.
     let method = parsed.arg("method", "");
     let chain: &str = match method {
         "0" | "storing" => "storing",
+        // "1 = 1b / $exe=exe+1b", "1b = 1xb", "1xb = 4x4:tor:3". The $exe arm
+        // needs file-type detection, which is not ported.
+        "1" | "1x" => "4x4:tor:3",
+        "tor" => "tor",
         other => {
-            eprintln!(
-                "ERROR: -m{other} is not implemented in this port yet -- it needs \
-                 the \"gerpn\" solid sort order (arc.groups grouping, extension, \
-                 the reorder pass, path, name), which is not ported. Only -m0 is \
-                 written, because it is the one level with sorting disabled."
-            );
+            eprintln!("ERROR: -m{other} is not implemented in this port yet");
             return 2;
         }
     };
+    // sort_order (Cmdline.hs:617): "" when the main compressor is
+    // aNO_COMPRESSION, and aDEFAULT_SOLID_SORT_ORDER otherwise. -m0 is the one
+    // level with sorting disabled, which is why it packs in scan order.
+    let sort_order = if chain == "storing" { "" } else { "gerpn" };
     let recursive = parsed.flag("recursive");
     let nodates = parsed.flag("nodates");
 
@@ -226,9 +214,12 @@ fn add(archive_name: &str, parsed: &options::Parsed) -> i32 {
         }
     }
 
+    // Read every file first, then sort, then lay the block out: the sort keys
+    // include the size, so it cannot run before the scan is complete.
     let mut dir_entries: Vec<Entry> = Vec::new();
     let mut file_entries: Vec<Entry> = Vec::new();
-    let mut data = Vec::new();
+    let mut contents: std::collections::HashMap<String, Vec<u8>> =
+        std::collections::HashMap::new();
     for (stored, disk, is_dir) in &found {
         let meta = match std::fs::symlink_metadata(disk) {
             Ok(m) => m,
@@ -264,9 +255,22 @@ fn add(archive_name: &str, parsed: &options::Parsed) -> i32 {
             is_dir: false,
             crc: crc::calc(&body),
             block: 1,
-            pos_in_block: data.len() as u64,
+            pos_in_block: 0,
         });
-        data.extend_from_slice(&body);
+        contents.insert(stored.clone(), body);
+    }
+
+    // sortFiles: the solid sort order decides the layout of the block, and so
+    // the archive's bytes.
+    let groups = load_groups(parsed);
+    file_entries = darc_arc::sort::sort_files(sort_order, &groups, &file_entries);
+    let mut data = Vec::new();
+    for e in &mut file_entries {
+        e.pos_in_block = data.len() as u64;
+        match contents.get(&e.stored_name) {
+            Some(body) => data.extend_from_slice(body),
+            None => {}
+        }
     }
 
     // splitToSolidBlocks (ArhiveFileList.hs:291): directories go into their own
@@ -307,6 +311,49 @@ fn add(archive_name: &str, parsed: &options::Parsed) -> i32 {
     }
     println!("All OK");
     0
+}
+
+/// The groups file, resolved the way `Cmdline.hs:382` resolves it.
+///
+/// `--groups=FILE` names one, `--groups-` disables grouping, and the default is
+/// `arc.groups` beside the executable — `configFilePlaces` is
+/// `takeDirectory(getExeName) </> filename` and nothing else (`Files.hs:208`).
+/// No groups file means `[reANY_FILE]`: one group holding everything.
+///
+/// ## The reference never finds one on macOS
+///
+/// Measured, and it changes what this port must do to match. `Tests/arc-ghc`
+/// produces the same file order with no option, with `--groups-`, and with
+/// `arc.groups` copied to sit beside the binary — while `--groups=<path>`
+/// produces a different one. So `getExeName` does not resolve here, the default
+/// lookup finds nothing, and the reference's default IS the one-group path.
+///
+/// That is a pre-existing bug in the reference on this platform, not something
+/// this port should imitate: the lookup below is the faithful one. It simply
+/// finds nothing either, because `darc` does not live beside an arc.groups.
+fn load_groups(parsed: &options::Parsed) -> darc_arc::sort::Groups {
+    match parsed.arg("groups", "--") {
+        // `--groups-` -- the option's value is a bare "-".
+        "-" => return darc_arc::sort::Groups::single(),
+        "--" => {}
+        explicit => match std::fs::read_to_string(explicit) {
+            Ok(text) => return darc_arc::sort::Groups::parse(&text),
+            Err(e) => {
+                eprintln!("ERROR: {explicit}: {e}");
+                std::process::exit(2);
+            }
+        },
+    }
+    let beside_exe = std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(|d| d.join("arc.groups")));
+    match beside_exe {
+        Some(path) => match std::fs::read_to_string(&path) {
+            Ok(text) => darc_arc::sort::Groups::parse(&text),
+            Err(_) => darc_arc::sort::Groups::single(),
+        },
+        None => darc_arc::sort::Groups::single(),
+    }
 }
 
 fn mtime(meta: &std::fs::Metadata) -> i64 {
