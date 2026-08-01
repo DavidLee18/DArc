@@ -247,10 +247,19 @@ pub fn compress_one_with(method: &Method, src: &[u8], all_at_once: bool) -> Resu
                 pb: p.pos_state_bits as u8,
                 dict_size: p.dictionary_size,
                 fb: p.num_fast_bytes,
-                // matchFinderCycles is 0 in the method string -- DArc's "auto"
-                // sentinel. Taking it literally underflows the search's cut
-                // counter, so it must be resolved from the match finder and fb.
-                mc: match_finder(p.match_finder).auto_mc(p.num_fast_bytes),
+                // 0 is DArc's "auto" sentinel and must be resolved from the
+                // match finder and fb -- taking it literally underflows the
+                // search's cut counter. A NON-zero value is the user's and must
+                // be passed through.
+                //
+                // Always resolving looked right because auto_mc(32) on the
+                // default HT4 finder is exactly 16, which is what -m4's `mc16`
+                // asks for. -m3 asks for `mc8` and differed by 185 bytes.
+                mc: if p.match_finder_cycles != 0 {
+                    p.match_finder_cycles
+                } else {
+                    match_finder(p.match_finder).auto_mc(p.num_fast_bytes)
+                },
                 mf: match_finder(p.match_finder),
                 num_threads: 1,
                 // algorithm 1 is the optimal parser; 0 would be fast_mode.
@@ -268,16 +277,67 @@ pub fn compress_one_with(method: &Method, src: &[u8], all_at_once: bool) -> Resu
         Method::FourX4(p) => {
             crate::fourx4::encode(p, src, |m, chunk| compress_one_with(m, chunk, true))
         }
-        other @ (Method::Ppmd(_)
-        | Method::Rep(_)
-        | Method::Grzip(_)
-        | Method::Exe
-        | Method::Dict(_)
-        | Method::Lzp(_)
-        | Method::Delta(_)
-        | Method::Dispack(_)
-        | Method::FourX4(_)
-        | Method::Unsupported(_)) => Err(Error::Unsupported(format!("{other:?}"))),
+        Method::Ppmd(p) => drive_enc("ppmd", src, |io| {
+            darc_codecs::ppmd::compress(io, p.order, p.mem, p.mr_method)
+        }),
+        Method::Rep(p) => drive_enc("rep", src, |io| {
+            darc_codecs::rep::compress(
+                io,
+                p.block_size,
+                p.min_compression as core::ffi::c_int,
+                p.min_match_len as core::ffi::c_int,
+                p.barrier as core::ffi::c_int,
+                p.smallest_len as core::ffi::c_int,
+                p.hash_size_log as core::ffi::c_int,
+                p.amplifier as core::ffi::c_int,
+            )
+        }),
+        Method::Grzip(p) => drive_enc("grzip", src, |io| {
+            darc_codecs::grzip::stream::compress(
+                io,
+                p.method as core::ffi::c_int,
+                p.block_size as core::ffi::c_int,
+                core::ffi::c_int::from(p.enable_lzp),
+                p.min_match_len as core::ffi::c_int,
+                p.hash_size_log as core::ffi::c_int,
+                core::ffi::c_int::from(p.alternative_bwt_sort),
+                core::ffi::c_int::from(p.adaptive_block_size),
+                core::ffi::c_int::from(p.delta_filter),
+            )
+        }),
+        Method::Exe => drive_enc("exe", src, |io| {
+            darc_codecs::bcj::de_compress(io, darc_codecs::bcj::Direction::Encode)
+        }),
+        Method::Dict(p) => drive_enc("dict", src, |io| {
+            darc_codecs::dict_encode::compress(
+                io,
+                p.block_size,
+                p.min_compression as core::ffi::c_int,
+                p.min_weak_chars as core::ffi::c_int,
+                p.min_large_cnt as core::ffi::c_int,
+                p.min_medium_cnt as core::ffi::c_int,
+                p.min_small_cnt as core::ffi::c_int,
+                p.min_ratio as core::ffi::c_int,
+            )
+        }),
+        Method::Lzp(p) => drive_enc("lzp", src, |io| {
+            darc_codecs::lzp::compress(
+                io,
+                p.block_size,
+                p.min_compression as core::ffi::c_int,
+                p.min_match_len,
+                p.hash_size_log,
+                p.barrier,
+                p.smallest_len,
+            )
+        }),
+        Method::Delta(p) => drive_enc("delta", src, |io| {
+            darc_codecs::delta::compress(io, p.block_size, p.extended_tables)
+        }),
+        Method::Dispack(p) => drive_enc("dispack", src, |io| {
+            darc_codecs::dispack::encode::compress(io, p.block_size)
+        }),
+        other @ Method::Unsupported(_) => Err(Error::Unsupported(format!("{other:?}"))),
     }
 }
 

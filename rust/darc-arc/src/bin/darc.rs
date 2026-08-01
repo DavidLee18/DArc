@@ -240,19 +240,22 @@ fn add(archive_name: &str, parsed: &options::Parsed) -> i32 {
     // The subset of builtinMethodSubsts (Compression.hs:428) this port can
     // write. Each maps a -m level to its unfitted chain; the data-size fitting
     // happens once the block's contents are known.
-    // The subset of builtinMethodSubsts (Compression.hs:428) this port writes.
+    // decode_method expands a -m level into one chain per file type.
     let method = parsed.arg("method", "");
-    let chain: &str = match method {
-        "0" | "storing" => "storing",
-        // "1 = 1b / $exe=exe+1b", "1b = 1xb", "1xb = 4x4:tor:3". The $exe arm
-        // needs file-type detection, which is not ported.
-        "1" | "1x" => "4x4:tor:3",
-        "tor" => "tor",
-        other => {
-            eprintln!("ERROR: -m{other} is not implemented in this port yet");
-            return 2;
-        }
-    };
+    let decoded = darc_arc::methodtable::decode_method(method);
+    if decoded.is_empty() {
+        eprintln!("ERROR: -m{method} expanded to nothing");
+        return 2;
+    }
+    // NOT validated here. A level defines chains for types no file can be given
+    // -- $wav and $bmp need an arc.groups entry, and getDefaultType maps every
+    // autodetectable type to $binary -- so refusing a level because its dead
+    // $wav arm uses `tta` would reject -m1 and -m4 outright. The chains that
+    // are actually reached are checked below, once the split is known.
+    let type_names: Vec<String> = decoded.iter().map(|(t, _)| t.clone()).collect();
+    let chains: Vec<String> = decoded.iter().map(|(_, c)| c.join("+")).collect();
+    // The main chain, used for the single-block paths below.
+    let chain: &str = &chains[0];
     // parseSolidOption (Cmdline.hs:757). Only the two forms this port needs:
     // "-s-" is [GroupNone], one solid block per file; the default and a bare
     // "-s" are the empty criteria list, which splits nothing.
@@ -349,6 +352,51 @@ fn add(archive_name: &str, parsed: &options::Parsed) -> i32 {
         }
     }
 
+    // splitFileTypes: which files share a block, decided by CONTENT. Only
+    // reached when the level defines more than one chain -- with a single chain
+    // every file is type 0 anyway, and probing would be wasted work.
+    let type_groups: Vec<(usize, Vec<usize>)> = if chains.len() > 1 {
+        let cands: Vec<darc_arc::filetype::Candidate<'_>> = file_entries
+            .iter()
+            .map(|e| darc_arc::filetype::Candidate {
+                stored_name: &e.stored_name,
+                size: e.size,
+                data: contents.get(&e.stored_name).map(Vec::as_slice).unwrap_or(&[]),
+                // getDefaultType: every autodetectable type becomes $binary,
+                // and only arc.groups can produce anything else.
+                default_type: "$binary",
+            })
+            .collect();
+        let split = darc_arc::filetype::split_file_types(&cands, &type_names);
+        darc_arc::filetype::merge_by_type(&split, |t| chains[t].clone())
+    } else {
+        vec![(0, (0..file_entries.len()).collect())]
+    };
+
+    // Now that the split is known, check only the chains it reaches.
+    for (ty, _) in &type_groups {
+        for m in chains[*ty].split('+') {
+            match darc_arc::method::Method::parse(m) {
+                Some(darc_arc::method::Method::Unsupported(name)) => {
+                    eprintln!(
+                        "ERROR: -m{method} needs {name} for {}, which this port cannot write yet",
+                        if type_names[*ty].is_empty() {
+                            "the default file type"
+                        } else {
+                            &type_names[*ty]
+                        }
+                    );
+                    return 2;
+                }
+                Some(_) => {}
+                None => {
+                    eprintln!("ERROR: -m{method}: {m} does not parse");
+                    return 2;
+                }
+            }
+        }
+    }
+
     // splitToSolidBlocks (ArhiveFileList.hs:291): directories go into their own
     // block, always stored. The files are split by opt_group_data -- except for
     // aNO_COMPRESSION, where splitOneType returns a single block whatever the
@@ -363,10 +411,56 @@ fn add(archive_name: &str, parsed: &options::Parsed) -> i32 {
     // so with one block per file every file gets its own dictionary.
     let mut data_blocks = vec![dir_block];
     if one_block_per_file {
-        for (i, e) in file_entries.iter_mut().enumerate() {
-            let body = contents.get(&e.stored_name).cloned().unwrap_or_default();
-            e.block = i + 1;
-            e.pos_in_block = 0;
+        // splitToSolidBlocks runs splitFileTypes FIRST and only then splits each
+        // type's files by the grouping, so a file keeps ITS OWN type's chain
+        // even when every file is its own block. Using the main chain for all of
+        // them was wrong by 1.500 to 3.100 bytes on the four multi-type levels.
+        let mut reordered: Vec<Entry> = Vec::new();
+        for (ty, group) in &type_groups {
+            let chain = &chains[*ty];
+            for &i in group {
+                let mut e = file_entries[i].clone();
+                let body = contents.get(&e.stored_name).cloned().unwrap_or_default();
+                e.block = data_blocks.len();
+                e.pos_in_block = 0;
+                let fitted = match darc_arc::memlimit::fit_to_data(chain, body.len() as u64) {
+                    Some(f) => f,
+                    None => {
+                        eprintln!("ERROR: cannot fit {chain} to {} bytes", body.len());
+                        return 2;
+                    }
+                };
+                let compressor: Vec<String> = fitted.split('+').map(str::to_string).collect();
+                match w.write_compressed_data(&body, compressor, 1) {
+                    Ok(b) => data_blocks.push(b),
+                    Err(err) => {
+                        eprintln!("ERROR: {err}");
+                        return 2;
+                    }
+                }
+                reordered.push(e);
+            }
+        }
+        file_entries = reordered;
+    } else {
+        // One block per file TYPE, in the order merge_by_type produced. The
+        // entries are reordered to match, because the directory stores block
+        // membership as a run length over the file list.
+        let mut reordered: Vec<Entry> = Vec::new();
+        for (ty, group) in &type_groups {
+            let mut body = Vec::new();
+            for &i in group {
+                let e = &file_entries[i];
+                let mut e = e.clone();
+                e.block = data_blocks.len();
+                e.pos_in_block = body.len() as u64;
+                match contents.get(&e.stored_name) {
+                    Some(b) => body.extend_from_slice(b),
+                    None => {}
+                }
+                reordered.push(e);
+            }
+            let chain = &chains[*ty];
             let fitted = match darc_arc::memlimit::fit_to_data(chain, body.len() as u64) {
                 Some(f) => f,
                 None => {
@@ -375,30 +469,15 @@ fn add(archive_name: &str, parsed: &options::Parsed) -> i32 {
                 }
             };
             let compressor: Vec<String> = fitted.split('+').map(str::to_string).collect();
-            match w.write_compressed_data(&body, compressor, 1) {
+            match w.write_compressed_data(&body, compressor, group.len()) {
                 Ok(b) => data_blocks.push(b),
-                Err(err) => {
-                    eprintln!("ERROR: {err}");
+                Err(e) => {
+                    eprintln!("ERROR: {e}");
                     return 2;
                 }
             }
         }
-    } else {
-        let fitted = match darc_arc::memlimit::fit_to_data(chain, data.len() as u64) {
-            Some(f) => f,
-            None => {
-                eprintln!("ERROR: cannot fit {chain} to {} bytes", data.len());
-                return 2;
-            }
-        };
-        let compressor: Vec<String> = fitted.split('+').map(str::to_string).collect();
-        match w.write_compressed_data(&data, compressor, file_entries.len()) {
-            Ok(b) => data_blocks.push(b),
-            Err(e) => {
-                eprintln!("ERROR: {e}");
-                return 2;
-            }
-        }
+        file_entries = reordered;
     }
 
     let mut entries = dir_entries;

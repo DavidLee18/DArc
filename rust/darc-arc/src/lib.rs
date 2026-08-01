@@ -57,6 +57,7 @@ pub mod filetype;
 pub mod fourx4;
 pub mod memlimit;
 pub mod method;
+pub mod methodtable;
 pub mod options;
 pub mod sort;
 pub mod writer;
