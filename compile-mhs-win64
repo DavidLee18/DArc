@@ -162,6 +162,14 @@ if true; then
   for l in $rust_libs; do
     [ -f "$l" ] || { echo "error: cargo produced no $l" >&2; exit 1; }
   done
+  # Existing is not the same as carrying the dropin aliases -- see the note in
+  # `compile` and rust/check-dropin.sh. The host nm cannot read a PE archive, so
+  # hand it the cross one; check-dropin.sh warns and passes if neither is there,
+  # which is the right trade for a cross build we cannot inspect.
+  cross_nm="$triple-nm"
+  command -v "$cross_nm" >/dev/null 2>&1 || cross_nm="llvm-nm"
+  bash "$PWD/rust/check-dropin.sh" \
+       "$PWD/rust/target/$rust_target/release/libdarc_codecs.a" "$cross_nm" || exit 1
 
   # Reaches the per-codec makefiles through win32-common.mak; make imports it.
   export DARC_EXTRA_DEFINES="-DDARC_RUST"

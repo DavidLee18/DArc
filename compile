@@ -100,7 +100,11 @@ rust_lib="$PWD/rust/target/release/libdarc_codecs.a $PWD/rust/target/release/lib
 # `srep` binary rather than calling a symbol. That binary used to be built from
 # Compression/SREP by srep/compile; both are gone, and the Rust port is the
 # implementation now, so install it where the archiver looks.
-( cd rust && cargo build --release -p darc-codecs --bin srep ) || {
+# --features darc-codecs/dropin here too, matching the build above. Not because
+# the binary needs the aliases, but so both invocations resolve the SAME feature
+# set: switching features between them makes cargo recompile the crate twice per
+# build for nothing.
+( cd rust && cargo build --release -p darc-codecs --bin srep --features darc-codecs/dropin ) || {
   echo "error: cargo build failed for the srep binary" >&2; exit 1; }
 mkdir -p Tests
 cp "$PWD/rust/target/release/srep" Tests/srep || {
@@ -108,6 +112,12 @@ cp "$PWD/rust/target/release/srep" Tests/srep || {
 for l in $rust_lib; do
   [ -f "$l" ] || { echo "error: cargo produced no $l" >&2; exit 1; }
 done
+# The staticlib existing is not the same as the staticlib being usable: every
+# rust/difftest script builds darc-codecs WITHOUT the dropin feature into this
+# same workspace target directory, overwriting it with one that is missing six
+# symbols. The Haskell link uses -undefined dynamic_lookup, so that does not
+# fail here -- it fails when the finished binary starts. See rust/check-dropin.sh.
+bash "$PWD/rust/check-dropin.sh" "$PWD/rust/target/release/libdarc_codecs.a" || exit 1
 defines="$defines -DDARC_RUST"
 # Reaches the per-codec makefiles through unix-common.mak, which appends
 # DARC_EXTRA_DEFINES to DEFINES; make imports it from the environment.
