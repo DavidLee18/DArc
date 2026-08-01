@@ -50,5 +50,6 @@ pub mod codec_io;
 pub mod crc;
 pub mod decompress;
 pub mod directory;
+pub mod extract;
 pub mod fourx4;
 pub mod method;
