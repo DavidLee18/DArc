@@ -33,6 +33,46 @@ Two properties every harness here is expected to have, learned the hard way:
 the reverse is recorded, because the vendored SDK was compiled with PPMd and the
 ARM64/ARMT filters switched off.
 
+## The Haskell layer: `arc-cli-check.sh` and the GHC probe
+
+`rust/difftest/arc-cli-check.sh <reference-arc> <port-arc>` is the acceptance
+gate for the application layer. It runs 18 argv cases through two `arc`
+binaries and compares five observables — archive bytes, exit code, stdout,
+stderr, and the whole extracted tree. Only three things are normalised (timing
+lines, progress redraws, the sandbox path); everything else, including the file
+count and the ratio, is compared verbatim. It ends with a self-test that proves
+the comparison can fail.
+
+`./compile-ghc-probe` builds today's tree with GHC and `-threaded` into
+`Tests/arc-ghc`. It is a probe, not a build path: the GHC build was deleted at
+`af8dd3c`. It exists because the MicroHs build cannot answer whether real
+Haskell parallelism is archive-visible — `compat-ghc/GHC/Conc.hs` makes
+`setNumCapabilities` a no-op and MicroHs has no `-threaded`, so every
+determinism measurement taken on `Tests/arc` was taken on a serial build.
+
+Measured 2026-08-01, GHC 9.10.3:
+
+- **Archives are byte-identical** between the two builds in all 15
+  archive-producing cases, as are the extracted trees and the listings.
+- The threaded binary is identical to itself across `+RTS -N1/-N2/-N8` ×
+  `-mt1/-mt8` — six real-parallelism settings, one archive. Consistent with
+  `ArcvProcessRead.hs:104`: `splitToSolidBlocks` is a *pure* function
+  (`ArhiveFileList.hs:291`), so block boundaries are decided before any
+  concurrency and nothing downstream can move them.
+
+The 12 differences it *did* find are all MicroHs-only regressions in the
+application layer, and each is a constraint on the port:
+
+| what | why |
+|---|---|
+| `Compressed 8 files` where GHC says `226` | `ArcvProcessCompress.hs:106` — under `__MHS__` a data block is one `darc_compress_solid_block_w` call. It never emits `FileStart`, so `uiStartFile` never runs and only directory entries reach the counter. The **whole Haskell compression pipeline is bypassed**; the GHC branch runs `compressa`, a real multi-stage `de_compress_PROCESS` chain. |
+| `uncaught exception: …` / exit 1, vs `ERROR: …` / exit 2 | `Arc.hs:75` guards `setUncaughtExceptionHandler handler` behind `#ifdef __GLASGOW_HASKELL__`, and the `compat-ghc` shim is `\_ -> return ()`. MicroHs prints its runtime's own message — leaking a `System/IO/Internal.hs` path — and exits 1 where the contract is 2. |
+| one global callback slot | `CompressionLib.hs:333` — MicroHs has no `wrapper` FFI, so every `mkCALL_BACK` writes the same `IORef` instead of minting a `FunPtr`. Harmless while single-threaded; a port that restores concurrent codec invocation must not reproduce it. |
+
+So `Tests/arc` is a sound *format* reference and a poor *behaviour* reference.
+Gate archive bytes against it; gate the summary line and the error paths
+against `Tests/arc-ghc`.
+
 ## End-to-end
 
 ```bash

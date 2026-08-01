@@ -1,0 +1,119 @@
+#!/usr/bin/env bash
+# Build today's tree with GHC and the THREADED runtime, to answer one question:
+# does real Haskell-side parallelism change the archives DArc writes?
+#
+# The MicroHs build cannot answer it. compat-ghc/GHC/Conc.hs makes
+# setNumCapabilities a no-op, Arc.hs guards the capability setup behind
+# #ifdef __GLASGOW_HASKELL__, and MicroHs has no -threaded, so every
+# determinism measurement taken on Tests/arc was taken on a serial build.
+#
+# This is a PROBE, not a build path: compile-ghc was deleted at af8dd3c and is
+# not coming back. It lives in the scratchpad and is modelled on today's
+# ./compile, not on the deleted script -- the codec set, the Rust staticlibs and
+# the vendored Lua have all changed since.
+#
+# Differences from ./compile that matter:
+#   * no -D__MHS__ anywhere. It guards exactly one thing in the C
+#     (darc_get_haskell_callback_ptr, Environment.cpp:1902), which returns the
+#     address of a MicroHs-generated function. Under GHC, CompressionLib.hs
+#     takes the #ifndef __MHS__ branch and uses the real `wrapper` FFI instead.
+#   * -icompat-oldtime but NOT -icompat-ghc: the latter's GHC.Conc, System.Process
+#     and Data.Array are MicroHs fills and would shadow GHC's own base modules --
+#     including the setNumCapabilities no-op this probe exists to avoid.
+#
+# What it found, on 2026-08-01 with GHC 9.10.3 (see docs/testing.md):
+#   * every archive byte-identical to the MicroHs build, and identical again
+#     across +RTS -N1/-N2/-N8 x -mt1/-mt8 -- six real-parallelism settings, one
+#     archive. Threading does not move solid-block boundaries.
+#   * three MicroHs-only behaviour differences, all in the application layer.
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "$0")" && pwd)"
+cd "$ROOT"
+
+exe=Tests/arc-ghc
+ctempdir=/tmp/out/FreeArc-ghc-c
+htempdir=/tmp/out/FreeArc-ghc-hs
+mkdir -p "$ctempdir" "$htempdir" Tests
+
+defines="-DFREEARC_UNIX -DFREEARC_INTEL_BYTE_ORDER -DFREEARC_64BIT -DDARC_RUST"
+[ "$(uname -s)" = "Darwin" ] && defines="$defines -DFREEARC_MACOS"
+if pkg-config --exists libcurl 2>/dev/null; then
+  curl_libs=$(pkg-config --libs libcurl)
+else
+  curl_libs=""; defines="$defines -DFREEARC_NOURL"
+fi
+
+echo "== Rust staticlibs (with the drop-in aliases)"
+( cd rust && cargo build --release -p darc-codecs -p darc-crypto -p darc-sevenz \
+    --features darc-codecs/dropin )
+bash rust/check-dropin.sh rust/target/release/libdarc_codecs.a
+rust_lib="$ROOT/rust/target/release/libdarc_codecs.a $ROOT/rust/target/release/libdarc_crypto.a $ROOT/rust/target/release/libdarc_sevenz.a"
+
+echo "== codecs (shared with the mhs build -- Compression/ never sees __MHS__)"
+cp unix-common.mak common.mak
+export DARC_EXTRA_DEFINES="-DDARC_RUST"
+( cd Compression && chmod +x compile && ./compile ) >/dev/null
+
+echo "== Environment.o / URL.o, rebuilt WITHOUT __MHS__"
+make TEMPDIR="$ctempdir" ALL DEFINES="$defines" >/dev/null
+
+echo "== vendored Lua"
+lua_objs=""
+for src in HsLua/src/*.c; do
+  obj="$ctempdir/hslua_$(basename "${src%.c}").o"
+  [ -f "$obj" ] || clang -std=c99 -O2 -w -c "$src" -IHsLua/src -o "$obj"
+  lua_objs="$lua_objs $obj"
+done
+
+# Same list as ./compile, with Environment.o and URL.o taken from OUR tempdir.
+mhs_objs=/tmp/out/FreeArc
+c_objs="$ctempdir/Environment.o $ctempdir/URL.o \
+  $mhs_objs/Common.o $mhs_objs/CompressionLibrary.o \
+  $mhs_objs/C_PPMD.o $mhs_objs/C_LZP.o $mhs_objs/C_LZMA.o $mhs_objs/C_LZMA2.o \
+  $mhs_objs/C_LZ4.o $mhs_objs/C_BCJ.o $mhs_objs/C_GRZip.o $mhs_objs/C_BSC.o \
+  $mhs_objs/C_DisPack.o $mhs_objs/C_Zstd.o $mhs_objs/C_Dict.o $mhs_objs/C_REP.o \
+  $mhs_objs/C_MM.o $mhs_objs/C_TTA.o $mhs_objs/C_Tornado.o $mhs_objs/C_4x4.o \
+  $mhs_objs/C_Delta.o $mhs_objs/C_External.o $mhs_objs/C_Encryption.o"
+for o in $c_objs; do
+  [ -f "$o" ] || { echo "missing object: $o" >&2; exit 1; }
+done
+
+case "$(uname -s)" in
+  Darwin) omp_libs=""; sevenz_undef="-Wl,-u,_darc_7z_list -Wl,-u,_darc_7z_extract -Wl,-u,_darc_7z_test" ;;
+  *)      omp_libs="-lgomp"; sevenz_undef="-Wl,--undefined=darc_7z_list -Wl,--undefined=darc_7z_extract -Wl,--undefined=darc_7z_test" ;;
+esac
+c_libs="-lstdc++ -lncurses -lpthread $omp_libs $curl_libs"
+
+optl=()
+for o in $c_objs $lua_objs; do optl+=(-optl "$o"); done
+for u in $sevenz_undef;      do optl+=(-optl "$u"); done
+for o in $rust_lib;          do optl+=(-optl "$o"); done
+for l in $c_libs;            do optl+=(-optl "$l"); done
+
+optc=(-optc -I. -optc -ICompression -optc -IHsLua/src)
+for d in $defines; do optc+=(-optc "$d"); done
+
+# This codebase predates AMP; -w plus these is what lets it through a modern GHC.
+exts=(-XNoMonomorphismRestriction -XFlexibleContexts -XScopedTypeVariables
+      -XTypeSynonymInstances -XFlexibleInstances -XMultiParamTypeClasses -XCPP
+      -XNondecreasingIndentation -XUndecidableInstances -XOverlappingInstances -XLambdaCase
+      -XBangPatterns -XRecursiveDo -XTupleSections)
+
+hs_defines=()
+for d in $defines; do hs_defines+=("$d"); done
+
+echo "== ghc $(ghc --numeric-version), -threaded"
+rm -f "$exe"
+ghc \
+  -i. -iCompression -icompat-oldtime -iHsLua/src \
+  -odir "$htempdir" -hidir "$htempdir" \
+  -O2 -threaded -rtsopts \
+  "${hs_defines[@]}" "${optc[@]}" "${exts[@]}" \
+  -fno-warn-deprecated-flags -w \
+  "${optl[@]}" \
+  --make Arc.hs -main-is Arc -o "$exe"
+
+[ -s "$exe" ] || { echo "error: no $exe" >&2; exit 1; }
+chmod +x "$exe"
+echo "Built: $exe ($(wc -c <"$exe" | tr -d ' ') bytes)"
