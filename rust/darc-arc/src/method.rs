@@ -140,12 +140,83 @@ impl LzmaParams {
     }
 }
 
+/// `ppmd:ORDER:MEM` (`C_PPMD.cpp:130`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PpmdParams {
+    pub order: i32,
+    pub mem: u32,
+    pub mr_method: i32,
+}
+
+impl Default for PpmdParams {
+    /// `PPMD_METHOD::PPMD_METHOD()` (`C_PPMD.cpp:73`).
+    fn default() -> Self {
+        PpmdParams { order: 10, mem: 48 * 1024 * 1024, mr_method: 0 }
+    }
+}
+
+/// `dict:BLOCK:...` (`C_Dict.cpp:86`). Only `BlockSize` reaches the decoder;
+/// the rest steer the encoder's dictionary selection and leave no trace.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DictParams {
+    pub block_size: u32,
+}
+
+/// `lzp:BLOCK:...` (`C_LZP.cpp`). Five of the six parameters reach the decoder,
+/// because LZP's output depends on the same hash geometry that produced it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LzpParams {
+    pub block_size: u32,
+    pub min_match_len: i32,
+    pub hash_size_log: i32,
+    pub barrier: i32,
+    pub smallest_len: i32,
+}
+
+impl Default for LzpParams {
+    /// `LZP_METHOD::LZP_METHOD()` (`C_LZP.cpp:32`). `Barrier` defaults to
+    /// `INT_MAX`, not to a size — it is "no barrier", and a zero here would
+    /// change what the decoder reconstructs.
+    fn default() -> Self {
+        LzpParams {
+            block_size: 8 * 1024 * 1024,
+            min_match_len: 64,
+            hash_size_log: 18,
+            barrier: i32::MAX,
+            smallest_len: 32,
+        }
+    }
+}
+
+/// `delta` / `delta:BLOCK:x` (`C_Delta.cpp`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DeltaParams {
+    pub block_size: u32,
+    pub extended_tables: i32,
+}
+
 /// One link of a compression chain.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Method {
     /// `aSTORING` — the block's bytes are its data.
     Storing,
     Lzma(LzmaParams),
+    Ppmd(PpmdParams),
+    /// Tornado. Every parameter that matters to the decoder is in the stream
+    /// header, so the method string is parsed only to be accepted.
+    Tornado,
+    /// REP, likewise self-describing on decode (`rep.rs:164` ignores all eight
+    /// of its parameters and calls the parameterless decoder).
+    Rep,
+    /// GRZip, self-describing.
+    Grzip,
+    /// `exe` — the x86 BCJ filter. Takes no parameters at all: `parse_BCJ_X86`
+    /// requires `parameters[1] == NULL`.
+    Exe,
+    Dict(DictParams),
+    Lzp(LzpParams),
+    Delta(DeltaParams),
+    Dispack(DeltaParams),
     /// A method this port does not decode yet. Carried rather than dropped so
     /// the caller can say *which* method it could not handle, which is the
     /// difference between a useful message and "archive is corrupt".
@@ -162,9 +233,27 @@ impl Method {
     pub fn parse(s: &str) -> Option<Method> {
         let mut parts = s.split(':');
         let name = parts.next().unwrap_or("");
+        // The rest of the string, re-joined, is what each parser walks.
+        let params: Vec<&str> = parts.collect();
         match name {
             "storing" => Some(Method::Storing),
-            "lzma" => parse_lzma(parts).map(Method::Lzma),
+            "lzma" => parse_lzma(params.into_iter()).map(Method::Lzma),
+            "ppmd" => parse_ppmd(&params).map(Method::Ppmd),
+            "tor" => Some(Method::Tornado),
+            "rep" => Some(Method::Rep),
+            "grzip" => Some(Method::Grzip),
+            // parse_BCJ_X86 accepts "exe" ONLY with no parameters.
+            "exe" => {
+                if params.is_empty() {
+                    Some(Method::Exe)
+                } else {
+                    Some(Method::Unsupported(s.to_string()))
+                }
+            }
+            "dict" => parse_dict(&params).map(Method::Dict),
+            "lzp" => parse_lzp(&params).map(Method::Lzp),
+            "delta" => parse_delta(&params).map(Method::Delta),
+            "dispack" | "dispack070" => parse_delta(&params).map(Method::Dispack),
             _ => Some(Method::Unsupported(s.to_string())),
         }
     }
@@ -173,6 +262,174 @@ impl Method {
     pub fn parse_chain(methods: &[String]) -> Option<Vec<Method>> {
         methods.iter().map(|m| Method::parse(m)).collect()
     }
+}
+
+/// `parse_PPMD` (`C_PPMD.cpp:130`).
+///
+/// A bare parameter is the ORDER if it parses as an integer, and the memory
+/// size otherwise — so `ppmd:10:48mb` is order 10 with 48 MB. An out-of-range
+/// order is rejected here rather than reaching the model: "-mppmd:o0" and
+/// "-mppmd:o1" once crashed StartModelRare's solid-mode branch.
+fn parse_ppmd(params: &[&str]) -> Option<PpmdParams> {
+    let mut p = PpmdParams::default();
+    for param in params {
+        // "mem..." is handled as "m...": the C advances by 2, leaving "m...".
+        let param: &str = match param.strip_prefix("me") {
+            Some(rest) => rest,
+            None => param,
+        };
+        if param.len() == 1 && param == "r" {
+            p.mr_method = 1;
+            continue;
+        }
+        if param.len() > 1 {
+            let (head, rest) = param.split_at(1);
+            let handled = match head {
+                "m" => {
+                    p.mem = parse_mem(rest)?;
+                    true
+                }
+                "o" => {
+                    p.order = parse_int(rest)? as i32;
+                    true
+                }
+                "r" => {
+                    p.mr_method = parse_int(rest)? as i32;
+                    true
+                }
+                _ => false,
+            };
+            if handled {
+                continue;
+            }
+        }
+        match parse_int(param) {
+            Some(n) => p.order = n as i32,
+            None => p.mem = parse_mem(param)?,
+        }
+    }
+    // PPMD_MIN_ORDER / PPMD_MAX_ORDER (C_PPMD.cpp:39).
+    if p.order < 2 || p.order > 128 {
+        return None;
+    }
+    Some(p)
+}
+
+/// `parse_DICT` (`C_Dict.cpp:86`). Only BlockSize is kept: `dict::decompress`
+/// takes nothing else.
+fn parse_dict(params: &[&str]) -> Option<DictParams> {
+    let mut block_size = 64 * 1024 * 1024u32;
+    for param in params {
+        let param: &str = param;
+        if param.len() == 1 && (param == "p" || param == "f") {
+            // Encoder presets; nothing the decoder sees.
+            continue;
+        }
+        if param.len() > 1 {
+            let (head, rest) = param.split_at(1);
+            match head {
+                "b" => {
+                    block_size = parse_mem(rest)?;
+                    continue;
+                }
+                // c/l/m/s/r are encoder thresholds. They must still PARSE, or a
+                // valid method string would be rejected.
+                "c" | "l" | "m" | "s" | "r" => {
+                    parse_int(rest)?;
+                    continue;
+                }
+                _ => {}
+            }
+        }
+        match param.strip_suffix('%') {
+            Some(pct) => {
+                match parse_int(pct) {
+                    Some(_) => continue,
+                    None => {}
+                }
+            }
+            None => {}
+        }
+        // A bare integer is MinWeakChars; anything else is the block size.
+        match parse_int(param) {
+            Some(_) => continue,
+            None => block_size = parse_mem(param)?,
+        }
+    }
+    Some(DictParams { block_size })
+}
+
+/// `parse_LZP` (`C_LZP.cpp:110`).
+fn parse_lzp(params: &[&str]) -> Option<LzpParams> {
+    let mut p = LzpParams::default();
+    for param in params {
+        let param: &str = param;
+        if param.len() > 1 {
+            let (head, rest) = param.split_at(1);
+            let handled = match head {
+                "b" => {
+                    p.block_size = parse_mem(rest)?;
+                    true
+                }
+                "l" => {
+                    p.min_match_len = parse_int(rest)? as i32;
+                    true
+                }
+                "h" => {
+                    p.hash_size_log = parse_int(rest)? as i32;
+                    true
+                }
+                "d" => {
+                    p.barrier = parse_mem(rest)? as i32;
+                    true
+                }
+                "s" => {
+                    p.smallest_len = parse_int(rest)? as i32;
+                    true
+                }
+                _ => false,
+            };
+            if handled {
+                continue;
+            }
+        }
+        match param.strip_suffix('%') {
+            Some(pct) => {
+                match parse_int(pct) {
+                    // MinCompression: encoder-only.
+                    Some(_) => continue,
+                    None => {}
+                }
+            }
+            None => {}
+        }
+        match parse_int(param) {
+            Some(n) => p.min_match_len = n as i32,
+            None => p.block_size = parse_mem(param)?,
+        }
+    }
+    Some(p)
+}
+
+/// `parse_DELTA` (`C_Delta.cpp:72`), which `dispack` shares the shape of.
+fn parse_delta(params: &[&str]) -> Option<DeltaParams> {
+    let mut p = DeltaParams { block_size: 8 * 1024 * 1024, extended_tables: 0 };
+    for param in params {
+        let param: &str = param;
+        if param == "x" {
+            p.extended_tables = 1;
+            continue;
+        }
+        match param.strip_prefix('b') {
+            Some(rest) => {
+                p.block_size = parse_mem(rest)?;
+                continue;
+            }
+            None => {}
+        }
+        p.block_size = parse_mem(param)?;
+    }
+    Some(p)
 }
 
 /// `parse_LZMA` (`C_LZMA.cpp:164`), parameter for parameter.
@@ -418,10 +675,92 @@ mod tests {
         let chain = vec!["delta".to_string(), "lzma:1mb".to_string()];
         let got = Method::parse_chain(&chain).expect("parses");
         assert_eq!(got.len(), 2);
-        assert_eq!(got[0], Method::Unsupported("delta".to_string()));
-        match got[1] {
-            Method::Lzma(p) => assert_eq!(p.dictionary_size, 1024 * 1024),
-            ref other @ (Method::Storing | Method::Unsupported(_)) => panic!("{other:?}"),
+        assert_eq!(
+            got[0],
+            Method::Delta(DeltaParams { block_size: 8 * 1024 * 1024, extended_tables: 0 })
+        );
+        assert_eq!(got[1], Method::Lzma(LzmaParams { dictionary_size: 1 << 20, ..Default::default() }));
+    }
+
+    /// Every method that appears in an archive DArc writes at its default
+    /// levels. Taken from `arc lt` output for -m0..-m9, -mtor and -mppmd, so
+    /// this is what the archives actually contain rather than what the manual
+    /// says. A method landing in Unsupported here means `arc t` cannot read a
+    /// default archive.
+    #[test]
+    fn the_methods_real_archives_use_all_parse() {
+        let real = [
+            "storing",
+            "tor:434kb",
+            "tor:3:434kb",
+            "ppmd:10:48mb",
+            "ppmd:8:96mb",
+            "ppmd:22:1gb",
+            "rep:379kb",
+            "exe",
+            "delta",
+            "lzma:379kb",
+            "lzma:379kb:a0:mc8",
+            "lzma:379kb:mc16",
+            "lzma:1mb:mf=BT4",
+            "dict:56kb:85%:l8192:m400:s100",
+            "dict:56kb:80%:l8192:m400:s100",
+            "lzp:56kb:92%:24:h16",
+            "lzp:56kb:90%:65:h16:d1mb:s16",
+            "lzp:56kb:92%:105:h16:d1mb",
+            "lzp:56kb:92%:235:h16:d1mb",
+            "grzip:56kb:m4:l32:h15",
+            "grzip:56kb:m3:l",
+        ];
+        for m in real {
+            match Method::parse(m) {
+                Some(Method::Unsupported(name)) => panic!("{name} is not supported"),
+                Some(_) => {}
+                None => panic!("{m} did not parse at all"),
+            }
+        }
+    }
+
+    /// "exe" takes no parameters -- parse_BCJ_X86 requires parameters[1] to be
+    /// NULL. "exe:1" is a different, unknown method, not a BCJ filter with an
+    /// argument.
+    #[test]
+    fn exe_with_parameters_is_not_the_bcj_filter() {
+        assert_eq!(Method::parse("exe"), Some(Method::Exe));
+        assert_eq!(
+            Method::parse("exe:1"),
+            Some(Method::Unsupported("exe:1".to_string()))
+        );
+    }
+
+    /// A bare number is the ORDER for ppmd, and a suffixed one is the memory --
+    /// so "ppmd:10:48mb" is order 10, not 10 bytes of memory.
+    #[test]
+    fn ppmd_takes_a_bare_number_as_the_order() {
+        assert_eq!(
+            Method::parse("ppmd:10:48mb"),
+            Some(Method::Ppmd(PpmdParams { order: 10, mem: 48 * 1024 * 1024, mr_method: 0 }))
+        );
+        // Out of range, and refused here rather than in the model.
+        assert_eq!(Method::parse("ppmd:o1"), None);
+        assert_eq!(Method::parse("ppmd:o129"), None);
+        assert!(Method::parse("ppmd:o2").is_some());
+        assert!(Method::parse("ppmd:o128").is_some());
+    }
+
+    /// LZP's barrier defaults to INT_MAX -- "no barrier". A zero default would
+    /// change what the decoder reconstructs, silently.
+    #[test]
+    fn lzp_defaults_carry_an_infinite_barrier() {
+        match Method::parse("lzp:56kb:92%:24:h16") {
+            Some(Method::Lzp(p)) => {
+                assert_eq!(p.block_size, 56 * 1024);
+                assert_eq!(p.min_match_len, 24, "the bare number is MinMatchLen");
+                assert_eq!(p.hash_size_log, 16);
+                assert_eq!(p.barrier, i32::MAX, "no barrier, not zero");
+                assert_eq!(p.smallest_len, 32);
+            }
+            other => panic!("{other:?}"),
         }
     }
 }

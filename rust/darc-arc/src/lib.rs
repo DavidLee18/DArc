@@ -46,6 +46,7 @@
 pub mod archive;
 pub mod block;
 pub mod bytestream;
+pub mod codec_io;
 pub mod crc;
 pub mod decompress;
 pub mod directory;

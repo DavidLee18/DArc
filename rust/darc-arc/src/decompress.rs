@@ -11,6 +11,7 @@
 //! That bound is generous rather than exact because an intermediate stage's
 //! output length is not recorded anywhere in the archive.
 
+use crate::codec_io;
 use crate::method::{LzmaParams, Method};
 
 /// What stopped a block from decompressing.
@@ -49,13 +50,61 @@ impl std::fmt::Display for Error {
 impl std::error::Error for Error {}
 
 /// Undo one compression step.
+///
+/// Every arm but LZMA goes through [`codec_io::run`], driving the same
+/// `darc-codecs` entry point the C archiver drives — the only version that has
+/// been differential-tested byte-for-byte against the original C.
 fn undo(method: &Method, src: &[u8], hint: usize) -> Result<Vec<u8>, Error> {
     match method {
         // aNO_COMPRESSION: the bytes are already the data.
         Method::Storing => Ok(src.to_vec()),
+        // LZMA is the exception: DArc writes no header, so it needs the property
+        // bytes rebuilt from the method string rather than a callback.
         Method::Lzma(params) => undo_lzma(*params, src, hint),
+        Method::Ppmd(p) => {
+            drive("ppmd", src, hint, |io| {
+                darc_codecs::ppmd::decompress(io, p.order, p.mem, p.mr_method)
+            })
+        }
+        Method::Tornado => {
+            drive("tor", src, hint, darc_codecs::tornado::decode::decompress)
+        }
+        Method::Rep => drive("rep", src, hint, darc_codecs::rep::decompress),
+        Method::Grzip => drive("grzip", src, hint, darc_codecs::grzip::stream::decompress),
+        // The BCJ filter runs in the decode direction here.
+        Method::Exe => drive("exe", src, hint, |io| {
+            darc_codecs::bcj::de_compress(io, darc_codecs::bcj::Direction::Decode)
+        }),
+        Method::Dict(p) => {
+            drive("dict", src, hint, |io| darc_codecs::dict::decompress(io, p.block_size))
+        }
+        Method::Lzp(p) => drive("lzp", src, hint, |io| {
+            darc_codecs::lzp::decompress(
+                io,
+                p.block_size,
+                p.min_match_len,
+                p.hash_size_log,
+                p.barrier,
+                p.smallest_len,
+            )
+        }),
+        Method::Delta(p) => drive("delta", src, hint, |io| {
+            darc_codecs::delta::decompress(io, p.block_size, p.extended_tables)
+        }),
+        Method::Dispack(p) => drive("dispack", src, hint, |io| {
+            darc_codecs::dispack::decode::decompress(io, p.block_size)
+        }),
         Method::Unsupported(name) => Err(Error::Unsupported(name.clone())),
     }
+}
+
+/// Run one `darc-codecs` decoder over a buffer, naming it if it fails.
+fn drive<F>(name: &str, src: &[u8], hint: usize, f: F) -> Result<Vec<u8>, Error>
+where
+    F: FnOnce(&darc_codecs::ffi::Io) -> core::ffi::c_int,
+{
+    codec_io::run(src, hint, f)
+        .map_err(|e| Error::Codec { method: name.to_string(), detail: e.to_string() })
 }
 
 fn undo_lzma(params: LzmaParams, src: &[u8], hint: usize) -> Result<Vec<u8>, Error> {
