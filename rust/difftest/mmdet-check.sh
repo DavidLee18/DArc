@@ -130,7 +130,11 @@ echo "mmdet: $checked inputs, $fail differing"
 # -- if they never do, the fast/thorough distinction is untested.
 verdicts=$(for f in "$W"/in/*; do "$W/c" < "$f" | awk '{print $1}'; done | sort -u)
 for want in '$text' '$compressed' default; do
-  echo "$verdicts" | grep -qx -- "$want" || {
+  # A here-string, not `echo | grep -qx`: under `set -o pipefail` grep -q exits
+  # on its first match, echo takes SIGPIPE writing the rest, and the pipeline
+  # reports failure for a SUCCESSFUL match. Small outputs usually survive it,
+  # which is what makes it a flake rather than a bug you find once.
+  grep -qx -- "$want" <<< "$verdicts" || {
     echo "SELF-TEST FAILED: no input produced $want, so that branch is untested" >&2
     exit 1
   }

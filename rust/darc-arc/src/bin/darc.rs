@@ -290,12 +290,21 @@ fn add(
     parsed: &options::Parsed,
     pw: &darc_arc::passwords::Passwords,
 ) -> i32 {
-    // opt_update_type (Cmdline.hs). --sync is not offered: it deletes, and the
-    // deletion path is not exercised by any harness here yet.
+    // opt_update_type (Cmdline.hs). The COMMAND wins over the options, and the
+    // options are tried in the order `freshen`, `update`, `sync` -- so `-u
+    // --sync` is an update, not a sync, and `f --sync` is a freshen.
     let update_type = match command {
         "u" => darc_arc::joinlist::UpdateType::Update,
         "f" => darc_arc::joinlist::UpdateType::Freshen,
-        _ => darc_arc::joinlist::UpdateType::Add,
+        _ => match (parsed.flag("freshen"), parsed.flag("update"), parsed.flag("sync")) {
+            (true, _, _) => darc_arc::joinlist::UpdateType::Freshen,
+            (false, true, _) => darc_arc::joinlist::UpdateType::Update,
+            // `--sync` brings the archive in line with the disk: a file the
+            // filespecs did not reach is DELETED from it, which no other mode
+            // does. An empty result removes the archive, as `d` does.
+            (false, false, true) => darc_arc::joinlist::UpdateType::Sync,
+            (false, false, false) => darc_arc::joinlist::UpdateType::Add,
+        },
     };
     // The subset of builtinMethodSubsts (Compression.hs:428) this port can
     // write. Each maps a -m level to its unfitted chain; the data-size fitting

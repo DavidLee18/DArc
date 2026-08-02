@@ -43,6 +43,21 @@ trap 'rm -rf "$W"' EXIT
 
 fail=0 checked=0
 
+# saw <pattern> <command...> -- true when the command's output contains it.
+#
+# NOT `cmd | grep -q pattern`. Under `set -o pipefail` that construction reports
+# FAILURE on a successful match: grep -q exits the moment it matches, cmd gets
+# SIGPIPE writing the rest, and pipefail takes the pipeline's status from the
+# killed writer. It only shows up when the output is long enough that cmd is
+# still writing -- so it passes on small cases and flakes on real ones, which is
+# how it was found here (a listing that plainly contained the name was reported
+# as not containing it). Capture first, match after.
+saw () {
+  local pattern="$1"; shift
+  local text; text="$("$@" 2>&1)"
+  grep -q -- "$pattern" <<< "$text"
+}
+
 # build_tree <dir> -- a tree with files of three different ages plus a
 # subdirectory, so the timestamp rules and the directory handling both matter.
 build_tree() {
@@ -85,6 +100,43 @@ for m in -m0 -m1 -m4 -m9; do
         fail=$((fail + 1))
       fi
     done
+  done
+done
+
+# The same merge reached through OPTIONS rather than commands: `a -u`, `a -f`
+# and `a --sync`. The option spellings are not aliases handled at the call site
+# -- Cmdline.hs picks the mode with the command first and then the options in
+# the order freshen, update, sync -- so they need their own rows.
+#
+# --sync is the one that DELETES: a file in the archive that the filespecs did
+# not reach is dropped, which no other mode does. That is also why it gets a row
+# where the disk tree is missing a file the archive has.
+for m in -m0 -m1 -m4 -m9; do
+  for opt in -u -f --sync; do
+    checked=$((checked + 1))
+    build_tree "$W/src"
+    rm -f "$W/ref.arc" "$W/port.arc"
+    # The base archive holds a file that is NOT on disk (gone.txt), so --sync
+    # has something to remove and -u/-f have something to keep.
+    printf 'only in the archive\n' > "$W/src/gone.txt"
+    touch -t 202501010000 "$W/src/gone.txt"
+    ( cd "$W/src" && "$REF" a --nodates -y "$m" "$W/ref.arc" \
+        older.txt newer.txt same.txt gone.txt ) >/dev/null 2>&1
+    rm -f "$W/src/gone.txt"
+    cp "$W/ref.arc" "$W/port.arc"
+
+    ( cd "$W/src" && "$REF"  a --nodates -r $opt -y "$m" "$W/ref.arc"  . ) >/dev/null 2>&1
+    ( cd "$W/src" && "$PORT" a --nodates -r $opt -y "$m" "$W/port.arc" . ) >/dev/null 2>&1
+
+    r=present; [ -f "$W/ref.arc" ]  || r=gone
+    p=present; [ -f "$W/port.arc" ] || p=gone
+    if [ "$r" != "$p" ]; then
+      echo "  DIFF [$m a $opt]: reference $r, port $p"
+      fail=$((fail + 1))
+    elif [ "$r" = present ] && ! cmp -s "$W/ref.arc" "$W/port.arc"; then
+      echo "  DIFF [$m a $opt]: $(wc -c <"$W/ref.arc") vs $(wc -c <"$W/port.arc") bytes"
+      fail=$((fail + 1))
+    fi
   done
 done
 
@@ -136,6 +188,30 @@ fi
 if cmp -s "$W/u.arc" "$W/f.arc"; then
   echo "SELF-TEST FAILED: u and f produced the same archive, so nothing here" >&2
   echo "distinguishes the two modes" >&2
+  exit 1
+fi
+
+# --sync must actually DELETE. Every --sync row above passes if --sync is
+# silently treated as -u, since the two agree on every file that exists on both
+# sides -- they differ only on a file the archive has and the disk does not.
+# Require that file to be gone, and require --sync to differ from -u.
+build_tree "$W/src"
+printf 'only in the archive\n' > "$W/src/gone.txt"
+touch -t 202501010000 "$W/src/gone.txt"
+rm -f "$W/sync.arc" "$W/upd.arc"
+( cd "$W/src" && "$REF" a --nodates -y -m1 "$W/sync.arc" older.txt gone.txt ) >/dev/null 2>&1
+rm -f "$W/src/gone.txt"
+cp "$W/sync.arc" "$W/upd.arc"
+( cd "$W/src" && "$PORT" a --nodates -r --sync -y -m1 "$W/sync.arc" . ) >/dev/null 2>&1
+( cd "$W/src" && "$PORT" a --nodates -r -u     -y -m1 "$W/upd.arc"  . ) >/dev/null 2>&1
+if saw 'gone.txt' "$PORT" l "$W/sync.arc"; then
+  echo "SELF-TEST FAILED: --sync left a file the disk no longer has, so it is" >&2
+  echo "not deleting and the rows above compared it against -u" >&2
+  exit 1
+fi
+if ! saw 'gone.txt' "$PORT" l "$W/upd.arc"; then
+  echo "SELF-TEST FAILED: -u also dropped the file, so the archives the --sync" >&2
+  echo "rows compare are not distinguishable from the -u ones" >&2
   exit 1
 fi
 

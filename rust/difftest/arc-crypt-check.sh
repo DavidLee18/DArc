@@ -80,6 +80,19 @@ trap 'rm -rf "$W"' EXIT
 
 fail=0 checked=0
 
+# saw <pattern> <command...> -- true when the command's output contains it.
+#
+# NOT `cmd | grep -q pattern`. Under `set -o pipefail` that reports FAILURE on a
+# successful match: grep -q exits at the first match, cmd takes SIGPIPE writing
+# the rest, and pipefail takes the status from the killed writer. It only bites
+# when the output is long enough that cmd is still writing, so it passes on
+# small archives and flakes on real ones. Capture first, match after.
+saw () {
+  local pattern="$1"; shift
+  local text; text="$("$@" 2>&1)"
+  grep -q -- "$pattern" <<< "$text"
+}
+
 # A tree with content long enough to cross a cipher block and a chunk boundary,
 # a subdirectory, and a file whose bytes are a recognisable marker so "is it
 # really encrypted" can be answered by looking.
@@ -122,7 +135,7 @@ for m in -m0 -m1 -m4 -m9; do
     if [ ! -f "$W/port.arc" ]; then
       echo "  FAIL [$m $spec]: the port wrote no archive"; fail=$((fail + 1)); continue
     fi
-    if ! ( "$REF" t $spec "$W/port.arc" 2>&1 | grep -q 'All OK' ); then
+    if ! saw 'All OK' "$REF" t $spec "$W/port.arc"; then
       echo "  FAIL [$m $spec]: the reference cannot test the port's archive"
       fail=$((fail + 1))
     elif ! extract_and_compare "$REF" "$W/port.arc" $spec; then
@@ -137,7 +150,7 @@ for m in -m0 -m1 -m4 -m9; do
     if [ ! -f "$W/ref.arc" ]; then
       echo "  FAIL [$m $spec]: the reference wrote no archive"; fail=$((fail + 1)); continue
     fi
-    if ! ( $PORT t $spec "$W/ref.arc" 2>&1 | grep -q 'All OK' ); then
+    if ! saw 'All OK' $PORT t $spec "$W/ref.arc"; then
       echo "  FAIL [$m $spec]: the port cannot test the reference's archive"
       fail=$((fail + 1))
     elif ! extract_and_compare "$PORT" "$W/ref.arc" $spec; then
@@ -155,10 +168,10 @@ for ae in aes aes-128 aes-192 blowfish serpent twofish aes/cfb blowfish/cfb serp
   rm -f "$W/port.arc" "$W/ref.arc"
   ( cd "$W/src" && $PORT a --nodates -r -y -m1 -ae"$ae" -pSECRET "$W/port.arc" . ) >/dev/null 2>&1
   ( cd "$W/src" && "$REF" a --nodates -r -y -m1 -ae"$ae" -pSECRET "$W/ref.arc" . ) >/dev/null 2>&1
-  if ! ( "$REF" t -pSECRET "$W/port.arc" 2>&1 | grep -q 'All OK' ); then
+  if ! saw 'All OK' "$REF" t -pSECRET "$W/port.arc"; then
     echo "  FAIL [-ae $ae]: the reference cannot read the port's archive"; fail=$((fail + 1))
   fi
-  if ! ( $PORT t -pSECRET "$W/ref.arc" 2>&1 | grep -q 'All OK' ); then
+  if ! saw 'All OK' $PORT t -pSECRET "$W/ref.arc"; then
     echo "  FAIL [-ae $ae]: the port cannot read the reference's archive"; fail=$((fail + 1))
   fi
 done
@@ -171,10 +184,10 @@ checked=$((checked + 2))
 rm -f "$W/h1.arc" "$W/h0.arc"
 ( cd "$W/src" && $PORT a --nodates -r -y -m0 -pSECRET            "$W/h1.arc" . ) >/dev/null 2>&1
 ( cd "$W/src" && $PORT a --nodates -r -y -m0 -pSECRET -aeaes:h0  "$W/h0.arc" . ) >/dev/null 2>&1
-if ! ( "$REF" lt -pSECRET "$W/h1.arc" 2>/dev/null | grep -q ':h1' ); then
+if ! saw ':h1' "$REF" lt -pSECRET "$W/h1.arc"; then
   echo "  FAIL: the default archive does not record :h1"; fail=$((fail + 1))
 fi
-if ( "$REF" lt -pSECRET "$W/h0.arc" 2>/dev/null | grep -q ':h1' ); then
+if saw ':h1' "$REF" lt -pSECRET "$W/h0.arc"; then
   echo "  FAIL: -ae aes:h0 still recorded :h1, so the override is ignored"
   fail=$((fail + 1))
 fi
@@ -189,7 +202,7 @@ checked=$((checked + 2))
 for bin in "$PORT" "$REF"; do
   rm -f "$W/n.arc"
   ( cd "$W/src" && "$bin" a --nodates -r -y -m0 -pSECRET "$W/n.arc" . ) >/dev/null 2>&1
-  if ! ( "$REF" lt -pSECRET "$W/n.arc" 2>/dev/null | grep -q ':n210000:' ); then
+  if ! saw ':n210000:' "$REF" lt -pSECRET "$W/n.arc"; then
     echo "  FAIL: $(basename "$bin") did not write the default iteration count"
     "$REF" lt -pSECRET "$W/n.arc" 2>/dev/null | grep '^\*' | head -1
     fail=$((fail + 1))
@@ -202,10 +215,10 @@ done
 checked=$((checked + 2))
 rm -f "$W/n1000.arc"
 ( cd "$W/src" && $PORT a --nodates -r -y -m0 -pSECRET -aeaes:n1000 "$W/n1000.arc" . ) >/dev/null 2>&1
-if ! ( "$REF" lt -pSECRET "$W/n1000.arc" 2>/dev/null | grep -q ':n1000:' ); then
+if ! saw ':n1000:' "$REF" lt -pSECRET "$W/n1000.arc"; then
   echo "  FAIL: -ae aes:n1000 did not reach the archive"; fail=$((fail + 1))
 fi
-if ! ( "$REF" t -pSECRET "$W/n1000.arc" 2>&1 | grep -q 'All OK' ); then
+if ! saw 'All OK' "$REF" t -pSECRET "$W/n1000.arc"; then
   echo "  FAIL: the reference cannot read an archive with a non-default count"
   fail=$((fail + 1))
 fi
