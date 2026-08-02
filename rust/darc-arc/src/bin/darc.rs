@@ -84,6 +84,43 @@ fn main() {
         ep,
     };
 
+    // An option this port does not implement must be REFUSED, not ignored.
+    //
+    // This exists because of a measured failure: `arc a -x*.dat` archived the
+    // .dat files. The option parsed, was recorded, and was never read -- so the
+    // port wrote an archive containing exactly what the user had asked to leave
+    // out, and said "All OK". Every option below is one the code actually
+    // consults; anything else stops the command.
+    //
+    // `-y`, `-i…` and `--display` are accepted and ignored deliberately: they
+    // steer prompting and progress output, not what is written.
+    const HONOURED: &[&str] = &[
+        "append", "arccmt", "archive-comment", "arcpath", "delete", "delfiles",
+        "diskpath", "encryption", "ExcludePath", "freshen", "fullnames", "groups",
+        "HeadersPassword", "keyfile", "lock", "method", "nodates", "OldKeyfile",
+        "OldPassword", "password", "recompress", "recursive", "solid", "sync",
+        "update",
+        // Accepted and deliberately ignored: UI only.
+        "yes", "indicator", "display",
+    ];
+    let unimplemented: Vec<&str> = parsed
+        .options
+        .iter()
+        .map(|(n, _)| n.as_str())
+        .filter(|n| !HONOURED.contains(n))
+        .collect();
+    if !unimplemented.is_empty() {
+        let mut names: Vec<&str> = unimplemented;
+        names.sort_unstable();
+        names.dedup();
+        eprintln!(
+            "ERROR: this port does not implement {} yet, and ignoring it would \
+             write an archive that is not what you asked for",
+            names.join(", ")
+        );
+        std::process::exit(2);
+    }
+
     // The passwords, cooked once: the prompt must not appear twice, and both
     // the reader and the writer need the same answer.
     let pw = cook_passwords(&parsed, &command);
@@ -114,7 +151,7 @@ fn main() {
         }
         // One function: every one of these is `runArchiveAdd` with a different
         // archive filter and a different source of files (Arc.hs:122-131).
-        "a" | "u" | "f" | "d" | "ch" | "c" | "k" | "j" => {
+        "a" | "u" | "f" | "d" | "ch" | "c" | "k" | "j" | "m" | "mf" => {
             add(&command, &archive_name, &parsed, &pw)
         }
         // Not an `arc` command: a probe, so the canonicaliser can be checked
@@ -267,10 +304,10 @@ fn main() {
             }
             if bad > 0 { 2 } else { 0 }
         }
-        // `m`/`mf` also DELETE the files from disk afterwards, and `rr`/`s…`
+        // `rr…` writes recovery records and `s…` sets the solid grouping; both
         // carry options this port does not write yet, so they stay refused
         // rather than silently doing the copy half.
-        "m" | "mf" | "rr" | "s" => {
+        "rr" | "s" => {
             eprintln!("ERROR: command {command:?} is not implemented in this port yet");
             2
         }
@@ -360,6 +397,20 @@ fn add(
     // (Arc.hs:213): `d` is `a` with NO disk files and an archive filter that
     // keeps everything the filespecs do NOT match.
     let deleting = command == "d";
+
+    // `delete_files` (Cmdline.hs:610). `m`/`-d` remove the archived files AND
+    // the directories that held them; `mf`/`-df` remove only the files. Giving
+    // both is an error rather than a union.
+    //
+    // This is the only thing `m` adds to `a`, and it touches the DISK, not the
+    // archive -- an `m` archive is byte-identical to the `a` archive, so a
+    // byte-comparison harness cannot see whether the deletion happened at all.
+    let del_dirs = parsed.flag("delete") || command == "m";
+    let del_files = parsed.flag("delfiles") || command == "mf";
+    if del_dirs && del_files {
+        eprintln!("ERROR: incompatible options: m/-d and mf/-df");
+        return 2;
+    }
     // `runCopy = runArchiveAdd . setArcFilter fullFileFilter` (Arc.hs:211) --
     // the same shape as `d` with the filter NOT negated: no disk files, and the
     // archive's own files kept where the filespecs DO match. `ch` is the
@@ -424,6 +475,11 @@ fn add(
     let mut file_entries: Vec<Entry> = Vec::new();
     let mut contents: std::collections::HashMap<String, Vec<u8>> =
         std::collections::HashMap::new();
+    // Size and mtime AS SCANNED, for `checkThatFileWasNotChanged` under -d/-df.
+    // Re-statting at deletion time would compare the file against itself and
+    // always agree, which is the same as not checking.
+    let mut scanned: std::collections::HashMap<std::path::PathBuf, (u64, i64)> =
+        std::collections::HashMap::new();
     for (stored, disk, is_dir) in &found {
         let meta = match std::fs::symlink_metadata(disk) {
             Ok(m) => m,
@@ -452,6 +508,9 @@ fn add(
                 return 2;
             }
         };
+        // The REAL mtime, not the `--nodates` zero: the check compares against
+        // what the filesystem will report later, not against what was stored.
+        scanned.insert(disk.clone(), (body.len() as u64, mtime(&meta)));
         file_entries.push(Entry {
             stored_name: stored.clone(),
             size: body.len() as u64,
@@ -1075,9 +1134,49 @@ fn add(
             return 2;
         }
     }
+
+    // `postProcessWrapper` (ArcCreate.hs:248) -- only AFTER the archive is
+    // safely written, and only for files that came from disk.
+    if del_dirs || del_files {
+        println!("Deleting successfully archived files");
+        for (_, disk, is_dir) in &found {
+            if *is_dir {
+                continue;
+            }
+            // `checkThatFileWasNotChanged` (ArcCreate.hs:287): size and mtime
+            // must still match what was archived. A file rewritten while the
+            // archive was being built is NOT deleted -- the copy in the archive
+            // is of the old contents, so removing it would lose the new ones.
+            let same = match (std::fs::metadata(disk), scanned.get(disk)) {
+                (Ok(md), Some((size, time))) => md.len() == *size && mtime(&md) == *time,
+                // Never scanned, or gone: leave it alone. Deleting a file this
+                // run did not archive is the one outcome with no way back.
+                _ => false,
+            };
+            if !same {
+                continue;
+            }
+            // `ignoreErrors . fileRemove`: a file that cannot be removed is not
+            // a failure of the archiving, which has already succeeded.
+            drop(std::fs::remove_file(disk));
+        }
+        if del_dirs {
+            // `reverse dirs` -- deepest first, so a directory is empty by the
+            // time its own removal is attempted. `dirRemove` is likewise
+            // best-effort: a directory holding something that was not archived
+            // simply stays.
+            for (_, disk, is_dir) in found.iter().rev() {
+                if *is_dir {
+                    drop(std::fs::remove_dir(disk));
+                }
+            }
+        }
+    }
+
     println!("All OK");
     0
 }
+
 
 /// The groups file, resolved the way `Cmdline.hs:382` resolves it.
 ///
