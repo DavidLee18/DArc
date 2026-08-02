@@ -69,6 +69,7 @@ pub fn show(method: &Method) -> String {
         Method::Rep(p) => show_rep(p),
         Method::Grzip(p) => show_grzip(p),
         Method::FourX4(p) => show_fourx4(p),
+        Method::Encryption(e) => e.show(),
         Method::Unsupported(s) => s.clone(),
     }
 }

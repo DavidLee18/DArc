@@ -31,6 +31,7 @@
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used))]
 
 pub mod cfb;
+pub mod cipher;
 pub mod ffi;
 pub mod exports;
 pub mod random;

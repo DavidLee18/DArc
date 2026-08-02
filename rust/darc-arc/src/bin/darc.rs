@@ -84,9 +84,13 @@ fn main() {
         ep,
     };
 
+    // The passwords, cooked once: the prompt must not appear twice, and both
+    // the reader and the writer need the same answer.
+    let pw = cook_passwords(&parsed, &command);
+
     let path = std::path::Path::new(&archive_name);
     // Only the read commands need an existing archive; `a` creates one.
-    let open_existing = || match archive::read_info(path) {
+    let open_existing = || match archive::read_info(path, &pw) {
         Ok(i) => i,
         Err(e) => {
             eprintln!("ERROR: {e}");
@@ -106,9 +110,9 @@ fn main() {
                 }
             };
             let extracting = command != "t";
-            run_blocks(&info, &data, &layout, extracting)
+            run_blocks(&info, &data, &layout, extracting, &pw)
         }
-        "a" | "u" | "f" | "d" => add(&command, &archive_name, &parsed),
+        "a" | "u" | "f" | "d" => add(&command, &archive_name, &parsed, &pw),
         // Not an `arc` command: a probe, so the canonicaliser can be checked
         // against the method strings real archives contain. Prints the
         // canonical form of each argument, or "?" if it does not parse.
@@ -236,7 +240,12 @@ fn main() {
 /// valid, decodes correctly, and is not the bytes the reference would have
 /// written -- the failure mode this repo cares most about. Refusing is the
 /// honest behaviour until it is ported.
-fn add(command: &str, archive_name: &str, parsed: &options::Parsed) -> i32 {
+fn add(
+    command: &str,
+    archive_name: &str,
+    parsed: &options::Parsed,
+    pw: &darc_arc::passwords::Passwords,
+) -> i32 {
     // opt_update_type (Cmdline.hs). --sync is not offered: it deletes, and the
     // deletion path is not exercised by any harness here yet.
     let update_type = match command {
@@ -368,7 +377,7 @@ fn add(command: &str, archive_name: &str, parsed: &options::Parsed) -> i32 {
     if (deleting || update_type != darc_arc::joinlist::UpdateType::Add)
         && std::path::Path::new(archive_name).exists()
     {
-        let info = match archive::read_info(std::path::Path::new(archive_name)) {
+        let info = match archive::read_info(std::path::Path::new(archive_name), pw) {
             Ok(i) => i,
             Err(e) => {
                 eprintln!("ERROR: {e}");
@@ -424,7 +433,7 @@ fn add(command: &str, archive_name: &str, parsed: &options::Parsed) -> i32 {
         file_entries.clear();
         for c in merged {
             if c.origin == darc_arc::joinlist::Origin::Archive && !c.entry.is_dir {
-                match archive::read_entry(&data, &info, &c.entry) {
+                match archive::read_entry(&data, &info, &c.entry, pw) {
                     Ok(body) => {
                         contents.insert(c.entry.stored_name.clone(), body);
                     }
@@ -516,7 +525,25 @@ fn add(command: &str, archive_name: &str, parsed: &options::Parsed) -> i32 {
     // grouping says, so -m0 -s- is still one block.
     let one_block_per_file = per_file && chain != "storing";
 
-    let mut w = darc_arc::writer::Writer::new();
+    // The encryption algorithm, canonicalised the way Cmdline.hs:529 does it
+    // before it can reach a block: `-ae aes` becomes `aes-256/ctr:n1000:r0`.
+    let mut algorithm = Vec::new();
+    if !pw.data.is_empty() || !pw.headers.is_empty() {
+        for part in parsed.arg("encryption", "aes").split('+') {
+            match darc_arc::encryption::canonize(part) {
+                Some(c) => algorithm.push(c),
+                None => {
+                    eprintln!("ERROR: bad name or parameters in encryption algorithm {part}");
+                    return 2;
+                }
+            }
+        }
+    }
+    let mut w = darc_arc::writer::Writer::with_encryption(
+        algorithm,
+        pw.data.clone(),
+        pw.headers.clone(),
+    );
     w.write_header();
 
     // `dirs &&& [(aNO_COMPRESSION, dirs)]` (ArhiveFileList.hs:291): the
@@ -526,8 +553,13 @@ fn add(command: &str, archive_name: &str, parsed: &options::Parsed) -> i32 {
     // freshened first showed it.
     let mut data_blocks: Vec<darc_arc::block::ArchiveBlock> = Vec::new();
     if !dir_entries.is_empty() {
-        data_blocks
-            .push(w.write_data(&[], darc_arc::writer::no_compression(), dir_entries.len()));
+        match w.write_data(&[], darc_arc::writer::no_compression(), dir_entries.len()) {
+            Ok(b) => data_blocks.push(b),
+            Err(e) => {
+                eprintln!("ERROR: {e}");
+                return 2;
+            }
+        }
     }
 
     if one_block_per_file {
@@ -861,6 +893,7 @@ fn run_blocks(
     data: &[u8],
     layout: &Layout,
     extracting: bool,
+    pw: &darc_arc::passwords::Passwords,
 ) -> i32 {
     // The safety check runs on the archive's contribution alone: the
     // destination is the user's own and may be absolute.
@@ -920,8 +953,17 @@ fn run_blocks(
                     return bad;
                 }
             };
+            // The block's chain may name an encryption method, which carries a
+            // salt but no key until a password has been verified against it.
+            let compressor = match archive::keyed(&b.compressor, b, pw) {
+                Ok(c) => c,
+                Err(e) => {
+                    bad.push(format!("{e}"));
+                    return bad;
+                }
+            };
             let unpacked =
-                match decompress::decompress_chain(&b.compressor, packed, b.orig_size as usize) {
+                match decompress::decompress_chain(&compressor, packed, b.orig_size as usize) {
                     Ok(u) => u,
                     Err(e) => {
                         bad.push(format!("{}: {e}", b.name()));
@@ -1057,4 +1099,146 @@ struct Tm {
 
 extern "C" {
     fn localtime_r(t: *const i64, tm: *mut Tm) -> *mut Tm;
+}
+
+// ── Passwords ───────────────────────────────────────────────────────────────
+
+/// `cookPasswords`'s inputs, gathered from the parsed command line
+/// (`Cmdline.hs:534-582`).
+///
+/// `-op` has two spellings. Besides the option itself, `-o` values that begin
+/// with `p` are peeled and treated as old passwords (`is_op_option`,
+/// `Cmdline.hs:156`) — which is why `-op-` disables prompting even though `-op`
+/// looks like an overwrite mode.
+fn cook_passwords(parsed: &options::Parsed, command: &str) -> darc_arc::passwords::Passwords {
+    use darc_arc::passwords::{cook, Prompt, Raw};
+
+    // `partition is_op_option (findReqList o "overwrite")`, then `tryToSkip "p"`.
+    let op_opt: Vec<&str> = parsed
+        .all("overwrite")
+        .into_iter()
+        .filter(|v| v.len() >= 2 && v.starts_with('p'))
+        .map(|v| &v[1..])
+        .collect();
+
+    let read_file = |name: &str| -> Vec<u8> {
+        match std::fs::read(name) {
+            Ok(b) => b,
+            Err(e) => {
+                eprintln!("ERROR: {name}: {e}");
+                std::process::exit(2);
+            }
+        }
+    };
+    let mut old_keyfiles: Vec<Vec<u8>> = Vec::new();
+    for name in parsed.all("OldKeyfile").into_iter().chain(parsed.all("keyfile")) {
+        old_keyfiles.push(read_file(name));
+    }
+    // `unlessNull fileGetBinary` — the LAST -kf, and nothing when absent.
+    let keyfile = match parsed.arg("keyfile", "") {
+        "" => Vec::new(),
+        name => read_file(name),
+    };
+
+    let mut old_password_list = op_opt.clone();
+    old_password_list.extend(parsed.all("OldPassword"));
+
+    let raw = Raw {
+        password: parsed.arg("password", "--"),
+        headers_password: parsed.arg("HeadersPassword", "--"),
+        password_list: parsed.all("password"),
+        headers_list: parsed.all("HeadersPassword"),
+        old_password_list,
+        old_keyfiles,
+        keyfile,
+        dont_ask: op_opt.last().copied() == Some("-")
+            || parsed.arg("OldPassword", "") == "-"
+            || parsed.arg("password", "") == "-"
+            || parsed.arg("HeadersPassword", "") == "-",
+    };
+    // `cmdType cmd == ADD_CMD` picks the double-entry encryption prompt.
+    let prompt = match command {
+        "a" | "u" | "f" | "m" | "mf" | "c" | "ch" | "k" | "d" | "j" => Prompt::Encryption,
+        _ => Prompt::Decryption,
+    };
+    cook(&raw, prompt, ask_password)
+}
+
+/// `ask_encryption_password` / `ask_decryption_password` (`CUI.hs:141`).
+///
+/// The encryption prompt asks twice and repeats until the two agree; the
+/// decryption prompt asks once. Both hide the input. The strings and their
+/// leading blank line are reproduced exactly, because they are what a user
+/// driving both binaries side by side sees.
+fn ask_password(prompt: darc_arc::passwords::Prompt) -> String {
+    match prompt {
+        darc_arc::passwords::Prompt::Decryption => {
+            print!("\n  Enter decryption password:");
+            drop(std::io::stdout().flush());
+            hidden_line()
+        }
+        darc_arc::passwords::Prompt::Encryption => loop {
+            print!("\n  Enter encryption password:");
+            drop(std::io::stdout().flush());
+            let first = hidden_line();
+            print!("  Reenter encryption password:");
+            drop(std::io::stdout().flush());
+            let second = hidden_line();
+            if first == second {
+                return first;
+            }
+            println!("  Passwords are different. You need to repeat input");
+        },
+    }
+}
+
+/// `getHiddenLine` — read one line with the terminal's echo turned off, and
+/// print the newline the terminal no longer echoes.
+///
+/// Echo is restored even when the read fails, so a `^C` at the prompt does not
+/// leave the user's shell silent.
+fn hidden_line() -> String {
+    let restore = echo_off();
+    let mut line = String::new();
+    let read = std::io::stdin().read_line(&mut line);
+    restore();
+    println!();
+    match read {
+        Ok(_) => line.trim_end_matches(['\r', '\n']).to_string(),
+        Err(_) => String::new(),
+    }
+}
+
+/// Turn terminal echo off, returning the action that turns it back on.
+///
+/// Driven through `stty` rather than `tcsetattr`. The reason is not taste: a
+/// hand-declared `struct termios` has a different field width and `c_cc` length
+/// on macOS than on Linux, and getting it wrong corrupts the terminal settings
+/// on whichever platform was not the one it was written on — while compiling
+/// and appearing to work on the other. `stty` knows the layout on both.
+///
+/// It reads `/dev/tty`, not stdin, so a harness that pipes a password in gets
+/// a harmless failure here and an un-hidden read after it, rather than having
+/// its pipe consumed.
+fn echo_off() -> impl FnOnce() {
+    let worked = stty("-echo");
+    move || {
+        if worked {
+            let restored = stty("echo");
+            if !restored {
+                eprintln!("WARNING: could not restore terminal echo");
+            }
+        }
+    }
+}
+
+fn stty(arg: &str) -> bool {
+    let tty = match std::fs::File::open("/dev/tty") {
+        Ok(f) => f,
+        Err(_) => return false,
+    };
+    match std::process::Command::new("stty").arg(arg).stdin(tty).status() {
+        Ok(status) => status.success(),
+        Err(_) => false,
+    }
 }

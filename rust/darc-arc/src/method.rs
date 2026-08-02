@@ -243,6 +243,14 @@ pub enum Method {
     /// `4x4` — the chunking meta-codec every level from -m1 up wraps its real
     /// compressor in. See [`crate::fourx4`].
     FourX4(crate::fourx4::FourX4Params),
+    /// An encryption step — `aes-256/ctr:n1000:r0:s…:c…:i…`. Boxed because it
+    /// is much the largest variant (four hex strings) and every chain that is
+    /// not encrypted would otherwise pay for it.
+    ///
+    /// A chain read from an archive carries the salt and check code but no key,
+    /// so this variant parses fine and cannot decrypt until
+    /// [`crate::encryption::generate_decryption`] has put a key into it.
+    Encryption(Box<crate::encryption::Encryption>),
     /// A method this port does not decode yet. Carried rather than dropped so
     /// the caller can say *which* method it could not handle, which is the
     /// difference between a useful message and "archive is corrupt".
@@ -281,7 +289,17 @@ impl Method {
             "delta" => parse_delta(&params).map(Method::Delta),
             "dispack" | "dispack070" => parse_delta(&params).map(Method::Dispack),
             "4x4" => crate::fourx4::parse(&params).map(Method::FourX4),
-            _ => Some(Method::Unsupported(s.to_string())),
+            // The C tries every registered parser in turn, and parse_ENCRYPTION
+            // is one of them. Splitting on whether the NAME is a cipher keeps
+            // the two failure modes apart: an unknown method is carried as
+            // Unsupported so the caller can name it, while a cipher with a bad
+            // parameter is a rejected string -- no other parser would claim it
+            // either.
+            _ => match crate::block::is_encryption(name) {
+                true => crate::encryption::Encryption::parse(name, &params)
+                    .map(|e| Method::Encryption(Box::new(e))),
+                false => Some(Method::Unsupported(s.to_string())),
+            },
         }
     }
 

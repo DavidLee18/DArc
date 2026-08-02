@@ -177,6 +177,13 @@ pub struct Writer {
     out: Vec<u8>,
     /// Service blocks, in the order the footer must list them.
     service: Vec<ArchiveBlock>,
+    /// The canonical `-ae` chain, e.g. `["aes-256/ctr:n1000:r0"]`. Only
+    /// consulted when a password is set.
+    encryption_algorithm: Vec<String>,
+    /// `opt_data_password` — empty means data blocks go in unencrypted.
+    data_password: Vec<u8>,
+    /// `opt_headers_password` — likewise for the directory and footer blocks.
+    headers_password: Vec<u8>,
 }
 
 impl Default for Writer {
@@ -187,7 +194,73 @@ impl Default for Writer {
 
 impl Writer {
     pub fn new() -> Self {
-        Writer { out: Vec::new(), service: Vec::new() }
+        Writer {
+            out: Vec::new(),
+            service: Vec::new(),
+            encryption_algorithm: Vec::new(),
+            data_password: Vec::new(),
+            headers_password: Vec::new(),
+        }
+    }
+
+    /// A writer that encrypts. `algorithm` is the canonical `-ae` chain, and
+    /// either password may be empty to leave that half of the archive in the
+    /// clear — `-p` without `-hp` is exactly that case.
+    pub fn with_encryption(
+        algorithm: Vec<String>,
+        data_password: Vec<u8>,
+        headers_password: Vec<u8>,
+    ) -> Self {
+        Writer {
+            encryption_algorithm: algorithm,
+            data_password,
+            headers_password,
+            ..Writer::new()
+        }
+    }
+
+    /// Which password a block type is encrypted with
+    /// (`ArcvProcessCompress.hs:83`).
+    ///
+    /// The header block is NOT encrypted even under `-hp`: it is the eight
+    /// bytes a reader identifies the file by, and its arm of the case is `""`.
+    /// Measured on a reference archive written with `-hp`, whose header block
+    /// still reads `["storing"]`.
+    /// The three `Unknown` tags have no arm: the Haskell's case ends in
+    /// `error$ "Unexpected block type "++…` rather than a catch-all, and
+    /// defaulting them to "no password" would write an unencrypted block into
+    /// an archive the user asked to encrypt. This writer never produces one, so
+    /// the case is unreachable rather than merely unhandled.
+    fn password_for(&self, block_type: BlockType) -> Option<&[u8]> {
+        match block_type {
+            BlockType::Data => Some(&self.data_password),
+            BlockType::Dir | BlockType::Footer => Some(&self.headers_password),
+            BlockType::Header | BlockType::Descr | BlockType::Recovery => Some(&[]),
+            BlockType::Unknown | BlockType::Unknown2 | BlockType::Unknown3 => None,
+        }
+    }
+
+    /// `generateEncryption` for one block: the chain that drives the cipher and
+    /// the chain the archive stores, both freshly salted.
+    ///
+    /// Returns two empty suffixes when this block type takes no password, so a
+    /// caller can append unconditionally.
+    fn encryption_for(
+        &self,
+        block_type: BlockType,
+    ) -> Result<(Vec<String>, Vec<String>), crate::encryption::Error> {
+        let password = match self.password_for(block_type) {
+            Some(p) => p,
+            None => {
+                return Err(crate::encryption::Error::BadMethod(format!(
+                    "unexpected block type {block_type:?}"
+                )))
+            }
+        };
+        if password.is_empty() {
+            return Ok((Vec::new(), Vec::new()));
+        }
+        crate::encryption::generate(&self.encryption_algorithm, password)
     }
 
     pub fn pos(&self) -> u64 {
@@ -200,7 +273,18 @@ impl Writer {
     /// packed size separately -- which is how a reader knows how much to read
     /// before it can check anything.
     fn service_block(&mut self, block_type: BlockType, body: &[u8], compressor: Vec<String>) {
-        let packed = match crate::decompress::compress_chain(&compressor, body) {
+        // Two chains: the one that runs, carrying the key, and the one that is
+        // written down, carrying the salt instead. Storing the wrong one would
+        // put the key in the archive.
+        let (real_suffix, stored_suffix) = match self.encryption_for(block_type) {
+            Ok(pair) => pair,
+            Err(e) => panic!("cannot encrypt a {block_type:?} block: {e}"),
+        };
+        let mut real = compressor.clone();
+        real.extend(real_suffix);
+        let mut compressor = compressor;
+        compressor.extend(stored_suffix);
+        let packed = match crate::decompress::compress_chain(&real, body) {
             Ok(p) => p,
             // A service block that cannot be compressed is a bug in the method
             // string, not a condition to recover from silently: storing it
@@ -240,25 +324,20 @@ impl Writer {
 
     /// A data block: bytes only, no descriptor. Returns the block record the
     /// directory will describe it with.
+    ///
+    /// Fallible only because of encryption. The directories block is written
+    /// through here with `no_compression()`, and under `-p` it still gets an
+    /// encryption method appended — measured on a reference archive, whose
+    /// empty directories block reads `storing+aes-256/ctr:…` with a salt of its
+    /// own. Writing its bytes out raw would leave the block unencrypted while
+    /// claiming otherwise.
     pub fn write_data(
         &mut self,
         body: &[u8],
         compressor: Vec<String>,
         files: usize,
-    ) -> ArchiveBlock {
-        let pos = self.pos();
-        self.out.extend_from_slice(body);
-        ArchiveBlock {
-            block_type: BlockType::Data,
-            compressor,
-            pos,
-            orig_size: body.len() as u64,
-            comp_size: body.len() as u64,
-            // tupleToDataBlock reads 0 back: a data block carries no CRC of its
-            // own, only the per-file CRCs in the directory.
-            crc: 0,
-            files: Some(files),
-        }
+    ) -> Result<ArchiveBlock, crate::decompress::Error> {
+        self.write_compressed_data(body, compressor, files)
     }
 
     /// A data block whose bytes are COMPRESSED with `compressor`.
@@ -271,7 +350,14 @@ impl Writer {
         compressor: Vec<String>,
         files: usize,
     ) -> Result<ArchiveBlock, crate::decompress::Error> {
-        let packed = crate::decompress::compress_chain(&compressor, body)?;
+        let (real_suffix, stored_suffix) = self
+            .encryption_for(BlockType::Data)
+            .map_err(|e| crate::decompress::Error::BadMethod(e.to_string()))?;
+        let mut real = compressor.clone();
+        real.extend(real_suffix);
+        let mut compressor = compressor;
+        compressor.extend(stored_suffix);
+        let packed = crate::decompress::compress_chain(&real, body)?;
         let pos = self.pos();
         self.out.extend_from_slice(&packed);
         Ok(ArchiveBlock {
@@ -303,6 +389,7 @@ impl Writer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::passwords::Passwords;
     use crate::{archive, block, directory};
 
     fn entry(name: &str, size: u64, is_dir: bool, crc: u32) -> Entry {
@@ -374,11 +461,11 @@ mod tests {
 
         let mut w = Writer::new();
         w.write_header();
-        let data_block = w.write_data(&data, no_compression(), entries.len());
+        let data_block = w.write_data(&data, no_compression(), entries.len()).expect("stores");
         w.write_directory(&[data_block], &entries);
         let archive_bytes = w.finish("", "", false);
 
-        let (base, footer) = archive::read_footer(&archive_bytes).expect("footer");
+        let (base, footer) = archive::read_footer(&archive_bytes, &Passwords::default()).expect("footer");
         assert_eq!(footer.sfx_size, 0, "no SFX stub");
         assert_eq!(base, footer.blocks.last().map(|b| b.pos).unwrap_or(0), "the footer block's own position is what the block list is relative to");
         // header, dir, and the footer's own descriptor.
@@ -440,7 +527,7 @@ mod tests {
         w.write_header();
         w.write_directory(&[], &[]);
         let bytes = w.finish("", "", false);
-        let (_, footer) = archive::read_footer(&bytes).expect("footer");
+        let (_, footer) = archive::read_footer(&bytes, &Passwords::default()).expect("footer");
         assert_eq!(footer.blocks.len(), 3);
     }
 
@@ -450,7 +537,7 @@ mod tests {
         w.write_header();
         w.write_directory(&[], &[]);
         let bytes = w.finish("a comment with Ünïcödé", "", false);
-        let (_, footer) = archive::read_footer(&bytes).expect("footer");
+        let (_, footer) = archive::read_footer(&bytes, &Passwords::default()).expect("footer");
         assert_eq!(footer.comment, "a comment with Ünïcödé");
     }
 }

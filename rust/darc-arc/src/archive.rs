@@ -18,6 +18,7 @@
 use crate::block::{self, ArchiveBlock, BlockType, FooterBlock};
 use crate::decompress;
 use crate::directory::{self, Entry};
+use crate::passwords::Passwords;
 use rayon::prelude::*;
 use std::io::Read;
 
@@ -33,6 +34,10 @@ pub enum Error {
     Block { name: String, cause: decompress::Error },
     /// A service block decoded, but its contents did not parse.
     Malformed { name: String, cause: crate::bytestream::Error },
+    /// The block is encrypted and no supplied password opened it. Kept apart
+    /// from `Block` because it is not a corruption report: the archive is
+    /// intact and the credential is not. `BAD_PASSWORD` in `Errors.hs`.
+    BadPassword { name: String },
 }
 
 impl std::fmt::Display for Error {
@@ -43,6 +48,7 @@ impl std::fmt::Display for Error {
             Error::NotAFooter => write!(f, "last block of archive is not footer block"),
             Error::Block { name, cause } => write!(f, "{name} failed decompression: {cause}"),
             Error::Malformed { name, cause } => write!(f, "{name} is corrupted: {cause}"),
+            Error::BadPassword { name } => write!(f, "{name}: wrong password"),
         }
     }
 }
@@ -83,7 +89,7 @@ fn read_all(path: &std::path::Path) -> Result<Vec<u8>, Error> {
 }
 
 /// `archiveReadFooter` — find the last descriptor and decode the footer.
-pub fn read_footer(data: &[u8]) -> Result<(u64, FooterBlock), Error> {
+pub fn read_footer(data: &[u8], pw: &Passwords) -> Result<(u64, FooterBlock), Error> {
     let size = data.len() as u64;
     let scan = block::SCAN_MAX.min(size);
     let from = (size - scan) as usize;
@@ -94,7 +100,7 @@ pub fn read_footer(data: &[u8]) -> Result<(u64, FooterBlock), Error> {
     if descriptor.block_type != BlockType::Footer {
         return Err(Error::NotAFooter);
     }
-    let body = read_service_block(data, &descriptor)?;
+    let body = read_service_block(data, &descriptor, pw)?;
     // Relative to blPos of the footer BLOCK, not of its descriptor.
     let base = descriptor.pos;
     let name = descriptor.name();
@@ -103,9 +109,37 @@ pub fn read_footer(data: &[u8]) -> Result<(u64, FooterBlock), Error> {
     Ok((base, footer))
 }
 
+/// `generateDecryption` over a chain read from the archive — give every
+/// encryption link the key derived from a password that verifies against its
+/// stored check code.
+///
+/// A chain with no encryption link is returned as-is without touching the KDF,
+/// which is what keeps an ordinary archive from paying for PBKDF2 iterations it
+/// does not need.
+pub fn keyed(compressor: &[String], b: &ArchiveBlock, pw: &Passwords) -> Result<Vec<String>, Error> {
+    if !compressor.iter().any(|m| crate::block::is_encryption(m)) {
+        return Ok(compressor.to_vec());
+    }
+    crate::encryption::generate_decryption(compressor, &pw.unpack, &pw.keyfiles).map_err(|e| {
+        match e {
+            crate::encryption::Error::BadPassword => Error::BadPassword { name: b.name() },
+            // Not a password problem: the stored method string is unusable, or
+            // the cipher refused what it named. Both are properties of the
+            // archive, so they report as a bad block rather than sending the
+            // user off to re-type a password that was never wrong.
+            other @ (crate::encryption::Error::BadMethod(_)
+            | crate::encryption::Error::Cipher(_)
+            | crate::encryption::Error::NoEntropy) => Error::Block {
+                name: b.name(),
+                cause: decompress::Error::BadMethod(other.to_string()),
+            },
+        }
+    })
+}
+
 /// `archiveBlockReadAll` — the packed bytes of one service block, decompressed
 /// and checked.
-fn read_service_block(data: &[u8], b: &ArchiveBlock) -> Result<Vec<u8>, Error> {
+fn read_service_block(data: &[u8], b: &ArchiveBlock, pw: &Passwords) -> Result<Vec<u8>, Error> {
     let start = b.pos as usize;
     let end = start.saturating_add(b.comp_size as usize);
     let packed = data.get(start..end).ok_or_else(|| Error::Block {
@@ -115,14 +149,15 @@ fn read_service_block(data: &[u8], b: &ArchiveBlock) -> Result<Vec<u8>, Error> {
             got: data.len().saturating_sub(start),
         },
     })?;
-    decompress::read_block(&b.compressor, packed, b.orig_size as usize, b.crc)
+    let compressor = keyed(&b.compressor, b, pw)?;
+    decompress::read_block(&compressor, packed, b.orig_size as usize, b.crc)
         .map_err(|cause| Error::Block { name: b.name(), cause })
 }
 
 /// `archiveReadInfo` — the footer, then every directory block.
-pub fn read_info(path: &std::path::Path) -> Result<ArchiveInfo, Error> {
+pub fn read_info(path: &std::path::Path, pw: &Passwords) -> Result<ArchiveInfo, Error> {
     let data = read_all(path)?;
-    let (_base, footer) = read_footer(&data)?;
+    let (_base, footer) = read_footer(&data, pw)?;
 
     let dir_blocks: Vec<&ArchiveBlock> =
         footer.blocks.iter().filter(|b| b.block_type == BlockType::Dir).collect();
@@ -133,7 +168,7 @@ pub fn read_info(path: &std::path::Path) -> Result<ArchiveInfo, Error> {
     let decoded: Vec<Result<directory::Directory, Error>> = dir_blocks
         .par_iter()
         .map(|b| {
-            let body = read_service_block(&data, b)?;
+            let body = read_service_block(&data, b, pw)?;
             directory::read_directory(b.pos, &body)
                 .map_err(|cause| Error::Malformed { name: b.name(), cause })
         })
@@ -175,7 +210,12 @@ pub fn read_info(path: &std::path::Path) -> Result<ArchiveInfo, Error> {
 /// extract one file from it, which is what "solid" means — there is no way to
 /// start in the middle. Extracting many files from one block should decompress
 /// it once, and that is the caller's job to arrange.
-pub fn read_entry(data: &[u8], info: &ArchiveInfo, entry: &Entry) -> Result<Vec<u8>, Error> {
+pub fn read_entry(
+    data: &[u8],
+    info: &ArchiveInfo,
+    entry: &Entry,
+    pw: &Passwords,
+) -> Result<Vec<u8>, Error> {
     let b = info.data_blocks.get(entry.block).ok_or(Error::NoSignature)?;
     let start = b.pos as usize;
     let end = start.saturating_add(b.comp_size as usize);
@@ -183,7 +223,8 @@ pub fn read_entry(data: &[u8], info: &ArchiveInfo, entry: &Entry) -> Result<Vec<
         name: b.name(),
         cause: decompress::Error::WrongSize { expected: b.comp_size as usize, got: 0 },
     })?;
-    let unpacked = decompress::decompress_chain(&b.compressor, packed, b.orig_size as usize)
+    let compressor = keyed(&b.compressor, b, pw)?;
+    let unpacked = decompress::decompress_chain(&compressor, packed, b.orig_size as usize)
         .map_err(|cause| Error::Block { name: b.name(), cause })?;
     let from = entry.pos_in_block as usize;
     let to = from.saturating_add(entry.size as usize);

@@ -33,3 +33,6 @@ darc-lzma = { path = "../darc-lzma" }
 # the C archiver drives them with -- see src/codec_io.rs. Reusing them is the
 # only version that has been differential-tested against the C.
 darc-codecs = { path = "../darc-codecs" }
+# The ported crypto. -p appends an encryption method to a block's chain, so the
+# archive layer needs the cipher table and the KDF, not just the C ABI exports.
+darc-crypto = { path = "../darc-crypto" }

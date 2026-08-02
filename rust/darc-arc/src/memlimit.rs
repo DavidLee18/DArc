@@ -71,6 +71,9 @@ pub fn get_dictionary(m: &Method) -> u32 {
         | Method::Dispack(_)
         | Method::Exe
         | Method::Storing
+        // ENCRYPTION_METHOD::GetDictionary returns 0 (C_Encryption.h:45), so an
+        // encrypted chain limits exactly as the same chain unencrypted does.
+        | Method::Encryption(_)
         | Method::Unsupported(_) => 0,
     }
 }
@@ -106,6 +109,8 @@ pub fn set_dictionary(m: &mut Method, dict: u32) {
         | Method::Dispack(_)
         | Method::Exe
         | Method::Storing
+        // SetDictionary is an empty body (C_Encryption.h:49).
+        | Method::Encryption(_)
         | Method::Unsupported(_) => {}
     }
 }
@@ -315,7 +320,9 @@ pub fn get_decompression_mem(m: &Method) -> u64 {
             };
             t * get_decompression_mem(&p.inner) + (t + 2) * 2 * bs
         }
-        Method::Storing | Method::Unsupported(_) => 0,
+        // GetCompressionMem and GetDecompressionMem are both 0
+        // (C_Encryption.h:43).
+        Method::Storing | Method::Encryption(_) | Method::Unsupported(_) => 0,
     }
 }
 
@@ -365,6 +372,8 @@ pub fn set_decompression_mem(m: &mut Method, mem: u64) {
         | Method::Dispack(_)
         | Method::Exe
         | Method::Storing
+        // SetDecompressionMem is an empty body (C_Encryption.h:48).
+        | Method::Encryption(_)
         | Method::Unsupported(_) => {}
     }
 }

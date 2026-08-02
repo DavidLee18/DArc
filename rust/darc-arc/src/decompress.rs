@@ -108,6 +108,20 @@ fn undo(method: &Method, src: &[u8], hint: usize) -> Result<Vec<u8>, Error> {
                 Error::Codec { method: "4x4".to_string(), detail: cause.to_string() }
             }
         }),
+        // Decryption is in place and does not change the length, so `hint` has
+        // nothing to size. A chain read straight from an archive has no key
+        // here: `generate_decryption` must have run over it first, or `apply`
+        // fails on a zero-length key rather than producing plausible garbage.
+        Method::Encryption(e) => {
+            let mut buf = src.to_vec();
+            match e.apply(&mut buf, false) {
+                Ok(()) => Ok(buf),
+                Err(err) => Err(Error::Codec {
+                    method: e.show_stored(),
+                    detail: err.to_string(),
+                }),
+            }
+        }
         Method::Unsupported(name) => Err(Error::Unsupported(name.clone())),
     }
 }
@@ -337,6 +351,21 @@ pub fn compress_one_with(method: &Method, src: &[u8], all_at_once: bool) -> Resu
         Method::Dispack(p) => drive_enc("dispack", src, |io| {
             darc_codecs::dispack::encode::compress(io, p.block_size)
         }),
+        // The encryption step of a chain. It must be the REAL method here --
+        // the one carrying `:k` -- not the one the archive will store, so
+        // `compress_chain` is given the real chain and the writer stores the
+        // other. Encrypting with a keyless method would silently emit
+        // plaintext, which is why `apply` fails instead of no-oping.
+        Method::Encryption(e) => {
+            let mut buf = src.to_vec();
+            match e.apply(&mut buf, true) {
+                Ok(()) => Ok(buf),
+                Err(err) => Err(Error::Codec {
+                    method: e.show_stored(),
+                    detail: err.to_string(),
+                }),
+            }
+        }
         other @ Method::Unsupported(_) => Err(Error::Unsupported(format!("{other:?}"))),
     }
 }

@@ -233,6 +233,7 @@ name = "darc-arc"
 version = "0.1.0"
 dependencies = [
  "darc-codecs",
+ "darc-crypto",
  "darc-lzma",
  "rayon",
 ]
