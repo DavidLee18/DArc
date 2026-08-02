@@ -87,6 +87,8 @@ Two directories look dead and are **not** — check before deleting: `Compressio
 >
 > `c`, `ch`, `k`, `s…` and `rr…` take **no filespecs** — `is_CMD_WITHOUT_ARGS` (`Options.hs:305`). `d` and `j` are the exceptions, and their arguments mean different things: archive members for `d`, archive names for `j`.
 >
+> The size and time filters are part of the same predicate, with comparisons that are not uniform: `-sm`/`-sl` are strict, `-ta`/`-tn` are inclusive, `-tb`/`-to` are exclusive. `-sm`/`-sl` take a `parseSize` argument (a bare number is **bytes**), `-ta`/`-tb` a positional `YYYYMMDDHHMMSS` in local time, and `-tn`/`-to` a period where a bare number means **days**. A note on reaching them: `-ta`, `-tb`, `-tn` and `-to` are all ambiguous with `--type`, which is in `aPREFFERED_OPTIONS` and wins — `arc a -ta20240101 …` is `--type=a20240101: only arc format is supported`, in the reference as much as in this port. Use the long spellings. `-sm`/`-sl` are themselves preferred and so survive their own clash with `-s`.
+>
 > **One deliberate divergence.** Under `--dirs` the reference writes the top-level directory of each filespec *twice*; this port writes it once. The archives list the same names and differ only in byte count, and `removeDuplicates` collapses the duplicate on the next update. `filter::write_dirs` documents it and the change back is one line.
 
 `Environment.cpp` (62KB, 1,917 lines — the largest C++ file left) provides OS-level services to the Haskell side: file/console/memory primitives that differ across Windows and Unix. It goes with the Haskell layer, not with the codecs.

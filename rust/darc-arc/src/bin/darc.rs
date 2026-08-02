@@ -100,6 +100,7 @@ fn main() {
         "HeadersPassword", "keyfile", "lock", "method", "nodates", "OldKeyfile",
         "OldPassword", "password", "recompress", "recursive", "solid", "sync",
         "update", "include", "exclude", "dirs", "nodirs",
+        "SizeMore", "SizeLess", "TimeBefore", "TimeAfter", "TimeNewer", "TimeOlder",
         // Accepted and deliberately ignored: UI only.
         "yes", "indicator", "display",
     ];
@@ -123,10 +124,61 @@ fn main() {
 
     // `opt_file_filter` -- one predicate, shared by the disk scan, the archive
     // selection and the read commands. See `darc_arc::filter`.
+    // `-sm`/`-sl` take a size, `-ta`/`-tb` an absolute YYYYMMDDHHMMSS in LOCAL
+    // time, `-tn`/`-to` a period back from now. The last two are resolved here
+    // so the filter itself never reads the clock.
+    let size_of = |flag: &str| -> Option<u64> {
+        match parsed.arg(flag, "--") {
+            "--" => None,
+            s => match darc_arc::filter::parse_size(s) {
+                Some(n) => Some(n),
+                None => {
+                    eprintln!("ERROR: -{flag}: {s:?} is not a size");
+                    std::process::exit(2);
+                }
+            },
+        }
+    };
+    let time_of = |flag: &str| -> Option<i64> {
+        match parsed.arg(flag, "--") {
+            "--" => None,
+            s => match parse_local_time(s) {
+                Some(t) => Some(t),
+                None => {
+                    eprintln!("ERROR: -{flag}: {s:?} is not a YYYYMMDDHHMMSS time");
+                    std::process::exit(2);
+                }
+            },
+        }
+    };
+    let ago_of = |flag: &str| -> Option<i64> {
+        match parsed.arg(flag, "--") {
+            "--" => None,
+            s => match darc_arc::filter::parse_period(s) {
+                Some(secs) => Some(now_seconds() - secs),
+                None => {
+                    eprintln!("ERROR: -{flag}: {s:?} is not a time period");
+                    std::process::exit(2);
+                }
+            },
+        }
+    };
     let file_filter = darc_arc::filter::FileFilter {
         include: parsed.all("include").iter().map(|s| s.to_string()).collect(),
         exclude: parsed.all("exclude").iter().map(|s| s.to_string()).collect(),
         full_names: parsed.flag("fullnames"),
+        size_more: size_of("SizeMore"),
+        size_less: size_of("SizeLess"),
+        // -ta and -tn are both `>=` and both apply, so they collect rather than
+        // overwrite: giving one must not silently drop the other.
+        time_at_or_after: [time_of("TimeAfter"), ago_of("TimeNewer")]
+            .into_iter()
+            .flatten()
+            .collect(),
+        time_before: [time_of("TimeBefore"), ago_of("TimeOlder")]
+            .into_iter()
+            .flatten()
+            .collect(),
     };
     // `findNoArgs o "dirs" "nodirs"` -- Nothing when neither is given.
     let dirs_option = match (parsed.flag("dirs"), parsed.flag("nodirs")) {
@@ -171,7 +223,7 @@ fn main() {
                     &read_specs,
                     &e.stored_name,
                     file_filter.full_names,
-                ) && file_filter.accepts(&e.stored_name)
+                ) && file_filter.accepts(&e.stored_name, e.size, e.time)
             }
         }
     };
@@ -555,9 +607,21 @@ fn add(
     // decided by --dirs/--nodirs, or failing that by whether any n/s/t filter
     // exists at all.
     let keep_dirs = darc_arc::filter::write_dirs(dirs_option, file_filter);
-    found.retain(|(stored, _, is_dir)| match is_dir {
+    found.retain(|(stored, disk, is_dir)| match is_dir {
         true => keep_dirs,
-        false => file_filter.accepts(stored),
+        // The size and time filters need the file's own numbers, so this stats
+        // here rather than filtering on the name alone. Removing the entry from
+        // `found` -- not merely skipping it later -- is what keeps `-d` from
+        // deleting a file the filters excluded from the archive.
+        //
+        // The filter sees the REAL mtime. `--nodates` zeroes what is STORED,
+        // not what `fiTime` holds, so `-tn1d --nodates` still selects by age.
+        false => match std::fs::symlink_metadata(disk) {
+            Ok(md) => file_filter.accepts(stored, md.len(), mtime(&md)),
+            // Unreadable: keep it, so the loop below reports the error rather
+            // than silently dropping the file.
+            Err(_) => true,
+        },
     });
 
     for (stored, disk, is_dir) in &found {
@@ -697,7 +761,7 @@ fn add(
                     &specs,
                     &e.stored_name,
                     full_names,
-                ) && file_filter.accepts(&e.stored_name);
+                ) && file_filter.accepts(&e.stored_name, e.size, e.time);
                 match (deleting, copying) {
                     (true, _) => !full,
                     (false, true) => full,
@@ -1843,5 +1907,66 @@ fn stty(arg: &str) -> bool {
     match std::process::Command::new("stty").arg(arg).stdin(tty).status() {
         Ok(status) => status.success(),
         Err(_) => false,
+    }
+}
+
+// ── Times on the command line ───────────────────────────────────────────────
+
+/// `makeCalendarTime` (`Cmdline.hs:459`) — a `YYYYMMDDHHMMSS` argument to
+/// `-ta`/`-tb`, as seconds since the epoch.
+///
+/// The fields are taken by POSITION, not by parsing separators: four digits of
+/// year, then two each of month, day, hour, minute, second, and a short string
+/// simply runs out — `readInt ""` is 0, so `-ta2025` means midnight on the 1st
+/// of month 0, which `max (x-1) 0` clamps to January.
+///
+/// The value is LOCAL time. The Haskell gets there by round-tripping through
+/// `toCalendarTime . toClockTime` twice to settle `ctTZ`; this uses the offset
+/// `localtime_r` reports, which is the same answer for every zone without a
+/// mid-interval DST change.
+fn parse_local_time(s: &str) -> Option<i64> {
+    let digits: Vec<char> = s.chars().collect();
+    if digits.iter().any(|c| !c.is_ascii_digit()) || digits.is_empty() {
+        return None;
+    }
+    // `readInt (take n (drop k s))`, with a short string yielding "" -> 0.
+    let field = |from: usize, len: usize| -> i64 {
+        let end = (from + len).min(digits.len());
+        if from >= digits.len() {
+            return 0;
+        }
+        digits[from..end].iter().collect::<String>().parse().unwrap_or(0)
+    };
+    let year = field(0, 4);
+    // `ctMonth = readInt … .$ (\x -> max (x-1) 0) .$ toEnum` -- a 0 or absent
+    // month is January, and the value is a MONTH INDEX from 0.
+    let month = (field(4, 2) - 1).max(0) as u32 + 1;
+    let day = field(6, 2).max(1);
+    let (hour, min, sec) = (field(8, 2), field(10, 2), field(12, 2));
+    if !(1..=12).contains(&month) {
+        return None;
+    }
+    let days = days_from_civil(year, month, day);
+    Some(days * 86_400 + hour * 3_600 + min * 60 + sec - local_offset_seconds())
+}
+
+/// The inverse of [`civil_from_days`] — Howard Hinnant's `days_from_civil`.
+fn days_from_civil(y: i64, m: u32, d: i64) -> i64 {
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = y.div_euclid(400);
+    let yoe = y - era * 400;
+    let mp = if m > 2 { m - 3 } else { m + 9 } as i64;
+    let doy = (153 * mp + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era * 146_097 + doe - 719_468
+}
+
+/// Seconds since the epoch, for `-tn`/`-to`.
+fn now_seconds() -> i64 {
+    match std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
+        Ok(d) => d.as_secs() as i64,
+        // Before 1970 on this machine's clock; the filters then select nothing,
+        // which is better than wrapping into the future.
+        Err(_) => 0,
     }
 }

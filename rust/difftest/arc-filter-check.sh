@@ -70,6 +70,20 @@ build_tree() {
 }
 build_tree "$W/src"
 
+# A second tree with three distinct sizes and three distinct ages, so the size
+# and time filters have boundaries to land on either side of.
+sizes_tree() {
+  local d="$1"
+  rm -rf "$d"; mkdir -p "$d/sub"
+  head -c 50   /dev/zero | tr '\0' 'a' > "$d/small.txt"
+  head -c 5000 /dev/zero | tr '\0' 'b' > "$d/big.txt"
+  head -c 500  /dev/zero | tr '\0' 'c' > "$d/sub/mid.txt"
+  touch -t 202001010000 "$d/small.txt"
+  touch -t 203001010000 "$d/big.txt"
+  touch -t 202501010000 "$d/sub/mid.txt"
+}
+sizes_tree "$W/sizes"
+
 # names <binary> <archive> -- the entry names, one per line.
 names() { "$1" l "$2" 2>/dev/null | grep -E '^[0-9]{4}-' | awk '{print $NF}'; }
 
@@ -133,6 +147,56 @@ create "--fullnames -x"       "--fullnames" "-xsub/n.txt"
 create "--fullnames -n"       "--fullnames" "-nsub/*"
 create "-x matching nothing"  "-xnothing.here"
 create "-n matching nothing"  "-nnothing.here"
+
+# ── the size and time filters ───────────────────────────────────────────────
+#
+# Over the `sizes` tree, and WITHOUT --nodates: the time filters read the file's
+# real mtime, and --nodates only changes what is stored.
+#
+# The time options are given by their LONG spellings on purpose. `-ta` is
+# ambiguous with `--type`, which is in aPREFFERED_OPTIONS and wins, so `-ta…`
+# is "--type=a…: only arc format is supported" -- in the reference as much as
+# here. `-sm`/`-sl` are themselves preferred and so survive their clash with
+# `-s`, which is why those rows use the short form.
+sizes() {
+  local label="$1"; shift
+  checked=$((checked + 1))
+  rm -f "$W/r.arc" "$W/p.arc"
+  ( cd "$W/sizes" && "$REF"  a -r -y -m0 "$@" "$W/r.arc" . ) >/dev/null 2>&1
+  ( cd "$W/sizes" && "$PORT" a -r -y -m0 "$@" "$W/p.arc" . ) >/dev/null 2>&1
+  local r=present p=present
+  [ -f "$W/r.arc" ] || r=gone
+  [ -f "$W/p.arc" ] || p=gone
+  if [ "$r" != "$p" ]; then
+    echo "  DIFF [a $label]: reference $r, port $p"
+    fail=$((fail + 1))
+  elif [ "$r" = present ] && ! cmp -s "$W/r.arc" "$W/p.arc"; then
+    echo "  DIFF [a $label]: $(wc -c <"$W/r.arc") vs $(wc -c <"$W/p.arc") bytes"
+    echo "    reference: $(names "$REF" "$W/r.arc" | tr '\n' ' ')"
+    echo "    port:      $(names "$PORT" "$W/p.arc" | tr '\n' ' ')"
+    fail=$((fail + 1))
+  fi
+}
+
+sizes "-sm100"              "-sm100"
+sizes "-sm1k"               "-sm1k"
+sizes "-sl1000"             "-sl1000"
+sizes "-sm100 -sl1000"      "-sm100" "-sl1000"
+sizes "-sm0"                "-sm0"
+sizes "-sm 50 boundary"     "-sm50"
+sizes "-sl 50 boundary"     "-sl50"
+sizes "-sm10k selects none" "-sm10k"
+sizes "TimeAfter abs"       "--TimeAfter=20240101000000"
+sizes "TimeBefore abs"      "--TimeBefore=20240101000000"
+sizes "TimeAfter future"    "--TimeAfter=20260101000000"
+sizes "TimeAfter short"     "--TimeAfter=2024"
+sizes "TimeNewer 1d"        "--TimeNewer=1d"
+sizes "TimeOlder 1d"        "--TimeOlder=1d"
+sizes "TimeNewer huge"      "--TimeNewer=99999"
+sizes "size and time"       "-sm100" "--TimeAfter=20240101000000"
+
+# The short spellings that lose to --type must lose the same way on both sides.
+sizes "-ta loses to --type"  "-ta20240101000000"
 
 # The reference duplicates the top-level directory under --dirs; compare names.
 create_names "--dirs"           "--dirs"
@@ -282,6 +346,27 @@ fi
 cp "$W/base.arc" "$W/accept.arc"
 if ! "$PORT" d --nodates -y -m0 "$W/accept.arc" a.txt >/dev/null 2>&1; then
   echo "SELF-TEST FAILED: d rejected a filespec, so the refusal is too broad" >&2
+  exit 1
+fi
+
+# The size and time filters must SELECT something and not everything, or their
+# rows compare two identical unfiltered archives.
+rm -f "$W/sz.arc" "$W/all2.arc"
+( cd "$W/sizes" && "$PORT" a -r -y -m0 "$W/all2.arc" . ) >/dev/null 2>&1
+( cd "$W/sizes" && "$PORT" a -r -y -m0 -sm100 "$W/sz.arc" . ) >/dev/null 2>&1
+n_all=$(names "$PORT" "$W/all2.arc" | grep -c . || true)
+n_sz=$(names "$PORT" "$W/sz.arc" | grep -c . || true)
+if [ "$n_sz" = "$n_all" ] || [ "$n_sz" = 0 ]; then
+  echo "SELF-TEST FAILED: -sm100 selected $n_sz of $n_all, so the size rows" >&2
+  echo "compared an unfiltered archive or an empty one" >&2
+  exit 1
+fi
+rm -f "$W/tm.arc"
+( cd "$W/sizes" && "$PORT" a -r -y -m0 --TimeAfter=20240101000000 "$W/tm.arc" . ) >/dev/null 2>&1
+n_tm=$(names "$PORT" "$W/tm.arc" | grep -c . || true)
+if [ "$n_tm" = "$n_all" ] || [ "$n_tm" = 0 ]; then
+  echo "SELF-TEST FAILED: --TimeAfter selected $n_tm of $n_all, so the time" >&2
+  echo "rows compared an unfiltered archive or an empty one" >&2
   exit 1
 fi
 
