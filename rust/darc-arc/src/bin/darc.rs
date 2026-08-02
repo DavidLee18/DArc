@@ -405,6 +405,9 @@ fn main() {
             }
             if bad > 0 { 2 } else { 0 }
         }
+        // `runArchiveRecovery` (ArcRecover.hs:301) -- repair an archive using
+        // its own recovery records, writing `fixed.<name>` beside it.
+        "r" => recover(path, &archive_name),
         // `s…` sets the solid grouping, which this port does not write yet, so
         // it stays refused rather than silently doing the copy half.
         c if c.starts_with('s') => {
@@ -2040,4 +2043,148 @@ fn now_seconds() -> i64 {
         // which is better than wrapping into the future.
         Err(_) => 0,
     }
+}
+
+// ── arc r ───────────────────────────────────────────────────────────────────
+
+/// `runArchiveRecovery` (`ArcRecover.hs:301`).
+///
+/// Repairs an archive from its own recovery records and writes the result to
+/// `fixed.<name>` in the same directory, leaving the damaged file alone. The
+/// damaged archive is the only copy of anything unrecoverable, so overwriting
+/// it in place would be the one mistake with no way back.
+fn recover(path: &std::path::Path, archive_name: &str) -> i32 {
+    // `arcname `replaceBaseName` ("fixed."++takeBaseName arcname)` -- the
+    // extension is kept and the base name prefixed, so `a.arc` becomes
+    // `fixed.a.arc`.
+    let fixed = {
+        let dir = path.parent().unwrap_or_else(|| std::path::Path::new(""));
+        match path.file_name().map(|s| s.to_string_lossy().into_owned()) {
+            Some(b) => dir.join(format!("fixed.{b}")),
+            None => {
+                eprintln!("ERROR: {archive_name} has no file name");
+                return 2;
+            }
+        }
+    };
+    if fixed.exists() {
+        eprintln!("ERROR: file {} already exists", fixed.display());
+        return 2;
+    }
+
+    let data = match archive::open(path) {
+        Ok(d) => d,
+        Err(e) => {
+            eprintln!("ERROR: {e}");
+            return 2;
+        }
+    };
+    // Only the FOOTER is read: a damaged archive may have no readable
+    // directory, and repairing it is the point.
+    let pw = darc_arc::passwords::Passwords::default();
+    let (_, footer) = match archive::read_footer(&data, &pw) {
+        Ok(f) => f,
+        Err(e) => {
+            eprintln!("ERROR: {e}");
+            return 2;
+        }
+    };
+
+    let scan = match darc_arc::recovery::scan(&footer.blocks, &data) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("ERROR: archive can't be recovered - {e}");
+            return 2;
+        }
+    };
+    let ss = scan.control.sector_size;
+    println!(
+        "{} recovery sectors ({}) present",
+        show3(scan.control.rec_sectors),
+        show_memory(scan.control.rec_sectors * ss)
+    );
+    if scan.bad.is_empty() {
+        println!("Archive ok, no need to restore it!");
+        return 0;
+    }
+
+    let (recoverable, lost) =
+        darc_arc::recovery::partition_bad(&scan.bad, scan.control.rec_sectors);
+    if recoverable.is_empty() {
+        eprintln!(
+            "ERROR: {} unrecoverable errors ({}) found, can't restore anything!",
+            show3(lost.len() as u64),
+            show_memory(lost.len() as u64 * ss)
+        );
+        return 2;
+    }
+    print!(
+        "{} recoverable errors ({}) ",
+        show3(recoverable.len() as u64),
+        show_memory(recoverable.len() as u64 * ss)
+    );
+    if !lost.is_empty() {
+        print!(
+            "and {} unrecoverable errors ({}) ",
+            show3(lost.len() as u64),
+            show_memory(lost.len() as u64 * ss)
+        );
+    }
+    println!("found");
+
+    let (out, still_bad) = match darc_arc::recovery::recover(&scan, &data) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("ERROR: {e}");
+            return 2;
+        }
+    };
+    match std::fs::write(&fixed, &out) {
+        Ok(()) => {}
+        Err(e) => {
+            eprintln!("ERROR: {}: {e}", fixed.display());
+            return 2;
+        }
+    }
+    println!("Recovered archive saved to {}", fixed.display());
+    if !still_bad.is_empty() {
+        eprintln!(
+            "WARNING: {} errors ({}) remain unrecovered",
+            show3(still_bad.len() as u64),
+            show_memory(still_bad.len() as u64 * ss)
+        );
+    }
+    println!("All OK");
+    0
+}
+
+/// `showMemory` (`Compression.hs:590`), which is `showM` over
+/// `[(gb," gbytes"),(mb," mbytes"),(kb," kbytes"),(b," bytes")]`.
+///
+/// Not the same spelling as `showMem`: this one has a SPACE and the long unit
+/// names, so 1024 is `"1 kbytes"` and not `"1kb"`. Both exist and both are
+/// used; the recovery messages use this one.
+///
+/// A unit is taken when it divides exactly OR when the next unit down would
+/// need four thousand of itself, and the displayed number is rounded rather
+/// than truncated: `show ((mem + val/2) div val)`.
+fn show_memory(bytes: u64) -> String {
+    const KB: u64 = 1024;
+    if bytes == 0 {
+        return "0 bytes".to_string();
+    }
+    let units: [(u64, &str); 4] = [
+        (KB * KB * KB, " gbytes"),
+        (KB * KB, " mbytes"),
+        (KB, " kbytes"),
+        (1, " bytes"),
+    ];
+    for (i, (val, name)) in units.iter().enumerate() {
+        // The final unit is 1, which always divides, so the loop always stops.
+        let next = units.get(i + 1).map(|(v, _)| *v).unwrap_or(1);
+        if bytes % val == 0 || bytes / next >= 4096 {
+            return format!("{}{}", (bytes + val / 2) / val, name);
+        }
+    }
+    format!("{bytes} bytes")
 }

@@ -265,6 +265,243 @@ pub fn build(g: &Geometry, protected: &[u8], crcs_offset: u64) -> Bodies {
     Bodies { sectors, crcs: out.into_bytes() }
 }
 
+/// What the CRC block's header describes — `readControlInfo`
+/// (`ArcRecover.hs:200`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Control {
+    /// Where the protected region starts. Recorded as a distance BACK from the
+    /// CRC block, so it survives the archive being moved or an SFX stub
+    /// changing size.
+    pub init_pos: u64,
+    pub arcsize: u64,
+    pub sector_size: u64,
+    pub rec_sectors: u64,
+}
+
+/// Why an archive could not be scanned.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Error {
+    /// Fewer than two RECOVERY blocks: there is no recovery info.
+    Absent,
+    /// The header names a version this build does not know. `aRecVersions` is
+    /// a whitelist, so a newer writer is refused rather than guessed at.
+    Version(String),
+    /// The header did not parse.
+    Malformed,
+    /// The recovery info describes a region the file does not contain.
+    Truncated,
+}
+
+impl std::fmt::Display for Error {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Error::Absent => write!(f, "recovery data absent or corrupt"),
+            Error::Version(v) => {
+                write!(f, "you need FreeArc {v} or above to process this recovery info")
+            }
+            Error::Malformed => write!(f, "the recovery info header did not parse"),
+            Error::Truncated => write!(f, "the archive is shorter than its recovery info says"),
+        }
+    }
+}
+
+/// Parse the CRC block's header, returning it and the offset of the CRCs that
+/// follow it.
+pub fn read_control(body: &[u8], crcs_block_pos: u64) -> Result<(Control, usize), Error> {
+    let mut s = crate::bytestream::InStream::new(body);
+    let version = s.string().map_err(|_| Error::Malformed)?;
+    // `version notElem aRecVersions` -- a whitelist, checked before anything
+    // else is read, so meta-information from a format we do not know is never
+    // interpreted as if it were ours.
+    if version != "0.36" && version != "0.39" {
+        return Err(Error::Version(version));
+    }
+    let arcsize = s.varint().map_err(|_| Error::Malformed)?;
+    let offset = s.varint().map_err(|_| Error::Malformed)?;
+    let n = s.count().map_err(|_| Error::Malformed)?;
+    if n == 0 {
+        return Err(Error::Malformed);
+    }
+    let sector_size = s.varint().map_err(|_| Error::Malformed)?;
+    let rec_sectors = s.varint().map_err(|_| Error::Malformed)?;
+    if sector_size == 0 {
+        return Err(Error::Malformed);
+    }
+    // Only the first "compartment" is used; the format allows more and no
+    // writer produces them.
+    let init_pos = crcs_block_pos.checked_sub(offset).ok_or(Error::Malformed)?;
+    Ok((Control { init_pos, arcsize, sector_size, rec_sectors }, s.pos()))
+}
+
+/// The result of scanning an archive against its recovery info.
+pub struct Scan {
+    pub control: Control,
+    /// Indices of sectors whose CRC no longer matches.
+    pub bad: Vec<u64>,
+    /// The XOR sectors, after every archive sector has been XORed back in.
+    ///
+    /// For a recovery sector with exactly ONE damaged archive sector, this now
+    /// holds `S_damaged ^ S_correct` — everything else cancels — so XORing it
+    /// with the damaged sector produces the correct one. That identity is the
+    /// entire recovery scheme.
+    pub parity: Vec<u8>,
+    /// The stored CRC of each archive sector, in order.
+    ///
+    /// Kept rather than re-read: the repair pass needs them again to check each
+    /// repair, and a second parse could disagree with the first about where the
+    /// header ends.
+    pub stored_crcs: Vec<u32>,
+}
+
+/// `scanArchive` (`ArcRecover.hs:243`) — compare every sector against its
+/// stored CRC.
+///
+/// `blocks` is the footer's block list and `data` the whole file.
+pub fn scan(blocks: &[ArchiveBlock], data: &[u8]) -> Result<Scan, Error> {
+    let rec: Vec<&ArchiveBlock> =
+        blocks.iter().filter(|b| b.block_type == BlockType::Recovery).collect();
+    // "The current version can only process a single pair of recovery blocks."
+    if rec.len() < 2 {
+        return Err(Error::Absent);
+    }
+    let (sectors_block, crcs_block) = (rec[0], rec[1]);
+
+    let body = |b: &ArchiveBlock| -> Result<&[u8], Error> {
+        let start = b.pos as usize;
+        let end = start.checked_add(b.comp_size as usize).ok_or(Error::Truncated)?;
+        data.get(start..end).ok_or(Error::Truncated)
+    };
+    let crcs_body = body(crcs_block)?;
+    let (control, crcs_at) = read_control(crcs_body, crcs_block.pos)?;
+    let mut parity = body(sectors_block)?.to_vec();
+
+    let ss = control.sector_size as usize;
+    let arc_sectors = control.arcsize.div_ceil(control.sector_size);
+    let start = control.init_pos as usize;
+    let end = start
+        .checked_add(control.arcsize as usize)
+        .ok_or(Error::Truncated)?;
+    let protected = data.get(start..end).ok_or(Error::Truncated)?;
+
+    let mut idx = match control.rec_sectors {
+        0 => 0,
+        n => (n - (arc_sectors % n)) % n,
+    };
+    let mut bad = Vec::new();
+    let mut stored_crcs = Vec::with_capacity(arc_sectors as usize);
+    let mut crcs = crate::bytestream::InStream::new(&crcs_body[crcs_at..]);
+    for (n, chunk) in protected.chunks(ss).enumerate() {
+        if control.rec_sectors > 0 {
+            let base = idx as usize * ss;
+            match parity.get_mut(base..base + chunk.len()) {
+                Some(dst) => {
+                    for (d, s) in dst.iter_mut().zip(chunk) {
+                        *d ^= s;
+                    }
+                }
+                // The XOR block is shorter than its geometry claims.
+                None => return Err(Error::Truncated),
+            }
+            idx = (idx + 1) % control.rec_sectors;
+        }
+        let stored = crcs.crc().map_err(|_| Error::Malformed)?;
+        stored_crcs.push(stored);
+        if crc::calc(chunk) != stored {
+            bad.push(n as u64);
+        }
+    }
+    Ok(Scan { control, bad, parity, stored_crcs })
+}
+
+/// Which damaged sectors can be repaired, and which cannot.
+///
+/// A recovery sector holds the XOR of everything mapped to it, so it can supply
+/// exactly ONE unknown. Two damaged sectors sharing a recovery sector are both
+/// lost — `partition (null.tail)` over the groups.
+pub fn partition_bad(bad: &[u64], rec_sectors: u64) -> (Vec<u64>, Vec<u64>) {
+    // "If the RR contains no recovery sectors, then no archive sector can be
+    // recovered with their help :D"
+    if rec_sectors == 0 {
+        return (Vec::new(), bad.to_vec());
+    }
+    let mut groups: std::collections::BTreeMap<u64, Vec<u64>> =
+        std::collections::BTreeMap::new();
+    for n in bad {
+        groups.entry(n % rec_sectors).or_default().push(*n);
+    }
+    let mut recoverable = Vec::new();
+    let mut lost = Vec::new();
+    for (_, g) in groups {
+        match g.len() {
+            1 => recoverable.extend(g),
+            _ => lost.extend(g),
+        }
+    }
+    (recoverable, lost)
+}
+
+/// `runArchiveRecovery`'s copy loop — produce the repaired archive.
+///
+/// Returns the new file's bytes and the sectors that remain broken. A sector is
+/// only accepted after its repaired contents match the stored CRC: the parity
+/// itself may be damaged, and a "repair" that fails that check is undone rather
+/// than written.
+pub fn recover(scan: &Scan, data: &[u8]) -> Result<(Vec<u8>, Vec<u64>), Error> {
+    let c = &scan.control;
+    let ss = c.sector_size as usize;
+    let arc_sectors = c.arcsize.div_ceil(c.sector_size);
+    let (recoverable, mut still_bad) = partition_bad(&scan.bad, c.rec_sectors);
+
+    let start = c.init_pos as usize;
+    let end = start.checked_add(c.arcsize as usize).ok_or(Error::Truncated)?;
+    let protected = data.get(start..end).ok_or(Error::Truncated)?;
+
+    // Everything before the protected region -- an SFX stub, if any -- is
+    // copied through unchanged.
+    let mut out = data.get(..start).ok_or(Error::Truncated)?.to_vec();
+
+    let mut idx = match c.rec_sectors {
+        0 => 0,
+        n => (n - (arc_sectors % n)) % n,
+    };
+
+    for (n, chunk) in protected.chunks(ss).enumerate() {
+        let mut sector = chunk.to_vec();
+        let this = idx;
+        if c.rec_sectors > 0 {
+            idx = (idx + 1) % c.rec_sectors;
+        }
+        if recoverable.contains(&(n as u64)) {
+            let base = this as usize * ss;
+            match scan.parity.get(base..base + sector.len()) {
+                Some(p) => {
+                    for (d, s) in sector.iter_mut().zip(p) {
+                        *d ^= s;
+                    }
+                }
+                None => return Err(Error::Truncated),
+            }
+            // "If the CRC still does not match after that (which is possible
+            // when the reference sector itself is in error), then restore the
+            // sector's original contents."
+            match scan.stored_crcs.get(n) {
+                Some(want) if crc::calc(&sector) == *want => {}
+                _ => {
+                    sector.copy_from_slice(chunk);
+                    still_bad.push(n as u64);
+                }
+            }
+        }
+        out.extend_from_slice(&sector);
+    }
+
+    // "Copy the recovery blocks (or rather, the entire remainder of the old
+    // archive file after the protected data)."
+    out.extend_from_slice(data.get(end..).ok_or(Error::Truncated)?);
+    still_bad.sort_unstable();
+    Ok((out, still_bad))
+}
+
 /// A `RECOVERY_BLOCK` record for the footer's block list.
 pub fn block(pos: u64, body: &[u8]) -> ArchiveBlock {
     ArchiveBlock {
