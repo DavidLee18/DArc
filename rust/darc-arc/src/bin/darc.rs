@@ -57,8 +57,23 @@ fn main() {
             std::process::exit(2);
         }
     };
+    // `addArcExtension` (Cmdline.hs:770): an archive name with NO extension
+    // gets `.arc` appended, unless `--noarcext`. It applies to EVERY command,
+    // so `arc l x` opens `x.arc`.
+    //
+    // This interacts with `-sfx`, which renames `x.arc` to `x` on Unix: the
+    // resulting SFX archive cannot then be named without `--noarcext`, because
+    // `arc l x` would look for `x.arc` again. That is the reference's
+    // behaviour, not an artefact here.
+    let add_arc_ext = |name: &str| -> String {
+        let has_ext = std::path::Path::new(name).extension().is_some();
+        match has_ext || parsed.flag("noarcext") {
+            true => name.to_string(),
+            false => format!("{name}.arc"),
+        }
+    };
     let archive_name = match parsed.free.first() {
-        Some(a) => a.clone(),
+        Some(a) => add_arc_ext(a),
         None if command == "canonize" || command == "fit" || command == "types" => {
             String::new()
         }
@@ -101,7 +116,7 @@ fn main() {
         "OldPassword", "password", "recompress", "recursive", "solid", "sync",
         "update", "include", "exclude", "dirs", "nodirs",
         "SizeMore", "SizeLess", "TimeBefore", "TimeAfter", "TimeNewer", "TimeOlder",
-        "recovery",
+        "recovery", "volume", "sfx", "noarcext",
         // Accepted and deliberately ignored: UI only.
         "yes", "indicator", "display",
     ];
@@ -408,15 +423,17 @@ fn main() {
         // `runArchiveRecovery` (ArcRecover.hs:301) -- repair an archive using
         // its own recovery records, writing `fixed.<name>` beside it.
         "r" => recover(path, &archive_name),
-        // `s…` sets the solid grouping, which this port does not write yet, so
-        // it stays refused rather than silently doing the copy half.
-        c if c.starts_with('s') => {
-            eprintln!("ERROR: command {command:?} is not implemented in this port yet");
-            2
+        // `rr…` is `ch -rr…` and `s…` is `ch -sfx…` (Cmdline.hs:124, :166) --
+        // the same copy path, with the setting read off the command's own
+        // suffix.
+        //
+        // The `"r"` arm above must come FIRST: `r` is the recovery command and
+        // is not a prefix of anything, but matching `starts_with("rr")` before
+        // it would be harmless while matching a bare `starts_with('r')` would
+        // swallow it.
+        c if c.starts_with("rr") || c.starts_with('s') => {
+            add(&command, &archive_name, &parsed, &pw, &file_filter, dirs_option)
         }
-        // `rr…` is `ch -rr…` (Cmdline.hs:124): the same copy path, with the
-        // recovery setting taken from the command's own suffix.
-        c if c.starts_with("rr") => add(&command, &archive_name, &parsed, &pw, &file_filter, dirs_option),
         other => {
             eprintln!("ERROR: unknown command {other:?}");
             2
@@ -434,6 +451,44 @@ fn main() {
 /// valid, decodes correctly, and is not the bytes the reference would have
 /// written -- the failure mode this repo cares most about. Refusing is the
 /// honest behaviour until it is ported.
+/// `changeSfxExt` (`ArcCreate.hs:336`) — the archive is RENAMED when an SFX
+/// module is added or removed.
+///
+/// On Unix `aDEFAULT_SFX_EXTENSION` is the empty string, so `-sfxMODULE` turns
+/// `x.arc` into `x`, and `-sfx-` turns an extensionless `x` back into `x.arc`.
+/// A name whose extension is neither is left alone.
+///
+/// Applied only when the archive does not already exist (`ArcCreate.hs:68`):
+/// updating an existing archive never renames it.
+fn change_sfx_ext(sfx: &str, arcname: &str) -> String {
+    const SFX_EXT: &str = ""; // ".exe" on Windows
+    const ARC_EXT: &str = ".arc";
+    let ext = match std::path::Path::new(arcname).extension() {
+        Some(e) => format!(".{}", e.to_string_lossy()),
+        None => String::new(),
+    };
+    let replace = |new: &str| -> String {
+        let stem = match arcname.rfind('.') {
+            // `replaceExtension` only looks after the last separator; a dot in
+            // a directory name is not an extension.
+            Some(i) if !arcname[i..].contains('/') => &arcname[..i],
+            _ => arcname,
+        };
+        format!("{stem}{new}")
+    };
+    match sfx {
+        "--" => arcname.to_string(),
+        "-" => match ext == SFX_EXT {
+            true => replace(ARC_EXT),
+            false => arcname.to_string(),
+        },
+        _ => match ext == ARC_EXT {
+            true => replace(SFX_EXT),
+            false => arcname.to_string(),
+        },
+    }
+}
+
 fn add(
     command: &str,
     archive_name: &str,
@@ -488,18 +543,18 @@ fn add(
     let chains: Vec<String> = decoded.iter().map(|(_, c)| c.join("+")).collect();
     // The main chain, used for the single-block paths below.
     let chain: &str = &chains[0];
-    // `parseSolidOption` (Cmdline.hs:757). The `s…` COMMAND is `ch -s…`, so
-    // its suffix is the option's default the way `rr…`'s is.
-    let solid_default = match command.strip_prefix('s') {
-        Some(rest) if command != "s" || rest.is_empty() => rest,
-        _ => "",
-    };
-    let solid = match darc_arc::grouping::parse_solid(parsed.arg("solid", solid_default)) {
+    // `parseSolidOption` (Cmdline.hs:757).
+    //
+    // `-s` has NO command form. The `s…` command is `ch -sfx…`, not `ch -s…`
+    // (Cmdline.hs:166) -- its suffix names an SFX module. An earlier version
+    // here derived the solid grouping from it, which was wrong; it was dead
+    // code because `s…` is refused, but it said something untrue.
+    let solid = match darc_arc::grouping::parse_solid(parsed.arg("solid", "")) {
         Some(s) => s,
         None => {
             eprintln!(
                 "ERROR: invalid value {:?} for option --solid (-s)",
-                parsed.arg("solid", solid_default)
+                parsed.arg("solid", "")
             );
             return 2;
         }
@@ -712,6 +767,7 @@ fn add(
     let mut old_comment = String::new();
     let mut old_locked = false;
     let mut old_recovery = String::new();
+    let mut old_sfx: Vec<u8> = Vec::new();
     // Where each archive-origin file came from: (which input archive, which of
     // its blocks, position within that block). Captured before `pos_in_block` is
     // overwritten for the OUTPUT archive, which is the only chance to know it.
@@ -771,6 +827,9 @@ fn add(
                 return 2;
             }
         };
+        // `archiveCopyData oldArchive 0 oldSFXSize archive` -- the default is
+        // to carry the input archive's SFX stub across.
+        old_sfx = data.get(..info.footer.sfx_size as usize).unwrap_or(&[]).to_vec();
         let full_names = parsed.flag("fullnames");
         let main: Vec<darc_arc::joinlist::Candidate> = info
             .entries
@@ -1042,6 +1101,52 @@ fn add(
                 return 2;
             }
         }
+    }
+    // `writeSFX` (ArcCreate.hs:323), and the `s…` command is `ch -sfx…`
+    // (Cmdline.hs:166) -- its suffix is the module name.
+    //
+    //   -sfx-      drop the stub the input archive had
+    //   -sfx--     copy it across (the default)
+    //   -sfxNAME   prepend the named module file
+    //
+    // A bare `-sfx` means aDEFAULT_SFX, "freearc.sfx", which the reference
+    // looks up in its library directory. That lookup is `findFile
+    // libraryFilePlaces`, the same executable-relative search that already does
+    // not resolve for this port, so a bare `-sfx` is refused rather than
+    // silently producing an archive with no stub.
+    let sfx_default = match command.strip_prefix('s') {
+        Some(rest) if command.starts_with('s') => rest,
+        _ => "--",
+    };
+    let sfx = parsed.arg("sfx", sfx_default);
+    // The name is decided TWICE. `ArcCreate.hs:68` picks the SFX name up front
+    // for an archive that does not exist yet, and `renameArchiveAsSFX`
+    // (`:172`) renames afterwards in every case -- so `ch -sfx-` on an existing
+    // `x` still produces `x.arc`. Doing only the first gives the right bytes
+    // under the wrong name.
+    let written_name = change_sfx_ext(sfx, archive_name);
+    let archive_name: &str = &match std::path::Path::new(archive_name).exists() {
+        true => archive_name.to_string(),
+        false => written_name.clone(),
+    };
+    match sfx {
+        "-" => {}
+        "--" => w.write_sfx(&old_sfx),
+        "" => {
+            eprintln!(
+                "ERROR: a bare -sfx needs the default module freearc.sfx from the \
+                 library directory, which this port does not locate; name one \
+                 explicitly"
+            );
+            return 2;
+        }
+        name => match std::fs::read(name) {
+            Ok(module) => w.write_sfx(&module),
+            Err(e) => {
+                eprintln!("ERROR: can't open SFX module {name}: {e}");
+                return 2;
+            }
+        },
     }
     w.write_header();
 
@@ -1370,6 +1475,74 @@ fn add(
         Err(e) => {
             eprintln!("ERROR: {archive_name}: {e}");
             return 2;
+        }
+    }
+
+    // `renameArchiveAsSFX` (ArcCreate.hs:172) -- after writing, in every case,
+    // not only when the archive was new.
+    let archive_name: &str = match written_name != archive_name {
+        false => archive_name,
+        true => {
+            println!("Renaming {archive_name} to {written_name}");
+            match std::fs::rename(archive_name, &written_name) {
+                Ok(()) => &written_name,
+                Err(e) => {
+                    eprintln!("ERROR: {archive_name}: {e}");
+                    return 2;
+                }
+            }
+        }
+    };
+
+    // `-v`/`--volume` (ArcCreate.hs:218) -- split the FINISHED archive into
+    // `.001`, `.002`, … and remove the original.
+    //
+    // There is no per-volume header and no cross-volume structure: it is a
+    // plain byte split, which is why the message tells the user to reassemble
+    // with `cat`. The read side exists in C (`darc_join_volumes`) and has NO
+    // caller, so nothing reads volumes back automatically -- checked, not
+    // assumed.
+    //
+    // The archive is written whole first and split after, so a `-v` smaller
+    // than the archive still needs room for both at once. That is the
+    // reference's behaviour too.
+    match parsed.arg("volume", "") {
+        "" => {}
+        spec => {
+            let volsize = match darc_arc::filter::parse_size(spec) {
+                Some(n) if n > 0 => n,
+                // `parseSize` errors out in the Haskell; a zero or unparseable
+                // size would otherwise loop for ever writing empty volumes.
+                _ => {
+                    eprintln!("ERROR: -v{spec}: not a volume size");
+                    return 2;
+                }
+            };
+            let mut vol = 0usize;
+            for chunk in bytes.chunks(volsize as usize) {
+                vol += 1;
+                let name = format!("{archive_name}.{vol:03}");
+                match std::fs::write(&name, chunk) {
+                    Ok(()) => {}
+                    Err(e) => {
+                        eprintln!("ERROR: {name}: {e}");
+                        return 2;
+                    }
+                }
+            }
+            match std::fs::remove_file(archive_name) {
+                Ok(()) => {}
+                Err(e) => {
+                    eprintln!("ERROR: {archive_name}: {e}");
+                    return 2;
+                }
+            }
+            println!(
+                "Split into {vol} volume(s): {archive_name}.001 .. .{vol:03}"
+            );
+            println!(
+                "To extract, reassemble with: cat {archive_name}.* > {archive_name}"
+            );
         }
     }
 

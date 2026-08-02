@@ -335,6 +335,19 @@ impl Writer {
         self.dir.clone()
     }
 
+    /// Prepend an SFX module — `writeSFX` (`ArcCreate.hs:323`).
+    ///
+    /// Must be called before [`write_header`](Self::write_header): the stub
+    /// goes at offset 0 and everything else after it. Block positions are
+    /// absolute, so they all shift — but the footer stores them RELATIVE to
+    /// itself (`arcpos - blPos`), so the encoded values are unchanged and only
+    /// `ftSFXSize`, which a reader derives from the first block's position,
+    /// differs.
+    pub fn write_sfx(&mut self, module: &[u8]) {
+        assert!(self.out.is_empty(), "the SFX module must go before everything else");
+        self.out.extend_from_slice(module);
+    }
+
     /// The archive signature. Stored, not compressed -- it is the eight bytes a
     /// reader identifies the file by.
     pub fn write_header(&mut self) {
