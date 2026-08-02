@@ -182,6 +182,9 @@ pub struct Writer {
     encryption_algorithm: Vec<String>,
     /// `opt_data_password` — empty means data blocks go in unencrypted.
     data_password: Vec<u8>,
+    /// The chain for DIRECTORY and FOOTER blocks -- `-dm`, or the "0" three
+    /// of the -s presets carry.
+    dir: Vec<String>,
     /// `opt_headers_password` — likewise for the directory and footer blocks.
     headers_password: Vec<u8>,
 }
@@ -200,6 +203,7 @@ impl Writer {
             encryption_algorithm: Vec::new(),
             data_password: Vec::new(),
             headers_password: Vec::new(),
+            dir: Self::dir_compressor(),
         }
     }
 
@@ -315,6 +319,22 @@ impl Writer {
         vec!["lzma:1mb:mf=BT4".to_string()]
     }
 
+    /// Use a different chain for the directory and footer blocks.
+    ///
+    /// `-dm`, and the `"0"` that three of the `-s` presets carry:
+    /// `defaultDirCompressor = thd3 grouping ||| aDEFAULT_DIR_COMPRESSION`
+    /// (`Cmdline.hs:117`), so `--solid=zip` stores the directory rather than
+    /// compressing it. That is archive-visible and was worth ~450 bytes on a
+    /// sixteen-file corpus.
+    pub fn set_dir_compressor(&mut self, chain: Vec<String>) {
+        self.dir = chain;
+    }
+
+    /// The chain in force for directory and footer blocks.
+    fn dirc(&self) -> Vec<String> {
+        self.dir.clone()
+    }
+
     /// The archive signature. Stored, not compressed -- it is the eight bytes a
     /// reader identifies the file by.
     pub fn write_header(&mut self) {
@@ -411,14 +431,14 @@ impl Writer {
     /// The directory block, describing `blocks`.
     pub fn write_directory(&mut self, blocks: &[ArchiveBlock], entries: &[Entry]) {
         let body = directory_block(self.pos(), blocks, entries);
-        self.service_block(BlockType::Dir, &body, Self::dir_compressor());
+        self.service_block(BlockType::Dir, &body, self.dirc());
     }
 
     /// The footer, and the finished archive.
     pub fn finish(mut self, comment: &str, recovery: &str, locked: bool) -> Vec<u8> {
         let blocks = self.service.clone();
         let body = footer_block(self.pos(), &blocks, locked, comment, recovery);
-        self.service_block(BlockType::Footer, &body, Self::dir_compressor());
+        self.service_block(BlockType::Footer, &body, self.dirc());
         self.out
     }
 
@@ -435,12 +455,12 @@ impl Writer {
         let body = footer_block(self.pos(), &blocks, locked, comment, "");
         // The footer is compressed, so its length has to be produced, not
         // estimated. Cheap: it is a few hundred bytes.
-        let packed = crate::decompress::compress_chain(&Self::dir_compressor(), &body)
+        let packed = crate::decompress::compress_chain(&self.dirc(), &body)
             .map(|p| p.len())
             .unwrap_or(0) as u64;
         let mut block = ArchiveBlock {
             block_type: BlockType::Footer,
-            compressor: Self::dir_compressor(),
+            compressor: self.dirc(),
             pos: self.pos(),
             orig_size: body.len() as u64,
             comp_size: packed,
@@ -478,7 +498,7 @@ impl Writer {
         // after it.
         let blocks = self.service.clone();
         let body = footer_block(self.pos(), &blocks, locked, comment, "");
-        self.service_block(BlockType::Footer, &body, Self::dir_compressor());
+        self.service_block(BlockType::Footer, &body, self.dirc());
 
         // Everything written so far is what the recovery info protects.
         let rr_pos = self.pos();
@@ -514,7 +534,7 @@ impl Writer {
         blocks.push(r0);
         blocks.push(r1);
         let body = footer_block(self.pos(), &blocks, locked, comment, recovery);
-        self.service_block(BlockType::Footer, &body, Self::dir_compressor());
+        self.service_block(BlockType::Footer, &body, self.dirc());
         Some(self.out)
     }
 }

@@ -488,16 +488,28 @@ fn add(
     let chains: Vec<String> = decoded.iter().map(|(_, c)| c.join("+")).collect();
     // The main chain, used for the single-block paths below.
     let chain: &str = &chains[0];
-    // parseSolidOption (Cmdline.hs:757). Only the two forms this port needs:
-    // "-s-" is [GroupNone], one solid block per file; the default and a bare
-    // "-s" are the empty criteria list, which splits nothing.
-    let per_file = parsed.arg("solid", "") == "-";
-
+    // `parseSolidOption` (Cmdline.hs:757). The `s…` COMMAND is `ch -s…`, so
+    // its suffix is the option's default the way `rr…`'s is.
+    let solid_default = match command.strip_prefix('s') {
+        Some(rest) if command != "s" || rest.is_empty() => rest,
+        _ => "",
+    };
+    let solid = match darc_arc::grouping::parse_solid(parsed.arg("solid", solid_default)) {
+        Some(s) => s,
+        None => {
+            eprintln!(
+                "ERROR: invalid value {:?} for option --solid (-s)",
+                parsed.arg("solid", solid_default)
+            );
+            return 2;
+        }
+    };
     // sort_order (Cmdline.hs:617): "" when the main compressor is
     // aNO_COMPRESSION, and ALSO "" when group_data is [GroupNone] -- there is
     // nothing to gain from ordering files that do not share a block. -m0 is the
     // one level where the first clause applies, which is why it packs in scan
     // order.
+    let per_file = solid.data == vec![darc_arc::grouping::Grouping::None];
     let sort_order = if chain == "storing" || per_file { "" } else { "gerpn" };
     let recursive = parsed.flag("recursive");
     let nodates = parsed.flag("nodates");
@@ -997,7 +1009,7 @@ fn add(
     // block, always stored. The files are split by opt_group_data -- except for
     // aNO_COMPRESSION, where splitOneType returns a single block whatever the
     // grouping says, so -m0 -s- is still one block.
-    let one_block_per_file = per_file && chain != "storing";
+
 
     // The encryption algorithm, canonicalised the way Cmdline.hs:529 does it
     // before it can reach a block: `-ae aes` becomes `aes-256/ctr:n1000:r0`.
@@ -1018,6 +1030,19 @@ fn add(
         pw.data.clone(),
         pw.headers.clone(),
     );
+    // `defaultDirCompressor = thd3 grouping ||| aDEFAULT_DIR_COMPRESSION`
+    // (Cmdline.hs:117): three of the -s presets force an UNCOMPRESSED
+    // directory, which is archive-visible.
+    if !solid.dir_method.is_empty() {
+        let decoded = darc_arc::methodtable::decode_method(&solid.dir_method);
+        match decoded.first() {
+            Some((_, chain)) => w.set_dir_compressor(chain.clone()),
+            None => {
+                eprintln!("ERROR: -dm{}: expanded to nothing", solid.dir_method);
+                return 2;
+            }
+        }
+    }
     w.write_header();
 
     // `dirs &&& [(aNO_COMPRESSION, dirs)]` (ArhiveFileList.hs:291): the
@@ -1137,48 +1162,33 @@ fn add(
         data_blocks.push(block);
     }
 
-    if one_block_per_file {
-        // splitToSolidBlocks runs splitFileTypes FIRST and only then splits each
-        // type's files by the grouping, so a file keeps ITS OWN type's chain
-        // even when every file is its own block. Using the main chain for all of
-        // them was wrong by 1.500 to 3.100 bytes on the four multi-type levels.
-        let mut reordered: Vec<Entry> = Vec::new();
-        for (ty, group) in &type_groups {
-            let chain = &chains[*ty];
-            for &i in group {
-                let mut e = file_entries[i].clone();
-                let body = contents.get(&e.stored_name).cloned().unwrap_or_default();
-                e.block = data_blocks.len();
-                e.pos_in_block = 0;
-                let fitted = match darc_arc::memlimit::fit_for_add(chain, body.len() as u64) {
-                    Some(f) => f,
-                    None => {
-                        eprintln!("ERROR: cannot fit {chain} to {} bytes", body.len());
-                        return 2;
-                    }
-                };
-                let compressor: Vec<String> = fitted.split('+').map(str::to_string).collect();
-                match w.write_compressed_data(&body, compressor, 1) {
-                    Ok(b) => data_blocks.push(b),
-                    Err(err) => {
-                        eprintln!("ERROR: {err}");
-                        return 2;
-                    }
-                }
-                reordered.push(e);
-            }
-        }
-        file_entries = reordered;
-    } else {
-        // One block per file TYPE, in the order merge_by_type produced. The
-        // entries are reordered to match, because the directory stores block
-        // membership as a run length over the file list.
-        let mut reordered: Vec<Entry> = Vec::new();
-        for (ty, group) in &type_groups {
+    // splitOneType (ArhiveFileList.hs:312) applied per file TYPE: each type's
+    // files are split into solid blocks by the -s criteria, and each block is
+    // packed with ITS OWN type's chain. Using the main chain for all of them
+    // was wrong by 1.500 to 3.100 bytes on the four multi-type levels.
+    //
+    // `aNO_COMPRESSION` short-circuits: "for fake compressors or -m0 there is
+    // no point in splitting the block into parts", so -m0 -s- is still ONE
+    // block however the grouping reads.
+    let mut reordered: Vec<Entry> = Vec::new();
+    for (ty, group) in &type_groups {
+        let chain = &chains[*ty];
+        let crits: Vec<darc_arc::grouping::Grouping> = match chain.as_str() {
+            "storing" => Vec::new(),
+            _ => solid.data.clone(),
+        };
+        let items: Vec<darc_arc::grouping::Item> = group
+            .iter()
+            .map(|&i| darc_arc::grouping::Item {
+                size: file_entries[i].size,
+                ext: darc_arc::sort::lc_extension(&file_entries[i].stored_name),
+            })
+            .collect();
+        let mut at = 0usize;
+        for len in darc_arc::grouping::split_blocks(&crits, &items) {
             let mut body = Vec::new();
-            for &i in group {
-                let e = &file_entries[i];
-                let mut e = e.clone();
+            for &i in &group[at..at + len] {
+                let mut e = file_entries[i].clone();
                 e.block = data_blocks.len();
                 e.pos_in_block = body.len() as u64;
                 match contents.get(&e.stored_name) {
@@ -1187,7 +1197,7 @@ fn add(
                 }
                 reordered.push(e);
             }
-            let chain = &chains[*ty];
+            at += len;
             let fitted = match darc_arc::memlimit::fit_for_add(chain, body.len() as u64) {
                 Some(f) => f,
                 None => {
@@ -1196,7 +1206,7 @@ fn add(
                 }
             };
             let compressor: Vec<String> = fitted.split('+').map(str::to_string).collect();
-            match w.write_compressed_data(&body, compressor, group.len()) {
+            match w.write_compressed_data(&body, compressor, len) {
                 Ok(b) => data_blocks.push(b),
                 Err(e) => {
                     eprintln!("ERROR: {e}");
@@ -1204,8 +1214,8 @@ fn add(
                 }
             }
         }
-        file_entries = reordered;
     }
+    file_entries = reordered;
 
     // Same order as the blocks: directories, then the copied/kept ones, then
     // the freshly split ones. The directory stores block membership as a run

@@ -57,6 +57,7 @@ pub mod extract;
 pub mod filter;
 pub mod filetype;
 pub mod fourx4;
+pub mod grouping;
 pub mod joinlist;
 pub mod memlimit;
 pub mod method;
