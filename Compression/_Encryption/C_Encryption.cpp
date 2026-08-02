@@ -94,7 +94,22 @@ ENCRYPTION_METHOD::ENCRYPTION_METHOD()
 {
     cipher        = -1;
     mode          = -1;
-    numIterations = 1000;
+    // PBKDF2-HMAC-SHA512, OWASP's recommended count for that PRF. FreeArc's
+    // 1000 dates from 2008 and is about 200x too low against a modern GPU.
+    //
+    // Unlike hexfix below, this default is safe to move: ShowCompressionMethod
+    // always writes ":n%d", so every stored method string names its own count
+    // and an old archive is decrypted with the 1000 it recorded, not with this.
+    // Nothing here is retroactive -- a weak archive stays weak, and the only way
+    // to strengthen it is to repack it.
+    //
+    // COST, measured on a 200-file tree: a key is derived PER BLOCK, so this is
+    // ~70ms x the number of blocks. A normal archive has one data block (plus
+    // two more under -hp), which is 131ms to create and 112ms to test -- against
+    // 89/42 at n=1000. But "-s-" makes every file its own solid block, and there
+    // the same tree goes from 227ms to 13.9s. Use "-ae aes:n1000" if that
+    // combination is what you need; the count is stored per archive.
+    numIterations = 210000;
     rounds        = 0;
     // 0, so a method string read from an ARCHIVE that says nothing about the
     // hex decoding gets the old one. Every archive written before ":h1" existed

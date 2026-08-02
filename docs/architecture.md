@@ -75,6 +75,12 @@ Two directories look dead and are **not** — check before deleting: `Compressio
 >
 > The trap for anyone changing this: the salt and the check code never went through the broken decoder — they are decoded in Haskell by `Utils.hs`'s `decode16`, which was always real hex. So a build that decodes all four fields correctly **verifies every password** and then fails every CRC. The check code cannot detect the mismatch.
 
+> **PBKDF2 iterations, and why they cost what they cost.** The default moved from FreeArc's `1000` to **`210000`**, OWASP's recommendation for PBKDF2-HMAC-SHA512. Unlike `hexfix`, this default is safe to move: `ShowCompressionMethod` always writes `:n%d`, so every stored method names its own count and an old archive is decrypted with the 1000 it recorded. Nothing is retroactive — a weak archive stays weak until it is repacked.
+>
+> The cost is **per block, not per archive**, because `generateEncryption` draws a fresh salt for every block and therefore derives a fresh key. Measured on a 200-file tree: a normal archive has one data block (three under `-hp`), so creating it goes 89 ms → 131 ms and testing it 42 ms → 112 ms. But `-s-` makes every file its own solid block, and there the same tree goes **227 ms → 13.9 s**. That combination is the one to know about; `-ae aes:n1000` opts out, per archive.
+>
+> Making a high count cheap would mean deriving the salt once per archive and keeping the per-block IVs — the standard design, and a behaviour change beyond a default. It is not done here.
+
 `Environment.cpp` (62KB, 1,917 lines — the largest C++ file left) provides OS-level services to the Haskell side: file/console/memory primitives that differ across Windows and Unix. It goes with the Haskell layer, not with the codecs.
 
 ## UI layer

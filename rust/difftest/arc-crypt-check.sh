@@ -179,6 +179,37 @@ if ( "$REF" lt -pSECRET "$W/h0.arc" 2>/dev/null | grep -q ':h1' ); then
   fail=$((fail + 1))
 fi
 
+# The PBKDF2 iteration count. ENCRYPTION_METHOD's constructor default moved from
+# FreeArc's 1000 to OWASP's 210000 for PBKDF2-HMAC-SHA512, and it has to move on
+# both sides at once -- the two binaries would still cross-decrypt if only one
+# had moved, because each archive names its own count and the reader obeys it.
+# So a mismatch here is invisible to every other row: it would simply mean one
+# binary writes weak archives.
+checked=$((checked + 2))
+for bin in "$PORT" "$REF"; do
+  rm -f "$W/n.arc"
+  ( cd "$W/src" && "$bin" a --nodates -r -y -m0 -pSECRET "$W/n.arc" . ) >/dev/null 2>&1
+  if ! ( "$REF" lt -pSECRET "$W/n.arc" 2>/dev/null | grep -q ':n210000:' ); then
+    echo "  FAIL: $(basename "$bin") did not write the default iteration count"
+    "$REF" lt -pSECRET "$W/n.arc" 2>/dev/null | grep '^\*' | head -1
+    fail=$((fail + 1))
+  fi
+done
+
+# An explicit count still wins, and an archive carrying one is read with IT and
+# not with the default -- which is what keeps every archive written before the
+# default moved readable. Cross-decrypted, so both sides are checked.
+checked=$((checked + 2))
+rm -f "$W/n1000.arc"
+( cd "$W/src" && $PORT a --nodates -r -y -m0 -pSECRET -aeaes:n1000 "$W/n1000.arc" . ) >/dev/null 2>&1
+if ! ( "$REF" lt -pSECRET "$W/n1000.arc" 2>/dev/null | grep -q ':n1000:' ); then
+  echo "  FAIL: -ae aes:n1000 did not reach the archive"; fail=$((fail + 1))
+fi
+if ! ( "$REF" t -pSECRET "$W/n1000.arc" 2>&1 | grep -q 'All OK' ); then
+  echo "  FAIL: the reference cannot read an archive with a non-default count"
+  fail=$((fail + 1))
+fi
+
 # A wrong password must be REFUSED, not decoded into garbage, in both
 # directions. `-p-` forbids prompting, so a hung read is not mistaken for a
 # refusal.

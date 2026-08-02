@@ -219,7 +219,13 @@ impl Encryption {
             },
             iv_size: cipher.block_length(),
             // ENCRYPTION_METHOD's constructor, C_Encryption.cpp:93.
-            num_iterations: 1000,
+            //
+            // Only ever reached for a method string that names no `:n`, which
+            // means a command line, not an archive: every stored string carries
+            // its own count because ShowCompressionMethod always writes one. So
+            // raising this strengthens NEW archives and leaves old ones decoding
+            // with the 1000 they recorded.
+            num_iterations: 210_000,
             rounds: 0,
             hex_fix: false,
             key: String::new(),
@@ -521,20 +527,26 @@ pub fn password_bytes(password: &str) -> Vec<u8> {
 mod tests {
     use super::*;
 
-    /// The canonical form the command line produces, measured from an archive
-    /// the reference build wrote with `-hpSECRET`.
+    /// The canonical form the command line produces. The shape was measured
+    /// from an archive the reference build wrote with `-hpSECRET`; the
+    /// iteration count is `ENCRYPTION_METHOD`'s constructor default, which has
+    /// since moved from FreeArc's 1000 to OWASP's 210000 and must move on both
+    /// sides together.
     #[test]
     fn the_default_algorithm_canonizes_the_way_the_reference_writes_it() {
-        assert_eq!(canonize("aes").as_deref(), Some("aes-256/ctr:n1000:r0"));
+        assert_eq!(canonize("aes").as_deref(), Some("aes-256/ctr:n210000:r0"));
     }
 
     #[test]
     fn every_cipher_canonizes_to_its_own_default_key_size() {
-        assert_eq!(canonize("blowfish").as_deref(), Some("blowfish-448/ctr:n1000:r0"));
-        assert_eq!(canonize("serpent").as_deref(), Some("serpent-256/ctr:n1000:r0"));
-        assert_eq!(canonize("twofish").as_deref(), Some("twofish-256/ctr:n1000:r0"));
-        assert_eq!(canonize("aes-128/cfb").as_deref(), Some("aes-128/cfb:n1000:r0"));
+        assert_eq!(canonize("blowfish").as_deref(), Some("blowfish-448/ctr:n210000:r0"));
+        assert_eq!(canonize("serpent").as_deref(), Some("serpent-256/ctr:n210000:r0"));
+        assert_eq!(canonize("twofish").as_deref(), Some("twofish-256/ctr:n210000:r0"));
+        assert_eq!(canonize("aes-128/cfb").as_deref(), Some("aes-128/cfb:n210000:r0"));
+        // An explicit count still wins, which is what keeps every archive
+        // written before the default moved readable.
         assert_eq!(canonize("aes:n5000").as_deref(), Some("aes-256/ctr:n5000:r0"));
+        assert_eq!(canonize("aes:n1000").as_deref(), Some("aes-256/ctr:n1000:r0"));
     }
 
     /// `keySize/8` is integer division and happens *before* the zero test, so a
@@ -542,10 +554,10 @@ mod tests {
     /// key. Rounding up or rejecting would both diverge.
     #[test]
     fn a_key_size_below_one_byte_falls_back_to_the_default() {
-        assert_eq!(canonize("aes-4").as_deref(), Some("aes-256/ctr:n1000:r0"));
-        assert_eq!(canonize("aes-0").as_deref(), Some("aes-256/ctr:n1000:r0"));
+        assert_eq!(canonize("aes-4").as_deref(), Some("aes-256/ctr:n210000:r0"));
+        assert_eq!(canonize("aes-0").as_deref(), Some("aes-256/ctr:n210000:r0"));
         // 12 bits is one byte after truncation, and one byte it stays.
-        assert_eq!(canonize("aes-12").as_deref(), Some("aes-8/ctr:n1000:r0"));
+        assert_eq!(canonize("aes-12").as_deref(), Some("aes-8/ctr:n210000:r0"));
     }
 
     #[test]
@@ -654,10 +666,16 @@ mod tests {
     }
 
     /// End to end through the cipher, with the real chain on both sides.
+    ///
+    /// `:n1000` throughout, and not because the default is wrong: this exercises
+    /// the CIPHER plumbing, and every algorithm here would otherwise pay for two
+    /// 210000-iteration derivations. Left at the default, this one test took 40
+    /// seconds. The default itself is asserted in the canonize tests, which
+    /// derive nothing.
     #[test]
     fn a_block_encrypted_with_the_real_chain_decrypts_with_the_recovered_one() {
         for algorithm in ["aes", "blowfish", "serpent", "twofish", "aes-128/cfb", "twofish/cfb"] {
-            let alg = vec![canonize(algorithm).expect("canonizes")];
+            let alg = vec![canonize(&format!("{algorithm}:n1000")).expect("canonizes")];
             let (real, stored) = generate(&alg, b"s3cret").expect("generates");
             let plain: Vec<u8> = (0..40_000u32).map(|i| (i % 253) as u8).collect();
 
@@ -753,10 +771,10 @@ mod tests {
     /// it instead would make `-ae aes:h0` silently write a corrected archive.
     #[test]
     fn the_hex_fix_is_requested_for_writing_and_can_be_overridden() {
-        assert_eq!(canonize_for_writing("aes").as_deref(), Some("aes-256/ctr:n1000:r0:h1"));
+        assert_eq!(canonize_for_writing("aes").as_deref(), Some("aes-256/ctr:n210000:r0:h1"));
         assert_eq!(
             canonize_for_writing("aes:h0").as_deref(),
-            Some("aes-256/ctr:n1000:r0"),
+            Some("aes-256/ctr:n210000:r0"),
             "an explicit h0 must win, for writing an archive an old build can read"
         );
         assert_eq!(
@@ -764,14 +782,15 @@ mod tests {
             Some("blowfish-448/cfb:n5000:r0:h1")
         );
         // Reading is unaffected: canonize does not add anything.
-        assert_eq!(canonize("aes").as_deref(), Some("aes-256/ctr:n1000:r0"));
+        assert_eq!(canonize("aes").as_deref(), Some("aes-256/ctr:n210000:r0"));
     }
 
     /// The generator must carry `:h1` into the archive, or every archive it
     /// writes claims the legacy decoding while using the new one.
     #[test]
     fn a_generated_chain_records_which_decoding_it_used() {
-        let alg = vec![canonize_for_writing("aes").expect("canonizes")];
+        // :n1000 -- this checks that :h1 reaches the archive, not the KDF cost.
+        let alg = vec![canonize_for_writing("aes:n1000").expect("canonizes")];
         let (real, stored) = generate(&alg, b"pw").expect("generates");
         assert!(stored[0].contains(":h1"), "the archive does not record :h1: {}", stored[0]);
         assert!(real[0].contains(":h1"));
