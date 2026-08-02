@@ -206,6 +206,50 @@ fn main() {
             }
             0
         }
+        // A probe, not an `arc` command: encrypt a fixed plaintext with a fixed
+        // key and IV under each of the two hex decodings, so a harness can
+        // prove they DIFFER. Both formats round-trip, so every cross-decryption
+        // row passes whether or not `:h1` is honoured; this is what catches the
+        // parameter being parsed and then ignored.
+        //
+        // The key and IV are constants, not secrets -- nothing is protected by
+        // them and no archive uses them.
+        "crypt-probe" => {
+            let which = parsed.free.first().map(String::as_str).unwrap_or("h1");
+            let h = match which {
+                "h1" => ":h1",
+                "h0" => "",
+                other => {
+                    eprintln!("usage: darc crypt-probe h0|h1 (got {other:?})");
+                    std::process::exit(2);
+                }
+            };
+            let method = format!(
+                "aes-256/ctr:n1000:r0{h}\
+                 :kf012ca272b5efb2bbe496b21da1ee037004ff64d3a2ee911c842316cf886e145\
+                 :i6090b4cacecf5fb120ba94b9125db455"
+            );
+            let mut parts = method.split(':');
+            let name = parts.next().unwrap_or("");
+            let params: Vec<&str> = parts.collect();
+            let e = match darc_arc::encryption::Encryption::parse(name, &params) {
+                Some(e) => e,
+                None => {
+                    eprintln!("ERROR: the probe's own method string does not parse");
+                    std::process::exit(2);
+                }
+            };
+            let mut buf = vec![b'A'; 64];
+            match e.apply(&mut buf, true) {
+                Ok(()) => {}
+                Err(err) => {
+                    eprintln!("ERROR: {err}");
+                    std::process::exit(2);
+                }
+            }
+            println!("{}", darc_arc::encryption::encode16(&buf));
+            0
+        }
         "canonize" => {
             let mut bad = 0;
             for m in &parsed.free {
@@ -530,7 +574,7 @@ fn add(
     let mut algorithm = Vec::new();
     if !pw.data.is_empty() || !pw.headers.is_empty() {
         for part in parsed.arg("encryption", "aes").split('+') {
-            match darc_arc::encryption::canonize(part) {
+            match darc_arc::encryption::canonize_for_writing(part) {
                 Some(c) => algorithm.push(c),
                 None => {
                     eprintln!("ERROR: bad name or parameters in encryption algorithm {part}");

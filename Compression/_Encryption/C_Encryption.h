@@ -23,6 +23,7 @@ public:
   char code[MAXKEYSIZE*2+1];     // Self-check code in base16 notation
   int  numIterations;            // Number of iterations when generating the key from password+salt
   int  rounds;                   // Number of rounds during encryption; the more, the slower but the more secure. 0 - use the default value recommended by the algorithm's authors
+  int  hexfix;                   // 1 - the key and iv above are real hexadecimal; 0 - they are decoded by char2int_broken, as every archive written before this parameter existed requires. See decode16 in C_Encryption.cpp
   int  keySize;                  // Key length in bytes (0 - use the maximum available)
   int  ivSize;                   // IV length in bytes (= the block size of the encryption algorithm)
 

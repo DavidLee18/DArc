@@ -61,6 +61,14 @@ pub struct Encryption {
     pub iv_size: usize,
     pub num_iterations: u32,
     pub rounds: u32,
+    /// `:h1` — the key and IV are real hexadecimal.
+    ///
+    /// **False by default, and that default is load-bearing.** A method string
+    /// read from an archive that says nothing about its hex decoding is an
+    /// archive written before the parameter existed, and it has to keep being
+    /// read the old way. New archives get `:h1` from the command line
+    /// (`Cmdline.hs`'s `addHexFix`), never from a default here.
+    pub hex_fix: bool,
     pub key: String,
     pub iv: String,
     pub salt: String,
@@ -125,38 +133,32 @@ pub fn decode16(s: &str) -> Vec<u8> {
     out
 }
 
-/// `decode16` as **the C does it** (`C_Encryption.cpp:117`), which is not the
-/// same function as [`decode16`] above and does not decode hexadecimal.
-///
-/// `char2int` (`Common.h:594`) is
+/// The **broken** decoder every archive written before the `:h1` parameter
+/// existed needs — `char2int` (`Common.h:594`), now `char2int_broken`:
 ///
 /// ```c
 /// static inline int char2int(char c) {return isdigit(c)? c-'0' : tolower(c)-'a';}
 /// ```
 ///
-/// so `'a'` becomes **0**, not 10 — and `'f'` becomes 5. The key and IV that
-/// reach the cipher are therefore not the bytes the method string appears to
-/// name. This is invisible in normal use because the same function decodes on
-/// both the writing and the reading side, so every DArc build agrees with
-/// itself; it surfaces the moment anything decodes the hex correctly, which is
-/// how this port found it. An archive written with a correctly decoded key
-/// cannot be opened by any released build, and vice versa.
+/// `'a'` comes out as **0**, not 10, and `'f'` as 5: the `+10` is missing. The
+/// key and IV reaching the cipher were therefore not the bytes their hex named.
+/// It stayed invisible because the same function ran on both the writing and
+/// the reading side, so every build agreed with itself.
 ///
-/// # This weakens the key, and reproducing it is still right
+/// A nibble `v` maps to `v` below 10 and to `v - 10` above, folding 16 values
+/// onto 10 — `'a'` and `'0'` produce the same byte. About 0.75 bits per nibble,
+/// so roughly 208 bits of entropy in a 256-bit AES key, and the IV folded the
+/// same way.
 ///
-/// A nibble `v` maps to `v` when `v < 10` and to `v - 10` otherwise, so the 16
-/// values collapse onto 10: `'a'` and `'0'` produce the same byte. That costs
-/// 0.75 bits per nibble — a 256-bit AES key carries about 208 bits of entropy,
-/// and the IV is folded the same way. It is a genuine flaw in the format rather
-/// than in this port, and it is not this port's to fix: writing the corrected
-/// key would produce archives nothing else can read, silently.
+/// **This is kept only to read old archives.** New ones carry `:h1` and use
+/// [`decode16`], which is real hexadecimal. See [`Encryption::hex_fix`].
 ///
-/// Only the key and the IV go through this. The salt and the check code are
-/// decoded on the *Haskell* side by `Utils.hs:582`, which uses `digitToInt` and
-/// is ordinary hexadecimal — see [`decode16`]. Using one function for all four
-/// fields, in either direction, produces an archive that verifies the password
-/// and then decrypts to garbage.
-pub fn decode16_c(s: &str) -> Vec<u8> {
+/// Only the key and the IV ever went through this. The salt and the check code
+/// are decoded on the *Haskell* side by `Utils.hs:582`, which was always
+/// ordinary hex — which is why a build that decodes all four correctly still
+/// verifies every password and then fails every CRC. The check code never
+/// touches this function, so it cannot detect the mismatch.
+pub fn decode16_broken(s: &str) -> Vec<u8> {
     fn char2int(c: char) -> u8 {
         match c.is_ascii_digit() {
             true => (c as u8) - b'0',
@@ -219,6 +221,7 @@ impl Encryption {
             // ENCRYPTION_METHOD's constructor, C_Encryption.cpp:93.
             num_iterations: 1000,
             rounds: 0,
+            hex_fix: false,
             key: String::new(),
             iv: String::new(),
             salt: String::new(),
@@ -236,6 +239,10 @@ impl Encryption {
                 'c' => p.code = truncate_hex(value),
                 'n' => p.num_iterations = crate::method::parse_int(value)?,
                 'r' => p.rounds = crate::method::parse_int(value)?,
+                // Any non-zero value means corrected, as `hexfix?…` in the C
+                // tests it. A build without this case refuses the whole string,
+                // which is the intended way for an old build to fail.
+                'h' => p.hex_fix = crate::method::parse_int(value)? != 0,
                 _ => return None,
             }
         }
@@ -250,14 +257,7 @@ impl Encryption {
     /// order `generateEncryption` appends them in. Both orders parse the same;
     /// only this one is what a canonicalising pass produces.
     pub fn show(&self) -> String {
-        let mut s = format!(
-            "{}-{}/{}:n{}:r{}",
-            self.cipher.name(),
-            self.key_size * 8,
-            self.mode.name(),
-            self.num_iterations,
-            self.rounds
-        );
+        let mut s = self.algorithm_prefix();
         for (tag, value) in [("k", &self.key), ("i", &self.iv), ("s", &self.salt), ("c", &self.code)]
         {
             if !value.is_empty() {
@@ -295,12 +295,16 @@ impl Encryption {
     /// and what both of the above are built on.
     fn algorithm_prefix(&self) -> String {
         format!(
-            "{}-{}/{}:n{}:r{}",
+            "{}-{}/{}:n{}:r{}{}",
             self.cipher.name(),
             self.key_size * 8,
             self.mode.name(),
             self.num_iterations,
-            self.rounds
+            self.rounds,
+            match self.hex_fix {
+                true => ":h1",
+                false => "",
+            }
         )
     }
 
@@ -311,13 +315,17 @@ impl Encryption {
     /// an archive is free to disagree and the C would follow the hex string, so
     /// this does too.
     ///
-    /// The hex is decoded by [`decode16_c`], the C's own `decode16`, which is
-    /// **not** hexadecimal — read its documentation before changing this line.
-    /// Decoding the key correctly here produces a build that verifies every
-    /// password and then fails every CRC.
+    /// Which decoder the hex goes through is [`Encryption::hex_fix`]'s to say,
+    /// and it is not a preference: an archive without `:h1` was written with
+    /// the broken one and can only be read with the broken one. Read
+    /// [`decode16_broken`] before touching this.
     pub fn apply(&self, data: &mut [u8], encrypting: bool) -> Result<(), Error> {
-        let key = decode16_c(&self.key);
-        let iv = decode16_c(&self.iv);
+        let decode = match self.hex_fix {
+            true => decode16,
+            false => decode16_broken,
+        };
+        let key = decode(&self.key);
+        let iv = decode(&self.iv);
         apply_in_place(self.cipher, self.mode, &key, &iv, encrypting, data).map_err(Error::Cipher)
     }
 
@@ -374,6 +382,22 @@ pub fn canonize(algorithm: &str) -> Option<String> {
     let mut parts = algorithm.split(':');
     let name = parts.next().unwrap_or("");
     let params: Vec<&str> = parts.collect();
+    Encryption::parse(name, &params).map(|e| e.show())
+}
+
+/// `addHexFix` (`Cmdline.hs`) — ask for real hexadecimal in the archive about
+/// to be written, then canonicalise.
+///
+/// `:h1` goes immediately **after the name**, not at the end. Parameters are
+/// applied left to right and the last wins, so this position leaves `-ae
+/// aes:h0` — deliberately writing an old-format archive, for a build that
+/// predates the parameter — in charge. Appending would override the user
+/// silently, which is the whole failure mode this parameter exists to avoid.
+pub fn canonize_for_writing(algorithm: &str) -> Option<String> {
+    let mut parts = algorithm.split(':');
+    let name = parts.next().unwrap_or("");
+    let mut params: Vec<&str> = vec!["h1"];
+    params.extend(parts);
     Encryption::parse(name, &params).map(|e| e.show())
 }
 
@@ -665,29 +689,31 @@ mod tests {
         assert_eq!(password_bytes("\u{101}"), vec![0x01]);
     }
 
-    /// The C's `decode16` is not hexadecimal, and this pins the exact mapping
-    /// against a ciphertext produced by the reference build.
+    /// The broken decoder, pinned against a ciphertext an old build produced.
     ///
-    /// The vector is a real archive: `arc a -m0 -pSECRET` over 64 `'A'`s, whose
-    /// stored method named this salt and IV. Decoding the key as hex gives a
-    /// key whose check code still matches — which is why this needed a
-    /// ciphertext to catch and could not be caught by a round trip.
+    /// The vector is a real archive: `arc a -m0 -pSECRET` over 64 `'A'`s,
+    /// written before `:h1` existed, whose stored method named this salt and
+    /// IV. Decoding its key as hex gives a key whose check code STILL MATCHES —
+    /// which is why catching this needed a ciphertext and could not come from a
+    /// round trip. Without this vector there is nothing keeping the legacy read
+    /// path honest, since no current build writes archives it can be tested on.
     #[test]
-    fn the_key_and_iv_are_decoded_the_way_the_c_decodes_them() {
-        assert_eq!(decode16_c("0a"), vec![0x00], "'a' is 0, not 10");
-        assert_eq!(decode16_c("ff"), vec![0x55], "'f' is 5, not 15");
-        assert_eq!(decode16_c("09"), vec![0x09], "digits are unchanged");
-        assert_eq!(decode16_c("a0"), vec![0x00]);
-        assert_eq!(decode16_c("FF"), vec![0x55], "tolower first");
-        // …and the correct decoder still disagrees, so the two cannot be
-        // confused by a test that only exercises one of them.
+    fn the_legacy_decoder_reproduces_an_old_builds_ciphertext() {
+        assert_eq!(decode16_broken("0a"), vec![0x00], "'a' is 0, not 10");
+        assert_eq!(decode16_broken("ff"), vec![0x55], "'f' is 5, not 15");
+        assert_eq!(decode16_broken("09"), vec![0x09], "digits are unchanged");
+        assert_eq!(decode16_broken("FF"), vec![0x55], "tolower first");
+        // …and the correct decoder disagrees, so a test exercising one of them
+        // cannot silently be exercising the other.
         assert_eq!(decode16("ff"), vec![0xff]);
 
+        // No ":h1" -- an archive from before the parameter existed.
         let e = method_of(
             "aes-256/ctr:n1000:r0\
              :kf012ca272b5efb2bbe496b21da1ee037004ff64d3a2ee911c842316cf886e145\
              :i6090b4cacecf5fb120ba94b9125db455",
         );
+        assert!(!e.hex_fix, "an archive with no :h parameter is a legacy one");
         let mut buf = vec![b'A'; 64];
         e.apply(&mut buf, true).expect("encrypts");
         assert_eq!(
@@ -695,19 +721,61 @@ mod tests {
             "99743a501df4b37ccd871a8b9e55d30ee5490ef3ed946743e7ed5a375bce657d\
              2d05749e280c7b834d047942a79712fcc37867e056951ea35548159ccce3453c"
                 .replace(char::is_whitespace, ""),
-            "the block does not match what the reference build wrote"
+            "the legacy path no longer reproduces what an old build wrote"
         );
+
+        // The same method WITH :h1 must produce different bytes -- otherwise
+        // the parameter is being ignored and old archives are being read with
+        // the new decoder, or the reverse.
+        let fixed = method_of(
+            "aes-256/ctr:n1000:r0:h1\
+             :kf012ca272b5efb2bbe496b21da1ee037004ff64d3a2ee911c842316cf886e145\
+             :i6090b4cacecf5fb120ba94b9125db455",
+        );
+        assert!(fixed.hex_fix);
+        let mut fixed_buf = vec![b'A'; 64];
+        fixed.apply(&mut fixed_buf, true).expect("encrypts");
+        assert_ne!(fixed_buf, buf, ":h1 changed nothing, so it is being ignored");
     }
 
-    /// The salt and the check code come off the Haskell side, which uses real
-    /// hexadecimal. Decoding them with the C's function would derive a
-    /// different key from the same archive.
+    /// The salt and the check code come off the Haskell side, which always used
+    /// real hexadecimal. Decoding them with the broken function would derive a
+    /// different key from the same archive — in EITHER format.
     #[test]
-    fn the_salt_is_ordinary_hex_and_the_key_is_not() {
+    fn the_salt_was_always_ordinary_hex() {
         let salt_hex = "12c17eb14283b3d7b60d28c204b304cc79a06a290c36186d49aaf58f901f1c08";
         assert_eq!(decode16(salt_hex)[0], 0x12);
         assert_eq!(decode16(salt_hex)[1], 0xc1);
-        assert_ne!(decode16_c(salt_hex)[1], 0xc1, "the two decoders must differ here");
+        assert_ne!(decode16_broken(salt_hex)[1], 0xc1, "the two decoders must differ here");
+    }
+
+    /// `:h1` goes after the NAME, so a user's own `h` overrides it. Appending
+    /// it instead would make `-ae aes:h0` silently write a corrected archive.
+    #[test]
+    fn the_hex_fix_is_requested_for_writing_and_can_be_overridden() {
+        assert_eq!(canonize_for_writing("aes").as_deref(), Some("aes-256/ctr:n1000:r0:h1"));
+        assert_eq!(
+            canonize_for_writing("aes:h0").as_deref(),
+            Some("aes-256/ctr:n1000:r0"),
+            "an explicit h0 must win, for writing an archive an old build can read"
+        );
+        assert_eq!(
+            canonize_for_writing("blowfish/cfb:n5000").as_deref(),
+            Some("blowfish-448/cfb:n5000:r0:h1")
+        );
+        // Reading is unaffected: canonize does not add anything.
+        assert_eq!(canonize("aes").as_deref(), Some("aes-256/ctr:n1000:r0"));
+    }
+
+    /// The generator must carry `:h1` into the archive, or every archive it
+    /// writes claims the legacy decoding while using the new one.
+    #[test]
+    fn a_generated_chain_records_which_decoding_it_used() {
+        let alg = vec![canonize_for_writing("aes").expect("canonizes")];
+        let (real, stored) = generate(&alg, b"pw").expect("generates");
+        assert!(stored[0].contains(":h1"), "the archive does not record :h1: {}", stored[0]);
+        assert!(real[0].contains(":h1"));
+        assert!(method_of(&stored[0]).hex_fix);
     }
 
     #[test]

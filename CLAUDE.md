@@ -2,7 +2,10 @@
 
 DArc ("Distended Arc") is a fork of FreeArc 0.67 — a solid-compression archiver.
 Console binary `arc`, optional GTK binary `freearc`. Archive format is
-wire-compatible with [DArc86](https://github.com/YadeWira/DArc86).
+wire-compatible with [DArc86](https://github.com/YadeWira/DArc86) **except for
+encrypted archives**: those now carry `:h1` in the encryption method, because
+the old key/IV hex decoding was broken and weakened the key. Archives written
+without it are still read. See `docs/architecture.md`.
 
 **It is mid-port from C to Rust, codec by codec, and the codec half is done.**
 Rust ~53,000 lines (every codec, the crypto, the `.7z` reader, SREP);

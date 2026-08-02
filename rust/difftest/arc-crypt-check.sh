@@ -38,16 +38,30 @@
 # `:k` next to its ciphertext is unencrypted in every sense that matters, and
 # it would pass a round trip perfectly.
 #
-# ── The key is not decoded as hexadecimal ───────────────────────────────────
+# ── Two hex decodings, and the ":h1" that tells them apart ──────────────────
 #
-# C_Encryption.cpp's decode16 uses char2int (Common.h:594), which maps 'a' to 0
-# rather than to 10. The key and IV that reach the cipher are therefore not the
-# bytes their hex appears to name, while the salt and check code -- decoded on
-# the Haskell side by Utils.hs:582 -- are ordinary hex. A port that decodes all
-# four correctly VERIFIES EVERY PASSWORD and then fails every CRC, because the
-# check code is derived from the salt and never passes through the broken
-# decoder. This harness is what catches that: the unit tests could not, since
-# both halves of a round trip would be wrong together.
+# decode16 in C_Encryption.cpp used to call char2int (Common.h:594), which maps
+# 'a' to 0 rather than to 10 -- folding the key's 16 hex values onto 10 and
+# costing about 0.75 bits per nibble. The salt and check code never went through
+# it: those are decoded on the Haskell side by Utils.hs:582, which is ordinary
+# hex. So a build that decodes all four correctly VERIFIES EVERY PASSWORD and
+# then fails every CRC, since the check code cannot see the mismatch.
+#
+# It is fixed. Archives now carry ":h1", meaning "the key and IV are real
+# hexadecimal", and archives without it are still read the old way. The rows
+# below check all three halves of that:
+#
+#   * new archives, both directions, carry :h1 and cross-decrypt;
+#   * an archive written WITHOUT the fix (-ae aes:h0, the escape hatch for
+#     builds that predate the parameter) still cross-decrypts, which is what
+#     keeps the legacy read path alive; and
+#   * the two formats are not interchangeable -- forcing the wrong decoding
+#     must fail rather than quietly produce different bytes.
+#
+# A build with no case for 'h' rejects the whole method string, so an old binary
+# meeting a new archive says "invalid compression method or parameters" instead
+# of reporting a corrupt archive. That is deliberate and is not testable here,
+# since every binary in the tree now has the parameter.
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
@@ -96,8 +110,11 @@ extract_and_compare() {
 
 build_tree "$W/src"
 
+# The last spec writes the OLD format on purpose: "-ae aes:h0" overrides the
+# ":h1" the command line inserts, which is the only way to exercise the legacy
+# key decoding now that nothing writes it by default.
 for m in -m0 -m1 -m4 -m9; do
-  for spec in "-pSECRET" "-hpSECRET" "-pDATAPW -hpHEADPW"; do
+  for spec in "-pSECRET" "-hpSECRET" "-pDATAPW -hpHEADPW" "-pSECRET -aeaes:h0"; do
     # ── the port writes, the reference reads ─────────────────────────────
     checked=$((checked + 1))
     rm -f "$W/port.arc"
@@ -145,6 +162,22 @@ for ae in aes aes-128 aes-192 blowfish serpent twofish aes/cfb blowfish/cfb serp
     echo "  FAIL [-ae $ae]: the port cannot read the reference's archive"; fail=$((fail + 1))
   fi
 done
+
+# The two hex decodings must be distinguishable and NOT interchangeable. An
+# archive written with :h0 and one written with :h1 differ only in that
+# parameter and in which bytes the same key hex decodes to, so this is the one
+# check that separates them.
+checked=$((checked + 2))
+rm -f "$W/h1.arc" "$W/h0.arc"
+( cd "$W/src" && $PORT a --nodates -r -y -m0 -pSECRET            "$W/h1.arc" . ) >/dev/null 2>&1
+( cd "$W/src" && $PORT a --nodates -r -y -m0 -pSECRET -aeaes:h0  "$W/h0.arc" . ) >/dev/null 2>&1
+if ! ( "$REF" lt -pSECRET "$W/h1.arc" 2>/dev/null | grep -q ':h1' ); then
+  echo "  FAIL: the default archive does not record :h1"; fail=$((fail + 1))
+fi
+if ( "$REF" lt -pSECRET "$W/h0.arc" 2>/dev/null | grep -q ':h1' ); then
+  echo "  FAIL: -ae aes:h0 still recorded :h1, so the override is ignored"
+  fail=$((fail + 1))
+fi
 
 # A wrong password must be REFUSED, not decoded into garbage, in both
 # directions. `-p-` forbids prompting, so a hung read is not mistaken for a
@@ -220,4 +253,22 @@ if cmp -s "$W/e1.arc" "$W/e2.arc"; then
   exit 1
 fi
 
-echo "the Rust arc encrypts and decrypts exactly as the Haskell one does"
+# 4. The fix must CHANGE something. Both formats round-trip, so every row above
+#    would pass if ":h1" were parsed and then ignored -- the failure this whole
+#    parameter exists to prevent. Encrypt one block with each decoding, from the
+#    SAME key and IV, and require different bytes.
+h1_out=$($PORT crypt-probe h1 2>/dev/null)
+h0_out=$($PORT crypt-probe h0 2>/dev/null)
+if [ -z "$h1_out" ] || [ -z "$h0_out" ]; then
+  echo "SELF-TEST FAILED: the crypt-probe produced nothing, so the two hex" >&2
+  echo "decodings were never compared" >&2
+  exit 1
+fi
+if [ "$h1_out" = "$h0_out" ]; then
+  echo "SELF-TEST FAILED: the corrected and legacy hex decodings produce the" >&2
+  echo "same ciphertext from the same key, so :h1 is being ignored" >&2
+  exit 1
+fi
+
+echo "the Rust arc encrypts and decrypts exactly as the Haskell one does,"
+echo "in both the corrected and the legacy hex format"

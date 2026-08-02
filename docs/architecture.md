@@ -67,6 +67,14 @@ Two directories look dead and are **not** — check before deleting: `Compressio
 
 `Encryption.hs` / `EncryptionLib.hs` follow the identical pattern: **encryption is just another method in the chain** (`isEncryption = compressionIs "encryption?"`), with PBKDF2-HMAC and a Fortuna PRNG imported from `Compression.h` and OS entropy via `systemRandomData` in `Environment.cpp`. AES/Blowfish/Serpent/Twofish now come from `rust/darc-crypto`; `Compression/_Encryption/` is the wrapper that forwards to it.
 
+> **The `:h1` parameter, and the archives that predate it.** `decode16` in `C_Encryption.cpp` decodes the encryption key and IV from the hex in the method string. It used to do that through `char2int` (`Common.h`), which is missing its `+10`: `'a'` decoded to `0` and `'f'` to `5`, folding the key's 16 hex values onto 10 and costing roughly 0.75 bits per nibble — about 208 bits of entropy in a nominally 256-bit AES key, with the IV folded the same way. It stayed invisible because the same function ran when writing and when reading, so every build agreed with itself.
+>
+> Archives now carry `:h1` in the encryption method, meaning "the key and IV are real hexadecimal", inserted by `addHexFix` (`Cmdline.hs`) immediately after the algorithm name. Archives *without* it are still read the old way, via `char2int_broken` — the default in `ENCRYPTION_METHOD`'s constructor is `hexfix = 0` precisely because that constructor is also what parses a method string read from an archive. `-ae aes:h0` writes the old format on purpose; the parameter goes after the name so a user's own `h` overrides it rather than the reverse.
+>
+> A build without a case for `'h'` hits `default: error=1` and refuses the whole method string, so an old binary meeting a new archive reports "invalid compression method or parameters" rather than a corrupt archive. **Encrypted archives are therefore not wire-compatible with DArc86 or with FreeArc 0.67**; unencrypted ones are unaffected.
+>
+> The trap for anyone changing this: the salt and the check code never went through the broken decoder — they are decoded in Haskell by `Utils.hs`'s `decode16`, which was always real hex. So a build that decodes all four fields correctly **verifies every password** and then fails every CRC. The check code cannot detect the mismatch.
+
 `Environment.cpp` (62KB, 1,917 lines — the largest C++ file left) provides OS-level services to the Haskell side: file/console/memory primitives that differ across Windows and Unix. It goes with the Haskell layer, not with the codecs.
 
 ## UI layer

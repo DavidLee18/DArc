@@ -529,7 +529,21 @@ parseCmdline cmdline  =  (`mapMaybeM` split ";" cmdline) $ \args -> do
   encryptionAlgorithm <- join_compressor ==<< (foreach (split_compressor ea) $ \algorithm -> do
     unless (isEncryption algorithm) $ do
       registerError$ CMDLINE_GENERAL ["0378 bad name or parameters in encryption algorithm %1", algorithm]
-    return$ CompressionLib.canonizeCompressionMethod algorithm)
+    -- ":h1" -- the key and IV in the archive we are about to WRITE are real
+    -- hexadecimal. Without it, decode16 in C_Encryption.cpp falls back to
+    -- char2int_broken, which folds 'a'..'f' onto 0..5 and costs about 0.75 bits
+    -- per nibble of the key. Archives written before this parameter existed
+    -- carry no "h" and are still read the old way; nothing else changes.
+    --
+    -- Set here rather than in ENCRYPTION_METHOD's constructor precisely because
+    -- the constructor is also what parses a method string READ FROM AN ARCHIVE,
+    -- where the absence of ":h" has to keep meaning the old decoding.
+    --
+    -- "-ae aes:h0" writes an old-format archive on purpose. parse_ENCRYPTION
+    -- applies parameters left to right, so this one goes immediately AFTER THE
+    -- NAME and anything the user wrote overrides it. Appending it to the end
+    -- instead would silently ignore "-ae aes:h0".
+    return$ CompressionLib.canonizeCompressionMethod (addHexFix algorithm))
 
   -- Passwords for the archive data and headers
   let (dpwd,hpwd) = case (findReqArg o "password"        "--" .$changeTo [("-", "--")]
@@ -731,6 +745,19 @@ parseCmdline cmdline  =  (`mapMaybeM` split ";" cmdline) $ \args -> do
     , opt_parseData            = parseData
     , opt_unParseData          = unParseData
     }
+
+{-# NOINLINE addHexFix #-}
+-- |Insert the ":h1" parameter directly after the algorithm name, asking for the
+-- key and IV to be real hexadecimal in the archive we are about to write.
+--
+-- Position matters. parse_ENCRYPTION walks the parameters left to right and the
+-- last assignment wins, so putting this FIRST leaves "-ae aes:h0" -- writing an
+-- old-format archive on purpose, for a build that predates the parameter -- in
+-- charge. Appending it would override the user instead, silently.
+addHexFix algorithm =
+  case split_method algorithm of
+    (name:params) -> joinWith ":" (name : "h1" : params)
+    _             -> algorithm
 
 {-# NOINLINE testOption #-}
 -- |Check that the option takes one of the allowed values
