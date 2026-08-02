@@ -59,8 +59,17 @@ use crate::sort::match_filespecs;
 /// reads the clock and every rule below is testable.
 #[derive(Clone, Debug, Default)]
 pub struct FileFilter {
-    /// `-n` — when non-empty, a name must match one of these.
+    /// `-n` — when [`include_given`](Self::include_given), a name must match
+    /// one of these.
     pub include: Vec<String>,
+    /// Whether `-n` was given AT ALL, before `@listfile` expansion.
+    ///
+    /// `match_included = orig_include_list &&& [...]` (`Cmdline.hs:439`) tests
+    /// the ORIGINAL list, "since with an empty list file no file should pass
+    /// the filter". So `-n@empty.txt` selects NOTHING, where reading the
+    /// expanded list as absent would select everything — the difference
+    /// between an empty archive and a full one.
+    pub include_given: bool,
     /// `-x` — a name matching one of these is rejected.
     pub exclude: Vec<String>,
     /// `--fullnames`: match against the whole stored path rather than the base
@@ -85,7 +94,7 @@ impl FileFilter {
     /// rejects everything, which is why `include.is_empty()` and "include
     /// matched nothing" are different answers.
     pub fn accepts(&self, stored_name: &str, size: u64, time: i64) -> bool {
-        let included = self.include.is_empty()
+        let included = !self.include_given
             || match_filespecs(&self.include, stored_name, self.full_names);
         let excluded = !self.exclude.is_empty()
             && match_filespecs(&self.exclude, stored_name, self.full_names);
@@ -105,7 +114,7 @@ impl FileFilter {
     /// [`include_dirs`], and getting it wrong makes `arc l -x…` stop listing
     /// directories.
     pub fn has_nst(&self) -> bool {
-        !self.include.is_empty()
+        self.include_given
             || self.size_more.is_some()
             || self.size_less.is_some()
             || !self.time_at_or_after.is_empty()
@@ -243,6 +252,7 @@ mod tests {
 
     fn f(include: &[&str], exclude: &[&str]) -> FileFilter {
         FileFilter {
+            include_given: !include.is_empty(),
             include: include.iter().map(|s| s.to_string()).collect(),
             exclude: exclude.iter().map(|s| s.to_string()).collect(),
             full_names: false,

@@ -116,7 +116,7 @@ fn main() {
         "OldPassword", "password", "recompress", "recursive", "solid", "sync",
         "update", "include", "exclude", "dirs", "nodirs",
         "SizeMore", "SizeLess", "TimeBefore", "TimeAfter", "TimeNewer", "TimeOlder",
-        "recovery", "volume", "sfx", "noarcext",
+        "recovery", "volume", "sfx", "noarcext", "charset",
         // Accepted and deliberately ignored: UI only.
         "yes", "indicator", "display",
     ];
@@ -137,6 +137,43 @@ fn main() {
         );
         std::process::exit(2);
     }
+
+    // `-sc`/`--charset`, folded left to right over every occurrence
+    // (`parseCharsetOption`). It decides how list files and comment files are
+    // decoded; the other five domains are refused rather than ignored.
+    let mut charsets = darc_arc::charset::Charsets::default();
+    for opt in parsed.all("charset") {
+        match charsets.apply(opt) {
+            Ok(()) => {}
+            Err(e) => {
+                eprintln!("ERROR: -sc{opt}: {e}");
+                std::process::exit(2);
+            }
+        }
+    }
+    match charsets.check_applied() {
+        Ok(()) => {}
+        Err(e) => {
+            eprintln!("ERROR: {e}");
+            std::process::exit(2);
+        }
+    }
+
+    // `replace_list_files` (`Cmdline.hs:778`) -- `@listfile` is expanded in the
+    // FILESPECS and in the values of `-n` and `-x`, all in the 'l' charset.
+    //
+    // Done here, before anything looks at a filespec, because the expansion
+    // feeds the disk scan, the archive filter and the read commands alike.
+    let list_charset = charsets.of('l');
+    let expand = |specs: &[String], what: &str| -> Vec<String> {
+        match darc_arc::charset::expand_list_files(specs, list_charset, |p| std::fs::read(p)) {
+            Ok(v) => v,
+            Err(e) => {
+                eprintln!("ERROR: {what}: {e}");
+                std::process::exit(2);
+            }
+        }
+    };
 
     // `opt_file_filter` -- one predicate, shared by the disk scan, the archive
     // selection and the read commands. See `darc_arc::filter`.
@@ -180,8 +217,15 @@ fn main() {
         }
     };
     let file_filter = darc_arc::filter::FileFilter {
-        include: parsed.all("include").iter().map(|s| s.to_string()).collect(),
-        exclude: parsed.all("exclude").iter().map(|s| s.to_string()).collect(),
+        include: expand(
+            &parsed.all("include").iter().map(|s| s.to_string()).collect::<Vec<_>>(),
+            "-n",
+        ),
+        include_given: !parsed.all("include").is_empty(),
+        exclude: expand(
+            &parsed.all("exclude").iter().map(|s| s.to_string()).collect::<Vec<_>>(),
+            "-x",
+        ),
         full_names: parsed.flag("fullnames"),
         size_more: size_of("SizeMore"),
         size_less: size_of("SizeLess"),
@@ -226,7 +270,9 @@ fn main() {
     // The filespecs default to `["*"]` (aDEFAULT_FILESPECS), and whether they
     // were defaulted is itself an input to `x_include_dirs` -- `arc l x.arc`
     // lists directories and `arc l x.arc '*.txt'` does not.
-    let read_specs: Vec<String> = parsed.free.iter().skip(1).cloned().collect();
+    let add_specs: Vec<String> =
+        expand(&parsed.free.iter().skip(1).cloned().collect::<Vec<_>>(), "filespecs");
+    let read_specs: Vec<String> = add_specs.clone();
     let default_specs = read_specs.is_empty();
     let read_specs = if default_specs { vec!["*".to_string()] } else { read_specs };
     let show_dirs =
@@ -268,7 +314,7 @@ fn main() {
         // One function: every one of these is `runArchiveAdd` with a different
         // archive filter and a different source of files (Arc.hs:122-131).
         "a" | "u" | "f" | "d" | "ch" | "c" | "k" | "j" | "m" | "mf" => {
-            add(&command, &archive_name, &parsed, &pw, &file_filter, dirs_option)
+            add(&command, &archive_name, &parsed, &pw, &file_filter, &add_specs, dirs_option)
         }
         // Not an `arc` command: a probe, so the canonicaliser can be checked
         // against the method strings real archives contain. Prints the
@@ -432,7 +478,7 @@ fn main() {
         // it would be harmless while matching a bare `starts_with('r')` would
         // swallow it.
         c if c.starts_with("rr") || c.starts_with('s') => {
-            add(&command, &archive_name, &parsed, &pw, &file_filter, dirs_option)
+            add(&command, &archive_name, &parsed, &pw, &file_filter, &add_specs, dirs_option)
         }
         other => {
             eprintln!("ERROR: unknown command {other:?}");
@@ -495,6 +541,7 @@ fn add(
     parsed: &options::Parsed,
     pw: &darc_arc::passwords::Passwords,
     file_filter: &darc_arc::filter::FileFilter,
+    expanded_specs: &[String],
     dirs_option: Option<bool>,
 ) -> i32 {
     // opt_update_type (Cmdline.hs). The COMMAND wins over the options, and the
@@ -612,7 +659,8 @@ fn add(
     let archive_only = copying && command != "j";
 
     // Everything after the archive name is a filespec.
-    let specs: Vec<String> = parsed.free.iter().skip(1).cloned().collect();
+    // Already `@listfile`-expanded by the caller.
+    let specs: Vec<String> = expanded_specs.to_vec();
 
     // `is_CMD_WITHOUT_ARGS` (Options.hs:305): a copying command takes no
     // filespecs -- except `d` and `j`, whose arguments are archive members and
@@ -628,12 +676,19 @@ fn add(
         eprintln!("ERROR: command {command:?} shouldn't have additional arguments");
         return 2;
     }
-    // `aDEFAULT_FILESPECS` is `["*"]` for the archive-only commands: `ch` with
-    // no filespec re-packs everything. For `a` it is `.`, the disk tree.
-    let specs = match (specs.is_empty(), archive_only) {
-        (false, _) => specs,
-        (true, true) => vec!["*".to_string()],
-        (true, false) => vec![".".to_string()],
+    // `aDEFAULT_FILESPECS = [reANY_FILE]` (Options.hs:388) -- `["*"]`, for EVERY
+    // command, not just the archive-only ones.
+    //
+    // `*` and `.` are not the same default. `*` matches the top-level entries
+    // and recurses only under `-r`; `.` names a directory, which the scan walks
+    // in full and stores with a `./` prefix. This port used `.` for `a`, so
+    // `arc a x.arc` with no filespec archived the whole tree where the
+    // reference archived three files. Never caught because every harness row
+    // passes a filespec explicitly -- it surfaced through `@empty.lst`, whose
+    // expansion is the empty list and so falls back to this default.
+    let specs = match specs.is_empty() {
+        false => specs,
+        true => vec!["*".to_string()],
     };
 
     // Names are stored WITH the filespec as the user wrote it: `arc a x.arc .`
@@ -661,11 +716,55 @@ fn add(
         // archive that lists as if the files had never existed.
         let names_a_dir = spec.ends_with('/')
             || std::path::Path::new(spec).is_dir();
-        match scan(std::path::Path::new(spec), root, recursive || names_a_dir, &mut found) {
+        if names_a_dir {
+            match scan(std::path::Path::new(spec), root, recursive || names_a_dir, &mut found) {
+                Ok(()) => {}
+                Err(e) => {
+                    eprintln!("ERROR: {spec}: {e}");
+                    return 2;
+                }
+            }
+            continue;
+        }
+        // A spec that does NOT name a directory is a directory part plus a
+        // MASK -- `a.txt`, `*.txt`, `sub/*.bin`. `scan` only walks directories,
+        // so before this every such spec failed with ENOTDIR and the port
+        // could archive nothing but a whole tree. Found through `@listfile`,
+        // whose whole output is names of this shape.
+        let (dir_part, mask) = match root.rfind('/') {
+            Some(i) => (&root[..i], &root[i + 1..]),
+            None => ("", root),
+        };
+        let base = match dir_part.is_empty() {
+            true => std::path::Path::new("."),
+            false => std::path::Path::new(dir_part),
+        };
+        // A mask with no wildcard and an existing file is that file, named as
+        // the user wrote it.
+        let literal = !mask.contains('*') && !mask.contains('?');
+        if literal && base.join(mask).is_file() {
+            found.push((root.to_string(), base.join(mask), false));
+            continue;
+        }
+        // Otherwise collect the directory and keep what matches. With -r the
+        // mask applies at every level, which is `scan_subdirs` feeding
+        // `recursive` in find_filter_and_process_files.
+        let mut candidates: Vec<(String, std::path::PathBuf, bool)> = Vec::new();
+        match scan(base, dir_part, recursive, &mut candidates) {
             Ok(()) => {}
             Err(e) => {
                 eprintln!("ERROR: {spec}: {e}");
                 return 2;
+            }
+        }
+        let masks = [mask.to_string()];
+        for (stored, disk, is_dir) in candidates {
+            // Directories are decided by --dirs/--nodirs, never by the mask.
+            if is_dir {
+                continue;
+            }
+            if darc_arc::sort::match_filespecs(&masks, &stored, false) {
+                found.push((stored, disk, is_dir));
             }
         }
     }

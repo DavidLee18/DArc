@@ -48,6 +48,7 @@ pub mod archive;
 pub mod block;
 pub mod bytestream;
 pub mod canonize;
+pub mod charset;
 pub mod codec_io;
 pub mod crc;
 pub mod decompress;
