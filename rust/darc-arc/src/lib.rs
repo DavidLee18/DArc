@@ -63,5 +63,6 @@ pub mod method;
 pub mod methodtable;
 pub mod options;
 pub mod passwords;
+pub mod recovery;
 pub mod sort;
 pub mod writer;

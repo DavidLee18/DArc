@@ -101,6 +101,7 @@ fn main() {
         "OldPassword", "password", "recompress", "recursive", "solid", "sync",
         "update", "include", "exclude", "dirs", "nodirs",
         "SizeMore", "SizeLess", "TimeBefore", "TimeAfter", "TimeNewer", "TimeOlder",
+        "recovery",
         // Accepted and deliberately ignored: UI only.
         "yes", "indicator", "display",
     ];
@@ -404,13 +405,15 @@ fn main() {
             }
             if bad > 0 { 2 } else { 0 }
         }
-        // `rr…` writes recovery records and `s…` sets the solid grouping; both
-        // carry options this port does not write yet, so they stay refused
-        // rather than silently doing the copy half.
-        "rr" | "s" => {
+        // `s…` sets the solid grouping, which this port does not write yet, so
+        // it stays refused rather than silently doing the copy half.
+        c if c.starts_with('s') => {
             eprintln!("ERROR: command {command:?} is not implemented in this port yet");
             2
         }
+        // `rr…` is `ch -rr…` (Cmdline.hs:124): the same copy path, with the
+        // recovery setting taken from the command's own suffix.
+        c if c.starts_with("rr") => add(&command, &archive_name, &parsed, &pw, &file_filter, dirs_option),
         other => {
             eprintln!("ERROR: unknown command {other:?}");
             2
@@ -522,10 +525,21 @@ fn add(
     // The kept files are RECOMPRESSED, not copied: splitToSolidBlocks preserves
     // existing solid blocks only under --keep-original (ArhiveFileList.hs:297).
     // That is what makes `ch -m1` on a -m9 archive do anything at all.
-    let copying = matches!(command, "ch" | "c" | "k");
-    // Neither reads the disk. Together they are the two archive-only commands,
-    // and everything below that asks "is there a disk side" asks this.
-    let archive_only = deleting || copying;
+    // `is_COPYING_COMMAND` (Options.hs:300), ALL of it -- `rr…` and `s…` are
+    // prefixes, not literals. Spelling this as `matches!(command, "ch"|"c"|"k")`
+    // left `rr1%` outside it, so the command scanned the DISK with the default
+    // "." filespec instead of copying the archive: on this repo that was a walk
+    // of the whole tree, which showed up as a hang rather than a wrong archive.
+    let copying = matches!(command, "c" | "ch" | "k" | "d" | "j")
+        || command.starts_with("rr")
+        || command.starts_with('s');
+    // The copy commands that keep files by filespec rather than dropping them:
+    // `d` negates the filter and `j` does not filter at all, so neither belongs
+    // here even though both are copying commands.
+    let keeps_matching = copying && !deleting && command != "j";
+    // Nothing here reads the disk. Everything below that asks "is there a disk
+    // side" asks this.
+    let archive_only = copying && command != "j";
 
     // Everything after the archive name is a filespec.
     let specs: Vec<String> = parsed.free.iter().skip(1).cloned().collect();
@@ -539,9 +553,7 @@ fn add(
     // Accepting it silently is what a harness row of mine did: `ch … a.txt
     // archive` made a.txt the ARCHIVE NAME, both binaries failed identically,
     // and the row passed while testing nothing.
-    let takes_no_args = matches!(command, "c" | "ch" | "k")
-        || command.starts_with("rr")
-        || command.starts_with('s');
+    let takes_no_args = copying && !matches!(command, "d" | "j");
     if takes_no_args && !specs.is_empty() {
         eprintln!("ERROR: command {command:?} shouldn't have additional arguments");
         return 2;
@@ -684,6 +696,7 @@ fn add(
     // archive by exactly the comment's length.
     let mut old_comment = String::new();
     let mut old_locked = false;
+    let mut old_recovery = String::new();
     // Where each archive-origin file came from: (which input archive, which of
     // its blocks, position within that block). Captured before `pos_in_block` is
     // overwritten for the OUTPUT archive, which is the only chance to know it.
@@ -704,9 +717,7 @@ fn add(
     // Missing this made `arc d` without `-m` write a different archive from the
     // reference's: 279 bytes against 249 on a three-block test, because the port
     // repacked with the -m4 default what the reference had copied.
-    let is_copying = matches!(command, "c" | "ch" | "d" | "j" | "k")
-        || command.starts_with("rr")
-        || command.starts_with('s');
+    let is_copying = copying;
     // `mainMethod > ""` -- a bare `-m` with no value does NOT count as given,
     // so it does not force a recompress.
     let method_given = !parsed.arg("method", "").is_empty();
@@ -737,6 +748,7 @@ fn add(
         }
         old_comment = info.footer.comment.clone();
         old_locked = info.footer.locked;
+        old_recovery = info.footer.recovery.clone();
         let data = match archive::open(std::path::Path::new(archive_name)) {
             Ok(d) => d,
             Err(e) => {
@@ -762,7 +774,7 @@ fn add(
                     &e.stored_name,
                     full_names,
                 ) && file_filter.accepts(&e.stored_name, e.size, e.time);
-                match (deleting, copying) {
+                match (deleting, keeps_matching) {
                     (true, _) => !full,
                     (false, true) => full,
                     // a/u/f/j: `cmd_archive_filter = const True`. The filespecs
@@ -1279,7 +1291,66 @@ fn add(
     // rather than hard-coded, so that the day a `-k-` appears this still says
     // what it means.
     let locked = old_locked || parsed.flag("lock") || command == "k";
-    let bytes = w.finish(&comment, "", locked);
+
+    // `-rr`, defaulting to the archive's own setting -- and the `rr…` command
+    // is `ch -rr…` (Cmdline.hs:124), so the suffix after "rr" is the value.
+    //
+    // `0.1%`/`0.01%` are rewritten to their `N*SS` spellings before the option
+    // is looked at, as `changeTo` does.
+    let rr_default = match command.strip_prefix("rr") {
+        Some(rest) => rest,
+        None => "--",
+    };
+    let rr_option = match parsed.arg("recovery", rr_default) {
+        "0.1%" => "0*4kb",
+        "0.01%" => "0*64kb",
+        s => s,
+    };
+    // `rr_ok` runs before anything interprets the value, and it rejects "+" --
+    // so `arc a -rr+` is an error even though writeRecoveryBlocks has a case
+    // for it.
+    if !darc_arc::recovery::option_is_valid(rr_option) {
+        eprintln!(
+            "ERROR: invalid value {rr_option:?} for option --recovery (-rr); \
+             allowed: MEM, N, N%, MEM;SS, N%;SS, N*SS, -, \"\""
+        );
+        return 2;
+    }
+    // The recommendation depends on the archive's size, which is not known
+    // until the blocks are written; `finish` is where it lands.
+    let bytes = match darc_arc::recovery::resolve(rr_option, &old_recovery, 0).is_empty()
+        && rr_option != ""
+        && rr_option != "+"
+    {
+        // Nothing to add: the plain footer.
+        true => w.finish(&comment, "", locked),
+        false => {
+            // The size-dependent default needs the finished length, so ask the
+            // writer for it and resolve there.
+            let plain_len = w.projected_len(&comment, locked);
+            let recovery =
+                darc_arc::recovery::resolve(rr_option, &old_recovery, plain_len);
+            match recovery.is_empty() {
+                true => w.finish(&comment, "", locked),
+                false => {
+                    // Half the physical memory, as the C caps it. Not measured
+                    // here: a cap that varied with the machine would make the
+                    // archive's geometry vary with it too.
+                    const MEM_LIMIT: u64 = 2 * 1024 * 1024 * 1024;
+                    match w.finish_with_recovery(&comment, &recovery, locked, MEM_LIMIT) {
+                        Some(b) => b,
+                        None => {
+                            eprintln!(
+                                "ERROR: -rr{recovery}: not a recovery-info size \
+                                 (MEM, N, N%, MEM;SS, N%;SS, N*SS, -)"
+                            );
+                            return 2;
+                        }
+                    }
+                }
+            }
+        }
+    };
 
     match std::fs::write(archive_name, &bytes) {
         Ok(()) => {}

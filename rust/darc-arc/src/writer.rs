@@ -421,6 +421,102 @@ impl Writer {
         self.service_block(BlockType::Footer, &body, Self::dir_compressor());
         self.out
     }
+
+    /// How long the archive will be once the footer is on it.
+    ///
+    /// `recommended_rr` picks the default amount of recovery info from the
+    /// archive's SIZE, and the size is not known until the footer is written —
+    /// but the footer records the recovery setting, so the two depend on each
+    /// other. The Haskell breaks the cycle by measuring at `rrPos`, after the
+    /// first footer; this reproduces that measurement without consuming the
+    /// writer.
+    pub fn projected_len(&self, comment: &str, locked: bool) -> u64 {
+        let blocks = self.service.clone();
+        let body = footer_block(self.pos(), &blocks, locked, comment, "");
+        // The footer is compressed, so its length has to be produced, not
+        // estimated. Cheap: it is a few hundred bytes.
+        let packed = crate::decompress::compress_chain(&Self::dir_compressor(), &body)
+            .map(|p| p.len())
+            .unwrap_or(0) as u64;
+        let mut block = ArchiveBlock {
+            block_type: BlockType::Footer,
+            compressor: Self::dir_compressor(),
+            pos: self.pos(),
+            orig_size: body.len() as u64,
+            comp_size: packed,
+            crc: crc::calc(&body),
+            files: None,
+        };
+        // The descriptor's own length depends on the numbers inside it.
+        let descr = descriptor(&block).len() as u64;
+        block.pos = 0;
+        self.pos() + packed + descr
+    }
+
+    /// As [`finish`](Self::finish), but adding recovery records.
+    ///
+    /// The footer is written TWICE, which is `ArcvProcessRead.hs:93` and not an
+    /// oversight: the first closes the archive and is itself protected, then
+    /// the recovery blocks are appended, then a second footer lists them. A
+    /// reader finds the last one.
+    ///
+    /// `recovery` is the resolved `-rr` setting, already non-empty — the caller
+    /// decides whether any is wanted, because that decision needs the OLD
+    /// archive's setting.
+    pub fn finish_with_recovery(
+        mut self,
+        comment: &str,
+        recovery: &str,
+        locked: bool,
+        mem_limit: u64,
+    ) -> Option<Vec<u8>> {
+        // Footer #1, inside the protected region. Its recovery field is EMPTY
+        // -- `write_footer_block (header_block:directory_blocks) ""`
+        // (ArcvProcessRead.hs:87) -- because at that point the archive has no
+        // recovery info; only the second footer records the setting. Writing
+        // the real string here makes this footer longer and shifts every byte
+        // after it.
+        let blocks = self.service.clone();
+        let body = footer_block(self.pos(), &blocks, locked, comment, "");
+        self.service_block(BlockType::Footer, &body, Self::dir_compressor());
+
+        // Everything written so far is what the recovery info protects.
+        let rr_pos = self.pos();
+        let g = crate::recovery::geometry(recovery, rr_pos, mem_limit)?;
+
+        // The XOR block comes first and carries no header, so the CRC block's
+        // own start is where the recorded offset is measured from.
+        let protected = self.out.clone();
+        let sectors_len = g.rec_sectors * g.sector_size;
+        // `writeControlBlock` writes the body then a descriptor, so the CRC
+        // block starts after the XOR block AND its descriptor. Build the XOR
+        // block first to learn that position.
+        let bodies = crate::recovery::build(&g, &protected, 0);
+        let r0 = crate::recovery::block(rr_pos, &bodies.sectors);
+        debug_assert_eq!(bodies.sectors.len() as u64, sectors_len);
+        self.out.extend_from_slice(&bodies.sectors);
+        self.out.extend_from_slice(&descriptor(&r0));
+
+        let crcs_pos = self.pos();
+        // Rebuild with the offset now known. Only the header differs, and it is
+        // cheaper to say so than to patch bytes inside a varint field.
+        let bodies = crate::recovery::build(&g, &protected, crcs_pos);
+        let r1 = crate::recovery::block(crcs_pos, &bodies.crcs);
+        self.out.extend_from_slice(&bodies.crcs);
+        self.out.extend_from_slice(&descriptor(&r1));
+
+        // Footer #2 lists `header_block : directory_blocks ++ recovery_blocks`
+        // (ArcvProcessRead.hs:95) -- built from the snapshot taken BEFORE the
+        // first footer, so the first footer is not in it. Using the writer's
+        // running list instead adds a sixth block the reference does not have,
+        // which is what a block-table comparison caught.
+        let mut blocks = blocks;
+        blocks.push(r0);
+        blocks.push(r1);
+        let body = footer_block(self.pos(), &blocks, locked, comment, recovery);
+        self.service_block(BlockType::Footer, &body, Self::dir_compressor());
+        Some(self.out)
+    }
 }
 
 #[cfg(test)]
