@@ -111,6 +111,63 @@ try "2 at 1%"           -rr1% 30000 130000
 # CRC-only: damage is DETECTED but nothing can be repaired, so both must refuse.
 try "0% cannot repair"  -rr0% 100000
 
+# ── --original: a second copy of the archive ────────────────────────────────
+#
+# `originalURL` (ArcRecover.hs:439) has four forms, and the empty one is not
+# "none": `--` disables, `?CMD` runs `CMD <archive>` and takes the first line,
+# an empty value looks in files.bbs/descript.ion beside the archive, and
+# anything else is a path or URL.
+#
+# The damage here is a COLLISION -- two sectors on one recovery sector -- so
+# the parity alone can repair nothing and every row is decided by the copy.
+#
+# Two behaviours that are easy to get wrong and are checked:
+#
+#  * the "can't restore anything" error tests whether `--original` was GIVEN,
+#    not whether the copy could be read. A missing or wrong-sized copy still
+#    produces a `fixed.` archive, with the damage in it.
+#  * an unusable copy is a WARNING. This port cannot fetch a URL -- that needs
+#    an HTTP client and a licence decision -- so it warns and carries on,
+#    which is what the reference does when a fetch fails.
+orig_try() {
+  local label="$1"; shift
+  checked=$((checked + 1))
+  rm -rf "$W/r" "$W/p"; mkdir -p "$W/r" "$W/p"
+  ( cd "$W/src" && "$REF" a --nodates -y -m0 -rr4% "$W/pristine.arc" . ) >/dev/null 2>&1
+  for d in r p; do
+    cp "$W/pristine.arc" "$W/$d/x.arc"
+    clobber "$W/$d/x.arc" 50000 150000
+    [ -f "$W/files.bbs" ] && cp "$W/files.bbs" "$W/$d/"
+  done
+  ( cd "$W/r" && "$REF"  r "$@" "$W/r/x.arc" ) >/dev/null 2>&1
+  ( cd "$W/p" && "$PORT" r "$@" "$W/p/x.arc" ) >/dev/null 2>&1
+  local rf="$W/r/fixed.x.arc" pf="$W/p/fixed.x.arc"
+  local rp=present pp=present
+  [ -f "$rf" ] || rp=absent
+  [ -f "$pf" ] || pp=absent
+  if [ "$rp" != "$pp" ]; then
+    echo "  DIFF [$label]: reference $rp, port $pp"
+    fail=$((fail + 1))
+  elif [ "$rp" = present ] && ! cmp -s "$rf" "$pf"; then
+    echo "  DIFF [$label]: repairs differ"
+    fail=$((fail + 1))
+  fi
+}
+
+printf '#!/bin/sh\necho %s\n' "$W/pristine.arc" > "$W/geturl.sh"
+chmod +x "$W/geturl.sh"
+rm -f "$W/files.bbs"
+orig_try "no --original"      # the collision alone: both must refuse
+orig_try "explicit path"      "--original=$W/pristine.arc"
+orig_try "?command"           "--original=?$W/geturl.sh"
+orig_try "missing copy"       "--original=$W/nosuch.arc"
+orig_try "wrong-sized copy"   "--original=$W/geturl.sh"
+orig_try "explicit URL"       "--original=http://example.invalid/x.arc"
+orig_try "bare, no descr"     "--original"
+printf 'x.arc  mirror at http://example.invalid/x.arc\n' > "$W/files.bbs"
+orig_try "bare, files.bbs"    "--original"
+rm -f "$W/files.bbs"
+
 echo "arc r: $checked patterns, $fail differing"
 [ "$fail" -eq 0 ] || exit 1
 [ "$checked" -gt 0 ] || { echo "nothing was compared" >&2; exit 1; }
@@ -179,6 +236,29 @@ if ( cd "$W/twice" && "$PORT" r "$W/twice/x.arc" ) >/dev/null 2>&1; then
 fi
 if [ -s "$W/twice/fixed.x.arc" ]; then
   echo "SELF-TEST FAILED: r wrote over the existing file" >&2
+  exit 1
+fi
+
+# 5. `--original` must actually be USED. The collision damage is unrepairable
+#    by parity, so a copy is the only thing that can restore it -- if the row
+#    passed without one, nothing here tests the copy at all.
+rm -rf "$W/o"; mkdir -p "$W/o"
+( cd "$W/src" && "$REF" a --nodates -y -m0 -rr4% "$W/o/pristine.arc" . ) >/dev/null 2>&1
+cp "$W/o/pristine.arc" "$W/o/x.arc"
+clobber "$W/o/x.arc" 50000 150000
+( cd "$W/o" && "$PORT" r "$W/o/x.arc" ) >/dev/null 2>&1
+if [ -f "$W/o/fixed.x.arc" ]; then
+  echo "SELF-TEST FAILED: the collision damage was repaired WITHOUT a copy, so" >&2
+  echo "the --original rows prove nothing" >&2
+  exit 1
+fi
+( cd "$W/o" && "$PORT" r "--original=$W/o/pristine.arc" "$W/o/x.arc" ) >/dev/null 2>&1
+if [ ! -f "$W/o/fixed.x.arc" ]; then
+  echo "SELF-TEST FAILED: --original did not make the repair possible" >&2
+  exit 1
+fi
+if ! cmp -s "$W/o/fixed.x.arc" "$W/o/pristine.arc"; then
+  echo "SELF-TEST FAILED: the --original repair does not reproduce the archive" >&2
   exit 1
 fi
 

@@ -446,7 +446,31 @@ pub fn partition_bad(bad: &[u64], rec_sectors: u64) -> (Vec<u64>, Vec<u64>) {
 /// only accepted after its repaired contents match the stored CRC: the parity
 /// itself may be damaged, and a "repair" that fails that check is undone rather
 /// than written.
+/// A second copy of the archive, for `--original`.
+///
+/// A sector the parity cannot reconstruct may still be readable from an intact
+/// copy — the point of `--original` is that a damaged download can be repaired
+/// from the source without fetching the whole thing again.
+pub struct Original<'a> {
+    pub bytes: &'a [u8],
+}
+
 pub fn recover(scan: &Scan, data: &[u8]) -> Result<(Vec<u8>, Vec<u64>), Error> {
+    recover_with(scan, data, None)
+}
+
+/// As [`recover`], but also pulling unrecoverable sectors from a second copy.
+///
+/// The copy must be the SAME SIZE as the archive being repaired
+/// (`ArcRecover.hs:405`); a different size means a different build of the
+/// archive, whose sectors would not line up, and it is rejected rather than
+/// used at an offset. Each sector taken from it is still CRC-checked, so a copy
+/// that is the right size and the wrong contents changes nothing.
+pub fn recover_with(
+    scan: &Scan,
+    data: &[u8],
+    original: Option<Original<'_>>,
+) -> Result<(Vec<u8>, Vec<u64>), Error> {
     let c = &scan.control;
     let ss = c.sector_size as usize;
     let arc_sectors = c.arcsize.div_ceil(c.sector_size);
@@ -491,6 +515,29 @@ pub fn recover(scan: &Scan, data: &[u8]) -> Result<(Vec<u8>, Vec<u64>), Error> {
                     still_bad.push(n as u64);
                 }
             }
+        }
+        // `--original`: a sector still broken after the parity pass may be
+        // readable from an intact copy. Tried for EVERY sector in `errors`,
+        // which by now includes both the ones the parity could not address and
+        // the ones whose repair failed its own CRC.
+        //
+        // The sector is taken only if it passes the stored CRC, so a copy that
+        // is the right size and the wrong contents cannot make things worse.
+        match &original {
+            Some(o) if still_bad.contains(&(n as u64)) => {
+                let at = c.init_pos as usize + n * ss;
+                match o.bytes.get(at..at + sector.len()) {
+                    Some(fresh) => match scan.stored_crcs.get(n) {
+                        Some(want) if crc::calc(fresh) == *want => {
+                            sector.copy_from_slice(fresh);
+                            still_bad.retain(|x| *x != n as u64);
+                        }
+                        _ => {}
+                    },
+                    None => {}
+                }
+            }
+            _ => {}
         }
         out.extend_from_slice(&sector);
     }

@@ -116,7 +116,7 @@ fn main() {
         "OldPassword", "password", "recompress", "recursive", "solid", "sync",
         "update", "include", "exclude", "dirs", "nodirs",
         "SizeMore", "SizeLess", "TimeBefore", "TimeAfter", "TimeNewer", "TimeOlder",
-        "recovery", "volume", "sfx", "noarcext", "charset",
+        "recovery", "volume", "sfx", "noarcext", "charset", "original",
         // Accepted and deliberately ignored: UI only.
         "yes", "indicator", "display",
     ];
@@ -468,7 +468,7 @@ fn main() {
         }
         // `runArchiveRecovery` (ArcRecover.hs:301) -- repair an archive using
         // its own recovery records, writing `fixed.<name>` beside it.
-        "r" => recover(path, &archive_name),
+        "r" => recover(path, &archive_name, parsed.arg("original", "--")),
         // `rr…` is `ch -rr…` and `s…` is `ch -sfx…` (Cmdline.hs:124, :166) --
         // the same copy path, with the setting read off the command's own
         // suffix.
@@ -2335,7 +2335,110 @@ fn now_seconds() -> i64 {
 /// `fixed.<name>` in the same directory, leaving the damaged file alone. The
 /// damaged archive is the only copy of anything unrecoverable, so overwriting
 /// it in place would be the one mistake with no way back.
-fn recover(path: &std::path::Path, archive_name: &str) -> i32 {
+/// `originalURL` (`ArcRecover.hs:439`) — where a second copy of the archive can
+/// be found, for `--original`.
+///
+/// Four forms, and the empty one is not "none":
+///
+/// ```text
+///   --          disabled (the default)
+///   ?COMMAND    run `COMMAND <archive>` and take the first line of its output
+///   (empty)     look in files.bbs / descript.ion beside the archive
+///   anything    that value, a path or a URL
+/// ```
+fn original_url(opt: &str, arcname: &str) -> Result<String, String> {
+    match opt {
+        "--" => Ok(String::new()),
+        _ => match opt.strip_prefix('?') {
+            Some(command) => {
+                // `runProgram (command++" "++arcname) >>== head.linesCRLF`.
+                let out = std::process::Command::new("sh")
+                    .arg("-c")
+                    .arg(format!("{command} {arcname}"))
+                    .output()
+                    .map_err(|e| format!("can't run {command:?}: {e}"))?;
+                let text = String::from_utf8_lossy(&out.stdout).into_owned();
+                Ok(darc_arc::charset::lines_crlf(&text).first().cloned().unwrap_or_default())
+            }
+            None if opt.is_empty() => Ok(original_from_description(arcname)),
+            None => Ok(opt.to_string()),
+        },
+    }
+}
+
+/// The `files.bbs` / `descript.ion` lookup.
+///
+/// The description line starts with the archive's base name — bare, or quoted
+/// if it contains spaces — and the URL is whatever surrounds a `"://"` in it.
+/// A line beginning with whitespace continues the one before it.
+fn original_from_description(arcname: &str) -> String {
+    let dir = std::path::Path::new(arcname)
+        .parent()
+        .unwrap_or_else(|| std::path::Path::new(""));
+    let base = std::path::Path::new(arcname)
+        .file_name()
+        .map(|s| s.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    for descr in ["files.bbs", "descript.ion"] {
+        let text = match std::fs::read(dir.join(descr)) {
+            Ok(b) => String::from_utf8_lossy(&b).into_owned(),
+            Err(_) => continue,
+        };
+        // `joinContLines`: a line starting with a space belongs to the one
+        // before it.
+        let mut joined: Vec<String> = Vec::new();
+        for line in darc_arc::charset::lines_crlf(&text) {
+            match line.starts_with(|c: char| c.is_whitespace()) && !joined.is_empty() {
+                true => match joined.last_mut() {
+                    Some(prev) => prev.push_str(&line),
+                    None => {}
+                },
+                false => joined.push(line),
+            }
+        }
+        for line in joined {
+            // The name must be followed by whitespace, so `a.arc` does not
+            // match the description of `a.arc.bak`.
+            let rest = match line.strip_prefix(&base) {
+                Some(r) => Some(r),
+                None => line.strip_prefix(&format!("\"{base}\"")),
+            };
+            let rest = match rest {
+                Some(r) if r.starts_with(char::is_whitespace) => r,
+                _ => continue,
+            };
+            match find_url(rest) {
+                Some(u) => return u,
+                None => continue,
+            }
+        }
+    }
+    String::new()
+}
+
+/// `findURL` — the scheme letters before a `"://"` and the URL characters
+/// after it.
+fn find_url(s: &str) -> Option<String> {
+    let at = s.find("://")?;
+    let scheme: String = s[..at]
+        .chars()
+        .rev()
+        .take_while(char::is_ascii_alphabetic)
+        .collect::<Vec<char>>()
+        .into_iter()
+        .rev()
+        .collect();
+    let rest: String = s[at + 3..]
+        .chars()
+        .take_while(|c| !c.is_whitespace() && *c != '"')
+        .collect();
+    match scheme.is_empty() || rest.is_empty() {
+        true => None,
+        false => Some(format!("{scheme}://{rest}")),
+    }
+}
+
+fn recover(path: &std::path::Path, archive_name: &str, original: &str) -> i32 {
     // `arcname `replaceBaseName` ("fixed."++takeBaseName arcname)` -- the
     // extension is kept and the base name prefixed, so `a.arc` becomes
     // `fixed.a.arc`.
@@ -2390,9 +2493,74 @@ fn recover(path: &std::path::Path, archive_name: &str) -> i32 {
         return 0;
     }
 
+    // `--original`, resolved and loaded before anything is decided: a copy is
+    // what makes an otherwise-hopeless repair possible, so "nothing is
+    // recoverable" is only an error when there is no copy either.
+    let original_name = match original_url(original, archive_name) {
+        Ok(u) => u,
+        Err(e) => {
+            eprintln!("ERROR: {e}");
+            return 2;
+        }
+    };
+    let original_bytes: Option<Vec<u8>> = match original_name.is_empty() {
+        true => None,
+        false => {
+            if original_name.contains("://") {
+                // The reference fetches this with libcurl. An HTTP client here
+                // is a new dependency and a licence question (THIRD-PARTY.md),
+                // so it is not attempted.
+                //
+                // A WARNING, not an error: a URL that cannot be fetched is
+                // `once originalErr $ registerWarning "can't open original at
+                // %1"` and the repair carries on with whatever the parity can
+                // do. Refusing outright turned a repairable-with-warning case
+                // into a hard failure -- the reference still wrote a `fixed.`
+                // archive where this port exited 2.
+                eprintln!(
+                    "WARNING: can't open original at {original_name}: this port \
+                     reads a local copy only; fetch it first and pass its path"
+                );
+                None
+            } else {
+            match std::fs::read(&original_name) {
+                Ok(b) => Some(b),
+                // `once originalErr $ registerWarning` -- a copy that cannot be
+                // opened is a warning, and the repair goes on without it.
+                Err(e) => {
+                    eprintln!("WARNING: can't open original at {original_name}: {e}");
+                    None
+                }
+            }
+            }
+        }
+    };
+    let original_bytes = match original_bytes {
+        // "…has size %2 so it can't be used to recover %3 having size %4":
+        // a different size is a different build of the archive, whose sectors
+        // would not line up.
+        Some(b) if b.len() != data.len() => {
+            eprintln!(
+                "WARNING: {original_name} has size {} so it can't be used to recover \
+                 {archive_name} having size {}",
+                show3(b.len() as u64),
+                show3(data.len() as u64)
+            );
+            None
+        }
+        other => other,
+    };
+
     let (recoverable, lost) =
         darc_arc::recovery::partition_bad(&scan.bad, scan.control.rec_sectors);
-    if recoverable.is_empty() {
+    // `when (null recoverable && originalName=="")` (ArcRecover.hs:345) -- the
+    // test is on the NAME, not on whether the copy could be read. Giving
+    // `--original` at all suppresses this error, so a copy that turns out
+    // missing or the wrong size still produces a `fixed.` archive, with the
+    // damage in it and the "errors remain unrecovered" warning. Keying off the
+    // loaded bytes instead made the port refuse where the reference wrote a
+    // file.
+    if recoverable.is_empty() && original_name.is_empty() {
         eprintln!(
             "ERROR: {} unrecoverable errors ({}) found, can't restore anything!",
             show3(lost.len() as u64),
@@ -2414,7 +2582,10 @@ fn recover(path: &std::path::Path, archive_name: &str) -> i32 {
     }
     println!("found");
 
-    let (out, still_bad) = match darc_arc::recovery::recover(&scan, &data) {
+    let original_ref = original_bytes
+        .as_ref()
+        .map(|b| darc_arc::recovery::Original { bytes: b });
+    let (out, still_bad) = match darc_arc::recovery::recover_with(&scan, &data, original_ref) {
         Ok(r) => r,
         Err(e) => {
             eprintln!("ERROR: {e}");
