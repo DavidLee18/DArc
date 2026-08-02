@@ -54,6 +54,7 @@ pub mod decompress;
 pub mod directory;
 pub mod encryption;
 pub mod extract;
+pub mod filter;
 pub mod filetype;
 pub mod fourx4;
 pub mod joinlist;

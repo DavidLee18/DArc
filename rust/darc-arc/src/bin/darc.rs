@@ -99,7 +99,7 @@ fn main() {
         "diskpath", "encryption", "ExcludePath", "freshen", "fullnames", "groups",
         "HeadersPassword", "keyfile", "lock", "method", "nodates", "OldKeyfile",
         "OldPassword", "password", "recompress", "recursive", "solid", "sync",
-        "update",
+        "update", "include", "exclude", "dirs", "nodirs",
         // Accepted and deliberately ignored: UI only.
         "yes", "indicator", "display",
     ];
@@ -121,6 +121,22 @@ fn main() {
         std::process::exit(2);
     }
 
+    // `opt_file_filter` -- one predicate, shared by the disk scan, the archive
+    // selection and the read commands. See `darc_arc::filter`.
+    let file_filter = darc_arc::filter::FileFilter {
+        include: parsed.all("include").iter().map(|s| s.to_string()).collect(),
+        exclude: parsed.all("exclude").iter().map(|s| s.to_string()).collect(),
+        full_names: parsed.flag("fullnames"),
+    };
+    // `findNoArgs o "dirs" "nodirs"` -- Nothing when neither is given.
+    let dirs_option = match (parsed.flag("dirs"), parsed.flag("nodirs")) {
+        (true, false) => Some(true),
+        (false, true) => Some(false),
+        // Both or neither: the Haskell's findNoArgs returns the LAST of the two
+        // it saw, and neither means "decide from the context".
+        _ => None,
+    };
+
     // The passwords, cooked once: the prompt must not appear twice, and both
     // the reader and the writer need the same answer.
     let pw = cook_passwords(&parsed, &command);
@@ -135,10 +151,42 @@ fn main() {
         }
     };
 
+    // `setArcFilter (test_dirs fullFileFilter)` for the read commands: a file
+    // must match the filespecs AND pass the filter; a DIRECTORY is decided by
+    // `x_include_dirs` alone and never consults either.
+    //
+    // The filespecs default to `["*"]` (aDEFAULT_FILESPECS), and whether they
+    // were defaulted is itself an input to `x_include_dirs` -- `arc l x.arc`
+    // lists directories and `arc l x.arc '*.txt'` does not.
+    let read_specs: Vec<String> = parsed.free.iter().skip(1).cloned().collect();
+    let default_specs = read_specs.is_empty();
+    let read_specs = if default_specs { vec!["*".to_string()] } else { read_specs };
+    let show_dirs =
+        darc_arc::filter::include_dirs(dirs_option, default_specs, &file_filter, &command);
+    let selects = |e: &Entry| -> bool {
+        match e.is_dir {
+            true => show_dirs,
+            false => {
+                darc_arc::sort::match_filespecs(
+                    &read_specs,
+                    &e.stored_name,
+                    file_filter.full_names,
+                ) && file_filter.accepts(&e.stored_name)
+            }
+        }
+    };
+
     let code = match command.as_str() {
-        "l" | "v" | "lb" | "lt" => list(&command, &open_existing()),
+        "l" | "v" | "lb" | "lt" => {
+            let info = open_existing();
+            let selected: Vec<Entry> =
+                info.entries.iter().filter(|e| selects(e)).cloned().collect();
+            list(&command, &info, &selected)
+        }
         "t" | "x" | "e" => {
             let info = open_existing();
+            let selected: Vec<Entry> =
+                info.entries.iter().filter(|e| selects(e)).cloned().collect();
             let data = match archive::open(path) {
                 Ok(d) => d,
                 Err(e) => {
@@ -147,12 +195,12 @@ fn main() {
                 }
             };
             let extracting = command != "t";
-            run_blocks(&info, &data, &layout, extracting, &pw)
+            run_blocks(&info, &data, &layout, extracting, &pw, &selected)
         }
         // One function: every one of these is `runArchiveAdd` with a different
         // archive filter and a different source of files (Arc.hs:122-131).
         "a" | "u" | "f" | "d" | "ch" | "c" | "k" | "j" | "m" | "mf" => {
-            add(&command, &archive_name, &parsed, &pw)
+            add(&command, &archive_name, &parsed, &pw, &file_filter, dirs_option)
         }
         // Not an `arc` command: a probe, so the canonicaliser can be checked
         // against the method strings real archives contain. Prints the
@@ -333,6 +381,8 @@ fn add(
     archive_name: &str,
     parsed: &options::Parsed,
     pw: &darc_arc::passwords::Passwords,
+    file_filter: &darc_arc::filter::FileFilter,
+    dirs_option: Option<bool>,
 ) -> i32 {
     // opt_update_type (Cmdline.hs). The COMMAND wins over the options, and the
     // options are tried in the order `freshen`, `update`, `sync` -- so `-u
@@ -427,6 +477,23 @@ fn add(
 
     // Everything after the archive name is a filespec.
     let specs: Vec<String> = parsed.free.iter().skip(1).cloned().collect();
+
+    // `is_CMD_WITHOUT_ARGS` (Options.hs:305): a copying command takes no
+    // filespecs -- except `d` and `j`, whose arguments are archive members and
+    // archive names respectively. `arc ch x.arc a.txt` is
+    // "command \"ch\" shouldn't have additional arguments", not a request to
+    // keep only a.txt.
+    //
+    // Accepting it silently is what a harness row of mine did: `ch … a.txt
+    // archive` made a.txt the ARCHIVE NAME, both binaries failed identically,
+    // and the row passed while testing nothing.
+    let takes_no_args = matches!(command, "c" | "ch" | "k")
+        || command.starts_with("rr")
+        || command.starts_with('s');
+    if takes_no_args && !specs.is_empty() {
+        eprintln!("ERROR: command {command:?} shouldn't have additional arguments");
+        return 2;
+    }
     // `aDEFAULT_FILESPECS` is `["*"]` for the archive-only commands: `ch` with
     // no filespec re-packs everything. For `a` it is `.`, the disk tree.
     let specs = match (specs.is_empty(), archive_only) {
@@ -480,6 +547,19 @@ fn add(
     // always agree, which is the same as not checking.
     let mut scanned: std::collections::HashMap<std::path::PathBuf, (u64, i64)> =
         std::collections::HashMap::new();
+    // `accept_f` (FileInfo.hs:462). The scan applies the filter itself, so an
+    // excluded file is never read, never CRC'd and never considered for
+    // deletion by -d.
+    //
+    // A DIRECTORY's name is not matched against -n or -x on either side: it is
+    // decided by --dirs/--nodirs, or failing that by whether any n/s/t filter
+    // exists at all.
+    let keep_dirs = darc_arc::filter::write_dirs(dirs_option, file_filter);
+    found.retain(|(stored, _, is_dir)| match is_dir {
+        true => keep_dirs,
+        false => file_filter.accepts(stored),
+    });
+
     for (stored, disk, is_dir) in &found {
         let meta = match std::fs::symlink_metadata(disk) {
             Ok(m) => m,
@@ -609,11 +689,21 @@ fn add(
             // what they DO, and for a/u/f/j the filespecs select disk files or
             // archive names rather than archive members, so everything is kept.
             .filter(|e| {
-                let matched =
-                    darc_arc::sort::match_filespecs(&specs, &e.stored_name, full_names);
+                // `fullFileFilter` = the filespec match AND opt_file_filter
+                // (Arc.hs:255). `d` negates the whole conjunction, so a file
+                // the filters exclude is NOT deleted even when its name matches
+                // the filespec -- the command was never allowed to see it.
+                let full = darc_arc::sort::match_filespecs(
+                    &specs,
+                    &e.stored_name,
+                    full_names,
+                ) && file_filter.accepts(&e.stored_name);
                 match (deleting, copying) {
-                    (true, _) => !matched,
-                    (false, true) => matched,
+                    (true, _) => !full,
+                    (false, true) => full,
+                    // a/u/f/j: `cmd_archive_filter = const True`. The filespecs
+                    // select DISK files for these, so the archive's own entries
+                    // come along whatever they are called.
                     (false, false) => true,
                 }
             })
@@ -1292,14 +1382,14 @@ fn scan(
 ///
 /// The four share one summary line and differ only in the body. `lb` prints
 /// bare names with `myPutStr` -- no trailing newline and no summary at all.
-fn list(command: &str, info: &archive::ArchiveInfo) -> i32 {
+fn list(command: &str, info: &archive::ArchiveInfo, entries: &[Entry]) -> i32 {
     if command == "lb" {
         // `myPutStr$ joinWith "\n"$ map filename directory` -- names, joined.
         // Two things measured rather than read off: `lb` prints NO banner, the
         // only listing command that does not, and the output DOES end with a
         // newline even though myPutStr writes none.
         let names: Vec<&str> =
-            info.entries.iter().map(|e| e.stored_name.as_str()).collect();
+            entries.iter().map(|e| e.stored_name.as_str()).collect();
         println!("{}", names.join("\n"));
         return 0;
     }
@@ -1323,12 +1413,12 @@ fn list(command: &str, info: &archive::ArchiveInfo) -> i32 {
         println!(
             "-----------------------------------------------------------------------------"
         );
-        let total: u64 = info.entries.iter().map(|e| e.size).sum();
+        let total: u64 = entries.iter().map(|e| e.size).sum();
         // `lt` sums the block table directly, unlike `l` and `v`.
         let packed: u64 = info.data_blocks.iter().map(|b| b.comp_size).sum();
         println!(
             "{} files, {} bytes, {} compressed",
-            show3(info.entries.len() as u64),
+            show3(entries.len() as u64),
             show3(total),
             show3(packed)
         );
@@ -1352,7 +1442,7 @@ fn list(command: &str, info: &archive::ArchiveInfo) -> i32 {
     // file of each contiguous run sharing it.
     let mut compressed = 0u64;
     let mut prev: Option<u64> = None;
-    for e in &info.entries {
+    for e in entries {
         let (pos, csize) = match info.data_blocks.get(e.block) {
             Some(b) => (b.pos, b.comp_size),
             None => (0, 0),
@@ -1388,7 +1478,7 @@ fn list(command: &str, info: &archive::ArchiveInfo) -> i32 {
     }
     println!(
         "{} files, {} bytes, {} compressed",
-        show3(info.entries.len() as u64),
+        show3(entries.len() as u64),
         show3(total),
         show3(compressed)
     );
@@ -1406,13 +1496,14 @@ fn run_blocks(
     layout: &Layout,
     extracting: bool,
     pw: &darc_arc::passwords::Passwords,
+    entries: &[Entry],
 ) -> i32 {
     // The safety check runs on the archive's contribution alone: the
     // destination is the user's own and may be absolute.
     let relative = Layout { disk_basedir: String::new(), ..layout.clone() };
 
     if extracting && layout.creates_directories() {
-        for e in info.entries.iter().filter(|e| e.is_dir) {
+        for e in entries.iter().filter(|e| e.is_dir) {
             if !darc_arc::extract::is_safe(&relative.disk_name(e)) {
                 eprintln!("ERROR: refusing unsafe path {:?}", e.stored_name);
                 return 2;
@@ -1427,17 +1518,17 @@ fn run_blocks(
         }
     }
 
-    let total_bytes: u64 = info.entries.iter().map(|e| e.size).sum();
+    let total_bytes: u64 = entries.iter().map(|e| e.size).sum();
     if !extracting {
         println!(
             "Testing {} files, {} bytes.",
-            show3(info.entries.len() as u64),
+            show3(entries.len() as u64),
             show3(total_bytes)
         );
     }
 
     let mut per_block: Vec<Vec<&Entry>> = vec![Vec::new(); info.data_blocks.len()];
-    for e in &info.entries {
+    for e in entries {
         match per_block.get_mut(e.block) {
             Some(v) => v.push(e),
             None => {}
@@ -1541,7 +1632,7 @@ fn run_blocks(
             info.data_blocks.iter().filter(|b| b.orig_size > 0).map(|b| b.comp_size).sum();
         println!(
             "Tested {} files, {} => {} bytes. Ratio {}%",
-            show3(info.entries.len() as u64),
+            show3(entries.len() as u64),
             show3(packed),
             show3(total_bytes),
             ratio3(packed, total_bytes)
@@ -1549,7 +1640,7 @@ fn run_blocks(
     } else {
         println!(
             "Extracted {} files, {} bytes.",
-            show3(info.entries.len() as u64),
+            show3(entries.len() as u64),
             show3(total_bytes)
         );
     }

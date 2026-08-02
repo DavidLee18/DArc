@@ -77,8 +77,14 @@ base() {
   ( cd "$W/src" && "$REF" a --nodates -r -y "$@" "$arc" . ) >/dev/null 2>&1
 }
 
-# compare <label> <command...> -- run the command on a copy of each side's
-# archive and require the results to match byte for byte.
+# compare <label> <command-and-OPTIONS...> -- run the command on a copy of each
+# side's archive and require the results to match byte for byte.
+#
+# The archive name is appended LAST, so everything passed here must be an
+# OPTION. Passing a filespec makes it the archive name and the archive a
+# filespec, and both binaries then fail identically -- which reads as a pass.
+# That is not hypothetical: a `ch … a.txt` row here did exactly that, and it
+# tested nothing until `ch` was taught to refuse filespecs at all.
 compare() {
   local label="$1"; shift
   checked=$((checked + 1))
@@ -106,11 +112,29 @@ for make in "-m1" "-m1 -s-" "-m4"; do
     base "$W/base.arc" $make
     compare "ch [$make] $m"        ch --nodates -y $m
     compare "k  [$make] $m"        k  --nodates -y $m
-    compare "d  [$make] $m"        d  --nodates -y $m c.txt
+    # `d` is one of the two copying commands that DOES take filespecs, so its
+    # spec goes after the archive -- which `compare` cannot express. Done
+    # inline below instead.
+    checked=$((checked + 1))
+    cp "$W/base.arc" "$W/ref.arc"; cp "$W/base.arc" "$W/port.arc"
+    ( cd "$W/src" && "$REF"  d --nodates -y $m "$W/ref.arc"  c.txt ) >/dev/null 2>&1
+    ( cd "$W/src" && "$PORT" d --nodates -y $m "$W/port.arc" c.txt ) >/dev/null 2>&1
+    if ! cmp -s "$W/ref.arc" "$W/port.arc"; then
+      echo "  DIFF [d [$make] $m]: $(wc -c <"$W/ref.arc") vs $(wc -c <"$W/port.arc") bytes"
+      fail=$((fail + 1))
+    fi
     # A filespec that leaves a solid block PARTIALLY selected: the block cannot
     # be copied and has to be repacked with its own chain, not with the -m
-    # default. This is the case a naive keep_original gets wrong.
-    compare "ch part [$make] $m"   ch --nodates -y $m "a.txt"
+    # default. This is the case a naive keep_original gets wrong -- and it has
+    # to be reached through `d`, because `ch` refuses filespecs.
+    checked=$((checked + 1))
+    cp "$W/base.arc" "$W/ref.arc"; cp "$W/base.arc" "$W/port.arc"
+    ( cd "$W/src" && "$REF"  d --nodates -y $m "$W/ref.arc"  a.txt ) >/dev/null 2>&1
+    ( cd "$W/src" && "$PORT" d --nodates -y $m "$W/port.arc" a.txt ) >/dev/null 2>&1
+    if ! cmp -s "$W/ref.arc" "$W/port.arc"; then
+      echo "  DIFF [d part [$make] $m]: $(wc -c <"$W/ref.arc") vs $(wc -c <"$W/port.arc") bytes"
+      fail=$((fail + 1))
+    fi
   done
 done
 

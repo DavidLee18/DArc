@@ -81,6 +81,14 @@ Two directories look dead and are **not** — check before deleting: `Compressio
 >
 > Making a high count cheap would mean deriving the salt once per archive and keeping the per-block IVs — the standard design, and a behaviour change beyond a default. It is not done here.
 
+> **File selection is one predicate, reused.** `opt_file_filter` (`Cmdline.hs:493`) is built once from `-n`/`-x` and the size and time options; what varies per command is only whether the filespecs are ANDed in and whether the result is negated (`Arc.hs:243-272`) — the disk scan uses the filter alone, `ch`/`c`/`k`/`t`/`l` use filespecs AND filter, `d` uses its negation, and `a`/`u`/`f`/`j` set `cmd_archive_filter = const True` because for them the filespecs select *disk* files.
+>
+> Directories never go through the name filter, on either side: `test_dirs` (`Arc.hs:270`) when reading and `accept_f` (`FileInfo.hs:462`) when writing both decide them from `--dirs`/`--nodirs`, or failing that from whether any *n/s/t* filter exists. `-x` is not one of those (`nst_filters` lists `-n` and the size/time filters only), which is why `arc a -x*.dat` keeps a `sub` entry and `arc a -n*.txt` drops it. Reading those two outcomes as "directories are filtered by name" fits both and is wrong; `--dirs -n*.txt` is what separates the readings.
+>
+> `c`, `ch`, `k`, `s…` and `rr…` take **no filespecs** — `is_CMD_WITHOUT_ARGS` (`Options.hs:305`). `d` and `j` are the exceptions, and their arguments mean different things: archive members for `d`, archive names for `j`.
+>
+> **One deliberate divergence.** Under `--dirs` the reference writes the top-level directory of each filespec *twice*; this port writes it once. The archives list the same names and differ only in byte count, and `removeDuplicates` collapses the duplicate on the next update. `filter::write_dirs` documents it and the change back is one line.
+
 `Environment.cpp` (62KB, 1,917 lines — the largest C++ file left) provides OS-level services to the Haskell side: file/console/memory primitives that differ across Windows and Unix. It goes with the Haskell layer, not with the codecs.
 
 ## UI layer
