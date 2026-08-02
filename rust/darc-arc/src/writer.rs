@@ -371,6 +371,43 @@ impl Writer {
         })
     }
 
+    /// A data block copied VERBATIM from an input archive — `CopySolidBlock`
+    /// (`ArcvProcessRead.hs:137`).
+    ///
+    /// `packed` is the input block's bytes exactly as they were stored, and
+    /// `compressor` is the chain that produced them. Neither is re-derived:
+    /// that is the whole point, and it is what makes `arc d` on a solid archive
+    /// cheap instead of a full repack.
+    ///
+    /// **No encryption is appended**, deliberately. The Haskell writes
+    /// `blCompressor = compressor .$(not just_copy &&& add_encryption_info)`
+    /// (`ArcvProcessCompress.hs:248`), so a copied block keeps whatever
+    /// encryption method it already carried — including none. A block copied
+    /// out of an unencrypted archive into one created with `-p` therefore stays
+    /// in the clear, and one copied out of an encrypted archive keeps its
+    /// ORIGINAL key. That is surprising enough to be worth knowing, and it is
+    /// the reference's behaviour; encrypting here would write blocks no other
+    /// build could read.
+    pub fn write_copied_data(
+        &mut self,
+        packed: &[u8],
+        orig_size: u64,
+        compressor: Vec<String>,
+        files: usize,
+    ) -> ArchiveBlock {
+        let pos = self.pos();
+        self.out.extend_from_slice(packed);
+        ArchiveBlock {
+            block_type: BlockType::Data,
+            compressor,
+            pos,
+            orig_size,
+            comp_size: packed.len() as u64,
+            crc: 0,
+            files: Some(files),
+        }
+    }
+
     /// The directory block, describing `blocks`.
     pub fn write_directory(&mut self, blocks: &[ArchiveBlock], entries: &[Entry]) {
         let body = directory_block(self.pos(), blocks, entries);

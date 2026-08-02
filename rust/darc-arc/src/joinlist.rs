@@ -31,6 +31,16 @@ pub enum Origin {
 pub struct Candidate {
     pub entry: Entry,
     pub origin: Origin,
+    /// Which input archive this came from, for `Origin::Archive`.
+    ///
+    /// `j` merges several archives and a block number is local to the archive
+    /// that carried it, so two inputs both have a block 0. The merge picks a
+    /// winner per name by TIMESTAMP under -u/-f, which is why this rides along
+    /// with the entry instead of being reconstructed afterwards from the name:
+    /// there is no way to tell from the outside which copy won.
+    ///
+    /// Meaningless for `Origin::Disk`; 0 there.
+    pub archive: usize,
 }
 
 /// `opt_update_type` — the letter `Cmdline.hs` derives from the command.
@@ -150,9 +160,9 @@ pub fn join_lists(
 ///
 /// Directories are merged on `"pn"` regardless of the file sort order, which is
 /// the same split `sortFiles` makes.
-pub fn merge_filelists(
+pub fn merge_filelists<K: Ord>(
     sort_order: &str,
-    key: impl Fn(&str, &Entry) -> Vec<String>,
+    key: impl Fn(&str, &Entry) -> K,
     a: &[Candidate],
     b: &[Candidate],
 ) -> Vec<Candidate> {
@@ -167,9 +177,9 @@ pub fn merge_filelists(
 
 /// The classic two-list merge: take from whichever side compares smaller, and
 /// from the FIRST on a tie, which is what makes the archive's own entry win.
-fn merge_on(
+fn merge_on<K: Ord>(
     order: &str,
-    key: &impl Fn(&str, &Entry) -> Vec<String>,
+    key: &impl Fn(&str, &Entry) -> K,
     a: &[Candidate],
     b: &[Candidate],
 ) -> Vec<Candidate> {
@@ -205,6 +215,7 @@ mod tests {
                 pos_in_block: 0,
             },
             origin,
+            archive: 0,
         }
     }
 

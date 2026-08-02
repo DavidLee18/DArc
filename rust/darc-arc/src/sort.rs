@@ -242,12 +242,22 @@ fn sort_by(order: &str, groups: &Groups, files: Vec<Entry>) -> Vec<Entry> {
 
 /// One component of a sort key. The variants exist so that keys of different
 /// kinds never compare against each other, exactly as `SortOrder` does.
-#[derive(Clone, PartialEq, Eq, PartialOrd, Ord)]
-enum Key {
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Key {
     Str(String),
     Size(u64),
     Time(i64),
     Group(usize),
+}
+
+/// `keyFunc` (`ArhiveFileList.hs:78`) — the sort key, for callers that need to
+/// MERGE two already-sorted lists rather than sort one.
+///
+/// `mergeFilelists` must order by exactly what `sortFiles` ordered by, or the
+/// merge silently produces an unsorted list. Sharing this function is what
+/// guarantees that.
+pub fn sort_key(order: &str, groups: &Groups, e: &Entry) -> Vec<Key> {
+    key_of(order, groups, e)
 }
 
 /// `keyFunc` (`ArhiveFileList.hs:78`).

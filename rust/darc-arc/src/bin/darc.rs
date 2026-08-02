@@ -112,7 +112,11 @@ fn main() {
             let extracting = command != "t";
             run_blocks(&info, &data, &layout, extracting, &pw)
         }
-        "a" | "u" | "f" | "d" => add(&command, &archive_name, &parsed, &pw),
+        // One function: every one of these is `runArchiveAdd` with a different
+        // archive filter and a different source of files (Arc.hs:122-131).
+        "a" | "u" | "f" | "d" | "ch" | "c" | "k" | "j" => {
+            add(&command, &archive_name, &parsed, &pw)
+        }
         // Not an `arc` command: a probe, so the canonicaliser can be checked
         // against the method strings real archives contain. Prints the
         // canonical form of each argument, or "?" if it does not parse.
@@ -263,7 +267,10 @@ fn main() {
             }
             if bad > 0 { 2 } else { 0 }
         }
-        "c" | "m" | "j" | "ch" | "rr" | "k" => {
+        // `m`/`mf` also DELETE the files from disk afterwards, and `rr`/`s…`
+        // carry options this port does not write yet, so they stay refused
+        // rather than silently doing the copy half.
+        "m" | "mf" | "rr" | "s" => {
             eprintln!("ERROR: command {command:?} is not implemented in this port yet");
             2
         }
@@ -310,7 +317,18 @@ fn add(
     // write. Each maps a -m level to its unfitted chain; the data-size fitting
     // happens once the block's contents are known.
     // decode_method expands a -m level into one chain per file type.
-    let method = parsed.arg("method", "");
+    // `mainMethod ||| aDEFAULT_COMPRESSOR` (Cmdline.hs:334), and
+    // `aDEFAULT_COMPRESSOR = "4"` (Options.hs:370). `|||` treats an EMPTY value
+    // as absent, so a bare `-m` also means -m4.
+    //
+    // This was missing, and nothing caught it: every harness row passes `-m`
+    // explicitly, so the port had never once been asked to pick a default. It
+    // surfaced as "-m expanded to nothing" the moment a copy command was run
+    // the way a user would run it.
+    let method = match parsed.arg("method", "") {
+        "" => "4",
+        m => m,
+    };
     let decoded = darc_arc::methodtable::decode_method(method);
     if decoded.is_empty() {
         eprintln!("ERROR: -m{method} expanded to nothing");
@@ -342,10 +360,29 @@ fn add(
     // (Arc.hs:213): `d` is `a` with NO disk files and an archive filter that
     // keeps everything the filespecs do NOT match.
     let deleting = command == "d";
+    // `runCopy = runArchiveAdd . setArcFilter fullFileFilter` (Arc.hs:211) --
+    // the same shape as `d` with the filter NOT negated: no disk files, and the
+    // archive's own files kept where the filespecs DO match. `ch` is the
+    // general form; `c` is `ch -z`, `k` is `ch` plus the lock, and `s…`/`rr…`
+    // differ only in options this port does not implement yet.
+    //
+    // The kept files are RECOMPRESSED, not copied: splitToSolidBlocks preserves
+    // existing solid blocks only under --keep-original (ArhiveFileList.hs:297).
+    // That is what makes `ch -m1` on a -m9 archive do anything at all.
+    let copying = matches!(command, "ch" | "c" | "k");
+    // Neither reads the disk. Together they are the two archive-only commands,
+    // and everything below that asks "is there a disk side" asks this.
+    let archive_only = deleting || copying;
 
     // Everything after the archive name is a filespec.
     let specs: Vec<String> = parsed.free.iter().skip(1).cloned().collect();
-    let specs = if specs.is_empty() { vec![".".to_string()] } else { specs };
+    // `aDEFAULT_FILESPECS` is `["*"]` for the archive-only commands: `ch` with
+    // no filespec re-packs everything. For `a` it is `.`, the disk tree.
+    let specs = match (specs.is_empty(), archive_only) {
+        (false, _) => specs,
+        (true, true) => vec!["*".to_string()],
+        (true, false) => vec![".".to_string()],
+    };
 
     // Names are stored WITH the filespec as the user wrote it: `arc a x.arc .`
     // stores "./a.txt" and the directory name ".", not "a.txt" and "".
@@ -355,7 +392,12 @@ fn add(
     // exactly 3 bytes longer than one built without the prefix, which is
     // ".\0" plus "./" on the one subdirectory name.
     let mut found: Vec<(String, std::path::PathBuf, bool)> = Vec::new();
-    for spec in if deleting { &[][..] } else { &specs[..] } {
+    // `j`'s filespecs are ARCHIVE NAMES, not files to add: runJoin passes them
+    // as `cmd_added_arcnames` and gives runArchiveAdd no disk filespecs at all
+    // (Arc.hs:200). Scanning them as a tree makes the port try to walk an
+    // archive as a directory.
+    let reads_disk = !(archive_only || command == "j");
+    for spec in if reads_disk { &specs[..] } else { &[][..] } {
         let root = spec.trim_end_matches('/');
         // A filespec that NAMES A DIRECTORY is scanned recursively even without
         // -r. find_filter_and_process_files (FileInfo.hs:403) rewrites it as the
@@ -422,12 +464,58 @@ fn add(
         contents.insert(stored.clone(), body);
     }
 
+    // `sortFiles command diskfiles` (ArcCreate.hs:114) -- the DISK files, and
+    // only those. The archive's own files keep the order the archive wrote them
+    // in, and the two lists are interleaved by `mergeFilelists` below.
+    let groups = load_groups(parsed);
+    file_entries = darc_arc::sort::sort_files(sort_order, &groups, &file_entries);
+
     // For u/f: read what is already in the archive and merge. By DEFAULT the
     // kept files are recompressed rather than copied -- splitToSolidBlocks only
     // preserves existing solid blocks under --keep-original
     // (ArhiveFileList.hs:297) -- so the merged list is packed exactly as a
     // fresh one would be.
-    if (deleting || update_type != darc_arc::joinlist::UpdateType::Add)
+    // What the OUTPUT archive inherits from the input: the comment and the lock
+    // are copied by default, so `arc u` on a commented archive keeps the
+    // comment. Missing this was a real bug -- an update quietly shortened the
+    // archive by exactly the comment's length.
+    let mut old_comment = String::new();
+    let mut old_locked = false;
+    // Where each archive-origin file came from: (which input archive, which of
+    // its blocks, position within that block). Captured before `pos_in_block` is
+    // overwritten for the OUTPUT archive, which is the only chance to know it.
+    //
+    // The archive index exists for `j`: block numbers are local to the archive
+    // that carried them, so two inputs both have a block 0.
+    let mut source_of: std::collections::HashMap<String, (usize, usize, u64)> =
+        std::collections::HashMap::new();
+    let mut sources: Vec<(archive::ArchiveInfo, Vec<u8>)> = Vec::new();
+
+    // `opt_recompress` and `opt_keep_original` (Cmdline.hs:372-378).
+    //
+    // A copying command RECOMPRESSES only when it was told to — by `-m`,
+    // `--nodata`, `--crconly` or `--recompress`. Otherwise it keeps the input's
+    // own compression, which is why `arc ch x.arc` with no options is nearly
+    // free and `arc ch -m0 x.arc` repacks everything.
+    //
+    // Missing this made `arc d` without `-m` write a different archive from the
+    // reference's: 279 bytes against 249 on a three-block test, because the port
+    // repacked with the -m4 default what the reference had copied.
+    let is_copying = matches!(command, "c" | "ch" | "d" | "j" | "k")
+        || command.starts_with("rr")
+        || command.starts_with('s');
+    // `mainMethod > ""` -- a bare `-m` with no value does NOT count as given,
+    // so it does not force a recompress.
+    let method_given = !parsed.arg("method", "").is_empty();
+    let recompress = parsed.flag("recompress") || (is_copying && method_given);
+    let keep_original = parsed.flag("append") || (is_copying && !recompress);
+
+    // `j` joins archives: every extra name on the command line is an INPUT
+    // archive whose files are added, with `cmd_archive_filter = const True`
+    // (Arc.hs:200). The filespecs are archive names, not file patterns.
+    let joining = command == "j";
+
+    if (archive_only || joining || update_type != darc_arc::joinlist::UpdateType::Add)
         && std::path::Path::new(archive_name).exists()
     {
         let info = match archive::read_info(std::path::Path::new(archive_name), pw) {
@@ -437,6 +525,15 @@ fn add(
                 return 2;
             }
         };
+        // `abort_on_locked_archive` (ArcCreate.hs:84). A locked archive refuses
+        // every modifying command, including the one that would unlock it --
+        // that is the point of the lock.
+        if info.footer.locked {
+            eprintln!("ERROR: can't modify archive locked with -k");
+            return 2;
+        }
+        old_comment = info.footer.comment.clone();
+        old_locked = info.footer.locked;
         let data = match archive::open(std::path::Path::new(archive_name)) {
             Ok(d) => d,
             Err(e) => {
@@ -448,37 +545,89 @@ fn add(
         let main: Vec<darc_arc::joinlist::Candidate> = info
             .entries
             .iter()
-            // The archive filter. For `d` it is the NEGATION of the filespec
-            // match; for u/f the filespecs select disk files, not archive ones,
-            // so everything is kept.
+            // The archive filter, `setArcFilter` (Arc.hs:211-213). Three shapes:
+            // `d` keeps what the filespecs do NOT match, the copy commands keep
+            // what they DO, and for a/u/f/j the filespecs select disk files or
+            // archive names rather than archive members, so everything is kept.
             .filter(|e| {
-                !deleting
-                    || !darc_arc::sort::match_filespecs(&specs, &e.stored_name, full_names)
+                let matched =
+                    darc_arc::sort::match_filespecs(&specs, &e.stored_name, full_names);
+                match (deleting, copying) {
+                    (true, _) => !matched,
+                    (false, true) => matched,
+                    (false, false) => true,
+                }
             })
             .map(|e| darc_arc::joinlist::Candidate {
                 entry: e.clone(),
                 origin: darc_arc::joinlist::Origin::Archive,
+                archive: 0,
             })
             .collect();
+        sources.push((info, data));
+
+        // `added_list = concatMap arcDirectory added_archives ++ map DiskFile
+        // added_diskfiles` (ArhiveFileList.hs:157). The extra archives named by
+        // `j` contribute to the ADDED side, ahead of any disk files, and their
+        // entries are archive-origin like the main one's.
         let mut added: Vec<darc_arc::joinlist::Candidate> = Vec::new();
+        if joining {
+            for name in &specs {
+                let path = std::path::Path::new(name);
+                let extra = match archive::read_info(path, pw) {
+                    Ok(i) => i,
+                    Err(e) => {
+                        eprintln!("ERROR: {name}: {e}");
+                        return 2;
+                    }
+                };
+                let extra_data = match archive::open(path) {
+                    Ok(d) => d,
+                    Err(e) => {
+                        eprintln!("ERROR: {name}: {e}");
+                        return 2;
+                    }
+                };
+                let idx = sources.len();
+                for e in &extra.entries {
+                    added.push(darc_arc::joinlist::Candidate {
+                        entry: e.clone(),
+                        origin: darc_arc::joinlist::Origin::Archive,
+                        archive: idx,
+                    });
+                }
+                sources.push((extra, extra_data));
+            }
+        }
         for e in dir_entries.iter().chain(file_entries.iter()) {
             added.push(darc_arc::joinlist::Candidate {
                 entry: e.clone(),
                 origin: darc_arc::joinlist::Origin::Disk,
+                archive: 0,
             });
         }
+        // `mergeFilelists sort_order`, not a concatenation. Only the DISK files
+        // were sorted (ArcCreate.hs:114); the archive's own keep their ARCHIVE
+        // order, and the two sorted lists are interleaved.
+        //
+        // Sorting the merged list instead is wrong whenever the archive was not
+        // written in sorted order -- which is exactly what `-s-` produces, since
+        // per-file blocks set sort_order to "". `ch -m1` on such an archive then
+        // packed the block's files in a different order and compressed to 96
+        // bytes where the reference got 100.
         let merged = darc_arc::joinlist::join_lists(
             &main,
             &added,
             update_type,
             parsed.flag("append"),
-            // The merge order only matters when a sort order is in effect, and
-            // the files are re-sorted below in any case.
-            "",
+            sort_order,
             |a, b| {
-                let mut v = a.to_vec();
-                v.extend_from_slice(b);
-                v
+                darc_arc::joinlist::merge_filelists(
+                    sort_order,
+                    |order, e| darc_arc::sort::sort_key(order, &groups, e),
+                    a,
+                    b,
+                )
             },
         );
         // Pull the bytes of everything that came from the archive.
@@ -486,7 +635,18 @@ fn add(
         file_entries.clear();
         for c in merged {
             if c.origin == darc_arc::joinlist::Origin::Archive && !c.entry.is_dir {
-                match archive::read_entry(&data, &info, &c.entry, pw) {
+                source_of.insert(
+                    c.entry.stored_name.clone(),
+                    (c.archive, c.entry.block, c.entry.pos_in_block),
+                );
+                let (src_info, src_data) = match sources.get(c.archive) {
+                    Some(s) => s,
+                    None => {
+                        eprintln!("ERROR: internal: no input archive {}", c.archive);
+                        return 2;
+                    }
+                };
+                match archive::read_entry(src_data, src_info, &c.entry, pw) {
                     Ok(body) => {
                         contents.insert(c.entry.stored_name.clone(), body);
                     }
@@ -504,10 +664,43 @@ fn add(
         }
     }
 
-    // sortFiles: the solid sort order decides the layout of the block, and so
-    // the archive's bytes.
-    let groups = load_groups(parsed);
-    file_entries = darc_arc::sort::sort_files(sort_order, &groups, &file_entries);
+
+    // `partition isCompressedFile files` then `groupOn cfArcBlock`
+    // (ArhiveFileList.hs:292-298). Under keep_original the files that came from
+    // an archive are pulled OUT of the type split and grouped by the block they
+    // came from -- consecutively, which is well defined because only the DISK
+    // files are sorted (ArcCreate.hs:114) and the merge leaves archive files in
+    // archive order, so a block's members stay adjacent.
+    //
+    // `groupOn`, not `sort_and_groupOn`: two runs of the same block separated by
+    // a file from another block would be two groups, and neither would be a
+    // whole block. That is the behaviour, not an accident of this port.
+    let mut kept_groups: Vec<Vec<Entry>> = Vec::new();
+    if keep_original {
+        let mut rest: Vec<Entry> = Vec::new();
+        let mut current: Vec<Entry> = Vec::new();
+        // Keyed by (archive, block): under `j` two inputs both have a block 0,
+        // and merging their files into one group would produce a "whole block"
+        // that is nothing of the sort.
+        let mut current_block: Option<(usize, usize)> = None;
+        for e in file_entries.drain(..) {
+            match source_of.get(&e.stored_name).copied() {
+                Some((ai, bi, _)) => {
+                    if current_block != Some((ai, bi)) && !current.is_empty() {
+                        kept_groups.push(std::mem::take(&mut current));
+                    }
+                    current_block = Some((ai, bi));
+                    current.push(e);
+                }
+                None => rest.push(e),
+            }
+        }
+        if !current.is_empty() {
+            kept_groups.push(current);
+        }
+        file_entries = rest;
+    }
+
     let mut data = Vec::new();
     // `block` is assigned when the blocks are actually written, below: the
     // directories block may or may not exist, so the first data block's index
@@ -615,6 +808,107 @@ fn add(
         }
     }
 
+    // The kept blocks come BEFORE the freshly split ones: splitToSolidBlocks is
+    // `dirs ++ map … solidBlocksToKeep ++ concatMap splitOneType …`.
+    let mut kept_entries: Vec<Entry> = Vec::new();
+    for group in &kept_groups {
+        let (ai, bi) = match source_of.get(&group[0].stored_name) {
+            Some((ai, bi, _)) => (*ai, *bi),
+            None => continue,
+        };
+        let (src_info, src_bytes) = match sources.get(ai) {
+            Some(s) => s,
+            None => {
+                eprintln!("ERROR: internal: no input archive {ai}");
+                return 2;
+            }
+        };
+        let src = match src_info.data_blocks.get(bi) {
+            Some(b) => b,
+            None => {
+                eprintln!("ERROR: internal: block {bi} is not in input archive {ai}");
+                return 2;
+            }
+        };
+        // `isWholeSolidBlock` (ArhiveFileList.hs:387), all four conditions: the
+        // group starts at offset 0 of the block, has as many files as the block
+        // has, and is in increasing position order. A group failing any of them
+        // cannot be copied -- the block's bytes also contain the files that did
+        // not survive.
+        let positions: Vec<u64> = group
+            .iter()
+            .filter_map(|e| match source_of.get(&e.stored_name) {
+                // Same archive AND same block: a group can only be whole if
+                // every member agrees on both.
+                Some((a, b, p)) if *a == ai && *b == bi => Some(*p),
+                _ => None,
+            })
+            .collect();
+        let whole = positions.len() == group.len()
+            && positions.first() == Some(&0)
+            && src.files == Some(group.len())
+            && positions.windows(2).all(|w| w[0] <= w[1]);
+
+        let block = match whole {
+            true => {
+                let start = src.pos as usize;
+                let end = start.saturating_add(src.comp_size as usize);
+                let packed = match src_bytes.get(start..end) {
+                    Some(p) => p,
+                    None => {
+                        eprintln!("ERROR: the input archive is truncated at block {bi}");
+                        return 2;
+                    }
+                };
+                for e in group {
+                    let mut e = e.clone();
+                    e.block = data_blocks.len();
+                    // The bytes are unchanged, so every offset into them is too.
+                    kept_entries.push(e.clone());
+                    drop(e);
+                }
+                w.write_copied_data(
+                    packed,
+                    src.orig_size,
+                    src.compressor.clone(),
+                    group.len(),
+                )
+            }
+            // A partial block is repacked, but with the block's OWN chain, not
+            // the -m default: the group is keyed by `cfCompressor . head`.
+            false => {
+                let mut body = Vec::new();
+                for e in group {
+                    let mut e = e.clone();
+                    e.block = data_blocks.len();
+                    e.pos_in_block = body.len() as u64;
+                    match contents.get(&e.stored_name) {
+                        Some(b) => body.extend_from_slice(b),
+                        None => {}
+                    }
+                    kept_entries.push(e);
+                }
+                let original = src.compressor.join("+");
+                let fitted = match darc_arc::memlimit::fit_for_add(&original, body.len() as u64) {
+                    Some(f) => f,
+                    None => {
+                        eprintln!("ERROR: cannot fit {original} to {} bytes", body.len());
+                        return 2;
+                    }
+                };
+                let compressor: Vec<String> = fitted.split('+').map(str::to_string).collect();
+                match w.write_compressed_data(&body, compressor, group.len()) {
+                    Ok(b) => b,
+                    Err(e) => {
+                        eprintln!("ERROR: {e}");
+                        return 2;
+                    }
+                }
+            }
+        };
+        data_blocks.push(block);
+    }
+
     if one_block_per_file {
         // splitToSolidBlocks runs splitFileTypes FIRST and only then splits each
         // type's files by the grouping, so a file keeps ITS OWN type's chain
@@ -685,7 +979,11 @@ fn add(
         file_entries = reordered;
     }
 
+    // Same order as the blocks: directories, then the copied/kept ones, then
+    // the freshly split ones. The directory stores block membership as a run
+    // length over this list, so the two orders have to agree.
     let mut entries = dir_entries;
+    entries.extend(kept_entries);
     entries.extend(file_entries);
     w.write_directory(&data_blocks, &entries);
     // An archive with nothing left in it is REMOVED, not written empty.
@@ -706,7 +1004,69 @@ fn add(
         return 0;
     }
 
-    let bytes = w.finish("", "", false);
+    // `getArcComment` (ArcCreate.hs:299). --archive-comment wins outright;
+    // otherwise the -z value decides, and its DEFAULT is "--" meaning "keep the
+    // one the input archive had". The `c` command is documented as "ch -z", so
+    // its default is "" -- read the new comment from stdin.
+    let arccmt_default = if command == "c" { "" } else { "--" };
+    let comment = match parsed.arg("archive-comment", "") {
+        s if !s.is_empty() => s.to_string(),
+        _ => match parsed.arg("arccmt", arccmt_default) {
+            // Read it from stdin, which is what `arc c` does.
+            //
+            // `uiInputArcComment` (CUI.hs:210) reads LINES UNTIL A LONE "." --
+            // not until end of file. Hitting EOF first is an error there
+            // (`hGetLine: end of file`) and the archive is left alone, so a
+            // piped comment that forgets its terminator must fail rather than
+            // silently replacing the comment with whatever arrived.
+            "" => {
+                println!("Enter archive comment, ending with \".\" on separate line:");
+                drop(std::io::stdout().flush());
+                let mut lines: Vec<String> = Vec::new();
+                let mut terminated = false;
+                for line in std::io::BufRead::lines(std::io::stdin().lock()) {
+                    match line {
+                        Ok(l) => {
+                            if l == "." {
+                                terminated = true;
+                                break;
+                            }
+                            lines.push(l);
+                        }
+                        Err(e) => {
+                            eprintln!("ERROR: reading the comment: {e}");
+                            return 2;
+                        }
+                    }
+                }
+                if !terminated {
+                    eprintln!("ERROR: <stdin>: end of file before the closing \".\"");
+                    return 2;
+                }
+                lines.join("\n")
+            }
+            // Delete the old comment.
+            "-" => String::new(),
+            // Copy it -- the default.
+            "--" => old_comment.clone(),
+            // Read it from the named file.
+            file => match std::fs::read_to_string(file) {
+                Ok(s) => s.trim_end_matches(['\r', '\n']).to_string(),
+                Err(e) => {
+                    eprintln!("ERROR: {file}: {e}");
+                    return 2;
+                }
+            },
+        },
+    };
+    // `opt_lock_archive = findNoArg o "lock" || cmd=="k"` (Cmdline.hs). The lock
+    // is one-way: there is no option that clears it, so an archive that arrived
+    // locked stays locked -- and a locked one is refused above before it gets
+    // here, so `old_locked` can only be false in practice. It is carried anyway
+    // rather than hard-coded, so that the day a `-k-` appears this still says
+    // what it means.
+    let locked = old_locked || parsed.flag("lock") || command == "k";
+    let bytes = w.finish(&comment, "", locked);
 
     match std::fs::write(archive_name, &bytes) {
         Ok(()) => {}
