@@ -20,10 +20,13 @@
 #     check exits non-zero for that too.
 set -u
 
-cd "$(dirname "$0")/.." || exit 1   # rust/
+HERE="$(cd "$(dirname "$0")" && pwd)"   # absolute: the cd below breaks $0
+cd "$HERE/.." || exit 1   # rust/
 CHECK="difftest/crypto-check.sh"
 SRC=darc-crypto/src
-FILES="ctr.rs cfb.rs lib.rs exports.rs"
+# cipher.rs joined the list when the cipher table moved there; the sabotage
+# below edits it, and a file that is not backed up here is not restored after.
+FILES="ctr.rs cfb.rs lib.rs exports.rs cipher.rs"
 BACKUP=$(mktemp -d)
 FAILED=0
 
@@ -52,13 +55,7 @@ sabotage() {
         FAILED=1
         return
     fi
-    python3 - "$SRC/$file" "$from" "$to" <<'PY'
-import sys, pathlib
-p = pathlib.Path(sys.argv[1]); s = p.read_text()
-n = s.count(sys.argv[2])
-assert n == 1, f"pattern occurs {n} times, need exactly 1"
-p.write_text(s.replace(sys.argv[2], sys.argv[3]))
-PY
+    sh "$HERE/patch-once.sh" "$SRC/$file" "$from" "$to"
     if [ $? -ne 0 ]; then
         echo "BROKEN HARNESS: [$name] edit did not apply cleanly"
         FAILED=1
@@ -130,9 +127,9 @@ sabotage "pbkdf2: one extra iteration" lib.rs \
 
 # Cipher ids are positions in LibTomCrypt's registration table, hard-coded on
 # the Rust side. Nothing in the type system ties them together.
-sabotage "shim: cipher id 2 dispatches to the wrong cipher" exports.rs \
-    "        2 => run::<serpent::Serpent>(key, iv, mode, encrypting, &io)," \
-    "        2 => run::<twofish::Twofish>(key, iv, mode, encrypting, &io),"
+sabotage "shim: cipher id 2 dispatches to the wrong cipher" cipher.rs \
+    "            2 => Some(Cipher::Serpent)," \
+    "            2 => Some(Cipher::Twofish),"
 
 # The direction flag crosses the FFI boundary as an int. CTR does not care;
 # CFB does, so this is caught only by the decrypt half of the corpus.

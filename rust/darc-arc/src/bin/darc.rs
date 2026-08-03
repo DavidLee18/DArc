@@ -585,6 +585,27 @@ fn add(
             return 2;
         }
     };
+    // `SetCompressionThreads (cthreads)` (Cmdline.hs:294) -- "before the command
+    // starts, tell the compression library how many threads it should use".
+    //
+    // Here that is rayon's global pool, which is what parallelises 4x4's chunks
+    // and the block decoder. Zero means "as many as the machine has", which is
+    // already rayon's default, so only a positive value does anything.
+    //
+    // This does NOT change any archive: measured, `-mgrzip`, `-m4x4:tor` and
+    // `-m9` are byte-identical to the reference under -mt1 and -mt8 alike. The
+    // thread count only reaches GRZip's and 4x4's MEMORY formulas, and those
+    // move the output only when a limit forces a refit. Without this the option
+    // parsed correctly and then controlled nothing at all.
+    if mopts.threads > 0 {
+        // Errors only if a pool already exists, which cannot happen this early;
+        // either way a failure here just leaves the default pool in place.
+        drop(
+            rayon::ThreadPoolBuilder::new()
+                .num_threads(mopts.threads as usize)
+                .build_global(),
+        );
+    }
     // The knobs this port does not implement are REFUSED, not ignored: acting
     // on part of a -m spec and dropping the rest writes an archive that is not
     // what was asked for, which is the same rule the HONOURED list applies.
@@ -595,7 +616,13 @@ fn add(
     if mopts.autodetect != "--" {
         unimplemented.push(format!("-ma{}", mopts.autodetect));
     }
-    for d in &mopts.disabled {
+    // A disable name that is EMPTY is a no-op and must be accepted: `-mc-`
+    // strips the fencing dashes and leaves "", and `method_change ""`
+    // (Cmdline.hs:318) then filters for methods named "", of which there are
+    // none. Rejecting it broke `mm-reorder-check.sh`, which passes `-mc-` to
+    // mean "change nothing". A NAMED one -- `-mcd-`, `-mc-rep`, `-ms-` -- does
+    // rewrite the chain, and that is not implemented.
+    for d in mopts.disabled.iter().filter(|d| !d.is_empty()) {
         unimplemented.push(format!("-mc({d})"));
     }
     if !unimplemented.is_empty() {

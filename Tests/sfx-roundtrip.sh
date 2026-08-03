@@ -35,7 +35,9 @@ trap 'rm -rf "$W"' EXIT
 # under. A flat corpus never notices.
 echo "the quick brown fox" > "$W/in/a.txt"
 head -c 40000 /dev/urandom     > "$W/in/b.bin"
-python3 -c "import sys; open(sys.argv[1],'w').write('hello world '*5000)" "$W/in/sub/c.txt"
+# ASCII, so awk is enough -- its printf is only unsafe for bytes above 127,
+# which is why the binary corpora go through rust/difftest's corpusgen instead.
+awk 'BEGIN{for(i=0;i<5000;i++) printf "hello world "}' > "$W/in/sub/c.txt"
 printf '\x7fELF\x02\x01\x01%.0s' $(seq 1 500) > "$W/in/sub/d.exe"
 
 fail=0; tested=0; skip=0

@@ -15,7 +15,8 @@
 #     exit path.
 set -u
 
-cd "$(dirname "$0")/.." || exit 1   # rust/
+HERE="$(cd "$(dirname "$0")" && pwd)"   # absolute: the cd below breaks $0
+cd "$HERE/.." || exit 1   # rust/
 SRC=darc-codecs/src/tornado
 BACKUP=$(mktemp -d)
 FAILED=0
@@ -45,13 +46,7 @@ sabotage() {
         FAILED=1
         return
     fi
-    python3 - "$SRC/$file" "$from" "$to" <<'PY'
-import sys, pathlib
-p = pathlib.Path(sys.argv[1]); s = p.read_text()
-n = s.count(sys.argv[2])
-assert n == 1, f"pattern occurs {n} times, need exactly 1"
-p.write_text(s.replace(sys.argv[2], sys.argv[3]))
-PY
+    sh "$HERE/patch-once.sh" "$SRC/$file" "$from" "$to"
     if [ $? -ne 0 ]; then
         echo "BROKEN HARNESS: [$name] edit did not apply cleanly"
         FAILED=1

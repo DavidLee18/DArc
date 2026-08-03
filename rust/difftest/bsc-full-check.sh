@@ -36,35 +36,11 @@ cc() { local out="$1"; shift
 cc "$W/c"                    || exit 1
 cc "$W/rs" -DUSE_RUST "$LIB" || exit 1
 
-python3 - "$W/in" <<'PY'
-import os,sys
-d=sys.argv[1]; os.makedirs(d,exist_ok=True)
-def prng(seed,n):
-    s=seed; o=bytearray()
-    for _ in range(n): s=(s*1103515245+12345)&0xffffffff; o.append((s>>16)&0xff)
-    return bytes(o)
-w=lambda n,b: open(f"{d}/{n}","wb").write(b)
-w("text",     b"the quick brown fox jumps over the lazy dog. "*4000)   # >64K, LZP-friendly
-w("text_sm",  b"the quick brown fox jumps over the lazy dog. "*200)    # <64K
-w("english",  (b"compression algorithms rearrange data so that "
-               b"statistical redundancy can be removed by an entropy coder. ")*900)
-w("runs",     b"".join(bytes([i%97])*(1+(i*7)%200) for i in range(3000)))
-w("onebyte",  b"\x5a"*80000)
-w("twobyte",  b"\x00\xff"*45000)
-w("noise",    prng(9, 200000))            # incompressible -> stored-block path
-w("alphabet", bytes(i%256 for i in range(200000)))
-w("sparse",   b"".join((b"\x00"*300 + bytes([i%251])) for i in range(500)))
-w("skew",     bytes((0 if (i*2654435761>>28)&7 else (i%251)) for i in range(150000)))
-# The coder segments into >1 sub-block only above 262144 bytes (2 blocks) and
-# 1048576 (4 blocks). These straddle both so the multi-block wrapper is covered.
-w("big_text", b"the quick brown fox jumps over the lazy dog. "*12000)  # ~540K, 4 blocks
-w("big_eng",  (b"compression algorithms rearrange data so that "
-               b"statistical redundancy can be removed by an entropy coder. ")*5000)  # ~520K
-w("big_noise",prng(11, 400000))           # ~400K incompressible, 2 blocks
-w("big_skew", bytes((0 if (i*2654435761>>28)&7 else (i%251)) for i in range(400000)))
-for n in (1,2,3,16,255,256,257,4096,65535,65536,65537):
-    w(f"n_{n}", prng(3,n))
-PY
+( cd "$ROOT/rust" && cargo build --release -q -p darc-codecs --bin corpusgen ) || exit 1
+
+# Corpus from corpusgen -- a literal transcription of the python3 heredoc that
+# stood here, accepted on a byte comparison over every file it writes.
+"$ROOT/rust/target/release/corpusgen" bsc-full "$W/in"
 
 # sorter: 1=BWT 3..6=ST; coder: 1=static 2=adaptive; lzp: "0 0" off / defaults on
 total=0; tested=0
