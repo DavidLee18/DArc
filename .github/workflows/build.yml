@@ -350,9 +350,16 @@ jobs:
         key: cargo-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust-toolchain.toml', 'rust/Cargo.lock') }}
         restore-keys: |
           cargo-${{ runner.os }}-${{ runner.arch }}-
+    # -static, because llvm-mingw links libc++, libunwind and libwinpthread as
+    # DLLs by default and only the .exe is uploaded below. Without it the
+    # binary reaches the ARM64 runner and dies before main with "cannot open
+    # shared object file" -- which is what it did the first time this job got
+    # far enough to run at all. The x86_64 mingw target does not need this:
+    # Rust already passes -static-libgcc there and that toolchain has no
+    # libc++ dependency.
     - name: Build (Windows ARM64 cross)
       run: |
-        cargo build --release --manifest-path rust/Cargo.toml \
+        RUSTFLAGS="-C link-arg=-static" cargo build --release --manifest-path rust/Cargo.toml \
           --target aarch64-pc-windows-gnullvm -p darc-arc --bin darc
         mkdir -p Tests
         cp rust/target/aarch64-pc-windows-gnullvm/release/darc.exe Tests/darc-win-arm64.exe
@@ -375,6 +382,17 @@ jobs:
           *) echo "::error::not an ARM64 PE image: $desc"; exit 1 ;;
         esac
         echo "ARM64 image verified: $(wc -c < Tests/darc-win-arm64.exe) bytes"
+        # Only the .exe is uploaded, so an import of a toolchain DLL is a
+        # binary that cannot start on the test runner. Checking it HERE rather
+        # than discovering it a job away is the whole point: the failure mode
+        # is a loader error before main, which reads like a broken build.
+        imports=$(llvm-objdump -p Tests/darc-win-arm64.exe | grep -i "DLL Name" || true)
+        echo "$imports"
+        case "$imports" in
+          *libc++*|*libunwind*|*libwinpthread*)
+            echo "::error::the ARM64 binary imports a toolchain DLL that is not shipped with it"
+            exit 1 ;;
+        esac
     - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
       with:
         name: arc-win-arm64
