@@ -40,12 +40,54 @@ fn ratio3(count: u64, total: u64) -> String {
     }
 }
 
+/// The command list, and enough of the option surface to be usable.
+///
+/// Printed for `--help`/`-h`/`-?`/`help` and, minus the options, when there are
+/// no arguments at all. Not a transcription of the reference's help text: that
+/// one documented options this port refuses (`-mm`, `-ma`, `-mc`, `-lc-`,
+/// `-ld-`), and printing them would advertise what `-m` then rejects.
+fn help() -> String {
+    "usage: darc <command> [options] <archive> [files...]
+
+commands:
+  a         add files to an archive          l, v      list (v = verbose)
+  u         add newer and new files          lb, lt    list bare / with totals
+  f         refresh files already there      t         test
+  m, mf     add and delete the originals     x         extract with paths
+  d         delete files from an archive     e         extract without paths
+  c, ch     copy / recompress an archive     r         repair from recovery records
+  k         lock an archive                  j         join archives
+
+options (a selection):
+  -m<method>    compression method or level, e.g. -m9, -mlzma, -mtor:8m
+  -mt<n>        limit compression to n threads
+  -s<size>      solid block size; -s- for non-solid
+  -p<password>  encrypt; -op<password> to decrypt with an old one
+  -rr[<size>]   add recovery records; -rr+ to also protect the directory
+  -sfx[<name>]  make a self-extracting archive
+  -o+ / -o-     overwrite always / never
+  -ep<n>        how much of the path to store
+  --dirs        store directory entries explicitly
+  --noarcext    do not append .arc to the archive name
+  --original=<path|url>   a second copy of the archive, for `r`
+
+An archive name with no extension gets .arc appended unless --noarcext."
+        .to_string()
+}
+
 fn main() {
     let argv: Vec<String> = std::env::args().skip(1).collect();
     if argv.is_empty() {
         eprintln!("usage: darc <command> [options] <archive> [files...]");
-        eprintln!("commands: l (list), t (test), x (extract), e (extract flat)");
+        eprintln!("commands: a u f m mf d c ch k j r l v lb lt t x e");
+        eprintln!("`darc --help` for more.");
         std::process::exit(2);
+    }
+    // `--help` is not a command and carries no archive, so it has to be
+    // answered before the archive-name check below turns it into an error.
+    if ["--help", "-h", "-?", "help"].contains(&argv[0].as_str()) {
+        println!("{}", help());
+        return;
     }
     // The command is the first argument and is NOT an option, matching
     // `parseCmdline`: options may appear anywhere after it.
@@ -2284,6 +2326,7 @@ fn civil_from_days(z: i64) -> (i64, u32, u32) {
     (if m <= 2 { y + 1 } else { y }, m, d)
 }
 
+#[cfg(not(windows))]
 fn local_offset_seconds() -> i64 {
     // SAFETY: localtime_r writes into a tm we own; time 0 is always valid.
     unsafe {
@@ -2294,6 +2337,7 @@ fn local_offset_seconds() -> i64 {
     }
 }
 
+#[cfg(not(windows))]
 #[repr(C)]
 struct Tm {
     tm_sec: i32,
@@ -2309,8 +2353,52 @@ struct Tm {
     tm_zone: *const i8,
 }
 
+#[cfg(not(windows))]
 extern "C" {
     fn localtime_r(t: *const i64, tm: *mut Tm) -> *mut Tm;
+}
+
+/// The Windows CRT has neither `localtime_r` nor `tm_gmtoff` — its `struct tm`
+/// stops at `tm_isdst`. The offset comes out of a round trip instead: break
+/// epoch 0 down in LOCAL time, then reassemble those same fields as if they
+/// were UTC. The difference from 0 is exactly the offset, and `_mkgmtime64`
+/// returns it directly.
+#[cfg(windows)]
+fn local_offset_seconds() -> i64 {
+    #[repr(C)]
+    struct TmW {
+        tm_sec: i32,
+        tm_min: i32,
+        tm_hour: i32,
+        tm_mday: i32,
+        tm_mon: i32,
+        tm_year: i32,
+        tm_wday: i32,
+        tm_yday: i32,
+        tm_isdst: i32,
+    }
+    // The explicitly-64-bit names, not `localtime`/`mkgmtime`: those are macros
+    // whose time_t width depends on how the CRT headers were configured, and
+    // this passes an i64. `_localtime64` rather than `_localtime64_s` because
+    // the secure variant is not in every msvcrt.dll, while the plain one is in
+    // both msvcrt (x86_64-pc-windows-gnu) and UCRT (the gnullvm targets).
+    extern "C" {
+        fn _localtime64(t: *const i64) -> *mut TmW;
+        fn _mkgmtime64(tm: *mut TmW) -> i64;
+    }
+    // SAFETY: time 0 is always valid; the returned pointer is CRT-owned static
+    // storage, read and passed straight back before anything else can call into
+    // the CRT's time functions.
+    unsafe {
+        let t: i64 = 0;
+        let tm = _localtime64(&t);
+        // Null means no usable zone. UTC is the honest fallback, and it is what
+        // the Unix path yields for a zone with no offset.
+        match tm.is_null() {
+            true => 0,
+            false => _mkgmtime64(tm),
+        }
+    }
 }
 
 // ── Passwords ───────────────────────────────────────────────────────────────
