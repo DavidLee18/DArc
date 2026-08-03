@@ -22,7 +22,24 @@ fn main() {
     // The same defines the C build uses. Compression/Common.h errors out
     // without an OS and a byte-order define, so these are mandatory, not
     // decoration -- see Utils.hs:31 for the Haskell-side equivalent.
+    //
+    // `cfg!` in a build script is the HOST, not the target, and that is
+    // deliberate: Common.h:18's FREEARC_WIN branch includes <windows.h>, which
+    // libclang cannot find when cross-compiling from a Linux runner. Every item
+    // the allowlist below extracts is declared outside that branch -- MemSize is
+    // `unsigned` at Common.h:93 and CALLBACK_FUNC is a plain function type at
+    // Compression.h:62 -- so which branch is parsed does not reach the
+    // generated bindings, and parsing the one that compiles is what lets the
+    // Windows cross-builds run at all.
     let os_define = if cfg!(target_os = "windows") { "-DFREEARC_WIN" } else { "-DFREEARC_UNIX" };
+
+    // bindgen passes `--target=$TARGET` to clang, and libclang older than the
+    // llvm-mingw toolchain does not know the `gnullvm` environment: it reads
+    // `aarch64-pc-windows-gnullvm` as environment `gnu` plus version `llvm` and
+    // rejects it. The two differ in which linker and CRT the Rust side uses,
+    // not in anything a header sees, so clang is given the `-gnu` spelling.
+    // Last `--target` wins in the clang driver, so this overrides bindgen's.
+    let clang_target = env::var("TARGET").unwrap_or_default().replace("-gnullvm", "-gnu");
 
     let bindings = bindgen::Builder::default()
         .header("wrapper.h")
@@ -36,6 +53,7 @@ fn main() {
         ])
         .clang_arg(format!("-I{}", compression.display()))
         .clang_arg(format!("-I{}", root.display()))
+        .clang_arg(format!("--target={clang_target}"))
         // Only what the codec boundary actually needs. Without an allowlist
         // bindgen emits thousands of items from the C++ headers and the
         // signal is lost.
