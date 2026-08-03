@@ -944,6 +944,173 @@ fn sevenz(dir: &std::path::Path) {
     std::fs::create_dir_all(dir.join("emptydir")).expect("emptydir");
 }
 
+/// `grzip-check.sh`, main corpus.
+fn grzip(dir: &std::path::Path) {
+    write(dir, "text", &repeat(FOX, 9000));
+    let mut repeats_unit = repeat(b"ABCDEFGHIJKLMNOP", 64);
+    repeats_unit.extend(prng(1, 128));
+    write(dir, "repeats", &repeats_unit.repeat(300));
+    // `bytes([i%251])*(1+(i%97))` -- the run length follows i%97, not (i*7)%200.
+    let mut r = Vec::new();
+    for i in 0..6000usize {
+        r.extend(std::iter::repeat_n((i % 251) as u8, 1 + (i % 97)));
+    }
+    write(dir, "runs", &r);
+    write(dir, "noise", &prng(7, 400000));
+    write(dir, "zeros", &vec![0u8; 300000]);
+    write(dir, "rec4", &le32((0..120000u32).map(|i| i.wrapping_mul(7).wrapping_add(3))));
+    write(dir, "rec2", &le16((0..200000u32).map(|i| (i.wrapping_mul(11) & 0xffff) as u16)));
+    let mut mixed = Vec::new();
+    for i in 0..200u32 {
+        mixed.extend(prng(i, 600));
+        mixed.extend(repeat(b"pattern", 120));
+    }
+    write(dir, "mixed", &mixed);
+    // ~7 MB, just under one GRZip block.
+    write(dir, "big", &le32((0..1800000u32).map(|i| i.wrapping_mul(2654435761))));
+    for n in [1usize, 2, 3, 4, 27, 28, 29, 255, 256, 257, 4096, 65537] {
+        write(dir, &format!("n_{n}"), &truncated_repeat(b"the quick brown fox ", 4000, n));
+    }
+}
+
+/// The second file `grzip-check.sh` builds -- larger than `GRZ_MaxBlockSize`,
+/// so the STREAM layer has to split it. The block harness cannot take one.
+///
+/// Emitted to STDOUT: the Python wrote a single named file, not a directory.
+fn grzip_big() -> Vec<u8> {
+    let mut out = Vec::new();
+    for i in 0..3000000u32 {
+        match i % 3 {
+            0 => out.extend_from_slice(&b"the quick brown fox "[..4]),
+            _ => out.extend_from_slice(&i.wrapping_mul(2654435761).to_le_bytes()),
+        }
+    }
+    out
+}
+
+/// `lzma2-mt-check.sh` — sized around the 4 MiB block a 1 MB dictionary
+/// implies, so the split's boundaries are straddled from both sides.
+fn lzma2_mt(dir: &std::path::Path) {
+    const MB: usize = 1 << 20;
+    // `o += b'lorem ipsum dolor sit amet %d consectetur\n' % (s >> 16)` until
+    // the buffer is long enough, then truncated. The line length VARIES with
+    // the number, so this cannot be a fixed-size repeat.
+    let gen = |seed: u32, n: usize| -> Vec<u8> {
+        let mut s = seed;
+        let mut o: Vec<u8> = Vec::with_capacity(n + 64);
+        while o.len() < n {
+            s = s.wrapping_mul(1103515245).wrapping_add(12345);
+            o.extend_from_slice(
+                format!("lorem ipsum dolor sit amet {} consectetur\n", s >> 16).as_bytes(),
+            );
+        }
+        o.truncate(n);
+        o
+    };
+    for (name, n) in [
+        ("half_block", 2 * MB),
+        ("one_block", 4 * MB),
+        ("one_plus", 4 * MB + 1),
+        ("two_blocks", 8 * MB),
+        ("five_blocks", 20 * MB + 12345),
+    ] {
+        write(dir, name, &gen(7, n));
+    }
+    // Incompressible, which drives the copy-chunk path inside each block.
+    let mut s: u32 = 11;
+    let want = 9 * MB;
+    let mut noise: Vec<u8> = Vec::with_capacity(want + 4);
+    while noise.len() < want {
+        s = s.wrapping_mul(1103515245).wrapping_add(12345);
+        noise.extend_from_slice(&s.to_le_bytes());
+    }
+    noise.truncate(want);
+    write(dir, "noise_two_blocks", &noise);
+}
+
+/// `dict-check.sh`.
+///
+/// What Dict accepts is narrower than "repeated words": text made only of
+/// lowercase letters and spaces is REFUSED outright, because `MinWeakChars`
+/// demands a spread of non-word characters first. Only the `natural_*` inputs
+/// engage the encoder, and the harness asserts that at least eight blocks do --
+/// so these words, in this order, are what makes the comparison mean anything.
+fn dict(dir: &std::path::Path) {
+    const COMMON: &str = "the of and to in a is that for it as was with be by on not he this but have \
+from they which one you were all her she there would their we him been has \
+when who will more no if out so said what up its about into than them can";
+    const TOPIC: &str = "compression algorithm dictionary preprocessor archive redundancy entropy encoder \
+decoder statistical frequency threshold occurrence substitution replacement \
+transformation implementation";
+
+    let common: Vec<&str> = COMMON.split_whitespace().collect();
+    let topic: Vec<&str> = TOPIC.split_whitespace().collect();
+
+    let natural = |seed: u64, n: usize, topic_every: usize| -> Vec<u8> {
+        let mut r = MersenneTwister::new(seed);
+        let mut words: Vec<String> = Vec::new();
+        for i in 0..n {
+            let w = match i % topic_every {
+                0 => topic[r.randbelow(topic.len() as u32) as usize],
+                _ => common[r.randbelow(common.len() as u32) as usize],
+            };
+            // `str.capitalize()`: first character upper, the rest lower. Every
+            // word here is already lowercase ASCII.
+            let w = match i % 17 {
+                0 => {
+                    let mut c = w.chars();
+                    match c.next() {
+                        Some(f) => f.to_ascii_uppercase().to_string() + c.as_str(),
+                        None => String::new(),
+                    }
+                }
+                _ => w.to_string(),
+            };
+            words.push(w);
+            if i % 11 == 0 {
+                words.push((i % 1000).to_string());
+            }
+            if i % 13 == 0 {
+                words.push(",".to_string());
+            }
+            if i % 29 == 0 {
+                words.push(".".to_string());
+            }
+            if i % 97 == 0 {
+                words.push("\n".to_string());
+            }
+        }
+        words.join(" ").into_bytes()
+    };
+
+    write(dir, "natural_a", &natural(7, 200000, 6));
+    write(dir, "natural_b", &natural(11, 120000, 3));
+    write(dir, "natural_c", &natural(23, 60000, 12));
+
+    let sent = "The quick brown fox jumps over the lazy dog, and the dog barks. \
+Compression of text depends on repeated words appearing often. ";
+    write(dir, "english", &repeat(sent.as_bytes(), 3000));
+
+    // These DECLINE, and that is worth testing: the stored path has its own
+    // four-byte framing and the two implementations must agree on it.
+    let src = "static int compute_value(struct context *ctx, int index) {\n\
+    \x20   if (ctx == NULL || index < 0) return -1;\n\
+    \x20   return ctx->table[index] + ctx->offset;\n\
+}\n";
+    write(dir, "source", &repeat(src.as_bytes(), 6000));
+    write(
+        dir,
+        "markup",
+        &repeat(b"<div class=\"row\"><span id=\"x\">value</span></div>\n", 20000),
+    );
+    write(dir, "noise", &prng(9, 300000));
+    write(dir, "zeros", &vec![0u8; 200000]);
+    write(dir, "binary", &alphabet(300000));
+    for n in [0usize, 1, 2, 3, 63, 64, 65, 255, 256, 257, 4095, 4096, 65537] {
+        write(dir, &format!("n_{n}"), &truncated_repeat(b"word ", (n / 5) + 1, n));
+    }
+}
+
 /// `int(30000*math.sin(i/50.0)) >> (8*(i%2)) & 0xff` — a 16-bit sine, emitted
 /// little-endian one byte at a time, which is what `mm-reorder-check.sh` feeds
 /// MM's `:r1` transpose.
@@ -984,6 +1151,11 @@ fn main() {
             let n = num(args.next());
             let out = std::io::stdout();
             out.lock().write_all(&prng(seed, n)).expect("write");
+            return;
+        }
+        "grzip-big" => {
+            let out = std::io::stdout();
+            out.lock().write_all(&grzip_big()).expect("write");
             return;
         }
         "repeat" => {
@@ -1028,6 +1200,9 @@ fn main() {
         "srep" => srep(&dir),
         "debug-assert" => debug_assert(&dir),
         "sevenz" => sevenz(&dir),
+        "grzip" => grzip(&dir),
+        "lzma2-mt" => lzma2_mt(&dir),
+        "dict" => dict(&dir),
         other => {
             eprintln!("corpusgen: unknown corpus {other:?}");
             std::process::exit(2);

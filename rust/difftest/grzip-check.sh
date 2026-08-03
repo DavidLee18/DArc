@@ -49,26 +49,11 @@ cc "$W/rs" -DUSE_RUST "$LIB" || exit 1
 # block-level harness, and GRZip_CompressBlock cannot take more than one block.
 # Block splitting lives in the stream wrapper, which is not ported yet -- when
 # it is, the stream-level harness needs an input past that size.
-python3 - "$W/in" <<'PY'
-import os,sys,struct
-d=sys.argv[1]; os.makedirs(d,exist_ok=True)
-def prng(seed,n):
-    s=seed; o=bytearray()
-    for _ in range(n): s=(s*1103515245+12345)&0xffffffff; o.append((s>>16)&0xff)
-    return bytes(o)
-w=lambda n,b: open(f"{d}/{n}","wb").write(b)
-w("text",     b"the quick brown fox jumps over the lazy dog. "*9000)
-w("repeats",  (b"ABCDEFGHIJKLMNOP"*64 + prng(1,128))*300)
-w("runs",     b"".join(bytes([i%251])*(1+(i%97)) for i in range(6000)))
-w("noise",    prng(7, 400000))
-w("zeros",    b"\x00"*300000)
-w("rec4",     b"".join(struct.pack("<I", i*7+3) for i in range(120000)))
-w("rec2",     b"".join(struct.pack("<H", (i*11)&0xffff) for i in range(200000)))
-w("mixed",    b"".join((prng(i,600) + b"pattern"*120) for i in range(200)))
-w("big",      b"".join(struct.pack("<I", (i*2654435761)&0xffffffff) for i in range(1800000)))  # ~7 MB, just under one block
-for n in (1,2,3,4,27,28,29,255,256,257,4096,65537):
-    w(f"n_{n}", (b"the quick brown fox "*4000)[:n])
-PY
+( cd "$ROOT/rust" && cargo build --release -q -p darc-codecs --bin corpusgen ) || exit 1
+
+# Corpus from corpusgen -- a literal transcription of the python3 heredoc
+# that stood here, accepted on a byte comparison over every file it writes.
+"$ROOT/rust/target/release/corpusgen" grzip "$W/in"
 
 total=0
 for mode in 0 2 4 6 0x100 0x102 0x104 0x106 0x50104 0x50100; do
@@ -95,12 +80,7 @@ done
 # place an input past GRZ_MaxBlockSize (8 MB - 512) means anything -- the block
 # harness above physically cannot take one. Per the Tornado lesson, a corpus
 # that fits inside one block leaves the whole splitting path untested.
-python3 - "$W/big" <<'PY2'
-import sys,struct
-open(sys.argv[1],"wb").write(b"".join(
-    struct.pack("<I", (i*2654435761)&0xffffffff) if i%3 else b"the quick brown fox "[:4]
-    for i in range(3000000)))
-PY2
+"$ROOT/rust/target/release/corpusgen" grzip-big > "$W/big"
 sfail=0; sn=0
 for f in "$W"/in/* "$W/big"; do
   sn=$((sn+1)); name=$(basename "$f")

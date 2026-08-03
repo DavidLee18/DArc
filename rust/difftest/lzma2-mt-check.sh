@@ -57,30 +57,11 @@ fi
 have_rust=0; [ -x "$RS" ] && have_rust=1
 
 # ---- corpus: sizes chosen against the 4 MiB block that dictSize=1m produces ------
-python3 - "$W/in" <<'PY'
-import os, sys
-d = sys.argv[1]; os.makedirs(d, exist_ok=True)
-def gen(seed, n):
-    s = seed & 0xffffffff; o = bytearray()
-    while len(o) < n:
-        s = (s * 1103515245 + 12345) & 0xffffffff
-        o += b'lorem ipsum dolor sit amet %d consectetur\n' % (s >> 16)
-    return bytes(o[:n])
-MB = 1 << 20
-# Block is 4 MiB at dictSize=1m. Span: under one block, exactly one, just over,
-# two, and several -- the boundaries are where an off-by-one in the split shows.
-for name, n in [("half_block", 2*MB), ("one_block", 4*MB), ("one_plus", 4*MB + 1),
-                ("two_blocks", 8*MB), ("five_blocks", 20*MB + 12345)]:
-    open(f"{d}/{name}", "wb").write(gen(7, n))
-# Incompressible too: it drives the copy-chunk path inside each block.
-def prng4(seed, n):
-    s = seed & 0xffffffff; o = bytearray()
-    while len(o) < n:
-        s = (s * 1103515245 + 12345) & 0xffffffff
-        o += s.to_bytes(4, "little")
-    return bytes(o[:n])
-open(f"{d}/noise_two_blocks", "wb").write(prng4(11, 9*MB))
-PY
+( cd "$ROOT/rust" && cargo build --release -q -p darc-codecs --bin corpusgen ) || exit 1
+
+# Corpus from corpusgen -- a literal transcription of the python3 heredoc
+# that stood here, accepted on a byte comparison over every file it writes.
+"$ROOT/rust/target/release/corpusgen" lzma2-mt "$W/in"
 
 # dictSize lc lp pb fb mc mf algo -- dict 1m so the auto block is 4 MiB and a
 # few-megabyte corpus spans several blocks without needing gigabytes.
