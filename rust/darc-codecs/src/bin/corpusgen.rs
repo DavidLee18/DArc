@@ -1111,6 +1111,14 @@ Compression of text depends on repeated words appearing often. ";
     }
 }
 
+/// `crypto-check.sh` -- sizes either side of the 256 KB pipeline buffer, each
+/// seeded by its own length so no two files share a prefix.
+fn crypto(dir: &std::path::Path) {
+    for n in [0usize, 1, 8, 15, 16, 17, 255, 4096, 262143, 262144, 262145, 300000] {
+        write(dir, &format!("n_{n}"), &prng(n as u32 + 1, n));
+    }
+}
+
 /// `int(30000*math.sin(i/50.0)) >> (8*(i%2)) & 0xff` — a 16-bit sine, emitted
 /// little-endian one byte at a time, which is what `mm-reorder-check.sh` feeds
 /// MM's `:r1` transpose.
@@ -1203,6 +1211,7 @@ fn main() {
         "grzip" => grzip(&dir),
         "lzma2-mt" => lzma2_mt(&dir),
         "dict" => dict(&dir),
+        "crypto" => crypto(&dir),
         other => {
             eprintln!("corpusgen: unknown corpus {other:?}");
             std::process::exit(2);

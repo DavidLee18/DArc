@@ -57,7 +57,7 @@ fi
 have_rust=0; [ -x "$RS" ] && have_rust=1
 
 # ---- corpus: sizes chosen against the 4 MiB block that dictSize=1m produces ------
-( cd "$ROOT/rust" && cargo build --release -q -p darc-codecs --bin corpusgen ) || exit 1
+( cd "$ROOT/rust" && cargo build --release -q -p darc-codecs --bin corpusgen --bin difftest-util ) || exit 1
 
 # Corpus from corpusgen -- a literal transcription of the python3 heredoc
 # that stood here, accepted on a byte comparison over every file it writes.
@@ -82,43 +82,9 @@ for f in "$W"/in/*; do
     fi
     # Count blocks from the stream itself: a dictionary reset is control 0xE0..0xFF
     # (mode 3) or a COPY_RESET_DIC (0x01), and there is exactly one per block.
-    blocks=$(python3 - "$W/oc" <<'PYEOF'
-import sys
-# Count dictionary resets, which is exactly one per block (Lzma2Enc.c:106-111 sets
-# needInitProp and needInitState together at every block start, so the first chunk of
-# a block is mode 3 -- control >= 0xE0 -- or a COPY_RESET_DIC, control == 1).
-#
-# Chunk layout, Lzma2Enc.c:197-225 and :168-191:
-#   control 0x00            end of stream
-#   control >= 0x80         LZMA:  5 header bytes, +1 prop byte when control >= 0xC0,
-#                                  then packSize payload bytes
-#   control 1 or 2          copy:  3 header bytes then unpackSize raw bytes
-# Both sizes are stored minus one.
-b = open(sys.argv[1], "rb").read()
-i, n = 1, 0                     # byte 0 is the LZMA2 property byte
-while i < len(b):
-    c = b[i]
-    if c == 0:
-        break
-    if c >= 0x80:
-        if i + 5 > len(b):
-            break
-        pack = ((b[i+3] << 8) | b[i+4]) + 1
-        i += 5 + (1 if c >= 0xC0 else 0) + pack
-        if c >= 0xE0:
-            n += 1
-    elif c in (1, 2):
-        if i + 3 > len(b):
-            break
-        unpack = ((b[i+1] << 8) | b[i+2]) + 1
-        i += 3 + unpack
-        if c == 1:
-            n += 1
-    else:
-        break
-print(n)
-PYEOF
-) || blocks=0
+    # Dictionary resets, one per block -- see difftest-util.rs for the chunk
+    # layout this walks (Lzma2Enc.c:197-225).
+    blocks=$("$ROOT/rust/target/release/difftest-util" lzma2-blocks "$W/oc") || blocks=0
     if [ "${blocks:-0}" -gt 1 ]; then multiblock=$((multiblock+1)); fi
     c_out_by_threads="$c_out_by_threads $(wc -c < "$W/oc" | tr -d ' ')"
 
