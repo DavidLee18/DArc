@@ -51,6 +51,36 @@ Attribution only; no source-provision or notice-propagation duty.
 | RustCrypto (`aes`, `sha2`, `hmac`, `pbkdf2`, `blowfish`, `serpent`, `twofish`, `cipher`) | MIT OR Apache-2.0 |
 | 7-Zip SDK derivation in `rust/darc-lzma` | BSD-3-Clause — see `rust/darc-lzma/PROVENANCE.md` |
 
+## The HTTP client, for `--original`
+
+Pulled in by `darc-arc`'s `url` feature (on by default) so `arc r --original
+http://…` can repair an archive from a remote copy. Turning the feature off
+drops all of it, the way `-DFREEARC_NOURL` drops the C's libcurl path.
+
+| Component | Licence |
+|---|---|
+| `ureq`, `ureq-proto` | MIT OR Apache-2.0 |
+| `rustls` | Apache-2.0 OR ISC OR MIT |
+| `rustls-webpki` | ISC |
+| `rustls-pki-types` | MIT OR Apache-2.0 |
+| `ring` | Apache-2.0 AND ISC |
+| `webpki-roots` | **CDLA-Permissive-2.0** |
+
+`webpki-roots` is the odd one and is worth stating plainly: it is Mozilla's CA
+root *data*, not code, under the Community Data License Agreement — Permissive
+2.0. That licence attaches no conditions to sharing the data and no
+notice-propagation duty, so it is compatible with conveying this project under
+GPLv3. It is called out because CDLA is not one of the licences the rest of this
+file deals in, not because it is a problem.
+
+`ring` carries an OpenSSL-derived permissive notice alongside ISC; both are
+GPL-compatible and neither is copyleft.
+
+TLS here is rustls with the roots **compiled in** — no `native-tls`, no
+`platform-verifier`. That is a deliberate choice rather than a default: it keeps
+the mingw and aarch64 cross-builds free of any system TLS library or trust
+store, which is the whole reason this is not libcurl.
+
 ## Copyleft components vendored in-tree
 
 Both predate this change and both grant "or later", which is what allows the

@@ -124,11 +124,39 @@ if ! cmp -s "$W/r.arc" "$W/p.arc"; then
   fail=$((fail + 1))
 fi
 
-# `-rr+` must be REFUSED by both. `writeRecoveryBlocks` has a case for "+"
-# (ArcRecover.hs:93) but `rr_ok` (Cmdline.hs:641) runs first and rejects it, so
-# that case is unreachable. Implementing the reachable half only would make
-# `arc a -rr+` write an archive the reference will not.
-for spec in "+" "x" "1z"; do
+# `-rr+` means what a bare `-rr` means: the archive's own setting, or the
+# recommended amount if it had none (ArcRecover.hs:93). `rr_ok` (Cmdline.hs:641)
+# used to reject the value before that case could run, which made a documented
+# spelling an INVALID_OPTION_VALUE; both now list it. On a NEW archive there is
+# no old setting, so the two spellings must agree byte for byte -- and each must
+# agree across the two builds.
+checked=$((checked + 1))
+rm -f "$W/r.arc" "$W/p.arc" "$W/r-bare.arc" "$W/p-bare.arc"
+( cd "$W/src" && "$REF"  a --nodates -y -m0 -rr+ "$W/r.arc"      . ) </dev/null >/dev/null 2>&1
+( cd "$W/src" && "$PORT" a --nodates -y -m0 -rr+ "$W/p.arc"      . ) </dev/null >/dev/null 2>&1
+( cd "$W/src" && "$REF"  a --nodates -y -m0 -rr  "$W/r-bare.arc" . ) </dev/null >/dev/null 2>&1
+( cd "$W/src" && "$PORT" a --nodates -y -m0 -rr  "$W/p-bare.arc" . ) </dev/null >/dev/null 2>&1
+for f in r.arc p.arc r-bare.arc p-bare.arc; do
+  if [ ! -s "$W/$f" ]; then
+    echo "  DIFF [-rr+]: $f was not written -- the value was refused"
+    fail=$((fail + 1))
+  fi
+done
+if ! cmp -s "$W/r.arc" "$W/p.arc"; then
+  echo "  DIFF [-rr+]: $(size "$W/r.arc") vs $(size "$W/p.arc") bytes"
+  fail=$((fail + 1))
+fi
+if ! cmp -s "$W/r.arc" "$W/r-bare.arc"; then
+  echo "  DIFF [-rr+]: reference disagrees with its own bare -rr"
+  fail=$((fail + 1))
+fi
+if ! cmp -s "$W/p.arc" "$W/p-bare.arc"; then
+  echo "  DIFF [-rr+]: port disagrees with its own bare -rr"
+  fail=$((fail + 1))
+fi
+
+# Values that are still nonsense must be refused by both.
+for spec in "x" "1z"; do
   checked=$((checked + 1))
   rm -f "$W/r.arc" "$W/p.arc"
   ( cd "$W/src" && "$REF"  a --nodates -y -m0 "-rr$spec" "$W/r.arc" . ) </dev/null >/dev/null 2>&1

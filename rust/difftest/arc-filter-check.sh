@@ -33,12 +33,9 @@
 # fits both and is wrong; `--dirs -n*.txt` is what separates the two readings,
 # so it has a row of its own.
 #
-# ── The one divergence ─────────────────────────────────────────────────────
-#
-# Under `--dirs` the reference writes the top-level directory of each filespec
-# TWICE. This port writes it once. Those rows therefore compare deduplicated
-# NAME LISTS rather than bytes; every other row is byte-identity. See
-# `filter::write_dirs`.
+# Every row is byte-identity. There is no longer a `--dirs` exception: the
+# reference used to write the top-level directory of each filespec twice, which
+# is fixed in FileInfo.hs:462 -- see `filter::write_dirs`.
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
@@ -111,21 +108,26 @@ create() {
   fi
 }
 
-# create_names <label> <options...> -- compare DEDUPLICATED name lists only.
-# For --dirs, where the reference duplicates the top-level directory.
-create_names() {
-  local label="$1"; shift
+# create_spec <label> <filespec> <options...> -- as `create`, but the filespec
+# is given instead of always being ".". That distinction is the whole of the
+# addDir pass: "." names no child of ".", so it emits nothing and every row
+# using it is blind to the pass entirely.
+create_spec() {
+  local label="$1" spec="$2"; shift 2
   checked=$((checked + 1))
   rm -f "$W/r.arc" "$W/p.arc"
-  ( cd "$W/src" && "$REF"  a --nodates -r -y -m0 "$@" "$W/r.arc" . ) >/dev/null 2>&1
-  ( cd "$W/src" && "$PORT" a --nodates -r -y -m0 "$@" "$W/p.arc" . ) >/dev/null 2>&1
-  local rn pn
-  rn="$(names "$REF" "$W/r.arc" | sort -u | tr '\n' ' ')"
-  pn="$(names "$PORT" "$W/p.arc" | sort -u | tr '\n' ' ')"
-  if [ "$rn" != "$pn" ]; then
-    echo "  DIFF [a $label]: name sets differ"
-    echo "    reference: $rn"
-    echo "    port:      $pn"
+  ( cd "$W/src" && "$REF"  a --nodates -y -m0 "$@" "$W/r.arc" "$spec" ) >/dev/null 2>&1
+  ( cd "$W/src" && "$PORT" a --nodates -y -m0 "$@" "$W/p.arc" "$spec" ) >/dev/null 2>&1
+  local r=present p=present
+  [ -f "$W/r.arc" ] || r=gone
+  [ -f "$W/p.arc" ] || p=gone
+  if [ "$r" != "$p" ]; then
+    echo "  DIFF [a $label]: reference $r, port $p"
+    fail=$((fail + 1))
+  elif [ "$r" = present ] && ! cmp -s "$W/r.arc" "$W/p.arc"; then
+    echo "  DIFF [a $label]: $(wc -c <"$W/r.arc") vs $(wc -c <"$W/p.arc") bytes"
+    echo "    reference: $(names "$REF" "$W/r.arc" | tr '\n' ' ')"
+    echo "    port:      $(names "$PORT" "$W/p.arc" | tr '\n' ' ')"
     fail=$((fail + 1))
   fi
 }
@@ -198,10 +200,31 @@ sizes "size and time"       "-sm100" "--TimeAfter=20240101000000"
 # The short spellings that lose to --type must lose the same way on both sides.
 sizes "-ta loses to --type"  "-ta20240101000000"
 
-# The reference duplicates the top-level directory under --dirs; compare names.
-create_names "--dirs"           "--dirs"
-create_names "--dirs -n*.txt"   "--dirs" "-n*.txt"
-create_names "--dirs -x*.dat"   "--dirs" "-x*.dat"
+# `--dirs` is byte-identity like everything else. It used to be name-lists only:
+# `accept_f` (FileInfo.hs:462) served both the addDir pass and the main walk, and
+# forcing it true made the addDir pass accept every SIBLING of the named
+# directory -- duplicating the entry the walk already emitted, and storing
+# directories that were never named. Fixed by giving the pass its own arm.
+create "--dirs"           "--dirs"
+create "--dirs -n*.txt"   "--dirs" "-n*.txt"
+create "--dirs -x*.dat"   "--dirs" "-x*.dat"
+create "--dirs -r"        "--dirs" "-r"
+
+# ── the addDir pass: a filespec that NAMES a directory ──────────────────────
+#
+# Every row above passes ".", where the pass emits nothing. These pass a real
+# directory name, which must produce an entry for THAT directory -- and whose
+# predicate is `include_dirs `defaultVal` True`: --dirs/--nodirs decide it and
+# the n/s/t filters do not, so `-n*.txt` keeps `sub` while dropping the
+# subdirectories the walk found under it.
+for spec in sub sub/ ./sub sub/deeper; do
+  create_spec "$spec"               "$spec"
+  create_spec "$spec --dirs"        "$spec" "--dirs"
+  create_spec "$spec --nodirs"      "$spec" "--nodirs"
+  create_spec "$spec -n*.txt"       "$spec" "-n*.txt"
+  create_spec "$spec --dirs -n*.txt" "$spec" "--dirs" "-n*.txt"
+  create_spec "$spec -r"            "$spec" "-r"
+done
 
 # ── the READ commands: filespecs AND the filter ─────────────────────────────
 rm -f "$W/base.arc"

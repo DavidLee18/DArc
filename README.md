@@ -268,7 +268,7 @@ Options that take a parameter use `-<opt><value>` or `--<option>=<value>`.
 | `--sync` |                | Synchronize archive and disk contents |
 | `-o MODE` | `--overwrite=MODE` | Overwrite mode: `+` (always), `-` (never), `p` (prompt) |
 | `-k`  | `--lock`          | Lock archive to prevent modifications |
-| `-rr SIZE` | `--recovery=SIZE` | Add recovery information of SIZE to archive |
+| `-rr SIZE` | `--recovery=SIZE` | Add recovery information of SIZE to archive (`-rr`/`-rr+` reuse the archive's own setting, or a recommended amount if it had none) |
 | `-sfx MODULE` |            | Add SFX module (`freearc.sfx` by default) |
 | `--noarcext` |              | Do not add the default `.arc` extension to archive name |
 | `-ag FMT` | `--autogenerate=FMT` | Autogenerate archive name using a time format string |
@@ -309,7 +309,7 @@ Options that take a parameter use `-<opt><value>` or `--<option>=<value>`.
 |-------------------|-------------|
 | `--proxy=PROXY`   | Set proxy server(s) for URL access |
 | `--bypass=LIST`   | Set proxy bypass list for URL access |
-| `--original=URL`  | Re-download broken archive parts from URL |
+| `--original=URL`  | Re-download broken archive parts from URL — a local path, an `http(s)://` URL fetched by byte range, `?CMD` to run `CMD <archive>` for the URL, or empty to read it from `files.bbs`/`descript.ion` |
 | `--save-bad-ranges=FILE` | Save list of broken archive parts to FILE |
 | `--cache=N`       | Use N MB for read-ahead cache |
 

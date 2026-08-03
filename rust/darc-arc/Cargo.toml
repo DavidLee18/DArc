@@ -36,3 +36,19 @@ darc-codecs = { path = "../darc-codecs" }
 # The ported crypto. -p appends an encryption method to a block's chain, so the
 # archive layer needs the cipher table and the KDF, not just the C ABI exports.
 darc-crypto = { path = "../darc-crypto" }
+# `--original http://...` -- the second copy of the archive a damaged download
+# is repaired from. The reference does this with libcurl (URL.cpp), which makes
+# it a build-time system dependency and is why `-DFREEARC_NOURL` exists at all.
+#
+# ureq instead: pure Rust, blocking, and TLS through rustls with the CA roots
+# COMPILED IN (`rustls-webpki-roots`, no `platform-verifier`, no `native-tls`).
+# That is what makes it cross-compile -- the mingw and aarch64 targets get HTTPS
+# without an OpenSSL or a system trust store on the far side. MIT OR Apache-2.0,
+# so GPLv3-compatible; see THIRD-PARTY.md.
+ureq = { version = "3.3.0", default-features = false, features = ["rustls"], optional = true }
+
+[features]
+# On by default, and switchable off the way `-DFREEARC_NOURL` switches off the
+# C's URL support: without it `--original` takes local paths only.
+default = ["url"]
+url = ["dep:ureq"]

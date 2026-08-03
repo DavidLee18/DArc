@@ -99,15 +99,16 @@ pub fn resolve(option: &str, old: &str, arcsize: u64) -> String {
 /// `rr_ok` (`Cmdline.hs:641`) — whether the `-rr` value is one the command line
 /// accepts, checked BEFORE any of it is interpreted.
 ///
-/// This rejects `"+"`, even though `writeRecoveryBlocks` has a case for it
-/// (`ArcRecover.hs:93`). The validation runs first, so that case is unreachable
-/// and `arc a -rr+` is `INVALID_OPTION_VALUE`. Reproducing the reachable half
-/// only would make `-rr+` write an archive the reference refuses to.
+/// `"+"` is accepted here because `writeRecoveryBlocks` has a case for it
+/// (`ArcRecover.hs:93`): `-rr+` means the archive's own setting, or the
+/// recommended amount if it had none — the same as a bare `-rr`. The validation
+/// runs first, so omitting `"+"` made that case unreachable and rejected a
+/// documented spelling; both this and `Cmdline.hs:641` now list it.
 ///
 /// The size suffixes all pass because `parseNumber` reports `'b'` for every one
 /// of `b k m g t ^` — only a character it does not know comes back as itself.
 pub fn option_is_valid(s: &str) -> bool {
-    if matches!(s, "" | "-" | "--") || s.contains(';') || s.contains('*') {
+    if matches!(s, "" | "+" | "-" | "--") || s.contains(';') || s.contains('*') {
         return true;
     }
     let lowered = s.to_ascii_lowercase();
@@ -450,9 +451,40 @@ pub fn partition_bad(bad: &[u64], rec_sectors: u64) -> (Vec<u64>, Vec<u64>) {
 ///
 /// A sector the parity cannot reconstruct may still be readable from an intact
 /// copy — the point of `--original` is that a damaged download can be repaired
-/// from the source without fetching the whole thing again.
-pub struct Original<'a> {
-    pub bytes: &'a [u8],
+/// from the source *without fetching the whole thing again*.
+///
+/// Hence a reader rather than a buffer. The copy is usually REMOTE, and the
+/// reference never downloads it: `url_seek` only moves a cursor and each read
+/// issues one ranged GET (`URL.cpp`, `CURLOPT_RANGE`). That is what makes
+/// `-rr0.1%` — documented as "for recovery over the internet only" — worth
+/// having: a handful of KB of recovery records plus a few ranged reads repairs
+/// an archive that would otherwise have to be re-fetched in full.
+pub trait Original {
+    /// The copy's total size, or `None` if it cannot be determined.
+    ///
+    /// Checked against the archive being repaired before any sector is taken: a
+    /// different size is a different build, whose sectors would not line up.
+    fn size(&mut self) -> Option<u64>;
+
+    /// Exactly `len` bytes at `offset`, or `None` if they cannot be read.
+    ///
+    /// `None` is not fatal — a sector that cannot be fetched simply stays in the
+    /// unrecovered list, the same as one whose CRC does not match.
+    fn read_at(&mut self, offset: u64, len: usize) -> Option<Vec<u8>>;
+}
+
+/// A copy already in memory: a local file, read once.
+pub struct Bytes(pub Vec<u8>);
+
+impl Original for Bytes {
+    fn size(&mut self) -> Option<u64> {
+        Some(self.0.len() as u64)
+    }
+
+    fn read_at(&mut self, offset: u64, len: usize) -> Option<Vec<u8>> {
+        let at = usize::try_from(offset).ok()?;
+        self.0.get(at..at.checked_add(len)?).map(<[u8]>::to_vec)
+    }
 }
 
 pub fn recover(scan: &Scan, data: &[u8]) -> Result<(Vec<u8>, Vec<u64>), Error> {
@@ -469,7 +501,11 @@ pub fn recover(scan: &Scan, data: &[u8]) -> Result<(Vec<u8>, Vec<u64>), Error> {
 pub fn recover_with(
     scan: &Scan,
     data: &[u8],
-    original: Option<Original<'_>>,
+    // `dyn Original + '_`, not a bare `dyn Original`: elision would tie the
+    // trait object's lifetime to the `&mut`'s, and because `&mut T` is
+    // invariant in `T` that makes the caller's Box borrowed for as long as it
+    // exists — which its own destructor then contradicts.
+    mut original: Option<&mut (dyn Original + '_)>,
 ) -> Result<(Vec<u8>, Vec<u64>), Error> {
     let c = &scan.control;
     let ss = c.sector_size as usize;
@@ -523,13 +559,17 @@ pub fn recover_with(
         //
         // The sector is taken only if it passes the stored CRC, so a copy that
         // is the right size and the wrong contents cannot make things worse.
-        match &original {
-            Some(o) if still_bad.contains(&(n as u64)) => {
-                let at = c.init_pos as usize + n * ss;
-                match o.bytes.get(at..at + sector.len()) {
+        match original {
+            Some(ref mut o) if still_bad.contains(&(n as u64)) => {
+                // `fileSeek original (arcPos n); fileReadBuf original temp
+                // bytes` (ArcRecover.hs:413) -- one ranged read per damaged
+                // sector, so a remote copy costs only the sectors actually
+                // needed.
+                let at = c.init_pos + (n * ss) as u64;
+                match o.read_at(at, sector.len()) {
                     Some(fresh) => match scan.stored_crcs.get(n) {
-                        Some(want) if crc::calc(fresh) == *want => {
-                            sector.copy_from_slice(fresh);
+                        Some(want) if crc::calc(&fresh) == *want => {
+                            sector.copy_from_slice(&fresh);
                             still_bad.retain(|x| *x != n as u64);
                         }
                         _ => {}
@@ -627,14 +667,15 @@ mod tests {
         assert_eq!(g.rec_sectors, 0, "nothing is left over for XOR sectors");
     }
 
-    /// `-rr+` is documented in ArcRecover and rejected by Cmdline, which runs
-    /// first. Accepting it would write archives the reference refuses to.
+    /// `-rr+` is documented in ArcRecover and now also accepted by Cmdline,
+    /// which runs first — previously it rejected the value and made
+    /// `ArcRecover.hs:93` unreachable.
     #[test]
-    fn the_option_validator_rejects_plus_and_accepts_every_size_suffix() {
+    fn the_option_validator_accepts_plus_and_every_size_suffix() {
         assert!(option_is_valid(""));
         assert!(option_is_valid("-"));
         assert!(option_is_valid("--"));
-        assert!(!option_is_valid("+"), "rr_ok rejects + before ArcRecover sees it");
+        assert!(option_is_valid("+"), "rr_ok lets + through to ArcRecover");
         for s in ["4", "100b", "1k", "2m", "1g", "1t", "10^", "1%", "5p"] {
             assert!(option_is_valid(s), "{s} should be a valid -rr value");
         }

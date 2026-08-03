@@ -221,24 +221,18 @@ pub fn include_dirs(
 /// Same shape as [`include_dirs`], on purpose: a directory's fate is settled by
 /// `--dirs`/`--nodirs` and by whether a selection filter exists, never by its
 /// name, and that holds whichever direction the command runs in.
-/// # A deliberate divergence: `--dirs` duplicates a directory in the reference
 ///
-/// `arc a --dirs x.arc .` over a tree containing `a/b/c` writes the entry `a`
-/// **twice** — measured, on both `-r` and no `-r`. Only the top-level directory
-/// of each filespec is affected; `a/b` and `a/b/c` appear once. It happens
-/// because forcing `include_dirs` true makes `accept_f` accept the directory
-/// both as a filespec match and again from the walk, and the default expression
-/// it replaces happens to reject one of them.
+/// This governs the entries the WALK produces. The directory a filespec names
+/// outright comes from the `addDir` pass, whose test is `include_dirs
+/// `defaultVal` True` — only the option, never the n/s/t filters — and which
+/// `darc.rs` applies separately.
 ///
-/// This port writes the entry once. The archives are otherwise identical and
-/// the two list the same set of names, so nothing downstream can tell them
-/// apart except by byte count — a duplicate directory entry carries no data and
-/// `removeDuplicates` collapses it on the next update anyway.
-///
-/// The alternative was to reproduce it and keep byte-identity under `--dirs`.
-/// It is one line here if that is ever wanted; the harness compares
-/// deduplicated name lists for `--dirs` instead of bytes, and byte-identity
-/// still holds for every other filter combination including `--nodirs`.
+/// `--dirs` used to duplicate the top-level directory of each filespec in the
+/// reference: `accept_f` serves both passes, and forcing it true made the
+/// addDir pass accept every SIBLING of the named directory, so the entry the
+/// walk already emitted appeared twice — and directories the user never named
+/// appeared at all. Fixed in `FileInfo.hs:462` by giving the addDir pass its
+/// own arm, so the two builds are byte-identical under `--dirs` again.
 pub fn write_dirs(dirs_option: Option<bool>, filter: &FileFilter) -> bool {
     match dirs_option {
         Some(x) => x,

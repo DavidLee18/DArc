@@ -55,6 +55,10 @@ pub mod decompress;
 pub mod directory;
 pub mod encryption;
 pub mod extract;
+/// `--original` over HTTP. Off with `--no-default-features`, the way
+/// `-DFREEARC_NOURL` turns off the C's URL support.
+#[cfg(feature = "url")]
+pub mod fetch;
 pub mod filter;
 pub mod filetype;
 pub mod fourx4;

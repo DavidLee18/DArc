@@ -638,12 +638,16 @@ parseCmdline cmdline  =  (`mapMaybeM` split ";" cmdline) $ \args -> do
                 else aDEFAULT_SOLID_SORT_ORDER  -- Otherwise - use the standard sort order for solid archives
 
   -- Check that the "-rr" option takes one of the allowed values
-  let rr_ok = recovery `elem` ["","-","--"]
+  -- "+" belongs here because ArcRecover.hs has a case for it: -rr+ means
+  -- "keep the archive's own setting, or the recommended amount if it had
+  -- none", exactly like a bare -rr. Without it that case was unreachable and
+  -- the documented spelling was rejected.
+  let rr_ok = recovery `elem` ["","+","-","--"]
               || snd (parseNumber recovery 'b') `elem` ['b','%','p']
               || ';' `elem` recovery
               || '*' `elem` recovery
   unless rr_ok $ do
-    registerError$ INVALID_OPTION_VALUE "recovery" "rr" ["MEM", "N", "N%", "MEM;SS", "N%;SS", "N*SS", "-", ""]
+    registerError$ INVALID_OPTION_VALUE "recovery" "rr" ["MEM", "N", "N%", "MEM;SS", "N%;SS", "N*SS", "+", "-", ""]
 
   -- State of the overwrite prompt shown to the user
   ref_overwrite  <-  newIORef$ case (yes,   overwrite) of

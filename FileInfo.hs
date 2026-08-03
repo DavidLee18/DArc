@@ -459,7 +459,20 @@ find_filter_and_process_files filespecs ff@FileFind{ ff_ep=ep, ff_scan_subdirs=s
             -- Predicate determining which files and directories will be included in the list being built:
             --   for directories this depends on the --[no]dirs options, by default - provided "[dir/]* -r" || "dir/" and no file selection filters -n/-s../-t..
             --   for files, we check that they satisfy the `filter_f` predicate and one of the wildcards
-            accept_f fi | fiIsDir fi  =  include_dirs `defaultVal` (addDir && baseName fi `elem` masks  ||  no_nst_filters && recursive && include_all)
+            --
+            -- The two passes answer that question differently. The addDir pass
+            -- exists only to emit the entry for a directory named literally on
+            -- the command line, so its answer is that name test -- and --dirs
+            -- must not widen it. Letting --dirs force this pass true as well
+            -- made it accept every SIBLING of the named directory, which both
+            -- duplicated the top-level entry (the main pass emits it too, so
+            -- "arc a --dirs arch ." wrote "a" twice) and stored bare entries
+            -- for directories the user never named, leaking the surrounding
+            -- filesystem layout. Same failure the `recursive` guard above
+            -- fixes, reached through the option instead of through -r.
+            -- --nodirs still suppresses the pass entirely.
+            accept_f fi | fiIsDir fi && addDir  =  include_dirs `defaultVal` True  &&  baseName fi `elem` masks
+                        | fiIsDir fi  =  include_dirs `defaultVal` (no_nst_filters && recursive && include_all)
                         | otherwise   =  filter_f fi && (include_all || match_filespecs fpBasename masks (fiFilteredName fi))
             -- Sets the fiGroup group numbers in [FileInfo] using the function passed in group_f
             map_group_f = case group_f of

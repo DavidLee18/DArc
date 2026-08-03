@@ -699,6 +699,20 @@ fn add(
     // exactly 3 bytes longer than one built without the prefix, which is
     // ".\0" plus "./" on the one subdirectory name.
     let mut found: Vec<(String, std::path::PathBuf, bool)> = Vec::new();
+    // The `addDir` pass (`FileInfo.hs:403`): a filespec that literally names a
+    // directory also gets an entry for THAT DIRECTORY, separately from the walk
+    // of its contents. `arc a x.arc work/data` stores `work/data` itself, and
+    // dropping it here cost an entry on every filespec that was not `.` --
+    // invisible to the harnesses, which all pass `.`, where the pass emits
+    // nothing because no child of `.` is named `.`.
+    //
+    // Kept apart from `found` because it answers a DIFFERENT question. Its
+    // predicate is `include_dirs `defaultVal` True` (FileInfo.hs:462): only
+    // --dirs/--nodirs decide it, never the n/s/t filters -- measured, `arc a
+    // -n*.txt x.arc work/data` keeps `work/data` and drops `work/data/sub`.
+    // These entries also come FIRST, because the reference runs every filespec's
+    // addDir pass before any main walk.
+    let mut named_dirs: Vec<(String, std::path::PathBuf, bool)> = Vec::new();
     // `j`'s filespecs are ARCHIVE NAMES, not files to add: runJoin passes them
     // as `cmd_added_arcnames` and gives runArchiveAdd no disk filespecs at all
     // (Arc.hs:200). Scanning them as a tree makes the port try to walk an
@@ -717,6 +731,13 @@ fn add(
         let names_a_dir = spec.ends_with('/')
             || std::path::Path::new(spec).is_dir();
         if names_a_dir {
+            // `baseName fi `elem` masks`, where the masks are this filespec's
+            // last component and the pass scans its parent. That match can only
+            // succeed when the filespec HAS a last component, so `.`, `..` and
+            // `/` contribute nothing -- exactly what `file_name()` reports.
+            if std::path::Path::new(root).file_name().is_some() {
+                named_dirs.push((root.to_string(), std::path::PathBuf::from(root), true));
+            }
             match scan(std::path::Path::new(spec), root, recursive || names_a_dir, &mut found) {
                 Ok(()) => {}
                 Err(e) => {
@@ -804,6 +825,12 @@ fn add(
             Err(_) => true,
         },
     });
+
+    // ...and only now the addDir entries, ahead of the walk and past the retain:
+    // `include_dirs `defaultVal` True` is the whole of their test.
+    if dirs_option.unwrap_or(true) {
+        found.splice(0..0, named_dirs);
+    }
 
     for (stored, disk, is_dir) in &found {
         let meta = match std::fs::symlink_metadata(disk) {
@@ -2335,6 +2362,23 @@ fn now_seconds() -> i64 {
 /// `fixed.<name>` in the same directory, leaving the damaged file alone. The
 /// damaged archive is the only copy of anything unrecoverable, so overwriting
 /// it in place would be the one mistake with no way back.
+/// A remote `--original`, when this build has URL support.
+///
+/// Split out so the two builds differ in one function rather than throughout
+/// `recover`. Without the `url` feature the copy is simply unopenable, which is
+/// the same warning any unreadable copy produces — the reference behaves
+/// identically when built `-DFREEARC_NOURL`.
+#[cfg(feature = "url")]
+fn remote_original(url: &str) -> Option<Box<dyn darc_arc::recovery::Original>> {
+    Some(Box::new(darc_arc::fetch::Url::new(url)))
+}
+
+#[cfg(not(feature = "url"))]
+fn remote_original(url: &str) -> Option<Box<dyn darc_arc::recovery::Original>> {
+    eprintln!("WARNING: can't open original at {url}: built without URL support");
+    None
+}
+
 /// `originalURL` (`ArcRecover.hs:439`) — where a second copy of the archive can
 /// be found, for `--original`.
 ///
@@ -2503,52 +2547,52 @@ fn recover(path: &std::path::Path, archive_name: &str, original: &str) -> i32 {
             return 2;
         }
     };
-    let original_bytes: Option<Vec<u8>> = match original_name.is_empty() {
-        true => None,
-        false => {
-            if original_name.contains("://") {
-                // The reference fetches this with libcurl. An HTTP client here
-                // is a new dependency and a licence question (THIRD-PARTY.md),
-                // so it is not attempted.
-                //
-                // A WARNING, not an error: a URL that cannot be fetched is
-                // `once originalErr $ registerWarning "can't open original at
-                // %1"` and the repair carries on with whatever the parity can
-                // do. Refusing outright turned a repairable-with-warning case
-                // into a hard failure -- the reference still wrote a `fixed.`
-                // archive where this port exited 2.
+    // A local path is read once; a URL is left as a ranged reader, because the
+    // reference never downloads the copy -- `url_seek` moves a cursor and each
+    // read is one `CURLOPT_RANGE` GET (URL.cpp:327). Slurping it here would work
+    // and would make `-rr0.1%` ("for recovery over the internet only")
+    // pointless.
+    //
+    // Failure at either is a WARNING, not an error: `once originalErr $
+    // registerWarning "can't open original at %1"`, and the repair carries on
+    // with whatever the parity can do. Refusing outright turned a
+    // repairable-with-warning case into a hard failure -- the reference still
+    // wrote a `fixed.` archive where this port exited 2.
+    let mut original: Option<Box<dyn darc_arc::recovery::Original>> =
+        match original_name.is_empty() {
+            true => None,
+            false => match original_name.contains("://") {
+                true => remote_original(&original_name),
+                false => match std::fs::read(&original_name) {
+                    Ok(b) => Some(Box::new(darc_arc::recovery::Bytes(b))),
+                    Err(e) => {
+                        eprintln!("WARNING: can't open original at {original_name}: {e}");
+                        None
+                    }
+                },
+            },
+        };
+    // "…has size %2 so it can't be used to recover %3 having size %4": a
+    // different size is a different build of the archive, whose sectors would
+    // not line up. Asked ONCE, before any sector is fetched -- for a URL this is
+    // the HEAD, and it is what stops a wrong copy from costing a request per
+    // damaged sector.
+    original = match original {
+        Some(mut o) => match o.size() {
+            Some(n) if n != data.len() as u64 => {
                 eprintln!(
-                    "WARNING: can't open original at {original_name}: this port \
-                     reads a local copy only; fetch it first and pass its path"
+                    "WARNING: {original_name} has size {} so it can't be used to recover \
+                     {archive_name} having size {}",
+                    show3(n),
+                    show3(data.len() as u64)
                 );
                 None
-            } else {
-            match std::fs::read(&original_name) {
-                Ok(b) => Some(b),
-                // `once originalErr $ registerWarning` -- a copy that cannot be
-                // opened is a warning, and the repair goes on without it.
-                Err(e) => {
-                    eprintln!("WARNING: can't open original at {original_name}: {e}");
-                    None
-                }
             }
-            }
-        }
-    };
-    let original_bytes = match original_bytes {
-        // "…has size %2 so it can't be used to recover %3 having size %4":
-        // a different size is a different build of the archive, whose sectors
-        // would not line up.
-        Some(b) if b.len() != data.len() => {
-            eprintln!(
-                "WARNING: {original_name} has size {} so it can't be used to recover \
-                 {archive_name} having size {}",
-                show3(b.len() as u64),
-                show3(data.len() as u64)
-            );
-            None
-        }
-        other => other,
+            // A server that will not give a length is not a reason to refuse:
+            // every sector taken is CRC-checked anyway.
+            _ => Some(o),
+        },
+        None => None,
     };
 
     let (recoverable, lost) =
@@ -2582,10 +2626,14 @@ fn recover(path: &std::path::Path, archive_name: &str, original: &str) -> i32 {
     }
     println!("found");
 
-    let original_ref = original_bytes
-        .as_ref()
-        .map(|b| darc_arc::recovery::Original { bytes: b });
-    let (out, still_bad) = match darc_arc::recovery::recover_with(&scan, &data, original_ref) {
+    // Scoped, then dropped: a remote copy holds a connection and nothing below
+    // reads it.
+    let recovered = {
+        let original_ref = original.as_deref_mut();
+        darc_arc::recovery::recover_with(&scan, &data, original_ref)
+    };
+    drop(original);
+    let (out, still_bad) = match recovered {
         Ok(r) => r,
         Err(e) => {
             eprintln!("ERROR: {e}");
