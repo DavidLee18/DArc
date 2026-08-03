@@ -18,7 +18,7 @@ working tree so the oracle survives the C being deleted and cannot drift.
 
 ```bash
 rust/difftest/lzma-decode-check.sh     # exit 0 or the port diverged
-cd rust && cargo nextest run --profile ci   # 557 unit tests
+cd rust && cargo nextest run --profile ci   # 648 unit tests
 ```
 
 Two properties every harness here is expected to have, learned the hard way:

@@ -64,8 +64,8 @@ options (a selection):
   -s<size>      solid block size; -s- for non-solid
   -p<password>  encrypt; -op<password> to decrypt with an old one
   -rr[<size>]   add recovery records; -rr+ to also protect the directory
-  -sfx[<name>]  make a self-extracting archive
-  -o+ / -o-     overwrite always / never
+  -sfx<name>    make a self-extracting archive with that module
+  -o+ -o- -o    on extract: overwrite always / never / ask (the default)
   -ep<n>        how much of the path to store
   --dirs        store directory entries explicitly
   --noarcext    do not append .arc to the archive name
@@ -158,7 +158,7 @@ fn main() {
         "OldPassword", "password", "recompress", "recursive", "solid", "sync",
         "update", "include", "exclude", "dirs", "nodirs",
         "SizeMore", "SizeLess", "TimeBefore", "TimeAfter", "TimeNewer", "TimeOlder",
-        "recovery", "volume", "sfx", "noarcext", "charset", "original",
+        "recovery", "volume", "sfx", "noarcext", "charset", "original", "overwrite",
         // Accepted and deliberately ignored: UI only.
         "yes", "indicator", "display",
     ];
@@ -351,7 +351,21 @@ fn main() {
                 }
             };
             let extracting = command != "t";
-            run_blocks(&info, &data, &layout, extracting, &pw, &selected)
+            // Testing writes nothing, so it has nothing to overwrite.
+            let skip = match extracting {
+                true => {
+                    let mode = match overwrite_mode(&parsed) {
+                        Ok(m) => m,
+                        Err(e) => {
+                            eprintln!("ERROR: {e}");
+                            std::process::exit(2);
+                        }
+                    };
+                    resolve_overwrites(&layout, &selected, mode, parsed.flag("yes"))
+                }
+                false => std::collections::HashSet::new(),
+            };
+            run_blocks(&info, &data, &layout, extracting, &pw, &selected, &skip)
         }
         // One function: every one of these is `runArchiveAdd` with a different
         // archive filter and a different source of files (Arc.hs:122-131).
@@ -2141,6 +2155,102 @@ fn list(command: &str, info: &archive::ArchiveInfo, entries: &[Entry]) -> i32 {
 ///
 /// Testing and extracting differ only in what happens after the CRC check, so
 /// they share the loop rather than duplicating the block handling.
+/// What `-o` says to do when the file is already on disk.
+///
+/// `testOption "overwrite" "o" … (words "+ - p")` (`Cmdline.hs:160`): the three
+/// legal values, defaulting to `p`. `-op<something>` is NOT one of them — it is
+/// an old password, peeled off before this is read (`is_op_option`,
+/// `Cmdline.hs:156`), which is why `-o` values of length > 1 beginning with `p`
+/// never reach here.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Overwrite {
+    Always,
+    Never,
+    Ask,
+}
+
+/// `last ("p" : o_rest)` (`Cmdline.hs:157`) — the LAST `-o` wins, and the
+/// default is to ask.
+fn overwrite_mode(parsed: &options::Parsed) -> Result<Overwrite, String> {
+    let mut mode = Overwrite::Ask;
+    for v in parsed.all("overwrite") {
+        // The old-password spelling, already consumed by cook_passwords.
+        if v.len() > 1 && v.starts_with('p') {
+            continue;
+        }
+        mode = match v {
+            "+" => Overwrite::Always,
+            "-" => Overwrite::Never,
+            "p" | "" => Overwrite::Ask,
+            other => return Err(format!("-o{other}: expected one of +, -, p")),
+        };
+    }
+    Ok(mode)
+}
+
+/// Decide, for every file that already exists, whether it may be overwritten.
+///
+/// Serial and BEFORE the parallel loop on purpose: `Ask` reads from stdin, and
+/// prompting from inside `par_iter` would interleave questions from several
+/// threads and answer them against the wrong file.
+///
+/// Returns the set of stored names to skip.
+fn resolve_overwrites(
+    layout: &Layout,
+    entries: &[Entry],
+    mode: Overwrite,
+    assume_yes: bool,
+) -> std::collections::HashSet<String> {
+    use std::io::BufRead;
+    let mut skip = std::collections::HashSet::new();
+    if mode == Overwrite::Always || assume_yes {
+        return skip;
+    }
+    let mut all = false;
+    let mut none = false;
+    for e in entries.iter().filter(|e| !e.is_dir) {
+        if !std::path::Path::new(&layout.disk_name(e)).exists() {
+            continue;
+        }
+        let overwrite = match mode {
+            Overwrite::Always => true,
+            Overwrite::Never => false,
+            Overwrite::Ask => match (all, none) {
+                (true, _) => true,
+                (_, true) => false,
+                _ => {
+                    print!("{} already exists. Overwrite? [y]es/[n]o/[A]ll/[N]one: ", layout.disk_name(e));
+                    match std::io::Write::flush(&mut std::io::stdout()) {
+                        Ok(()) => {}
+                        Err(_) => {}
+                    }
+                    let mut line = String::new();
+                    // EOF (no terminal, or stdin closed) is NOT consent: an
+                    // unanswered question must not clobber the user's file.
+                    match std::io::stdin().lock().read_line(&mut line) {
+                        Ok(0) | Err(_) => false,
+                        Ok(_) => match line.trim() {
+                            "A" => {
+                                all = true;
+                                true
+                            }
+                            "N" => {
+                                none = true;
+                                false
+                            }
+                            a => a.eq_ignore_ascii_case("y"),
+                        },
+                    }
+                }
+            },
+        };
+        if !overwrite {
+            skip.insert(e.stored_name.clone());
+        }
+    }
+    skip
+}
+
 fn run_blocks(
     info: &archive::ArchiveInfo,
     data: &[u8],
@@ -2148,6 +2258,7 @@ fn run_blocks(
     extracting: bool,
     pw: &darc_arc::passwords::Passwords,
     entries: &[Entry],
+    skip: &std::collections::HashSet<String>,
 ) -> i32 {
     // The safety check runs on the archive's contribution alone: the
     // destination is the user's own and may be absolute.
@@ -2246,6 +2357,11 @@ fn run_blocks(
                 }
                 if !darc_arc::extract::is_safe(&relative.disk_name(e)) {
                     bad.push(format!("refusing unsafe path {:?}", e.stored_name));
+                    continue;
+                }
+                // `-o-`, or an existing file the user declined to overwrite.
+                // Decided serially before this loop; see resolve_overwrites.
+                if skip.contains(&e.stored_name) {
                     continue;
                 }
                 let name = layout.disk_name(e);
@@ -2938,4 +3054,46 @@ fn show_memory(bytes: u64) -> String {
         }
     }
     format!("{bytes} bytes")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn mode_of(args: &[&str]) -> Result<Overwrite, String> {
+        let owned: Vec<String> = args.iter().map(|s| (*s).to_string()).collect();
+        overwrite_mode(&options::parse(&owned).expect("parses"))
+    }
+
+    /// `last ("p" : o_rest)` (`Cmdline.hs:157`). The default is to ask, and a
+    /// later `-o` overrides an earlier one rather than combining with it.
+    #[test]
+    fn the_last_overwrite_option_wins_and_the_default_is_ask() {
+        assert!(matches!(mode_of(&[]), Ok(Overwrite::Ask)));
+        assert!(matches!(mode_of(&["-o+"]), Ok(Overwrite::Always)));
+        assert!(matches!(mode_of(&["-o-"]), Ok(Overwrite::Never)));
+        assert!(matches!(mode_of(&["-o-", "-o+"]), Ok(Overwrite::Always)));
+        assert!(matches!(mode_of(&["-o+", "-o-"]), Ok(Overwrite::Never)));
+    }
+
+    /// `-op<something>` is an old PASSWORD, not an overwrite mode
+    /// (`is_op_option`, `Cmdline.hs:156`). It must not be read as one, and it
+    /// must not disturb a real `-o` given alongside it.
+    #[test]
+    fn op_is_a_password_and_not_an_overwrite_mode() {
+        assert!(matches!(mode_of(&["-opsecret"]), Ok(Overwrite::Ask)));
+        assert!(matches!(mode_of(&["-o+", "-opsecret"]), Ok(Overwrite::Always)));
+        assert!(matches!(mode_of(&["-opsecret", "-o-"]), Ok(Overwrite::Never)));
+        // A BARE -op is the mode `p`, not a password: is_op_option needs at
+        // least one character after the p.
+        assert!(matches!(mode_of(&["-op"]), Ok(Overwrite::Ask)));
+    }
+
+    /// Anything outside `+ - p` is refused rather than silently treated as the
+    /// default -- `testOption "overwrite" "o" … (words "+ - p")`.
+    #[test]
+    fn an_unknown_overwrite_value_is_refused() {
+        assert!(mode_of(&["-oz"]).is_err());
+        assert!(mode_of(&["-o1"]).is_err());
+    }
 }
