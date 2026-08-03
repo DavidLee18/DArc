@@ -547,6 +547,32 @@ impl MersenneTwister {
         }
     }
 
+    /// `randbytes(n)` — `getrandbits(8n).to_bytes(n, "little")`.
+    ///
+    /// `getrandbits` for more than 32 bits draws `ceil(k/32)` words, shifting
+    /// only the LAST one right by `32-k_remaining`, and assembles them
+    /// little-endian. Since `k` is a multiple of 8 here, that is exactly "one
+    /// u32 little-endian per four bytes, with a partial final word".
+    fn randbytes(&mut self, n: usize) -> Vec<u8> {
+        if n == 0 {
+            return Vec::new();
+        }
+        let k = 8 * n;
+        let words = (k - 1) / 32 + 1;
+        let mut out = Vec::with_capacity(words * 4);
+        let mut rem = k;
+        for _ in 0..words {
+            let mut r = self.genrand_u32();
+            if rem < 32 {
+                r >>= 32 - rem;
+            }
+            out.extend_from_slice(&r.to_le_bytes());
+            rem = rem.saturating_sub(32);
+        }
+        out.truncate(n);
+        out
+    }
+
     /// `choices(population, weights, k)` — cumulative weights and a bisect on
     /// `random() * total`, with `hi = len-1` as CPython passes it.
     fn choices(&mut self, cum_weights: &[f64], k: usize) -> Vec<usize> {
@@ -1882,6 +1908,141 @@ fn bcj(dir: &std::path::Path) {
     }
 }
 
+/// `make_inputs.py`, the Delta corpus `run.sh` builds.
+///
+/// These exist because of a measurement, not a guess. A corpus of random data,
+/// a real binary and a few degenerate sizes matched 8/8 between C and Rust and
+/// looked thorough — but with the Rust carry handling broken on purpose, only 1
+/// of the 8 noticed, because the compressor finds almost no tables in random
+/// data and `undiff_table` barely runs. Everything here is shaped so the
+/// transforms actually execute.
+fn delta_inputs(dir: &std::path::Path) {
+    // `(v & mask).to_bytes(w, "little")`
+    // `(v & mask).to_bytes(w, "little")` -- note that Python ZERO-PADS to `w`
+    // bytes, so widths above 8 are not a truncation but an extension. Getting
+    // that wrong only shows on the width-12 and width-16 tables.
+    let le = |v: u64, w: usize| -> Vec<u8> {
+        let mask = match w >= 8 {
+            true => u64::MAX,
+            false => (1u64 << (8 * w)) - 1,
+        };
+        let mut b = (v & mask).to_le_bytes().to_vec();
+        b.resize(w, 0);
+        b
+    };
+    // Counters of several element widths: the carry path at several shapes.
+    for (n_bytes, rows) in [(2usize, 20000u64), (3, 15000), (4, 20000), (8, 10000), (16, 6000)] {
+        let mut out = Vec::new();
+        for i in 0..rows {
+            let v = i * 7 + 1000;
+            out.extend(le(v, n_bytes));
+        }
+        write(dir, &format!("counter{n_bytes}.bin"), &out);
+    }
+    // Monotonic and constant columns together: the diff path, the column
+    // reordering, and unreorder_table's early return when every column is one
+    // kind.
+    let mut out = Vec::new();
+    for i in 0..20000u32 {
+        out.extend_from_slice(&(i * 3).to_le_bytes());
+        out.extend_from_slice(&0xDEADBEEFu32.to_le_bytes());
+        out.extend_from_slice(&i.wrapping_mul(65537).to_le_bytes());
+        out.extend_from_slice(&0x11223344u32.to_le_bytes());
+    }
+    write(dir, "mixed-cols.bin", &out);
+    // A column that increments past 2^24, so carries propagate the full width.
+    let mut out = Vec::new();
+    for i in 0..20000u64 {
+        out.extend_from_slice(&(0x0100000000u64 + i * 13).to_le_bytes());
+        out.extend_from_slice(&(i * 257).to_le_bytes());
+    }
+    write(dir, "wide-carry.bin", &out);
+    // A table buried in noise, so boundary detection has to find its extent
+    // rather than being handed a block that is entirely table.
+    let mut rng = MersenneTwister::new(1234);
+    let mut out = rng.randbytes(30000);
+    for i in 0..10000u32 {
+        out.extend_from_slice(&(i * 5).to_le_bytes());
+        out.extend_from_slice(&(i * 9 + 3).to_le_bytes());
+        out.extend_from_slice(&0xCAFEBABEu32.to_le_bytes());
+        out.extend_from_slice(&i.to_le_bytes());
+    }
+    out.extend(rng.randbytes(30000));
+    write(dir, "embedded.bin", &out);
+
+    // Columns that climb then fall: forces the direction-change branch, the
+    // only place `omit`, `lastpoint` and the bad-run counter are used. Without
+    // it every detected table was perfectly monotonic and four deliberate
+    // errors went unnoticed across 14 byte-identical inputs.
+    let mut out = Vec::new();
+    for i in 0..30000u64 {
+        let v = match (i / 40) % 2 {
+            0 => i * 11,
+            _ => 500000u64.wrapping_sub(i * 11),
+        };
+        out.extend(le(v, 4));
+        out.extend(le(i * 3, 4));
+    }
+    write(dir, "zigzag.bin", &out);
+    // Counters that wrap, producing a sign flip in the int16 view every 2^16.
+    let mut out = Vec::new();
+    for i in 0..40000u64 {
+        out.extend(le(i * 2731, 4));
+        out.extend(le(i * 65533, 4));
+    }
+    write(dir, "wrapping.bin", &out);
+    // Many small tables of differing widths separated by noise of differing
+    // lengths, so the skip field -- and skipBits in the acceptance test --
+    // takes a wide range of values.
+    let mut rng = MersenneTwister::new(99);
+    let mut out = Vec::new();
+    for (t, width) in [2usize, 3, 4, 5, 6, 8, 12, 16].iter().enumerate() {
+        for rep in 0..6usize {
+            out.extend(rng.randbytes(17 + t * 29 + rep * 7));
+            let rows = 40 + rep * 25;
+            for i in 0..rows {
+                out.extend(le((i * (t + 2) + rep) as u64, *width));
+            }
+        }
+    }
+    write(dir, "many-tables.bin", &out);
+    // Tables sized either side of the acceptance test.
+    let mut out = Vec::new();
+    let mut rows = 8usize;
+    while rows < 90 {
+        out.extend(rng.randbytes(23));
+        for i in 0..rows {
+            out.extend(le((i * 5 + 7) as u64, 4));
+        }
+        rows += 3;
+    }
+    write(dir, "threshold-edge.bin", &out);
+    // Runs that are monotonic but only briefly, so the len>=4 test and the
+    // consecutive-short-run counter both matter.
+    let mut out = Vec::new();
+    for i in 0..30000u64 {
+        let seg = i / 3;
+        out.extend(le(seg * 17 + (i % 3) * 4099, 4));
+    }
+    write(dir, "short-runs.bin", &out);
+    // A FINE sweep across the acceptance test. threshold-edge.bin steps rows by
+    // 3 and never landed a candidate close enough for a 30 -> 29 change in
+    // `useful*sqrt(N) > 30 + 4*skipBits` to alter a decision -- that sabotage
+    // went undetected by all 13 inputs. This steps one row at a time.
+    for width in [2usize, 3, 4, 6, 8] {
+        let mut out = Vec::new();
+        for gap in [5usize, 40, 300, 2000] {
+            for rows in 6..70usize {
+                out.extend(rng.randbytes(gap));
+                for i in 0..rows {
+                    out.extend(le((i * 3 + 11) as u64, width));
+                }
+            }
+        }
+        write(dir, &format!("threshold-sweep{width}.bin"), &out);
+    }
+}
+
 /// `crypto-check.sh` -- sizes either side of the 256 KB pipeline buffer, each
 /// seeded by its own length so no two files share a prefix.
 fn crypto(dir: &std::path::Path) {
@@ -1997,6 +2158,7 @@ fn main() {
         "dispack" => dispack(&dir, &aux),
         "dispack-filter" => dispack_filter(&dir, &aux),
         "bcj" => bcj(&dir),
+        "delta-inputs" => delta_inputs(&dir),
         other => {
             eprintln!("corpusgen: unknown corpus {other:?}");
             std::process::exit(2);

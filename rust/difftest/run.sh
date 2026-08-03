@@ -71,7 +71,12 @@ make_inputs () {
   : > "$WORK/in/empty.bin"
   printf 'x'                             > "$WORK/in/one-byte.bin"
   head -c 7 /dev/urandom                 > "$WORK/in/tiny.bin"
-  python3 "$HERE/make_inputs.py" "$WORK/in"
+  # The table-shaped half of the corpus. These exist because of a measurement:
+  # random data and a real binary matched 8/8 while a deliberately broken carry
+  # was noticed by only 1 of them, because the compressor finds almost no
+  # tables in either. See corpusgen.rs.
+  ( cd "$ROOT/rust" && cargo build --release -q -p darc-codecs --bin corpusgen ) || return 1
+  "$ROOT/rust/target/release/corpusgen" delta-inputs "$WORK/in"
 }
 
 selftest () {
@@ -181,20 +186,16 @@ diff_impls () {
 #     "nothing was broken", not "the test is blind". Hence apply_mutation
 #     below refuses to continue if its pattern is absent.
 #
-# With inputs built for the heuristics (make_inputs.py) the corpus produces
+# With inputs built for the heuristics (corpusgen delta-inputs) the corpus produces
 # ~280 tables and every mutation is caught by at least one input.
 MUT_SRC="$ROOT/rust/darc-codecs/src/delta.rs"
 
 apply_mutation () {
-  python3 - "$MUT_SRC" "$1" "$2" <<'PYEOF'
-import sys
-path, old, new = sys.argv[1], sys.argv[2], sys.argv[3]
-s = open(path).read()
-if old not in s:
-    sys.stderr.write("mutation pattern not found: %r\n" % old)
-    sys.exit(1)
-open(path, "w").write(s.replace(old, new, 1))
-PYEOF
+  # The same editor crypto-sabotage.sh and tornado-encoder-sabotage.sh use. It
+  # is STRICTER than the python this replaced: that one patched the FIRST
+  # match and only complained when there were none, so a pattern occurring
+  # twice sabotaged one site and silently left the other.
+  sh "$HERE/patch-once.sh" "$MUT_SRC" "$1" "$2"
 }
 
 sabotage () {
