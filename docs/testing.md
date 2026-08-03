@@ -43,44 +43,63 @@ lines, progress redraws, the sandbox path); everything else, including the file
 count and the ratio, is compared verbatim. It ends with a self-test that proves
 the comparison can fail.
 
-`./compile-ghc-probe` builds today's tree with GHC and `-threaded` into
-`Tests/arc-ghc`. It is a probe, not a build path: the GHC build was deleted at
-`af8dd3c`. It exists because the MicroHs build cannot answer whether real
-Haskell parallelism is archive-visible — `compat-ghc/GHC/Conc.hs` makes
-`setNumCapabilities` a no-op and MicroHs has no `-threaded`, so every
-determinism measurement taken on `Tests/arc` was taken on a serial build.
+## The archiver's oracle is gone; read this before touching archive bytes
 
-Measured 2026-08-01, GHC 9.10.3:
+Every `arc-*-check.sh` compares the port against a Haskell build. That build was
+deleted with the rest of the Haskell layer, so those harnesses no longer run out
+of the box: each takes a reference binary as `$1` and exits 2 without one.
 
-- **Archives are byte-identical** between the two builds in all 15
-  archive-producing cases, as are the extracted trees and the listings.
-- The threaded binary is identical to itself across `+RTS -N1/-N2/-N8` ×
-  `-mt1/-mt8` — six real-parallelism settings, one archive. Consistent with
-  `ArcvProcessRead.hs:104`: `splitToSolidBlocks` is a *pure* function
-  (`ArhiveFileList.hs:291`), so block boundaries are decided before any
-  concurrency and nothing downstream can move them.
+`9a127e6` is the last commit that can produce one:
 
-The 12 differences it *did* find are all MicroHs-only regressions in the
-application layer, and each is a constraint on the port:
+```bash
+git worktree add /tmp/darc-ref 9a127e6
+(cd /tmp/darc-ref && ./compile-ghc-probe)          # -> Tests/arc-ghc
+bash rust/difftest/arc-filter-check.sh /tmp/darc-ref/Tests/arc-ghc
+```
 
-| what | why |
-|---|---|
-| `Compressed 8 files` where GHC says `226` | `ArcvProcessCompress.hs:106` — under `__MHS__` a data block is one `darc_compress_solid_block_w` call. It never emits `FileStart`, so `uiStartFile` never runs and only directory entries reach the counter. The **whole Haskell compression pipeline is bypassed**; the GHC branch runs `compressa`, a real multi-stage `de_compress_PROCESS` chain. |
-| `uncaught exception: …` / exit 1, vs `ERROR: …` / exit 2 | `Arc.hs:75` guards `setUncaughtExceptionHandler handler` behind `#ifdef __GLASGOW_HASKELL__`, and the `compat-ghc` shim is `\_ -> return ()`. MicroHs prints its runtime's own message — leaking a `System/IO/Internal.hs` path — and exits 1 where the contract is 2. |
-| one global callback slot | `CompressionLib.hs:333` — MicroHs has no `wrapper` FFI, so every `mkCALL_BACK` writes the same `IORef` instead of minting a `FunPtr`. Harmless while single-threaded; a port that restores concurrent codec invocation must not reproduce it. |
+Note that `compile-ghc-probe` writes objects into the shared `/tmp/out/`, so run
+`rm -rf /tmp/out` afterwards before building the current tree.
 
-So `Tests/arc` is a sound *format* reference and a poor *behaviour* reference.
-Gate archive bytes against it; gate the summary line and the error paths
-against `Tests/arc-ghc`.
+### What runs without a reference: `arc-golden-check.sh`
+
+43 cases, one SHA-256 each, recorded from `Tests/arc-ghc` at `d6ebeb6` while all
+19 harnesses were green. It is the only archive-format gate CI runs, and the
+only one that will still be meaningful in a year.
+
+Two rules:
+
+- **Never re-record it from the port.** That swaps the thing being checked for
+  the thing doing the checking. Build a reference from `9a127e6` and record
+  from that; the manifest header says so too.
+- **New cases must be machine-independent**, which the differential harnesses
+  never had to be — they ran two binaries on one host, so anything host-varying
+  cancelled. That means `--nodates`, explicitly parameterised chains rather than
+  presets, `-rr` in absolute bytes, and **no `grzip` and no `4x4`**: those two
+  are the only methods whose memory formulas read the processor count
+  (`memlimit.rs:288`), so they are the only two that could bake the recording
+  machine into a hash.
+
+It earned its place on its first run by finding three divergences nothing else
+had: filespec group ordering, the missing `isVeryFastCompressor` clause in the
+sort-order decision, and `addBlockSizeCrit` having been ported and never called.
+
+### What the port cannot do
+
+`Tests/run-tests.sh` reports 17 passed / 7 skipped against the reference's 24
+passed. The seven are configurations the port refuses outright — `mm`, `tta`,
+`bsc`, `-ms`, `-mt1` — because `darc-arc`'s method table has no variant to emit,
+not because they produce wrong bytes. They are matched on the binary's own
+"cannot write yet" wording, so a case that starts failing for any other reason
+is a failure, not a skip.
 
 ## End-to-end
 
 ```bash
-./compile-O2
-cd Tests
-./arc a -r test.arc <some-directory>
-./arc t test.arc
-./arc x test.arc -dp /tmp/extracted
+cargo build --release --manifest-path rust/Cargo.toml -p darc-arc --bin darc
+D=rust/target/release/darc
+$D a -r /tmp/test.arc <some-directory>
+$D t /tmp/test.arc
+$D x /tmp/test.arc -dp /tmp/extracted
 ```
 
 Exercise the specific codec you touched via `-m` (e.g. `-m4x`, `-m9`), and test solid grouping (`-s`), encryption (`-p`), and recovery records (`rr`) when relevant — these are the paths most easily broken by changes to the compression pipeline. Format-compatibility regressions are the highest-risk failure mode in this repo: a change that compresses fine but produces archives older builds can't read will pass every build check.

@@ -121,7 +121,10 @@ build() {
 }
 
 # Top-level
-for src in Environment.cpp URL.cpp GuiEnvironment.cpp; do
+# URL.cpp and GuiEnvironment.cpp used to be here. The first served Files.hs's
+# `--original`, which the Rust port now does with its own HTTP client; the
+# second served the GTK GUI. Both went with the Haskell layer.
+for src in Environment.cpp; do
   [[ -f $src ]] && build "$src"
 done
 

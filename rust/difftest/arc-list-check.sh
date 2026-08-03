@@ -22,8 +22,12 @@ REF="${1:-$ROOT/Tests/arc-ghc}"
 PORT="$ROOT/rust/target/release/darc"
 
 [ -x "$REF" ] || {
-  echo "no reference binary at $REF" >&2
-  echo "build one with ./compile-ghc-probe (or pass Tests/arc)" >&2
+  echo "no reference binary at $REF.
+
+The Haskell reference was deleted; build one from a commit that still has it:
+  git worktree add /tmp/darc-ref 9a127e6 && (cd /tmp/darc-ref && ./compile-ghc-probe)
+then pass /tmp/darc-ref/Tests/arc-ghc as \$1. For a gate that needs no
+reference at all, use arc-golden-check.sh" >&2
   exit 2
 }
 

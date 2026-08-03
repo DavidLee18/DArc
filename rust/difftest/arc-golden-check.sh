@@ -18,14 +18,20 @@
 # anything that varied with the host cancelled out.
 #
 #   * `--nodates` on every case. Stored mtimes are otherwise the filesystem's.
-#   * `-mt1` on every case that names a real codec. A codec's memory formula can
-#     scale with the thread count (GRZip's does, via GetCompressionThreads),
-#     and that reaches the archive through the canonised method string.
-#   * `-m0` or an EXPLICITLY parameterised chain -- never a preset. Presets are
-#     fitted, and while this port fits to the DATA size rather than to physical
-#     memory (unlike the C, whose -rr clamps at getPhysicalMemory/2), pinning
-#     the parameters removes the question instead of relying on that.
-#   * `-rr` in absolute bytes, never a percentage, for the same reason.
+#   * `-m0` or an EXPLICITLY parameterised chain -- never a preset. A preset is
+#     fitted before it is written, and a fitted chain is written into the
+#     archive, so anything the fitting reads becomes archive-visible.
+#   * NO `grzip` and NO `4x4`. They are the only two methods whose memory
+#     formulas read the processor count (`compression_threads`, memlimit.rs:288,
+#     which is GetCompressionThreads), so they are the only two that could make
+#     a recorded hash depend on the machine that recorded it.
+#   * `-rr` in absolute bytes, never a percentage. A percentage is taken of the
+#     archive size and then clamped -- in the C, at getPhysicalMemory/2.
+#
+# An earlier version of this list also claimed `-mt1` pinned the thread count.
+# It does not: `-mt1` is a -m VALUE naming a method modifier, not a thread
+# option, and a later `-m` simply replaces it. Dropping it changed no hash,
+# which is the proof it was doing nothing.
 #
 # A case that violates one of those will record fine and fail on another
 # machine, which reads as a format regression and is not one. Add cases in that
@@ -173,13 +179,13 @@ run copy-c-lock          a --nodates -y -m0 -r "$A" . '%%' k --nodates -y "$A"
 run delete-d             a --nodates -y -m0 -r "$A" . '%%' d --nodates -y "$A" '*.dat'
 
 # ── real codecs, threads pinned ─────────────────────────────────────────────
-run m-lzma               a --nodates -y -mt1 -r -mlzma:1m:normal "$A" .
-run m-ppmd               a --nodates -y -mt1 -r -mppmd:8m:o6 "$A" .
-run m-tor                a --nodates -y -mt1 -r -mtor:3 "$A" .
-run m-rep-lzma           a --nodates -y -mt1 -r -mrep:8m+lzma:1m "$A" .
-run m-delta-lzma         a --nodates -y -mt1 -r -mdelta+lzma:1m "$A" .
-run m-lzp                a --nodates -y -mt1 -r -mlzp:8m:64 "$A" .
-run m-dict-lzma          a --nodates -y -mt1 -r -mdict:32k+lzma:1m "$A" .
+run m-lzma               a --nodates -y -r -mlzma:1m:normal "$A" .
+run m-ppmd               a --nodates -y -r -mppmd:8m:o6 "$A" .
+run m-tor                a --nodates -y -r -mtor:3 "$A" .
+run m-rep-lzma           a --nodates -y -r -mrep:8m+lzma:1m "$A" .
+run m-delta-lzma         a --nodates -y -r -mdelta+lzma:1m "$A" .
+run m-lzp                a --nodates -y -r -mlzp:8m:64 "$A" .
+run m-dict-lzma          a --nodates -y -r -mdict:32k+lzma:1m "$A" .
 run m-lzma-solid-off     a --nodates -y -mt1 -r -s- -mlzma:1m:normal "$A" .
 run m-lzma-rr            a --nodates -y -mt1 -r -rr4096b -mlzma:1m:normal "$A" .
 

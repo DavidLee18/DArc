@@ -21,9 +21,28 @@
 # So this sweeps s across every residue for each geometry, and pins sizes just
 # above the 1 MB first-block cut. Run from Tests/ with ./arc already built.
 set -e
-cd "$(dirname "$0")"
-ARC=./arc
-[ -x "$ARC" ] || { echo "no ./arc -- build first"; exit 1; }
+HERE="$(cd "$(dirname "$0")" && pwd)"
+# Takes the binary as $1 now. It used to be `./arc` beside this script, which
+# stopped existing when the Haskell layer was deleted.
+ARC="${1:-$HERE/../rust/target/release/darc}"
+case "$ARC" in /*) ;; *) ARC="$PWD/$ARC" ;; esac
+cd "$HERE"
+[ -x "$ARC" ] || { echo "no archiver at $ARC -- build first"; exit 1; }
+
+# This drives `-mmm`, which darc-arc cannot WRITE: the MM codec is ported and
+# difftested (rust/difftest/mm-check.sh), but the method table has no variant to
+# emit, so `-mmm` is refused before an archive exists. Nothing here can run
+# against such a build, and saying so beats failing.
+PROBE=/tmp/mm-probe.$$
+mkdir -p "$PROBE/in" && head -c 4096 /dev/zero | tr '\0' 'M' > "$PROBE/in/probe.bin"
+if ! "$ARC" a -y -mmm "$PROBE/t.arc" "$PROBE/in" >"$PROBE/log" 2>&1; then
+  if grep -q 'cannot write yet' "$PROBE/log"; then
+    rm -rf "$PROBE"
+    echo "SKIP: $ARC cannot write -mmm; the MM encoder is gated by rust/difftest/mm-check.sh"
+    exit 0
+  fi
+fi
+rm -rf "$PROBE"
 
 WORK=/tmp/mm-reorder-check.$$
 mkdir -p "$WORK"

@@ -55,10 +55,19 @@ LINK_FLAGS = -Xlinker --large-address-aware -s
 # librt was folded into glibc long ago and does not exist on macOS at all;
 # `-s` is obsolete there and only produces a warning.
 ifeq ($(UNAME_S),Darwin)
-UNIX_LINK_FLAGS = -lpthread
+UNIX_LINK_FLAGS = -lpthread $(EXTRA_LINK_FLAGS)
 else
-UNIX_LINK_FLAGS = -lrt -lpthread -s
+UNIX_LINK_FLAGS = -lrt -lpthread $(STRIP_FLAG) $(EXTRA_LINK_FLAGS)
 endif
+# `-s` is the default and stays that way, but it has to be overridable: a
+# sanitizer build needs its symbols to say anything useful, and stripping them
+# turns an ASan report into a list of addresses. Set STRIP_FLAG= to keep them.
+#
+# EXTRA_LINK_FLAGS exists for the same reason. -fsanitize=address has to appear
+# on the LINK line as well as the compile line, and DEBUG_FLAGS only reaches the
+# former -- so before this, an ASan build of Unarc compiled and then failed to
+# link.
+STRIP_FLAG ?= -s
 
 
 # This builds unarc and the SFX modules, which parse attacker-supplied archives
