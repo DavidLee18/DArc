@@ -11,8 +11,7 @@ without it are still read. See `docs/architecture.md`.
 (every codec, the crypto, the `.7z` reader, SREP, and the whole application
 layer); C/C++ ~23,800, none of which the archiver runs — it is `Unarc/` and the
 SFX modules, the codec sources they compile, and `rust/difftest`'s C oracles.
-The ~340 lines of Haskell left are two Windows-installer helpers that were never
-part of the archiver and are not built by anything.
+No Haskell remains.
 
 **The reference the port was gated against no longer exists.** Every
 `rust/difftest/arc-*-check.sh` compares two binaries and needs a Haskell build
@@ -55,6 +54,13 @@ in `rust-toolchain.toml`.
 `cargo` is mandatory. `rust/difftest/sevenz-check.sh` needs a `7z` binary.
 `--original` over HTTP is the default `url` feature; `--no-default-features`
 drops it and its whole dependency subtree, the way `-DFREEARC_NOURL` used to.
+
+**No harness needs `python3`.** Corpora come from `corpusgen`, pure functions
+from `difftest-util`, and the two large case builders are `lzma2-cases` and
+`lzma-dec-cases` — all cargo binaries under `rust/darc-codecs/src/bin/`. The
+sole exception is `verify-corpus.sh`, which exists to check a conversion
+against the Python it replaced and so cannot outlive it. See `docs/testing.md`
+before adding or changing a corpus.
 
 `Tests/` is a build *output* directory despite the name.
 
