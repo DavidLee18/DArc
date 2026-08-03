@@ -168,6 +168,20 @@ fn main() {
         },
     };
 
+    // `--pretest` (Cmdline.hs:127): the value defaults to "1", and `-` `+` and
+    // an empty value are spellings of 0, 2 and 2.
+    let pretest: i32 = match parsed.arg("pretest", "1") {
+        "-" => 0,
+        "+" | "" => 2,
+        s => match s.parse() {
+            Ok(n @ 0..=3) => n,
+            _ => {
+                eprintln!("ERROR: --pretest{s}: expected one of 0, 1, 2, 3");
+                std::process::exit(2);
+            }
+        },
+    };
+
     // `dir_exclude_path` (Cmdline.hs:137): 0 for the `e` command, otherwise the
     // -ep value, defaulting to 9.
     let ep: u32 = if command == "e" {
@@ -203,7 +217,7 @@ fn main() {
         "SizeMore", "SizeLess", "TimeBefore", "TimeAfter", "TimeNewer", "TimeOlder",
         "recovery", "volume", "sfx", "noarcext", "charset", "original", "overwrite",
         "keepbroken", "keeptime", "timetolast", "test", "autogenerate",
-        "pause-before-exit", "queue",
+        "pause-before-exit", "queue", "pretest", "logfile", "proxy", "bypass",
         // Accepted and deliberately ignored: UI only.
         "yes", "indicator", "display",
         // Accepted and deliberately ignored: these change SPEED or a Windows
@@ -347,6 +361,22 @@ fn main() {
     // The passwords, cooked once: the prompt must not appear twice, and both
     // the reader and the writer need the same answer.
     let pw = cook_passwords(&parsed, &command);
+
+    // `--pretest`: only for commands that READ an existing archive, and only
+    // once the passwords are known -- an encrypted archive cannot be scanned
+    // without them. `a` on a new archive has nothing to pretest.
+    if pretest > 0
+        && !archive_name.is_empty()
+        && std::path::Path::new(&archive_name).exists()
+        && matches!(
+            command.as_str(),
+            "t" | "x" | "e" | "l" | "v" | "lb" | "lt" | "a" | "u" | "f" | "d" | "ch" | "c"
+                | "k" | "j" | "m" | "mf"
+        )
+        && !pretest_archive(pretest, std::path::Path::new(&archive_name), &pw)
+    {
+        std::process::exit(2);
+    }
 
     let path = std::path::Path::new(&archive_name);
     // Only the read commands need an existing archive; `a` creates one.
@@ -577,7 +607,13 @@ fn main() {
         }
         // `runArchiveRecovery` (ArcRecover.hs:301) -- repair an archive using
         // its own recovery records, writing `fixed.<name>` beside it.
-        "r" => recover(path, &archive_name, parsed.arg("original", "--")),
+        "r" => recover(
+            path,
+            &archive_name,
+            parsed.arg("original", "--"),
+            parsed.arg("proxy", "--"),
+            parsed.arg("bypass", ""),
+        ),
         // `rr…` is `ch -rr…` and `s…` is `ch -sfx…` (Cmdline.hs:124, :166) --
         // the same copy path, with the setting read off the command's own
         // suffix.
@@ -602,6 +638,39 @@ fn main() {
     // Skipped when stdin is not a terminal: a pause nobody can end would turn
     // every scripted run into a hang, which is a worse failure than not
     // pausing.
+    // `--logfile` (Cmdline.hs:728): one line per run, APPENDED, so a series of
+    // scheduled backups leaves a history rather than only its last result.
+    // Written after the command has finished because the outcome is part of
+    // the record, and a failure to write the log never changes the exit code —
+    // the archiving already happened either way.
+    //
+    // WHAT IT DOES NOT CATCH, measured rather than assumed: every path that
+    // reaches this point is logged, including command failures (`t` on a
+    // damaged archive logs rc=2). Paths that `std::process::exit` earlier are
+    // not — a missing archive, an unparseable option, a refused option, and a
+    // failed --pretest. Those are precondition errors, reported on stderr, and
+    // covering them means routing every early exit through one place, which is
+    // a refactor rather than an option.
+    let logfile = parsed.arg("logfile", "");
+    if !logfile.is_empty() {
+        let line = format!(
+            "{} {} {} rc={code}\n",
+            format_time(now_unix()),
+            command,
+            match archive_name.is_empty() {
+                true => "-",
+                false => &archive_name,
+            }
+        );
+        match std::fs::OpenOptions::new().create(true).append(true).open(logfile) {
+            Ok(mut f) => match std::io::Write::write_all(&mut f, line.as_bytes()) {
+                Ok(()) => {}
+                Err(e) => eprintln!("WARNING: --logfile {logfile}: {e}"),
+            },
+            Err(e) => eprintln!("WARNING: --logfile {logfile}: {e}"),
+        }
+    }
+
     // Held until here, then released explicitly so the next queued process
     // starts as soon as this one is finished rather than mid-teardown.
     drop(queue_guard);
@@ -2300,6 +2369,66 @@ fn list(command: &str, info: &archive::ArchiveInfo, entries: &[Entry]) -> i32 {
 ///
 /// Testing and extracting differ only in what happens after the CRC check, so
 /// they share the loop rather than duplicating the block handling.
+/// `--pretest` — check an existing archive BEFORE operating on it.
+///
+/// The modes are `Options.hs:80`: 0 none, 1 recovery info only, 2 recovery or
+/// full, 3 full testing. `pretestArchive` (ArcRecover.hs:224) scans the
+/// recovery records first in every non-zero mode, and then runs a full test
+/// when the mode is 3, or when it is 2 and the archive carries no recovery
+/// information at all. An archive that fails either check stops the operation:
+/// the point is to refuse to build on damage, not to report it afterwards.
+///
+/// Returns false when the archive is damaged and the caller must stop.
+fn pretest_archive(mode: i32, path: &std::path::Path, pw: &darc_arc::passwords::Passwords) -> bool {
+    if mode <= 0 {
+        return true;
+    }
+    let data = match archive::open(path) {
+        Ok(d) => d,
+        // Unreadable is not the same as damaged, and the operation itself is
+        // about to fail on it with a better message.
+        Err(_) => return true,
+    };
+    let footer = match archive::read_footer(&data, pw) {
+        Ok((_, f)) => f,
+        Err(_) => return true,
+    };
+    // `isNothing result` is the "no recovery information" case, not an error.
+    let had_recovery = match darc_arc::recovery::scan(&footer.blocks, &data) {
+        Ok(scan) => {
+            if !scan.bad.is_empty() {
+                eprintln!(
+                    "ERROR: {}: found {} damaged sector(s); refusing to work on a broken archive",
+                    path.display(),
+                    scan.bad.len()
+                );
+                return false;
+            }
+            println!("Archive integrity OK");
+            true
+        }
+        Err(_) => false,
+    };
+    if mode != 3 && !(mode == 2 && !had_recovery) {
+        return true;
+    }
+    // The full test: every block, every CRC.
+    match (archive::read_info(path, pw), Ok::<&[u8], ()>(data.as_slice())) {
+        (Ok(info), Ok(bytes)) => {
+            let all: Vec<Entry> = info.entries.clone();
+            let empty = std::collections::HashSet::new();
+            let rc =
+                run_blocks(&info, bytes, &Layout::default(), false, pw, &all, &empty, false);
+            if rc != 0 {
+                eprintln!("ERROR: {}: failed its pretest", path.display());
+                return false;
+            }
+            true
+        }
+        _ => true,
+    }
+}
+
 /// Take the `--queue` advisory lock, blocking until it is ours.
 ///
 /// The file lives next to the temp directory rather than in the archive's
@@ -2981,12 +3110,23 @@ fn now_seconds() -> i64 {
 /// the same warning any unreadable copy produces — the reference behaves
 /// identically when built `-DFREEARC_NOURL`.
 #[cfg(feature = "url")]
-fn remote_original(url: &str) -> Option<Box<dyn darc_arc::recovery::Original>> {
-    Some(Box::new(darc_arc::fetch::Url::new(url)))
+fn remote_original(
+    url: &str,
+    proxy: &str,
+    bypass: &str,
+) -> Option<Box<dyn darc_arc::recovery::Original>> {
+    Some(Box::new(darc_arc::fetch::Url::with_proxy(url, proxy, bypass)))
 }
 
 #[cfg(not(feature = "url"))]
-fn remote_original(url: &str) -> Option<Box<dyn darc_arc::recovery::Original>> {
+fn remote_original(
+    url: &str,
+    proxy: &str,
+    bypass: &str,
+) -> Option<Box<dyn darc_arc::recovery::Original>> {
+    // Named and dropped rather than underscore-bound: the CI gate bans
+    // `let _`, and this build genuinely has nowhere to send them.
+    drop((proxy, bypass));
     eprintln!("WARNING: can't open original at {url}: built without URL support");
     None
 }
@@ -3094,7 +3234,13 @@ fn find_url(s: &str) -> Option<String> {
     }
 }
 
-fn recover(path: &std::path::Path, archive_name: &str, original: &str) -> i32 {
+fn recover(
+    path: &std::path::Path,
+    archive_name: &str,
+    original: &str,
+    proxy: &str,
+    bypass: &str,
+) -> i32 {
     // `arcname `replaceBaseName` ("fixed."++takeBaseName arcname)` -- the
     // extension is kept and the base name prefixed, so `a.arc` becomes
     // `fixed.a.arc`.
@@ -3174,7 +3320,7 @@ fn recover(path: &std::path::Path, archive_name: &str, original: &str) -> i32 {
         match original_name.is_empty() {
             true => None,
             false => match original_name.contains("://") {
-                true => remote_original(&original_name),
+                true => remote_original(&original_name, proxy, bypass),
                 false => match std::fs::read(&original_name) {
                     Ok(b) => Some(Box::new(darc_arc::recovery::Bytes(b))),
                     Err(e) => {
