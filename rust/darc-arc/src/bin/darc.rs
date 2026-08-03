@@ -114,8 +114,32 @@ fn main() {
             false => format!("{name}.arc"),
         }
     };
+    // `-ag`/`--autogenerate` (Cmdline.hs:180-182): append a timestamp to the
+    // archive's BASE name, before the extension is added, so `-ag x.arc`
+    // becomes `x20260804123000.arc` rather than `x.arc20260804…`. The default
+    // format is the one at Cmdline.hs:122.
+    let add_ag = |name: &str| -> String {
+        match parsed.arg("autogenerate", "--") {
+            "--" => name.to_string(),
+            f => {
+                let fmt = match f.is_empty() {
+                    true => "%Y%m%d%H%M%S",
+                    false => f,
+                };
+                let stamp = strftime_local(fmt, now_unix());
+                match name.rfind('.') {
+                    // Only a REAL extension is split around; a dot in a
+                    // directory component is not one.
+                    Some(i) if !name[i..].contains(['/', '\\']) => {
+                        format!("{}{stamp}{}", &name[..i], &name[i..])
+                    }
+                    _ => format!("{name}{stamp}"),
+                }
+            }
+        }
+    };
     let archive_name = match parsed.free.first() {
-        Some(a) => add_arc_ext(a),
+        Some(a) => add_arc_ext(&add_ag(a)),
         None if command == "canonize" || command == "fit" || command == "types" => {
             String::new()
         }
@@ -123,6 +147,25 @@ fn main() {
             eprintln!("ERROR: no archive name given");
             std::process::exit(2);
         }
+    };
+
+    // `--queue` (Arc.hs:80): serialise with other darc processes through an
+    // advisory lock, so two runs do not compete for the whole machine's memory
+    // and CPU. Held for the life of the process — the guard is bound here and
+    // dropped when main returns.
+    //
+    // flock, not a lockfile's existence: a process killed while holding it
+    // releases it, where a stale file would block every later run until someone
+    // deleted it by hand.
+    let queue_guard = match parsed.flag("queue") {
+        false => None,
+        true => match queue_acquire() {
+            Ok(f) => Some(f),
+            Err(e) => {
+                eprintln!("ERROR: --queue: {e}");
+                std::process::exit(2);
+            }
+        },
     };
 
     // `dir_exclude_path` (Cmdline.hs:137): 0 for the `e` command, otherwise the
@@ -159,9 +202,18 @@ fn main() {
         "update", "include", "exclude", "dirs", "nodirs",
         "SizeMore", "SizeLess", "TimeBefore", "TimeAfter", "TimeNewer", "TimeOlder",
         "recovery", "volume", "sfx", "noarcext", "charset", "original", "overwrite",
-        "keepbroken", "keeptime", "timetolast", "test",
+        "keepbroken", "keeptime", "timetolast", "test", "autogenerate",
+        "pause-before-exit", "queue",
         // Accepted and deliberately ignored: UI only.
         "yes", "indicator", "display",
+        // Accepted and deliberately ignored: these change SPEED or a Windows
+        // file attribute, never a byte of the archive nor which files go in
+        // it, so honouring them by doing nothing is honest rather than a
+        // silent no-op. --cache sizes a read-ahead buffer this port does not
+        // have (it builds the archive in memory); -ac/-ao are the Windows
+        // Archive attribute, which does not exist on the platforms this is
+        // gated on.
+        "cache", "ClearArchiveBit", "SelectArchiveBit",
     ];
     let unimplemented: Vec<&str> = parsed
         .options
@@ -542,6 +594,32 @@ fn main() {
             2
         }
     };
+
+    // `--pause-before-exit` (Cmdline.hs:699). The reference's values are
+    // `on`/`off`/`on-error`/`on-warning`; anything that is not "off" and does
+    // not restrict itself to failures pauses always.
+    //
+    // Skipped when stdin is not a terminal: a pause nobody can end would turn
+    // every scripted run into a hang, which is a worse failure than not
+    // pausing.
+    // Held until here, then released explicitly so the next queued process
+    // starts as soon as this one is finished rather than mid-teardown.
+    drop(queue_guard);
+
+    let pause = parsed.arg("pause-before-exit", "off");
+    let want_pause = match pause {
+        "off" | "" => false,
+        "on-error" => code != 0,
+        "on-warning" => code != 0,
+        _ => true,
+    };
+    if want_pause && std::io::IsTerminal::is_terminal(&std::io::stdin()) {
+        print!("Press Enter to exit...");
+        drop(std::io::Write::flush(&mut std::io::stdout()));
+        let mut line = String::new();
+        drop(std::io::BufRead::read_line(&mut std::io::stdin().lock(), &mut line));
+    }
+
     std::process::exit(code);
 }
 
@@ -2222,6 +2300,88 @@ fn list(command: &str, info: &archive::ArchiveInfo, entries: &[Entry]) -> i32 {
 ///
 /// Testing and extracting differ only in what happens after the CRC check, so
 /// they share the loop rather than duplicating the block handling.
+/// Take the `--queue` advisory lock, blocking until it is ours.
+///
+/// The file lives next to the temp directory rather than in the archive's
+/// directory: the point is to serialise this MACHINE's darc processes, and two
+/// runs on different archives still compete for the same memory and cores.
+///
+/// The returned handle owns the lock; dropping it releases it. On a platform
+/// without `flock` this returns the open file and no lock, which serialises
+/// nothing but also blocks nothing — the option is a courtesy, not a
+/// correctness mechanism, and failing the whole run would be worse.
+#[cfg(unix)]
+fn queue_acquire() -> std::io::Result<std::fs::File> {
+    use std::os::unix::io::AsRawFd;
+    let path = std::env::temp_dir().join("darc.queue.lock");
+    let f = std::fs::OpenOptions::new().create(true).write(true).truncate(false).open(&path)?;
+    extern "C" {
+        fn flock(fd: i32, operation: i32) -> i32;
+    }
+    const LOCK_EX: i32 = 2;
+    // SAFETY: the fd is owned by `f` and outlives the call.
+    match unsafe { flock(f.as_raw_fd(), LOCK_EX) } {
+        0 => Ok(f),
+        _ => Err(std::io::Error::last_os_error()),
+    }
+}
+
+#[cfg(not(unix))]
+fn queue_acquire() -> std::io::Result<std::fs::File> {
+    let path = std::env::temp_dir().join("darc.queue.lock");
+    std::fs::OpenOptions::new().create(true).write(true).truncate(false).open(&path)
+}
+
+/// Seconds since the Unix epoch, or 0 if the clock is before it.
+fn now_unix() -> i64 {
+    match std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
+        Ok(d) => d.as_secs() as i64,
+        Err(_) => 0,
+    }
+}
+
+/// The `strftime` subset `-ag` needs, in LOCAL time.
+///
+/// Not a crate: `chrono` would be a new dependency for eight conversions, and
+/// a dependency here is a licence question. The specifiers are the ones a
+/// filename can actually use — anything that would introduce a `/` or a space
+/// is deliberately absent, because the result becomes part of a path.
+///
+/// An unknown specifier is left verbatim, `%` and all, rather than silently
+/// dropped: a name that quietly loses part of its stamp can collide with
+/// another run's.
+fn strftime_local(fmt: &str, unix: i64) -> String {
+    let local = unix + local_offset_seconds();
+    let days = local.div_euclid(86_400);
+    let tod = local.rem_euclid(86_400);
+    let (y, mo, d) = civil_from_days(days);
+    let (h, mi, s) = (tod / 3600, (tod % 3600) / 60, tod % 60);
+    let mut out = String::new();
+    let mut it = fmt.chars();
+    while let Some(c) = it.next() {
+        if c != '%' {
+            out.push(c);
+            continue;
+        }
+        match it.next() {
+            Some('Y') => out.push_str(&format!("{y:04}")),
+            Some('y') => out.push_str(&format!("{:02}", y.rem_euclid(100))),
+            Some('m') => out.push_str(&format!("{mo:02}")),
+            Some('d') => out.push_str(&format!("{d:02}")),
+            Some('H') => out.push_str(&format!("{h:02}")),
+            Some('M') => out.push_str(&format!("{mi:02}")),
+            Some('S') => out.push_str(&format!("{s:02}")),
+            Some('%') => out.push('%'),
+            Some(other) => {
+                out.push('%');
+                out.push(other);
+            }
+            None => out.push('%'),
+        }
+    }
+    out
+}
+
 /// Set a file's mtime, leaving its atime alone.
 ///
 /// `std::fs::FileTimes` rather than a crate: this is the whole of what the
@@ -3173,6 +3333,22 @@ mod tests {
         // A BARE -op is the mode `p`, not a password: is_op_option needs at
         // least one character after the p.
         assert!(matches!(mode_of(&["-op"]), Ok(Overwrite::Ask)));
+    }
+
+    /// The `-ag` stamp. Fixed instant, so the assertion is on the FORMAT and
+    /// not on the clock: 2026-08-04 06:57:44 UTC.
+    #[test]
+    fn strftime_covers_what_a_filename_can_use() {
+        // Compared against UTC by cancelling the local offset out, so the test
+        // does not depend on the machine the suite runs on.
+        let t = 1_785_826_664 - local_offset_seconds();
+        assert_eq!(strftime_local("%Y%m%d%H%M%S", t), "20260804065744");
+        assert_eq!(strftime_local("%Y-%m-%d", t), "2026-08-04");
+        assert_eq!(strftime_local("%y", t), "26");
+        // A literal percent, and an unknown specifier kept verbatim rather
+        // than dropped -- a name that loses part of its stamp can collide.
+        assert_eq!(strftime_local("%%%q", t), "%%q");
+        assert_eq!(strftime_local("plain", t), "plain");
     }
 
     /// Anything outside `+ - p` is refused rather than silently treated as the
