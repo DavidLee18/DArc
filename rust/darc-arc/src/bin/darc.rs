@@ -159,6 +159,7 @@ fn main() {
         "update", "include", "exclude", "dirs", "nodirs",
         "SizeMore", "SizeLess", "TimeBefore", "TimeAfter", "TimeNewer", "TimeOlder",
         "recovery", "volume", "sfx", "noarcext", "charset", "original", "overwrite",
+        "keepbroken", "keeptime", "timetolast", "test",
         // Accepted and deliberately ignored: UI only.
         "yes", "indicator", "display",
     ];
@@ -365,7 +366,7 @@ fn main() {
                 }
                 false => std::collections::HashSet::new(),
             };
-            run_blocks(&info, &data, &layout, extracting, &pw, &selected, &skip)
+            run_blocks(&info, &data, &layout, extracting, &pw, &selected, &skip, parsed.flag("keepbroken"))
         }
         // One function: every one of these is `runArchiveAdd` with a different
         // archive filter and a different source of files (Arc.hs:122-131).
@@ -1673,6 +1674,18 @@ fn add(
     entries.extend(kept_entries);
     entries.extend(file_entries);
     w.write_directory(&data_blocks, &entries);
+
+    // `-tl`/`--timetolast` (ArcCreate.hs:170): stamp the finished archive with
+    // the mtime of the newest file IN it, so the archive is never older than
+    // its own contents. Directories are included -- `find_last_time` folds over
+    // the whole directory listing, not just the files.
+    //
+    // Captured here rather than after the write because `entries` is what was
+    // actually stored, which is not the same as what was on the command line.
+    let time_to_last: Option<i64> = match parsed.flag("timetolast") {
+        false => None,
+        true => entries.iter().map(|e| e.time).max(),
+    };
     // An archive with nothing left in it is REMOVED, not written empty.
     // Measured: `arc d a.arc "*"` leaves no file behind, because the basename
     // match takes the directories too. Writing a 161-byte archive of nothing
@@ -1814,12 +1827,44 @@ fn add(
         }
     };
 
+    // `-tk`/`--keeptime` (ArcCreate.hs:168) restores the archive's OWN mtime
+    // after an update, so refreshing an archive does not make it look new.
+    // Read before the write, because the write is what destroys it, and only
+    // when the archive already existed -- there is nothing to keep otherwise.
+    let kept_time: Option<std::time::SystemTime> = match parsed.flag("keeptime") {
+        false => None,
+        true => std::fs::metadata(archive_name).and_then(|m| m.modified()).ok(),
+    };
+
     match std::fs::write(archive_name, &bytes) {
         Ok(()) => {}
         Err(e) => {
             eprintln!("ERROR: {archive_name}: {e}");
             return 2;
         }
+    }
+
+    // The two mtime options, in the reference's order (ArcCreate.hs:168-171):
+    // -tk first, then -tl, so giving both leaves the newest-file time. Applied
+    // before the SFX rename, which carries the mtime with it.
+    match kept_time {
+        Some(t) => match set_mtime(archive_name, t) {
+            Ok(()) => {}
+            Err(e) => eprintln!("WARNING: -tk: cannot restore {archive_name}'s time: {e}"),
+        },
+        None => {}
+    }
+    match time_to_last {
+        // A negative or absurd stamp is the archive's problem, not ours;
+        // UNIX_EPOCH + a negative offset is simply refused by the conversion.
+        Some(t) if t >= 0 => {
+            let when = std::time::UNIX_EPOCH + std::time::Duration::from_secs(t as u64);
+            match set_mtime(archive_name, when) {
+                Ok(()) => {}
+                Err(e) => eprintln!("WARNING: -tl: cannot set {archive_name}'s time: {e}"),
+            }
+        }
+        _ => {}
     }
 
     // `renameArchiveAsSFX` (ArcCreate.hs:172) -- after writing, in every case,
@@ -1925,6 +1970,28 @@ fn add(
                     drop(std::fs::remove_dir(disk));
                 }
             }
+        }
+    }
+
+    // `-t`/`--test` (ArcCreate.hs:201): read the archive back and check every
+    // CRC before reporting success. Run last so it covers the finished
+    // artefact, including the SFX rename above.
+    if parsed.flag("test") {
+        println!("Testing {archive_name}");
+        let path = std::path::Path::new(archive_name);
+        let rc = match (archive::read_info(path, pw), archive::open(path)) {
+            (Ok(info), Ok(data)) => {
+                let all: Vec<Entry> = info.entries.clone();
+                let empty = std::collections::HashSet::new();
+                run_blocks(&info, &data, &Layout::default(), false, pw, &all, &empty, false)
+            }
+            (Err(e), _) | (_, Err(e)) => {
+                eprintln!("ERROR: {archive_name}: {e}");
+                2
+            }
+        };
+        if rc != 0 {
+            return rc;
         }
     }
 
@@ -2155,6 +2222,17 @@ fn list(command: &str, info: &archive::ArchiveInfo, entries: &[Entry]) -> i32 {
 ///
 /// Testing and extracting differ only in what happens after the CRC check, so
 /// they share the loop rather than duplicating the block handling.
+/// Set a file's mtime, leaving its atime alone.
+///
+/// `std::fs::FileTimes` rather than a crate: this is the whole of what the
+/// `filetime` crate would be pulled in for, and a new dependency here is a
+/// licence question (see THIRD-PARTY.md). Opening for write is required on
+/// Windows, where the handle needs write access to accept a time change.
+fn set_mtime(path: &str, when: std::time::SystemTime) -> std::io::Result<()> {
+    let f = std::fs::File::options().write(true).open(path)?;
+    f.set_times(std::fs::FileTimes::new().set_modified(when))
+}
+
 /// What `-o` says to do when the file is already on disk.
 ///
 /// `testOption "overwrite" "o" … (words "+ - p")` (`Cmdline.hs:160`): the three
@@ -2259,6 +2337,7 @@ fn run_blocks(
     pw: &darc_arc::passwords::Passwords,
     entries: &[Entry],
     skip: &std::collections::HashSet<String>,
+    keep_broken: bool,
 ) -> i32 {
     // The safety check runs on the archive's contribution alone: the
     // destination is the user's own and may be absolute.
@@ -2348,9 +2427,16 @@ fn run_blocks(
                         continue;
                     }
                 };
-                if crc::calc(bytes) != e.crc {
+                // `-kb`/`--keepbroken` (ArcExtract.hs:99): a file that failed
+                // its CRC is normally not left on disk. With -kb it is kept,
+                // and the failure is still reported -- keeping the bytes is not
+                // the same as calling them good.
+                let crc_ok = crc::calc(bytes) == e.crc;
+                if !crc_ok {
                     bad.push(format!("{}: CRC failed", e.stored_name));
-                    continue;
+                    if !keep_broken {
+                        continue;
+                    }
                 }
                 if !extracting {
                     continue;
