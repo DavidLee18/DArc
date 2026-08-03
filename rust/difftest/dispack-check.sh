@@ -42,61 +42,31 @@ cc "$W/rs" -DUSE_RUST -DDARC_RUST "$LIB" || exit 1
 
 # The corpus: real i386 code (built here so the test is self-contained), plus
 # non-code inputs that exercise the raw/TAG_DATA path, plus edge sizes.
-python3 - "$W" <<'PY'
-import os,sys,struct,subprocess
-w=sys.argv[1]; os.makedirs(f"{w}/in",exist_ok=True)
-def prng(seed,n):
-    s=seed; o=bytearray()
-    for _ in range(n): s=(s*1103515245+12345)&0xffffffff; o.append((s>>16)&0xff)
-    return bytes(o)
+( cd "$ROOT/rust" && cargo build --release -q -p darc-codecs --bin corpusgen --bin difftest-util ) || exit 1
 
-# Build a real i386 .text section, then rewrite its E8 relocation placeholders
-# into backward calls so detect() sees an executable.
-src=f"{w}/x.c"
-open(src,"w").write('''
+# The code corpus is REAL i386 machine code: synthetic bytes do not have the
+# call density detect() keys on. The compile stays here -- orchestration is
+# shell's job -- and difftest-util reads the .text section out of the object.
+# An empty .text means no i386 compiler on this host, and the corpus skips its
+# code inputs exactly as it always did.
+cat > "$W/x.c" <<'CSRC'
 __attribute__((noinline)) static int a(int x){return x*3+1;}
 __attribute__((noinline)) static int b(int x){return a(x)+a(x-1)+2;}
 __attribute__((noinline)) static int c(int x){return b(x)*a(x)-b(x+1);}
 __attribute__((noinline)) static int d(int x){return c(x)+b(x)+a(x)+c(x-2);}
 __attribute__((noinline)) static int e(int x){return d(x)^c(x)^b(x)^a(x);}
 __attribute__((noinline)) int top(int*p,int n){int s=0;for(int i=0;i<n;i++){s+=e(p[i])+d(s)+c(i)-b(s^i)+a(p[i&7]);if(s>100000)s=e(s)-d(i);}return s;}
-''')
-obj=f"{w}/x.o"
-r=subprocess.run(["clang","--target=i386-unknown-linux-gnu","-m32","-O2","-c",src,"-o",obj],
-                 capture_output=True)
-if r.returncode!=0:
-    sys.stderr.write("i386 compile unavailable; skipping code corpus\n"+r.stderr.decode()[:400])
-    text=b""
-else:
-    d=open(obj,"rb").read()
-    e_shoff,=struct.unpack("<I",d[0x20:0x24]); ent,=struct.unpack("<H",d[0x2e:0x30])
-    num,=struct.unpack("<H",d[0x30:0x32]); stx,=struct.unpack("<H",d[0x32:0x34])
-    def sh(i): o=e_shoff+i*ent; return struct.unpack("<IIIIII",d[o:o+24])
-    st=sh(stx)[4]; text=b""
-    for i in range(num):
-        name,_,_,_,off,size=sh(i)
-        if d[st+name:d.index(b"\0",st+name)].decode()==".text": text=d[off:off+size]
+CSRC
+clang --target=i386-unknown-linux-gnu -m32 -O2 -c "$W/x.c" -o "$W/x.o" 2>/dev/null \
+  || echo "i386 compile unavailable; code corpus skipped" >&2
+"$ROOT/rust/target/release/difftest-util" elf-text "$W/x.o" > "$W/text.bin" 2>/dev/null || : > "$W/text.bin"
+# The marker the corpus generator used to write, so the run can say out loud
+# that the interesting paths are uncovered rather than quietly passing.
+[ -s "$W/text.bin" ] && : > "$W/HAVE_CODE"
 
-def make_code(reps,seed):
-    blob=bytearray(text*reps); s=seed; i=0
-    while i<len(blob)-5:
-        if blob[i]==0xE8 and blob[i+1]==0==blob[i+2]==blob[i+3]==blob[i+4]:
-            s=(s*1103515245+12345)&0xffffff
-            blob[i+1]=s&0xff; blob[i+2]=(s>>8)&0xff; blob[i+3]=(s>>16)&0xff; blob[i+4]=0xFF
-        i+=1
-    return bytes(blob)
-
-wf=lambda n,b: open(f"{w}/in/{n}","wb").write(b)
-if text:
-    wf("code_small",  make_code(30,1))
-    wf("code_big",    make_code(200,7))          # spans multiple chunks
-    wf("code_noise",  make_code(60,3)+prng(9,40000))  # code then data
-wf("noise",   prng(2,300000))
-wf("zeros",   b"\x00"*200000)
-wf("text",    b"the quick brown fox jumps over the lazy dog. "*4000)
-for n in (0,1,4,5,64,4096,65536):
-    wf(f"n_{n}", prng(4,n))
-PY
+# Corpus from corpusgen -- a literal transcription of the python3 heredoc
+# that stood here, accepted on a byte comparison over every file it writes.
+"$ROOT/rust/target/release/corpusgen" dispack "$W/in" "$W/text.bin"
 
 # Whether the corpus actually contains x86 code (i386 cross-compile may be
 # unavailable). Determined from the corpus itself, NOT from how many cases

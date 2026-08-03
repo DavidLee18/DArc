@@ -1597,6 +1597,175 @@ fn lzma_gap(dir: &std::path::Path) {
     write(dir, "stream/big_runs", &br);
 }
 
+/// `make_code` from the dispack harnesses — real i386 machine code with its
+/// `E8` relocation placeholders rewritten into backward calls, so `detect()`
+/// sees an executable rather than an object file.
+///
+/// The mask is `0xffffff`, not `0xffffffff`: this LCG is deliberately narrower
+/// than [`prng`]'s, so the three address bytes stay inside 24 bits.
+fn make_code(text: &[u8], reps: usize, seed: u32) -> Vec<u8> {
+    let mut blob = text.repeat(reps);
+    let mut s = seed;
+    let mut i = 0usize;
+    while blob.len() >= 5 && i < blob.len() - 5 {
+        if blob[i] == 0xE8
+            && blob[i + 1] == 0
+            && blob[i + 2] == 0
+            && blob[i + 3] == 0
+            && blob[i + 4] == 0
+        {
+            s = s.wrapping_mul(1103515245).wrapping_add(12345) & 0xffffff;
+            blob[i + 1] = (s & 0xff) as u8;
+            blob[i + 2] = ((s >> 8) & 0xff) as u8;
+            blob[i + 3] = ((s >> 16) & 0xff) as u8;
+            blob[i + 4] = 0xFF;
+        }
+        i += 1;
+    }
+    blob
+}
+
+/// `dispack-check.sh`. `text` is the `.text` of an i386 object, or empty when
+/// no i386 compiler was available — in which case the code inputs are skipped,
+/// exactly as the Python skipped them.
+fn dispack(dir: &std::path::Path, text: &[u8]) {
+    if !text.is_empty() {
+        write(dir, "code_small", &make_code(text, 30, 1));
+        // Spans multiple chunks.
+        write(dir, "code_big", &make_code(text, 200, 7));
+        // Code then data.
+        let mut cn = make_code(text, 60, 3);
+        cn.extend(prng(9, 40000));
+        write(dir, "code_noise", &cn);
+    }
+    write(dir, "noise", &prng(2, 300000));
+    write(dir, "zeros", &vec![0u8; 200000]);
+    write(dir, "text", &repeat(FOX, 4000));
+    for n in [0usize, 1, 4, 5, 64, 4096, 65536] {
+        write(dir, &format!("n_{n}"), &prng(4, n));
+    }
+}
+
+/// The filler `dispack-filter-check.sh` builds for `detect()`, whose thresholds
+/// are otherwise unfalsifiable.
+///
+/// `detect()` scans for `p[0]==0xE8` with `p[4]`/`p[5]` deciding the form —
+/// exe is `p[4]==0xFF && p[5]!=0xFF`, obj is `p[4]==0x00 && p[5]!=0x00` — and
+/// requires `e8/len >= 0.002`, `(exe+obj)/e8 >= 0.20` and `exe/e8 >= 0.01`.
+/// The zero and ffff forms count as NEITHER and exist only so the `p[5]` halves
+/// of those two tests are falsifiable.
+#[allow(clippy::too_many_arguments)]
+fn dispack_calls(
+    n_e8: usize,
+    total: usize,
+    exe_frac: f64,
+    obj_frac: f64,
+    seed: u32,
+    zero_frac: f64,
+    tail_e8: bool,
+    ffff_frac: f64,
+) -> Vec<u8> {
+    let mut b = prng(seed, total);
+    // Scrub stray E8 so the count is exact.
+    for x in b.iter_mut() {
+        if *x == 0xE8 {
+            *x = 0xE7;
+        }
+    }
+    let n_exe = (n_e8 as f64 * exe_frac) as usize;
+    let n_obj = (n_e8 as f64 * obj_frac) as usize;
+    let n_zero = (n_e8 as f64 * zero_frac) as usize;
+    let n_ffff = (n_e8 as f64 * ffff_frac) as usize;
+    let step = (total / n_e8.max(1)).max(6);
+    for k in 0..n_e8 {
+        let i = k * step;
+        if i + 6 > total {
+            break;
+        }
+        b[i] = 0xE8;
+        let (p4, p5) = if k < n_exe {
+            (0xFF, 0x11)
+        } else if k < n_exe + n_obj {
+            (0x00, 0x22)
+        } else if k < n_exe + n_obj + n_zero {
+            (0x00, 0x00)
+        } else if k < n_exe + n_obj + n_zero + n_ffff {
+            (0xFF, 0xFF)
+        } else {
+            (0x7F, 0x33)
+        };
+        b[i + 4] = p4;
+        b[i + 5] = p5;
+    }
+    // An E8 at len-5, whose p[5] would be buf[total] -- out of range. The 0xFF
+    // is needed too: a scan running one position too far only READS p[5] when
+    // p[4] is 0xFF or 0x00, otherwise `&&` short-circuits and the bug is
+    // invisible. The first attempt at this input caught nothing for that reason.
+    if tail_e8 && total >= 6 {
+        b[total - 5] = 0xE8;
+        b[total - 1] = 0xFF;
+    }
+    b
+}
+
+/// `dispack-filter-check.sh`.
+fn dispack_filter(dir: &std::path::Path, text: &[u8]) {
+    if !text.is_empty() {
+        write(dir, "code_small", &make_code(text, 30, 1));
+        write(dir, "code_big", &make_code(text, 200, 7));
+        let mut cn = make_code(text, 60, 3);
+        cn.extend(prng(9, 40000));
+        write(dir, "code_noise", &cn);
+    }
+    // A plausible jump table: dwords that all land inside the block's address
+    // range, which is what DetectJumpTable keys on (>= 3 consecutive entries).
+    const BASE: u32 = 0x401000;
+    let mut tbl = le32((0..64u32).map(|i| BASE + ((i * 17) % 0x8000)));
+    match text.is_empty() {
+        true => tbl.extend(prng(5, 4000)),
+        false => tbl.extend_from_slice(text),
+    }
+    write(dir, "jumptable", &tbl);
+    // Runs of EXACTLY TWO in-range dwords separated by an out-of-range one. The
+    // threshold is "fewer than 3 is coincidence", so this is the only shape
+    // that tells 3 from 2 -- with 64 consecutive entries both behave alike.
+    let mut pairs = Vec::new();
+    for i in 0..300u32 {
+        pairs.extend_from_slice(&(BASE + ((i * 29) % 0x8000)).to_le_bytes());
+        pairs.extend_from_slice(&(BASE + ((i * 31) % 0x8000)).to_le_bytes());
+        pairs.extend_from_slice(&(0xF0000000u32 + i).to_le_bytes());
+    }
+    write(dir, "pairs", &pairs);
+    // Makes the MTF SEARCH BOUND falsifiable. add_mtf pushes to the front, so
+    // after inserting t0..t299 the table holds mtf[k] == t(299-k), putting t45
+    // at index 254. Referencing t45 next is found with the real bound and
+    // missed with one smaller -- and a miss emits a full 32-bit address instead
+    // of a one-byte index, which changes the output.
+    let mut many = le32((0..300u32).map(|i| BASE + i * 4));
+    many.extend_from_slice(&(BASE + 45 * 4).to_le_bytes());
+    write(dir, "mtf_boundary", &many);
+    const TOT: usize = 100000;
+    // e8 density either side of 0.002 (200 sites in 100000 bytes).
+    write(dir, "det_dense_just_over", &dispack_calls(260, TOT, 0.50, 0.30, 11, 0.0, false, 0.0));
+    write(dir, "det_dense_just_under", &dispack_calls(150, TOT, 0.50, 0.30, 12, 0.0, false, 0.0));
+    // (exe+obj)/e8 straddling 0.20 CLOSELY -- 0.25 vs 0.15 leaves room to move
+    // the threshold to 0.22 without reclassifying anything, which it did.
+    write(dir, "det_callish_over", &dispack_calls(400, TOT, 0.080, 0.125, 13, 0.0, false, 0.0));
+    write(dir, "det_callish_under", &dispack_calls(400, TOT, 0.080, 0.115, 14, 0.0, false, 0.0));
+    write(dir, "det_exe_share_over", &dispack_calls(400, TOT, 0.0125, 0.60, 15, 0.0, false, 0.0));
+    // exe_frac 0 but plenty of 0xFF/0xFF sites: correct code counts NO exe (so
+    // DATA), while dropping the `p[5] != 0xFF` test counts them all (so EXE).
+    write(dir, "det_exe_share_under", &dispack_calls(400, TOT, 0.0, 0.60, 16, 0.0, false, 0.30));
+    write(dir, "det_obj_zero_tail", &dispack_calls(400, TOT, 0.05, 0.10, 17, 0.40, false, 0.0));
+    write(dir, "det_e8_at_end", &dispack_calls(300, TOT, 0.50, 0.30, 18, 0.0, true, 0.0));
+    write(dir, "noise", &prng(2, 200000));
+    write(dir, "zeros", &vec![0u8; 100000]);
+    write(dir, "text", &repeat(FOX, 3000));
+    for n in [0usize, 1, 4, 5, 14, 15, 16, 64, 4096, 65536] {
+        write(dir, &format!("n_{n}"), &prng(4, n));
+    }
+}
+
 /// `crypto-check.sh` -- sizes either side of the 256 KB pipeline buffer, each
 /// seeded by its own length so no two files share a prefix.
 fn crypto(dir: &std::path::Path) {
@@ -1670,6 +1839,13 @@ fn main() {
         );
         std::process::exit(2);
     }
+    // An optional THIRD argument is auxiliary input a corpus needs but cannot
+    // produce -- the dispack ones need the .text of a real i386 object, which
+    // the shell compiles and difftest-util extracts.
+    let aux = match args.next() {
+        Some(p) => std::fs::read(p).unwrap_or_default(),
+        None => Vec::new(),
+    };
     let dir = std::path::PathBuf::from(dir);
     std::fs::create_dir_all(&dir).unwrap_or_else(|e| panic!("mkdir {}: {e}", dir.display()));
     match name.as_str() {
@@ -1702,6 +1878,8 @@ fn main() {
         "grzip-stage" => grzip_stage(&dir),
         "mmdet" => mmdet(&dir),
         "lzma-gap" => lzma_gap(&dir),
+        "dispack" => dispack(&dir, &aux),
+        "dispack-filter" => dispack_filter(&dir, &aux),
         other => {
             eprintln!("corpusgen: unknown corpus {other:?}");
             std::process::exit(2);

@@ -10,9 +10,10 @@
 //!   difftest-util lzma2-blocks <file>     count LZMA2 dictionary resets
 //!   difftest-util genhex key|iv N EXTRA   the crypto harness's key/IV material
 //!   difftest-util all-zeros <file> [skip] 1 if the rest of the file is zero
+//!   difftest-util elf-text <obj>        the .text section of an i386 ELF
 //! ```
 
-use std::io::Read;
+use std::io::{Read, Write};
 
 /// Count LZMA2 dictionary resets, which is exactly one per block.
 ///
@@ -81,6 +82,59 @@ fn genhex(kind: &str, n: usize, extra: i64) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
+/// The `.text` section of a 32-bit little-endian ELF object, to stdout.
+///
+/// The dispack harnesses compile a real i386 object and use its machine code as
+/// their corpus — synthetic bytes do not have the call/jump density `detect()`
+/// keys on. Only the shape the Python read is handled: `e_shoff` at 0x20,
+/// `e_shentsize` at 0x2e, `e_shnum` at 0x30, `e_shstrndx` at 0x32, and 24-byte
+/// section headers whose 5th and 6th words are offset and size.
+///
+/// Returns nothing when the file is missing or has no `.text`, which is how the
+/// harness detects "no i386 compiler here" and skips the code corpus.
+fn elf_text(path: &str) -> Vec<u8> {
+    let d = match std::fs::read(path) {
+        Ok(d) => d,
+        Err(_) => return Vec::new(),
+    };
+    let u32_at = |o: usize| -> Option<u32> {
+        d.get(o..o + 4).map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+    };
+    let u16_at = |o: usize| -> Option<u16> {
+        d.get(o..o + 2).map(|b| u16::from_le_bytes([b[0], b[1]]))
+    };
+    let (shoff, ent, num, stx) = match (u32_at(0x20), u16_at(0x2e), u16_at(0x30), u16_at(0x32)) {
+        (Some(a), Some(b), Some(c), Some(e)) => (a as usize, b as usize, c as usize, e as usize),
+        _ => return Vec::new(),
+    };
+    let sh = |i: usize| -> Option<(u32, u32, u32)> {
+        let o = shoff + i * ent;
+        Some((u32_at(o)?, u32_at(o + 16)?, u32_at(o + 20)?))
+    };
+    let strtab = match sh(stx) {
+        Some((_, off, _)) => off as usize,
+        None => return Vec::new(),
+    };
+    for i in 0..num {
+        let (name, off, size) = match sh(i) {
+            Some(t) => t,
+            None => continue,
+        };
+        let start = strtab + name as usize;
+        let end = match d[start..].iter().position(|b| *b == 0) {
+            Some(n) => start + n,
+            None => continue,
+        };
+        if &d[start..end] == b".text" {
+            return d
+                .get(off as usize..off as usize + size as usize)
+                .map(<[u8]>::to_vec)
+                .unwrap_or_default();
+        }
+    }
+    Vec::new()
+}
+
 fn read_file(path: &str) -> Vec<u8> {
     let mut v = Vec::new();
     std::fs::File::open(path)
@@ -103,6 +157,12 @@ fn main() {
             let n: usize = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(0);
             let extra: i64 = args.get(3).and_then(|s| s.parse().ok()).unwrap_or(0);
             println!("{}", genhex(kind, n, extra));
+        }
+        "elf-text" => {
+            let out = std::io::stdout();
+            out.lock()
+                .write_all(&elf_text(args.get(1).map(String::as_str).unwrap_or("")))
+                .expect("write");
         }
         // `d = read()[skip:]; print(int(d == bytes(len(d))))` -- 1 when every
         // remaining byte is zero.

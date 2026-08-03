@@ -52,151 +52,31 @@ cc() { local out="$1" lib="$2"; shift 2
 # which this driver never calls, while keeping DisFilter -- the C oracle here.
 cc "$W/t" "$LIB" -DDARC_RUST || { echo "harness build failed" >&2; exit 1; }
 
-python3 - "$W" <<'PY'
-import os,sys,struct,subprocess
-w=sys.argv[1]
-def prng(seed,n):
-    s=seed; o=bytearray()
-    for _ in range(n): s=(s*1103515245+12345)&0xffffffff; o.append((s>>16)&0xff)
-    return bytes(o)
+( cd "$ROOT/rust" && cargo build --release -q -p darc-codecs --bin corpusgen --bin difftest-util ) || exit 1
 
-src=f"{w}/x.c"
-open(src,"w").write('''
+# The code corpus is REAL i386 machine code: synthetic bytes do not have the
+# call density detect() keys on. The compile stays here -- orchestration is
+# shell's job -- and difftest-util reads the .text section out of the object.
+# An empty .text means no i386 compiler on this host, and the corpus skips its
+# code inputs exactly as it always did.
+cat > "$W/x.c" <<'CSRC'
 __attribute__((noinline)) static int a(int x){return x*3+1;}
 __attribute__((noinline)) static int b(int x){return a(x)+a(x-1)+2;}
 __attribute__((noinline)) static int c(int x){return b(x)*a(x)-b(x+1);}
 __attribute__((noinline)) static int d(int x){return c(x)+b(x)+a(x)+c(x-2);}
 __attribute__((noinline)) static int e(int x){return d(x)^c(x)^b(x)^a(x);}
 __attribute__((noinline)) int top(int*p,int n){int s=0;for(int i=0;i<n;i++){s+=e(p[i])+d(s)+c(i)-b(s^i)+a(p[i&7]);if(s>100000)s=e(s)-d(i);}return s;}
-''')
-obj=f"{w}/x.o"
-r=subprocess.run(["clang","--target=i386-unknown-linux-gnu","-m32","-O2","-c",src,"-o",obj],
-                 capture_output=True)
-text=b""
-if r.returncode!=0:
-    sys.stderr.write("i386 compile unavailable; code corpus skipped\n")
-else:
-    d=open(obj,"rb").read()
-    e_shoff,=struct.unpack("<I",d[0x20:0x24]); ent,=struct.unpack("<H",d[0x2e:0x30])
-    num,=struct.unpack("<H",d[0x30:0x32]); stx,=struct.unpack("<H",d[0x32:0x34])
-    def sh(i): o=e_shoff+i*ent; return struct.unpack("<IIIIII",d[o:o+24])
-    st=sh(stx)[4]
-    for i in range(num):
-        name,_,_,_,off,size=sh(i)
-        if d[st+name:d.index(b"\0",st+name)].decode()==".text": text=d[off:off+size]
+CSRC
+clang --target=i386-unknown-linux-gnu -m32 -O2 -c "$W/x.c" -o "$W/x.o" 2>/dev/null \
+  || echo "i386 compile unavailable; code corpus skipped" >&2
+"$ROOT/rust/target/release/difftest-util" elf-text "$W/x.o" > "$W/text.bin" 2>/dev/null || : > "$W/text.bin"
+# The marker the corpus generator used to write, so the run can say out loud
+# that the interesting paths are uncovered rather than quietly passing.
+[ -s "$W/text.bin" ] && : > "$W/HAVE_CODE"
 
-def make_code(reps,seed):
-    blob=bytearray(text*reps); s=seed; i=0
-    while i<len(blob)-5:
-        if blob[i]==0xE8 and blob[i+1]==0==blob[i+2]==blob[i+3]==blob[i+4]:
-            s=(s*1103515245+12345)&0xffffff
-            blob[i+1]=s&0xff; blob[i+2]=(s>>8)&0xff; blob[i+3]=(s>>16)&0xff; blob[i+4]=0xFF
-        i+=1
-    return bytes(blob)
-
-wf=lambda n,b: open(f"{w}/in/{n}","wb").write(b)
-if text:
-    wf("code_small", make_code(30,1))
-    wf("code_big",   make_code(200,7))
-    wf("code_noise", make_code(60,3)+prng(9,40000))
-    open(f"{w}/HAVE_CODE","w").write("1")
-# A plausible jump table: dwords that all land inside the block's address range,
-# which is exactly what DetectJumpTable keys on (>=3 consecutive entries).
-base=0x401000
-tbl=b"".join(struct.pack("<I", base+((i*17)%0x8000)) for i in range(64))
-wf("jumptable", tbl + (text if text else prng(5,4000)))
-# Runs of EXACTLY TWO in-range dwords, separated by an out-of-range one. The
-# threshold is "fewer than 3 is coincidence, not a table", so this is the only
-# shape that distinguishes 3 from 2 -- with 64 consecutive entries above, both
-# thresholds behave identically and a sabotage of the constant goes unnoticed.
-pairs=bytearray()
-for i in range(300):
-    pairs += struct.pack("<I", base+((i*29)%0x8000))
-    pairs += struct.pack("<I", base+((i*31)%0x8000))
-    pairs += struct.pack("<I", 0xF0000000 + i)   # out of range: breaks the run
-wf("pairs", bytes(pairs))
-# Make the MTF SEARCH BOUND falsifiable. Distinct targets alone do not: every
-# one is a miss, find_mtf never returns a hit, and 255-vs-254 cannot matter.
-# The bound only shows on a lookup that lands at exactly index 254.
-#
-# add_mtf pushes to the front, so after inserting t0..t299 in order the table
-# holds mtf[k] == t(299-k), putting t45 at index 254. Referencing t45 as the
-# next entry is therefore found with the real bound (searches 0..=254) and
-# missed with a bound one smaller -- which changes the output, because a miss
-# emits a full 32-bit address instead of a one-byte index.
-many=bytearray()
-for i in range(300):
-    many += struct.pack("<I", base+(i*4))
-many += struct.pack("<I", base+(45*4))    # sits at index 254 by the above
-wf("mtf_boundary", bytes(many))
-# --- inputs built for detect(), whose thresholds are otherwise unfalsifiable ---
-#
-# The code/non-code inputs above are POLARISED: far above every threshold or far
-# below, so moving one moderately reclassifies nothing. These sit deliberately
-# near each boundary, and one exercises the object-file arm, which the backward-
-# call rewrite above never produces (it only makes p[4]==0xFF).
-#
-# detect() scans p[0]==0xE8 with p[4]/p[5] deciding the form:
-#   exe form: p[4]==0xFF && p[5]!=0xFF     obj form: p[4]==0x00 && p[5]!=0x00
-# and requires  e8/len >= 0.002,  (exe+obj)/e8 >= 0.20,  exe/e8 >= 0.01.
-def calls(n_e8, total, exe_frac, obj_frac, seed=1, zero_frac=0.0, tail_e8=False, ffff_frac=0.0):
-    """Filler with n_e8 E8 sites in a chosen mix of forms.
-
-    exe form  p[4]=0xFF p[5]!=0xFF     obj form  p[4]=0x00 p[5]!=0x00
-    zero form p[4]=0x00 p[5]==0x00 -- counts as NEITHER, and exists only so the
-              `p[5] != 0` half of the obj test is falsifiable; without it,
-              dropping that check changes nothing.
-    ffff form p[4]=0xFF p[5]==0xFF -- also NEITHER, and likewise the only way to
-              falsify the `p[5] != 0xFF` half of the exe test.
-    tail_e8   plants an E8 at len-5 AND makes the final byte 0xFF. Both are
-              needed: a scan that runs one position too far only reads p[5]
-              (out of range) if p[4]==0xFF or 0x00 -- otherwise `&&`
-              short-circuits and the bug is invisible. That is exactly why the
-              first attempt at this input failed to catch anything.
-    """
-    b = bytearray(prng(seed, total))
-    for i in range(len(b)):          # scrub stray E8 so the count is exact
-        if b[i] == 0xE8: b[i] = 0xE7
-    n_exe = int(n_e8 * exe_frac); n_obj = int(n_e8 * obj_frac)
-    n_zero = int(n_e8 * zero_frac); n_ffff = int(n_e8 * ffff_frac)
-    step = max(6, total // max(1, n_e8))
-    for k in range(n_e8):
-        i = k * step
-        if i + 6 > total: break
-        b[i] = 0xE8
-        if k < n_exe:                      b[i+4], b[i+5] = 0xFF, 0x11
-        elif k < n_exe + n_obj:            b[i+4], b[i+5] = 0x00, 0x22
-        elif k < n_exe + n_obj + n_zero:   b[i+4], b[i+5] = 0x00, 0x00
-        elif k < n_exe + n_obj + n_zero + n_ffff: b[i+4], b[i+5] = 0xFF, 0xFF
-        else:                              b[i+4], b[i+5] = 0x7F, 0x33
-    if tail_e8 and total >= 6:
-        b[total-5] = 0xE8            # its p[5] would be buf[total]: out of range
-        b[total-1] = 0xFF            # ...and 0xFF here forces p[5] to be read
-    return bytes(b)
-
-TOT = 100000
-# e8 density either side of 0.002 (200 sites in 100000 bytes).
-wf("det_dense_just_over",  calls(260, TOT, 0.50, 0.30, 11))
-wf("det_dense_just_under", calls(150, TOT, 0.50, 0.30, 12))
-# (exe+obj)/e8 straddling 0.20 CLOSELY -- 0.25 vs 0.15 leaves room to move the
-# threshold to 0.22 without reclassifying anything, which it did.
-wf("det_callish_over",     calls(400, TOT, 0.080, 0.125, 13))  # 0.205
-wf("det_callish_under",    calls(400, TOT, 0.080, 0.115, 14))  # 0.195
-# exe/e8 straddling 0.01 closely, the rest carried by the OBJ arm.
-wf("det_exe_share_over",   calls(400, TOT, 0.0125, 0.60, 15))  # 0.0125
-# exe_frac 0 but plenty of 0xFF/0xFF sites: correct code counts NO exe (so
-# DATA), while dropping the `p[5] != 0xFF` test counts them all (so EXE).
-wf("det_exe_share_under",  calls(400, TOT, 0.0000, 0.60, 16, ffff_frac=0.30))
-# An E8 whose p[4]==p[5]==0, so the obj test's second half matters.
-wf("det_obj_zero_tail",    calls(400, TOT, 0.05, 0.10, 17, zero_frac=0.40))
-# An E8 at len-5, which a correct scan must not look past.
-wf("det_e8_at_end",        calls(300, TOT, 0.50, 0.30, 18, tail_e8=True))
-wf("noise",   prng(2,200000))
-wf("zeros",   b"\x00"*100000)
-wf("text",    b"the quick brown fox jumps over the lazy dog. "*3000)
-for n in (0,1,4,5,14,15,16,64,4096,65536):
-    wf(f"n_{n}", prng(4,n))
-PY
+# Corpus from corpusgen -- a literal transcription of the python3 heredoc
+# that stood here, accepted on a byte comparison over every file it writes.
+"$ROOT/rust/target/release/corpusgen" dispack-filter "$W/in" "$W/text.bin"
 
 [ -f "$W/HAVE_CODE" ] || echo "  WARNING: no i386 compiler -- the code corpus is absent and the interesting paths are NOT covered"
 
