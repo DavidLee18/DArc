@@ -139,6 +139,127 @@ fn bsc_full(dir: &std::path::Path) {
     }
 }
 
+/// `b"".join(bytes([i%m])*len for i in range(n))` — runs of a FIXED length,
+/// unlike [`runs`] whose length varies with the index.
+fn runs_fixed(n: usize, m: usize, len: usize) -> Vec<u8> {
+    let mut out = Vec::new();
+    for i in 0..n {
+        out.extend(std::iter::repeat_n((i % m) as u8, len));
+    }
+    out
+}
+
+/// `bytes(sorted(prng(seed, n)))` — the same bytes, ascending. A sorted input
+/// is the worst case for a suffix sorter, which is why it is in the corpus.
+fn sorted_prng(seed: u32, n: usize) -> Vec<u8> {
+    let mut v = prng(seed, n);
+    v.sort_unstable();
+    v
+}
+
+/// `bytes(range(256))*reps`.
+fn alphabet_full(reps: usize) -> Vec<u8> {
+    let one: Vec<u8> = (0..=255u8).collect();
+    one.repeat(reps)
+}
+
+/// `(pattern*reps)[:n]` — a repeat cut to an exact length.
+fn truncated_repeat(pattern: &[u8], reps: usize, n: usize) -> Vec<u8> {
+    let mut v = pattern.repeat(reps);
+    v.truncate(n);
+    v
+}
+
+/// The Fibonacci word: `f(0)="a"`, `f(1)="ab"`, `f(k)=f(k-1)+f(k-2)`, at k=24.
+///
+/// Its LMS substrings collide maximally, which is what forces SA-IS to recurse
+/// instead of resolving names in a single pass.
+fn fibonacci_word(k: usize) -> Vec<u8> {
+    let (mut a, mut b): (Vec<u8>, Vec<u8>) = (b"a".to_vec(), b"ab".to_vec());
+    if k == 0 {
+        return a;
+    }
+    for _ in 2..=k {
+        let next = [b.clone(), a].concat();
+        a = b;
+        b = next;
+    }
+    b
+}
+
+/// `bsc-bwt-check.sh` — the inverse BWT.
+fn bsc_bwt(dir: &std::path::Path) {
+    write(dir, "text", &repeat(FOX, 4000));
+    write(dir, "text_sm", &repeat(FOX, 200));
+    write(dir, "runs", &runs(3000));
+    write(dir, "onebyte", &vec![0x5a; 80000]);
+    write(dir, "onebyte_s", &vec![0x5a; 5000]);
+    write(dir, "twobyte", &repeat(b"\x00\xff", 45000));
+    write(dir, "noise", &prng(9, 200000));
+    write(dir, "noise_sm", &prng(9, 4000));
+    write(dir, "alphabet", &alphabet(200000));
+    write(dir, "sparse", &sparse(500));
+    write(dir, "skew", &skew(150000));
+    for n in [2usize, 3, 16, 255, 256, 257, 4095, 4096, 65535, 65536, 65537, 131072] {
+        write(dir, &format!("n_{n}"), &prng(3, n));
+    }
+}
+
+/// `bsc-bwt-encode-check.sh` — the forward BWT, against libsais.
+fn bsc_bwt_encode(dir: &std::path::Path) {
+    write(dir, "text", &repeat(FOX, 2000));
+    write(dir, "runs", &runs_fixed(400, 251, 200));
+    write(dir, "longruns", &runs_fixed(60, 7, 5000));
+    write(dir, "noise", &prng(7, 150000));
+    write(dir, "zeros", &vec![0u8; 80000]);
+    write(dir, "one_byte", &vec![b'Q'; 40000]);
+    write(dir, "sorted", &sorted_prng(11, 120000));
+    write(dir, "full_alpha", &alphabet_full(300));
+    let mut ends_zero = prng(3, 50000);
+    ends_zero.pop();
+    ends_zero.push(0);
+    write(dir, "ends_zero", &ends_zero);
+    write(dir, "periodic3", &repeat(b"abc", 30000));
+    write(dir, "periodic2", &repeat(b"ab", 45000));
+    write(dir, "fibonacci", &fibonacci_word(24));
+    write(dir, "almost_per", &repeat(b"abcabcabcabd", 8000));
+    // `bytes((i*i)%2 for i in range(100000))` -- i*i is even iff i is.
+    write(dir, "two_symbols", &(0..100000u64).map(|i| ((i * i) % 2) as u8).collect::<Vec<u8>>());
+    write(dir, "bwt_like", &sorted_prng(5, 90000));
+    for n in [2usize, 3, 4, 5, 17, 255, 256, 257, 1000, 65535, 65536] {
+        write(dir, &format!("n_{n}"), &truncated_repeat(b"abracadabra", 10000, n));
+    }
+}
+
+/// `bsc-st-check.sh` — the inverse ST.
+fn bsc_st(dir: &std::path::Path) {
+    write(dir, "text", &repeat(FOX, 3000));
+    write(dir, "english", &repeat(ENGLISH, 900));
+    write(dir, "runs", &runs(2000));
+    write(dir, "onebyte", &vec![0x5a; 80000]);
+    write(dir, "twobyte", &repeat(b"\x00\xff", 40000));
+    write(dir, "noise", &prng(9, 200000));
+    write(dir, "alphabet", &alphabet(200000));
+    write(dir, "sparse", &sparse(500));
+    write(dir, "skew", &skew(150000));
+    for n in [2usize, 3, 16, 255, 256, 257, 4096, 65537] {
+        write(dir, &format!("n_{n}"), &prng(3, n));
+    }
+}
+
+/// `bsc-st-encode-check.sh` — the forward ST.
+fn bsc_st_encode(dir: &std::path::Path) {
+    write(dir, "text", &repeat(FOX, 2000));
+    write(dir, "noise", &prng(7, 120000));
+    write(dir, "zeros", &vec![0u8; 60000]);
+    write(dir, "runs", &runs_fixed(400, 251, 150));
+    write(dir, "sorted", &sorted_prng(11, 90000));
+    write(dir, "alpha", &alphabet_full(300));
+    for n in [2usize, 3, 4, 17, 255, 256, 65537] {
+        write(dir, &format!("n_{n}"), &truncated_repeat(b"abracadabra", 10000, n));
+    }
+}
+
 /// `int(30000*math.sin(i/50.0)) >> (8*(i%2)) & 0xff` — a 16-bit sine, emitted
 /// little-endian one byte at a time, which is what `mm-reorder-check.sh` feeds
 /// MM's `:r1` transpose.
@@ -204,6 +325,10 @@ fn main() {
     match name.as_str() {
         "bsc" => bsc(&dir),
         "bsc-full" => bsc_full(&dir),
+        "bsc-bwt" => bsc_bwt(&dir),
+        "bsc-bwt-encode" => bsc_bwt_encode(&dir),
+        "bsc-st" => bsc_st(&dir),
+        "bsc-st-encode" => bsc_st_encode(&dir),
         other => {
             eprintln!("corpusgen: unknown corpus {other:?}");
             std::process::exit(2);

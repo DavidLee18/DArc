@@ -41,23 +41,11 @@ cc "$W/rs" -DUSE_RUST "$LIB" || { echo "Rust driver build failed" >&2; exit 1; }
 # ST3 sorts rotations by their leading 3 bytes, so what matters is the bigram
 # and trigram distribution: text, flat noise, a single symbol, long runs, sorted
 # data, the full alphabet, and lengths down to the n <= 1 early return.
-python3 - "$W/in" <<'CORPUS'
-import os,sys
-d=sys.argv[1]; os.makedirs(d,exist_ok=True)
-def prng(seed,n):
-    s=seed; o=bytearray()
-    for _ in range(n): s=(s*1103515245+12345)&0xffffffff; o.append((s>>16)&0xff)
-    return bytes(o)
-w=lambda n,b: open(f"{d}/{n}","wb").write(b)
-w("text",   b"the quick brown fox jumps over the lazy dog. "*2000)
-w("noise",  prng(7,120000))
-w("zeros",  b"\x00"*60000)
-w("runs",   b"".join(bytes([i%251])*150 for i in range(400)))
-w("sorted", bytes(sorted(prng(11,90000))))
-w("alpha",  bytes(range(256))*300)
-for n in (2,3,4,17,255,256,65537):
-    w(f"n_{n}", (b"abracadabra"*10000)[:n])
-CORPUS
+( cd "$ROOT/rust" && cargo build --release -q -p darc-codecs --bin corpusgen ) || exit 1
+
+# Corpus from corpusgen -- a literal transcription of the python3 heredoc
+# that stood here, accepted on a byte comparison over every file it writes.
+"$ROOT/rust/target/release/corpusgen" bsc-st-encode "$W/in"
 
 fail=0; tested=0
 for k in 3 4 5 6; do
