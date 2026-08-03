@@ -89,7 +89,7 @@ jobs:
         # cpphs is required by mhs to preprocess {-# LANGUAGE CPP #-} modules.
         # Its absence is why the build silently failed on every platform while
         # CI still reported success.
-        sudo apt-get install -y liblua5.1-dev libncurses-dev libcurl4-openssl-dev cpphs
+        sudo apt-get install -y libncurses-dev libcurl4-openssl-dev cpphs
     # `make minstall` dominates the short jobs. Keyed on the pinned
     # MicroHs commit, so bumping the pin invalidates it.
     - name: Cache MicroHs
@@ -181,10 +181,6 @@ jobs:
     - name: Install packages (macOS)
       if: runner.os == 'macOS'
       run: |
-        # No lua@5.1 here: Homebrew removed the formula, and ./compile builds
-        # Lua from the copy vendored in HsLua/src regardless. Asking for it
-        # only produced a red "No available formula" line in every macOS run
-        # that had nothing to do with the build.
         brew install ncurses || true
 
     # `make minstall` dominates the short jobs. Keyed on the pinned
@@ -550,7 +546,7 @@ jobs:
     - name: Install packages
       run: |
         sudo apt-get update
-        sudo apt-get install -y liblua5.1-dev libncurses-dev libcurl4-openssl-dev cpphs
+        sudo apt-get install -y libncurses-dev libcurl4-openssl-dev cpphs
     # `make minstall` dominates the short jobs. Keyed on the pinned
     # MicroHs commit, so bumping the pin invalidates it.
     - name: Cache MicroHs
@@ -922,7 +918,7 @@ jobs:
     - name: Install packages
       run: |
         sudo apt-get update
-        sudo apt-get install -y liblua5.1-dev libncurses-dev libcurl4-openssl-dev cpphs
+        sudo apt-get install -y libncurses-dev libcurl4-openssl-dev cpphs
     - name: Codec differential test (Rust vs C)
       run: |
         chmod +x rust/difftest/run.sh
@@ -953,7 +949,7 @@ jobs:
     - name: Install packages
       run: |
         sudo apt-get update
-        sudo apt-get install -y liblua5.1-dev libncurses-dev libcurl4-openssl-dev cpphs
+        sudo apt-get install -y libncurses-dev libcurl4-openssl-dev cpphs
     # A differential test that has never failed proves nothing. This mutates the
     # port and asserts every mutation is caught by at least one input; it also
     # aborts if a mutation pattern no longer matches, because a mutation that
@@ -1003,7 +999,7 @@ jobs:
         # implementation, not from either reader being compared. The harness
         # fails rather than passing if no 7z binary is found, so this is a hard
         # dependency and not a nice-to-have.
-        sudo apt-get install -y liblua5.1-dev libncurses-dev libcurl4-openssl-dev cpphs p7zip-full
+        sudo apt-get install -y libncurses-dev libcurl4-openssl-dev cpphs p7zip-full
     - name: Per-codec differential tests (REP, TTA, MM, LZP, Dict, LZ4-HC)
       run: |
         chmod +x rust/difftest/*.sh
@@ -1107,7 +1103,7 @@ jobs:
     - name: Install packages
       run: |
         sudo apt-get update
-        sudo apt-get install -y liblua5.1-dev libncurses-dev libcurl4-openssl-dev cpphs
+        sudo apt-get install -y libncurses-dev libcurl4-openssl-dev cpphs
     - name: Codecs under debug assertions
       run: |
         chmod +x rust/difftest/*.sh
@@ -1135,7 +1131,7 @@ jobs:
     - name: Install packages
       run: |
         sudo apt-get update
-        sudo apt-get install -y liblua5.1-dev libncurses-dev libcurl4-openssl-dev cpphs
+        sudo apt-get install -y libncurses-dev libcurl4-openssl-dev cpphs
     - name: Per-codec differential tests (Tornado, GRZip, DisPack)
       run: |
         chmod +x rust/difftest/*.sh
@@ -1191,7 +1187,7 @@ jobs:
     - name: Install packages
       run: |
         sudo apt-get update
-        sudo apt-get install -y liblua5.1-dev libncurses-dev libcurl4-openssl-dev cpphs
+        sudo apt-get install -y libncurses-dev libcurl4-openssl-dev cpphs
     - name: BSC decoder differential tests
       run: |
         chmod +x rust/difftest/*.sh
@@ -1260,7 +1256,7 @@ jobs:
     - name: Install packages
       run: |
         sudo apt-get update
-        sudo apt-get install -y liblua5.1-dev libncurses-dev libcurl4-openssl-dev cpphs
+        sudo apt-get install -y libncurses-dev libcurl4-openssl-dev cpphs
     # Both SREP harnesses build their own oracle from the PINNED revision now --
     # Compression/SREP and srep/ are deleted from the working tree, so there is
     # no C here to build. c-reference.sh extracts both and runs srep/compile
@@ -1315,7 +1311,7 @@ jobs:
     - name: Install packages
       run: |
         sudo apt-get update
-        sudo apt-get install -y liblua5.1-dev libncurses-dev libcurl4-openssl-dev cpphs
+        sudo apt-get install -y libncurses-dev libcurl4-openssl-dev cpphs
     - name: Encryption differential test (Rust vs C)
       run: |
         chmod +x rust/difftest/*.sh
@@ -1379,7 +1375,7 @@ jobs:
     - name: Install packages
       run: |
         sudo apt-get update
-        sudo apt-get install -y liblua5.1-dev libncurses-dev libcurl4-openssl-dev cpphs
+        sudo apt-get install -y libncurses-dev libcurl4-openssl-dev cpphs
     - name: PPMd differential test, wide grid (Rust vs the C as shipped)
       run: |
         chmod +x rust/difftest/*.sh
@@ -1420,7 +1416,7 @@ jobs:
     - name: Install packages
       run: |
         sudo apt-get update
-        sudo apt-get install -y liblua5.1-dev libncurses-dev libcurl4-openssl-dev cpphs
+        sudo apt-get install -y libncurses-dev libcurl4-openssl-dev cpphs
     # `make minstall` dominates the short jobs. Keyed on the pinned
     # MicroHs commit, so bumping the pin invalidates it.
     - name: Cache MicroHs
@@ -1488,7 +1484,7 @@ jobs:
     - name: Install packages
       run: |
         sudo apt-get update
-        sudo apt-get install -y liblua5.1-dev libncurses-dev libcurl4-openssl-dev cpphs
+        sudo apt-get install -y libncurses-dev libcurl4-openssl-dev cpphs
     - name: Cache MicroHs
       uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
       with:
@@ -1581,7 +1577,7 @@ jobs:
     - name: Install packages
       run: |
         sudo apt-get update
-        sudo apt-get install -y liblua5.1-dev libncurses-dev libcurl4-openssl-dev cpphs
+        sudo apt-get install -y libncurses-dev libcurl4-openssl-dev cpphs
     # `make minstall` dominates the short jobs. Keyed on the pinned
     # MicroHs commit, so bumping the pin invalidates it.
     - name: Cache MicroHs

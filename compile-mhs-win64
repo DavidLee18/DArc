@@ -178,8 +178,6 @@ fi
 # 1) Build C/C++ objects for the Windows target with __MHS__ defined
 MHS=1 WINOUT="$WINOUT" DARC_WIN_ARCH="$arch" DARC_WIN_TOOLCHAIN="$toolchain" ./compile-win64-c
 
-# 2) ntrljmp.c for Lua trampoline (Lua not used on MHS path — skip unless GUI/Lua needed)
-# We don't link Lua under MHS for now; HsLua bindings only used by GHC build.
 
 # 3) MHS cross-compile setup
 # mhs targets.conf has [environment] block that pulls cc/ccflags/cclibs/conf from env vars
@@ -275,7 +273,7 @@ case "$toolchain" in
   llvm)
     cc_quirks="-include errno.h -Wno-incompatible-function-pointer-types" ;;
 esac
-export MHSCCFLAGS="-O2 $cc_quirks -I. -ICompression -IHsLua/src $runtime_defs $defines $gui_flag"
+export MHSCCFLAGS="-O2 $cc_quirks -I. -ICompression $runtime_defs $defines $gui_flag"
 # Same GNU ld archive-ordering problem as in ./compile -- see the note there.
 # mingw ld is GNU ld, and PE-COFF on x86_64/aarch64 carries no leading
 # underscore, so the ELF spelling is the right one here.
@@ -309,12 +307,12 @@ if ! command -v mhs >/dev/null 2>&1; then
 fi
 
 # Build optc/optl args (mhs forwards these to the C compiler/linker too)
-optc_args="-optc -I. -optc -ICompression -optc -IHsLua/src"
+optc_args="-optc -I. -optc -ICompression"
 for d in $defines $gui_flag; do optc_args="$optc_args -optc $d"; done
 
 mhs Arc \
   -tenvironment \
-  -iCompression -icompat-ghc -icompat-oldtime -iHsLua/src \
+  -iCompression -icompat-ghc -icompat-oldtime \
   $defines $gui_flag \
   $optc_args \
   -o "$exe"

@@ -1,7 +1,7 @@
 # CLAUDE.md
 
 DArc ("Distended Arc") is a fork of FreeArc 0.67 — a solid-compression archiver.
-Console binary `arc`, optional GTK binary `freearc`. Archive format is
+Console binary `arc`. Archive format is
 wire-compatible with [DArc86](https://github.com/YadeWira/DArc86) **except for
 encrypted archives**: those now carry `:h1` in the encryption method, because
 the old key/IV hex decoding was broken and weakened the key. Archives written
@@ -11,7 +11,7 @@ without it are still read. See `docs/architecture.md`.
 Rust ~53,000 lines (every codec, the crypto, the `.7z` reader, SREP);
 Haskell ~20,300 (application logic, archive format, UI — untouched by the port);
 C/C++ ~41,600, of which only ~2,600 is still a codec *engine* — `mmdet.cpp`,
-`4x4`, and a Tornado remnant. Everything else is vendored Lua, `Unarc/`, the FFI
+`4x4`, and a Tornado remnant. Everything else is `Unarc/`, the FFI
 wrappers, the framework, and `rust/difftest`'s C oracles.
 
 **The remaining work is the Haskell layer**, and it is the harder half: every
@@ -32,7 +32,6 @@ layer has none.
 
 ```bash
 ./compile-O2          # console  -> Tests/arc
-./compile-GUI-O2      # GTK      -> Tests/freearc
 ./compile-mhs-win64   # cross    -> Tests/arc-mhs-win64.exe
 DARC_WIN_ARCH=aarch64 ./compile-mhs-win64   # needs llvm-mingw, not Debian's
 ```
@@ -88,7 +87,7 @@ locally.
   `-X` flags plus `-w`. Match the surrounding style rather than modernising — a
   cleanup assuming `Applicative f => Monad f` breaks the build.
 - Prefer adapting DArc's `Compression/C_*.cpp` wrapper over patching vendored
-  sources. What is still vendored (libbsc, Lua) is kept close to pristine so it
+  sources. What is still vendored (libbsc) is kept close to pristine so it
   can be re-synced.
 - Commit messages are `Component: what changed`, with bodies that explain *why* —
   including what was measured and what was ruled out.

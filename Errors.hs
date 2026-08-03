@@ -126,9 +126,7 @@ shutdown msg exitCode = do
         _ -> condPrintLineLn "n"$ "There were "++show w++" warning(s)"
       ignoreErrors (msg &&& condPrintLineLn "n" msg)
       condPrintLineLn "e" ""
-#if !defined(FREEARC_GUI)
     putStrLn ""
-#endif
 
     ignoreErrors$ closeLogFile
     ignoreErrors$ hFlush stdout
@@ -347,16 +345,10 @@ errcode _              = aEXIT_CODE_FATAL_ERROR
 ---- Screen input/output in the encoding specified by the -sct option ------------------------------
 ----------------------------------------------------------------------------------------------------
 
-#ifdef FREEARC_GUI
-myPutStr      = doNothing
-myPutStrLn    = doNothing
-myFlushStdout = doNothing0
-#else
 myGetLine     = getLine >>= terminal2str
 myPutStr      = putStr   =<<. str2terminal
 myPutStrLn    = putStrLn =<<. str2terminal
 myFlushStdout = hFlush stdout
-#endif
 
 
 ----------------------------------------------------------------------------------------------------
@@ -373,11 +365,9 @@ printLineC c str = do
       makeLower xs                    =  xs
   let handle "w" = stderr
       handle _   = stdout
-#ifndef FREEARC_GUI
   hPutStr (handle oldc) =<< str2terminal separator
   hPutStr (handle c)    =<< str2terminal ((oldc=="h" &&& makeLower) str)
   hFlush  (handle c)
-#endif
   separator' =: (c,"")
 
 -- |Print a string followed by a line separator

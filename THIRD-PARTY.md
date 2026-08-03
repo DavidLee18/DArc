@@ -63,6 +63,6 @@ project as a whole to be conveyed under GPLv3:
 
 ## Not audited here
 
-`srep/` and `HsLua/` are vendored third-party trees with their own upstream
+`srep/` is a vendored third-party tree with its own upstream
 terms; they were not reviewed as part of the `.7z` change and are listed so
 their absence from the tables above is not read as a clean bill of health.

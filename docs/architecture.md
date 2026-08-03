@@ -10,7 +10,7 @@ Load this when changing `Arc*.hs`, the archive format, or the UI. It is the half
 
 `Command` (`Options.hs:39`) is a large record carrying both the parsed command and every relevant option (`opt_*` fields). It is threaded through essentially the entire codebase, and drivers pass modified copies downward (see `findArchives` at `Arc.hs:149`, which rewrites `cmd_arcname`/`opt_disk_basedir` per matched archive). Options are declared in `Options.hs` and parsed generically by `Cmdline.hs`. Learn this record early.
 
-Two dispatch escapes sit ahead of the main table: `.7z` archives are detected by `is7zArchive` and diverted to `Arc7z.hs` (native read via the `darc-sevenz` crate, which replaced the vendored 7-Zip SDK; *writing* shells out to the system `7zz`/`7z`), and under `FREEARC_GUI` an invocation with fewer than two arguments launches the file manager instead of running a command.
+Two dispatch escapes sit ahead of the main table: `.7z` archives are detected by `is7zArchive` and diverted to `Arc7z.hs` (native read via the `darc-sevenz` crate, which replaced the vendored 7-Zip SDK; *writing* shells out to the system `7zz`/`7z`). (A second escape used to launch a GTK file manager when given fewer than two arguments; the GUI has been removed.)
 
 ## The process pipeline (the core abstraction)
 
@@ -95,21 +95,16 @@ Two directories look dead and are **not** — check before deleting: `Compressio
 
 ## UI layer
 
-`UI.hs:5–11` is the backend switch, and the *only* place the GUI/console choice is made:
+`UI.hs` re-exports `CUI`, the console backend:
 
 ```haskell
-#ifdef FREEARC_GUI
-module UI (module UI, module UIBase, module GUI) where
-import GUI
-#else
 module UI (module UI, module UIBase, module CUI) where
 import CUI
-#endif
 ```
 
-`UI` **re-exports its backend**, so every caller just writes `import UI` and gets `uiStartProgram`, `uiScanning`, `askPassword`, etc. regardless of build. `UIBase.hs` holds backend-independent state (progress counters, timers, terminal detection); `CUI.hs` is console, `GUI.hs` is GTK. Adding a UI operation means adding it to `UIBase` or to *both* backends.
+Every caller writes `import UI` and gets `uiStartProgram`, `uiScanning`, `askPassword` and the rest. `UIBase.hs` holds backend-independent state (progress counters, timers, terminal detection); `CUI.hs` is the console implementation.
 
-The GUI build additionally pulls in the GTK Archive Manager — `FileManager.hs`, `FileManPanel.hs`, `FileManDialogs.hs`, `FileManDialogAdd.hs`, `FileManUtils.hs` — a two-pane browser layered on `ArhiveDirectory` and `ArcExtract`. `Arc.hs` imports `FileManager` only under `#ifdef FREEARC_GUI`, so a GUI build exercises considerably more code than the console build CI covers.
+**There used to be a second backend.** `GUI.hs` and the GTK Archive Manager — `FileManager.hs`, `FileManPanel.hs`, `FileManDialogs.hs`, `FileManDialogAdd.hs`, `FileManUtils.hs`, about 3,500 lines — were selected by `#ifdef FREEARC_GUI`, which also made `Arc.hs` launch the file manager when invoked with fewer than two arguments. All of it was **removed**: CI never built it, it carried no format risk, and it was the only thing keeping `UI.hs` a switch rather than a re-export. `uiScanning` is now the no-op the console build always saw — its body only ever ran under the GUI.
 
 `Charsets.hs`, `UTF8Z.hs`, and `FilePath.hs` handle the encoding minefield — archives store filenames that must round-trip across Windows/Unix and across codepages. `-sc` and `--language` route through here.
 
@@ -154,5 +149,5 @@ These build separately from the main binary and are not covered by `./compile-O2
 
   The one to know about, because it is the shape the next one will take: `ArcStructure.h` read the per-file time field as **4 bytes** while `ByteStream.hs:599` writes `CTime` as a fixed 64-bit value. Everything stored after it — the directory flags and the CRCs — therefore came out of the wrong offset, so directories were recreated as zero-byte *files* and every extracted file failed its CRC. Sizes and names, which are stored *before* the time field, were perfect. A reader that lists an archive correctly can still be reading the second half of every directory block from nowhere.
 - **SREP** — a huge-dictionary LZ77 preprocessor, and the one codec DArc reaches by spawning a binary rather than calling a symbol (`arc.ini`'s `[External compressor:srep]`). Both directions are now `rust/darc-codecs/src/srep/`, and `./compile` installs the port as `Tests/srep`; the vendored C (`Compression/SREP/` and `srep/`, 16,075 lines) is deleted. Its oracle lives on in the pinned reference — `rust/difftest/srep-check.sh` and `srep-encode-check.sh` build the C from `git archive` of `DARC_C_REF_SHA` rather than from the tree.
-- **`HsLua/`** — vendored Lua 5.1 plus Haskell bindings, used by `Options.hs` for `arc.*.lua` config scripts. `./compile` builds the vendored Lua from `HsLua/src`; the Windows cross-build sets `FREEARC_NO_LUA` and links none of it.
+- **Lua scripting — REMOVED.** `HsLua/` held a vendored Lua 5.1 (16,338 lines) plus Haskell bindings, and `Options.hs` dispatched eight advisory events (`ProgramStart`/`Done`, `CommandStart`/`Done`, `ArchiveStart`/`Done`, `Error`, `Warning`) to handlers registered by `arc.*.lua` config scripts. Every exception from a handler was swallowed, so a script could not affect an archive; nothing in the format or the CLI depended on it. The `luaLevel`/`luaEvent` call sites remain as no-ops — the stubs the `FREEARC_NO_LUA` build always used.
 - **`Installer/`** — NSIS installer scripts and packaging assets (Windows).

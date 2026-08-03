@@ -2,13 +2,8 @@
 ----------------------------------------------------------------------------------------------------
 ---- Collection and display of program run statistics (amount of data processed, speed, etc.) ------
 ----------------------------------------------------------------------------------------------------
-#ifdef FREEARC_GUI
-module UI (module UI, module UIBase, module GUI) where
-import GUI
-#else
 module UI (module UI, module UIBase, module CUI) where
 import CUI
-#endif
 
 import Prelude hiding (catch)
 import Control.Monad
@@ -145,16 +140,10 @@ uiStage msg = do
 uiStartScanning = do
   files_scanned =: 0
 
--- |Called while scanning the disk; files is the list of files found in the current directory
-uiScanning msg files = do  -- For now this only works in the GUI
-#ifdef FREEARC_GUI
-  failOnTerminated
-  files_scanned += i(length files)
-  files_scanned' <- val files_scanned
-  msg <- i18n msg
-  uiStage$ format msg (show3 files_scanned')
-#endif
-  return ()
+-- |Called while scanning the disk; files is the list of files found in the current directory.
+-- The body only ever ran under the GUI, which has been removed, so this is now
+-- the no-op the console build always saw.
+uiScanning msg files = return ()
 
 -- |Note the start of file compression/decompression
 uiStartFiles count = do

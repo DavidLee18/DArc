@@ -2,7 +2,7 @@
 ---------------------------------------------------------------------------------------------------
 ---- Description of the commands and options supported by FreeArc.                             ----
 ---- Universal command-line parser.                                                            ----
----- Lua script interpretation.                                                                ----
+---- (Lua scripting was removed; the luaLevel/luaEvent stubs remain as no-ops.)                ----
 ---------------------------------------------------------------------------------------------------
 module Options where
 
@@ -22,9 +22,6 @@ import Foreign.C.Types
 import System.Environment
 import System.IO.Unsafe
 import System.Time
-#if !defined(FREEARC_NO_LUA)
-import qualified Scripting.Lua as Lua
-#endif
 
 import qualified CompressionLib
 import Utils
@@ -546,63 +543,22 @@ findNoArgs options flag1 flag2  =  case filter (\(o,_) -> o==flag1||o==flag2) op
 
 
 ---------------------------------------------------------------------------------------------------
----- Lua script interpretation                                                                 ----
+---- (Lua scripting was removed; the luaLevel/luaEvent stubs remain as no-ops.)                ----
 ---------------------------------------------------------------------------------------------------
 
-#if defined(FREEARC_NO_LUA)
--- Lua support disabled, just imitate it
+-- Lua scripting was REMOVED. It was an advisory event hook -- eight events
+-- (ProgramStart/Done, CommandStart/Done, ArchiveStart/Done, Error, Warning)
+-- dispatched to handlers registered by `arc.*.lua` config scripts, with every
+-- exception swallowed so a script could not affect the archive. Nothing in the
+-- format or the CLI depended on it, and it carried a vendored copy of Lua 5.1
+-- (16,338 lines) that had to be built on every platform.
+--
+-- The stubs stay so the `luaLevel`/`luaEvent` call sites read unchanged; they
+-- are the same no-ops the FREEARC_NO_LUA build always used.
 type LuaState = ()
 luaInit      = return ()
 luaRun _ _ _ = return ()
-#else
 
--- |Instance of Lua interpreter (separate instances may be created for every command executed)
-type LuaState = Lua.LuaState
-
--- |Create new Lua instance
-luaInit = do
-  l <- Lua.newstate
-  Lua.openlibs l
-  -- Init event handler lists
-  for luaEvents (addLuaEvent l)
-  -- Execute configuration scripts, adding handlers for events
-  places <- configFilePlaces "arc.*.lua"
-  for places $ \place -> do
-    scripts <- dirWildcardList place `catch` (\(e::SomeException)->return [])
-    for scripts (Lua.dofile l . (takeDirectory place </>))
-  return l
-
--- |Execute Lua scripts assigned to the event cmd.
--- Exceptions from callproc (e.g. "attempt to call a nil value" when a Lua global
--- is not yet defined, or errors from user-registered handlers) are silently swallowed:
--- Lua events are advisory-only and must not crash the archiver.
-luaRun l cmd params = (Lua.callproc l cmd params :: IO ())
-                        `catch` (\(_::SomeException) -> return ())
-
--- |Add support of event cmd to Lua instance; check for dostring errors.
-addLuaEvent l cmd = do
-    ret <- Lua.dostring l $ unlines
-                      [ handlers++" = {}"
-                      , "function on"++cmd++"(handler)"
-                      , "  table.insert ("++handlers++", handler)"
-                      , "end"
-                      , "function "++cmd++"(params_raw)"
-                      , "  local params = params_raw"
-                      , "  for _,handler in ipairs("++handlers++") do"
-                      , "    handler(params)"
-                      , "  end"
-                      , "end"
-                      ]
-    -- If dostring fails the error message is left on the Lua stack; pop it so
-    -- subsequent calls don't see a corrupted stack.
-    when (ret /= 0) $ Lua.pop l 1
-  where handlers = "on"++cmd++"Handlers"
-
--- |Lua events list
-luaEvents = words "ProgramStart ProgramDone CommandStart CommandDone"++
-            words "ArchiveStart ArchiveDone Error Warning"
-
-#endif
 
 
 -- |The global Lua instance

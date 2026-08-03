@@ -9,8 +9,8 @@
 #
 # This is a PROBE, not a build path: compile-ghc was deleted at af8dd3c and is
 # not coming back. It lives in the scratchpad and is modelled on today's
-# ./compile, not on the deleted script -- the codec set, the Rust staticlibs and
-# the vendored Lua have all changed since.
+# ./compile, not on the deleted script -- the codec set and the Rust staticlibs
+# have both changed since.
 #
 # Differences from ./compile that matter:
 #   * no -D__MHS__ anywhere. It guards exactly one thing in the C
@@ -58,14 +58,6 @@ export DARC_EXTRA_DEFINES="-DDARC_RUST"
 echo "== Environment.o / URL.o, rebuilt WITHOUT __MHS__"
 make TEMPDIR="$ctempdir" ALL DEFINES="$defines" >/dev/null
 
-echo "== vendored Lua"
-lua_objs=""
-for src in HsLua/src/*.c; do
-  obj="$ctempdir/hslua_$(basename "${src%.c}").o"
-  [ -f "$obj" ] || clang -std=c99 -O2 -w -c "$src" -IHsLua/src -o "$obj"
-  lua_objs="$lua_objs $obj"
-done
-
 # Same list as ./compile, with Environment.o and URL.o taken from OUR tempdir.
 mhs_objs=/tmp/out/FreeArc
 c_objs="$ctempdir/Environment.o $ctempdir/URL.o \
@@ -86,12 +78,12 @@ esac
 c_libs="-lstdc++ -lncurses -lpthread $omp_libs $curl_libs"
 
 optl=()
-for o in $c_objs $lua_objs; do optl+=(-optl "$o"); done
+for o in $c_objs;            do optl+=(-optl "$o"); done
 for u in $sevenz_undef;      do optl+=(-optl "$u"); done
 for o in $rust_lib;          do optl+=(-optl "$o"); done
 for l in $c_libs;            do optl+=(-optl "$l"); done
 
-optc=(-optc -I. -optc -ICompression -optc -IHsLua/src)
+optc=(-optc -I. -optc -ICompression)
 for d in $defines; do optc+=(-optc "$d"); done
 
 # This codebase predates AMP; -w plus these is what lets it through a modern GHC.
@@ -106,7 +98,7 @@ for d in $defines; do hs_defines+=("$d"); done
 echo "== ghc $(ghc --numeric-version), -threaded"
 rm -f "$exe"
 ghc \
-  -i. -iCompression -icompat-oldtime -iHsLua/src \
+  -i. -iCompression -icompat-oldtime \
   -odir "$htempdir" -hidir "$htempdir" \
   -O2 -threaded -rtsopts \
   "${hs_defines[@]}" "${optc[@]}" "${exts[@]}" \

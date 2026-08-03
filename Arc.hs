@@ -51,10 +51,6 @@ import ArcCreate
 import ArcExtract
 import ArcRecover
 import Arc7z
-#ifdef FREEARC_GUI
-import FileManager
-#endif
-
 import Foreign.C.String (CString, withCString)
 import Foreign.C.Types  (CInt(..))
 
@@ -69,9 +65,6 @@ arc cmdline  =  doMain (words cmdline)
 
 -- |Turn the command line into a set of commands and execute them
 doMain args  = do
-#ifdef FREEARC_GUI
-  bg $ do                           -- run in a new thread that is not a bound thread
-#endif
 #ifdef __GLASGOW_HASKELL__
   setUncaughtExceptionHandler handler
   nprocs <- getNumProcessors
@@ -81,11 +74,6 @@ doMain args  = do
   setCtrlBreakHandler $ do          -- Set up ^Break handling
   ensureCtrlBreak "resetConsoleTitle" resetConsoleTitle $ do
   luaLevel "Program" [("command", args)] $ do
-#ifdef FREEARC_GUI
-  if length args < 2                -- When the program is invoked with no arguments or with a single argument (a directory/archive name)
-    then myGUI run args             --   start the full-featured Archive Manager
-    else do                         --   otherwise just carry out the (de)archiving commands
-#endif
   uiStartProgram                    -- Open the UI
   commands <- parseCmdline args     -- Turn the command line into a list of commands to execute
   -- FreeArc 0.67 --queue: serialize with other arc processes via advisory lockfile
@@ -98,11 +86,7 @@ doMain args  = do
 
  where
    handler (ex :: SomeException)  =
-#ifdef FREEARC_GUI
-    mapM_ doNothing $
-#else
     registerError$ GENERAL_ERROR$
-#endif
       maybe (show ex) (\(ErrorCall s) -> s) (fromException ex) : []
 
 

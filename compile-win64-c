@@ -85,7 +85,7 @@ FLAGS=(
   -DFREEARC_WIN -DFREEARC_INTEL_BYTE_ORDER -DFREEARC_64BIT
   $MHS_DEF $RUST_DEF
   -D_WIN32_WINNT=$win_ver -DWINVER=$win_ver
-  -I. -ICompression -IHsLua/src
+  -I. -ICompression
   -O2 -fno-strict-aliasing
   -Wno-unknown-pragmas -Wno-sign-compare -Wno-deprecated-declarations
 )

@@ -3,11 +3,9 @@ Distended Arc - Based on FreeArc
 
 ## Overview
 
-DArc is a command-line (and optional GUI) archiver based on [FreeArc](http://freearc.org). It supports solid compression, strong encryption, recovery records, SFX archives, and a wide variety of compression algorithms.
+DArc is a command-line archiver based on [FreeArc](http://freearc.org). It supports solid compression, strong encryption, recovery records, SFX archives, and a wide variety of compression algorithms.
 
 The console binary is named `arc` (Unix) or `Arc.exe` (Windows).  
-The optional GUI binary is named `freearc` (Unix) or `FreeArc.exe` (Windows).
-
 Archives produced by DArc are format-compatible with [DArc86](https://github.com/YadeWira/DArc86).
 
 ---
@@ -15,7 +13,7 @@ Archives produced by DArc are format-compatible with [DArc86](https://github.com
 ## Building
 
 > **Build System Overview:**
-> DArc uses MicroHs (a lightweight Haskell compiler) for the Haskell code and Clang for C/C++ components (compiled with C++17 standard). The build process automatically compiles all compression libraries, HsLua bindings, and links everything into the final executable.
+> DArc uses MicroHs (a lightweight Haskell compiler) for the Haskell code and Clang for C/C++ components (compiled with C++17 standard). The build process automatically compiles all compression libraries and links everything into the final executable.
 
 ### On Windows
 
@@ -27,13 +25,9 @@ Archives produced by DArc are format-compatible with [DArc86](https://github.com
    ```
    compile-O2
    ```
-   This will automatically build all necessary C/C++ components, HsLua, and the main executable.
-4. Compile the GUI version (`FreeArc.exe`):
-   ```
-   compile-GUI-O2
-   ```
-5. The compiled binaries are placed in the `Tests/` subdirectory.
-6. To compile SFX modules and Unarc (optional):
+   This will automatically build all necessary C/C++ components and the main executable.
+4. The compiled binaries are placed in the `Tests/` subdirectory.
+5. To compile SFX modules and Unarc (optional):
    ```
    cd Unarc
    make windows
@@ -46,7 +40,6 @@ Archives produced by DArc are format-compatible with [DArc86](https://github.com
    - MicroHs installs both `mhs` and `cpphs` into `~/.mcabal/bin`. **Put that directory on your `PATH`** — `mhs` shells out to `cpphs` for every module using `{-# LANGUAGE CPP #-}`, which is most of this codebase, and its absence produces an unhelpful `callCommand: failed 32512`.
    - **Required:** ncurses (`libncurses-dev` on Debian/Ubuntu; already present on macOS).
    - **Optional:** libcurl (`libcurl4-openssl-dev`, or `curl` via Homebrew) for URL/network archive support. Auto-detected; the build succeeds without it.
-   - **Lua is *not* required.** Lua 5.1 is built from the copy vendored in `HsLua/src`, so there is nothing to install and no version skew with the HsLua bindings. This matters because Lua 5.1 is end-of-life: Homebrew has removed `lua@5.1` and distributions are dropping `liblua5.1-dev`.
    - No GHC installation is needed.
 2. Make compile scripts executable (if needed):
    ```bash
@@ -56,13 +49,9 @@ Archives produced by DArc are format-compatible with [DArc86](https://github.com
    ```bash
    ./compile-O2
    ```
-   This will automatically build all necessary C/C++ components, HsLua, and the main executable.
-4. Compile the GUI version (`freearc`):
-   ```bash
-   ./compile-GUI-O2
-   ```
-5. The compiled binaries are placed in the `Tests/` subdirectory.
-6. To compile SFX modules and Unarc (optional):
+   This will automatically build all necessary C/C++ components and the main executable.
+4. The compiled binaries are placed in the `Tests/` subdirectory.
+5. To compile SFX modules and Unarc (optional):
    ```bash
    cd Unarc
    make linux
@@ -88,10 +77,6 @@ macOS is covered by CI (`macos-latest`) and builds with no extra dependencies be
 
 **Linux/macOS:**
 - **"mhs not found"**: Install MicroHs from [the official repository](https://github.com/augustss/MicroHs) and ensure it's in your PATH.
-- **"lua5.1 not found"**: Install Lua development libraries:
-  - Ubuntu/Debian: `sudo apt-get install liblua5.1-0-dev libncurses-dev`
-  - Fedora/RHEL: `sudo dnf install lua-devel ncurses-devel`
-  - macOS: `brew install lua@5.1 ncurses`
 - **"curl not found" (optional)**: Install libcurl development package or build without URL support (automatic).
 - **Permission errors**: Make sure compile scripts are executable: `chmod +x compile*`
 
