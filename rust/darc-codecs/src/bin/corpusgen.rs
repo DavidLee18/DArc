@@ -526,13 +526,19 @@ impl MersenneTwister {
         }
     }
 
-    /// `_randbelow(n)` — rejection sampling on `n.bit_length()` bits, which is
-    /// what `randrange(n)` calls.
+    /// `_randbelow(n)` — rejection sampling on `n.bit_length()` bits.
+    ///
+    /// `n.bit_length()`, NOT `(n-1).bit_length()`. CPython's comment on that
+    /// line is literally "don't use (n-1) here", and the two agree except when
+    /// `n` is an exact power of two — where the wrong one draws a bit fewer,
+    /// never rejects, and desynchronises every draw after it. `random.choice`
+    /// over a 2-element sequence is the first place that bites, and it is the
+    /// only corpus entry that caught it.
     fn randbelow(&mut self, n: u32) -> u32 {
         if n == 0 {
             return 0;
         }
-        let k = 32 - (n - 1).leading_zeros();
+        let k = 32 - n.leading_zeros();
         loop {
             let r = self.getrandbits(k);
             if r < n {
@@ -1422,6 +1428,175 @@ fn grzip_stage(dir: &std::path::Path) {
     }
 }
 
+/// `mmdet-check.sh` — the file-type detector.
+///
+/// Every file re-seeds at 12345, because the shell called `python3 -c` once per
+/// file and each got a fresh interpreter.
+///
+/// The `gate_*` sweep is dense rather than sampled on purpose: the band that
+/// discriminates depends on the noise, and the harness records that with five
+/// points only one caught a sabotage of the order-0 sum, and that one was luck.
+fn mmdet(dir: &std::path::Path) {
+    write(dir, "text_english", &repeat(FOX, 3000));
+    write(dir, "text_source", &repeat(b"int main(void) { return compute(x, y); }\n", 2500));
+
+    // `random.choice(seq)` is `seq[_randbelow(len(seq))]`.
+    let choice = |rng: &mut MersenneTwister, seq: &[u8], n: usize| -> Vec<u8> {
+        (0..n).map(|_| seq[rng.randbelow(seq.len() as u32) as usize]).collect()
+    };
+    let mut rng = MersenneTwister::new(12345);
+    write(dir, "text_narrow", &choice(&mut rng, b"abcdefghijklmnopqrst ", 100000));
+    let mut rng = MersenneTwister::new(12345);
+    let a17: Vec<u8> = (97u8..114).collect();
+    write(dir, "text_17chars", &choice(&mut rng, &a17, 80000));
+    let mut rng = MersenneTwister::new(12345);
+    let a80: Vec<u8> = (33u8..113).collect();
+    write(dir, "text_80chars", &choice(&mut rng, &a80, 80000));
+
+    // `random.getrandbits(8)` is the top 8 bits of one draw.
+    let mut rng = MersenneTwister::new(12345);
+    write(
+        dir,
+        "noise",
+        &(0..200000).map(|_| rng.getrandbits(8) as u8).collect::<Vec<u8>>(),
+    );
+
+    // `getrandbits(8) if random() < p else 65` -- the CONDITION is evaluated
+    // first, and `getrandbits` is only drawn when it is true. Getting that
+    // order wrong desynchronises the whole stream.
+    for (name, p) in [("near_gate1", 0.93f64), ("near_gate2", 0.85), ("near_gate3", 0.97)] {
+        let mut rng = MersenneTwister::new(12345);
+        write(
+            dir,
+            name,
+            &(0..200000)
+                .map(|_| match rng.random() < p {
+                    true => rng.getrandbits(8) as u8,
+                    false => 65,
+                })
+                .collect::<Vec<u8>>(),
+        );
+    }
+    // `65 if random() < bias/10000.0 else getrandbits(8)` -- the other way
+    // round, so the draw happens on the FALSE branch here.
+    for bias in [
+        1040u32, 1050, 1060, 1070, 1075, 1080, 1085, 1088, 1090, 1092, 1095, 1100, 1105, 1110,
+        1120, 1130,
+    ] {
+        let mut rng = MersenneTwister::new(12345);
+        let p = f64::from(bias) / 10000.0;
+        write(
+            dir,
+            &format!("gate_{bias}"),
+            &(0..400000)
+                .map(|_| match rng.random() < p {
+                    true => 65,
+                    false => rng.getrandbits(8) as u8,
+                })
+                .collect::<Vec<u8>>(),
+        );
+    }
+    // One byte repeated: every count but one is zero, so the integer division
+    // in the order-0 sum matters most here.
+    write(dir, "all_zeros", &vec![0u8; 200000]);
+    let mut rng = MersenneTwister::new(12345);
+    write(dir, "two_symbols", &choice(&mut rng, b"ab", 200000));
+    // Structured binary, which should be neither text nor compressed.
+    write(dir, "struct32", &le32((0..50000u32).map(|i| i % 7919)));
+    let mut wav = Vec::new();
+    wav.extend_from_slice(b"RIFF");
+    wav.extend_from_slice(&(36u32 + 8000).to_le_bytes());
+    wav.extend_from_slice(b"WAVEfmt ");
+    wav.extend_from_slice(&16u32.to_le_bytes());
+    wav.extend_from_slice(&1u16.to_le_bytes());
+    wav.extend_from_slice(&2u16.to_le_bytes());
+    wav.extend_from_slice(&44100u32.to_le_bytes());
+    wav.extend_from_slice(&176400u32.to_le_bytes());
+    wav.extend_from_slice(&4u16.to_le_bytes());
+    wav.extend_from_slice(&16u16.to_le_bytes());
+    wav.extend_from_slice(b"data");
+    wav.extend_from_slice(&8000u32.to_le_bytes());
+    for i in 0..4000usize {
+        let v = ((8000.0 + 7000.0 * (i as f64 / 40.0).sin()) as i64).rem_euclid(65536) as u16;
+        wav.extend_from_slice(&v.to_le_bytes());
+    }
+    write(dir, "wavlike", &wav);
+    // Sizes around the scan's own boundaries: the match loop needs bufsize > 10
+    // and stops 10 bytes early, and mm_bytes changes shape at 64 KB and 1 MB.
+    for n in [0usize, 1, 9, 10, 11, 12, 100, 65535, 65536, 65537, 1048576, 2097152] {
+        let mut rng = MersenneTwister::new(12345);
+        let name = match n {
+            1048576 => "size_1m".to_string(),
+            2097152 => "size_2m".to_string(),
+            _ => format!("size_{n}"),
+        };
+        write(dir, &name, &(0..n).map(|_| rng.getrandbits(8) as u8).collect::<Vec<u8>>());
+    }
+}
+
+/// `lzma-gap-check.sh` — the main corpus plus its `stream/` subdirectory.
+///
+/// Everything in the top level is at most ~40 KB, smaller than the smallest
+/// dictionary swept, so the window never slides for any of it and it cannot
+/// tell a correct window from a broken one. The `stream/` files are many times
+/// the dictionary size and exist only for that.
+fn lzma_gap(dir: &std::path::Path) {
+    write(dir, "text", &repeat(FOX, 700));
+    write(dir, "zeros", &vec![0u8; 40000]);
+    let mut r = Vec::new();
+    for i in 0..300usize {
+        r.extend(std::iter::repeat_n((i % 251) as u8, 1 + (i * 7) % 300));
+    }
+    write(dir, "runs", &r);
+    write(dir, "noise", &prng(9, 40000));
+    let mut mixed = Vec::new();
+    for i in 0..150u32 {
+        mixed.extend_from_slice(format!("chunk-{i}-").as_bytes());
+        mixed.extend(prng(i, 200));
+    }
+    write(dir, "mixed", &mixed);
+    let mut nearby = Vec::new();
+    for i in 0..60u32 {
+        nearby.extend(prng(i % 5, 500));
+    }
+    write(dir, "nearby", &nearby);
+    let mut distant = prng(1, 30000);
+    distant.extend(prng(2, 30000));
+    distant.extend(prng(1, 30000));
+    write(dir, "distant", &distant);
+    for n in [1usize, 2, 17, 4096] {
+        write(dir, &format!("n_{n}"), &prng(5, n));
+    }
+
+    // Four bytes per step, so multi-megabyte corpora stay cheap to generate.
+    let prng4 = |seed: u32, n: usize| -> Vec<u8> {
+        let mut s = seed;
+        let mut o: Vec<u8> = Vec::with_capacity(n + 4);
+        while o.len() < n {
+            s = s.wrapping_mul(1103515245).wrapping_add(12345);
+            o.extend_from_slice(&s.to_le_bytes());
+        }
+        o.truncate(n);
+        o
+    };
+    write(dir, "stream/big_noise", &prng4(11, 3_000_000));
+    // Long-range repeats BEYOND the dictionary, so matches fall out of the
+    // window as it slides -- where an off-by-one in MoveBlock changes the parse.
+    let blk = prng4(12, 250_000);
+    let mut far = blk.clone();
+    far.extend(prng4(13, 600_000));
+    far.extend_from_slice(&blk);
+    far.extend(prng4(14, 600_000));
+    far.extend_from_slice(&blk);
+    write(dir, "stream/big_far_repeat", &far);
+    write(dir, "stream/big_text", &repeat(FOX, 60_000));
+    let mut br = Vec::new();
+    for i in 0..6000usize {
+        br.extend(std::iter::repeat_n((i % 251) as u8, 1 + (i * 13) % 900));
+    }
+    write(dir, "stream/big_runs", &br);
+}
+
 /// `crypto-check.sh` -- sizes either side of the 256 KB pipeline buffer, each
 /// seeded by its own length so no two files share a prefix.
 fn crypto(dir: &std::path::Path) {
@@ -1525,6 +1700,8 @@ fn main() {
         "crypto" => crypto(&dir),
         "mm" => mm(&dir),
         "grzip-stage" => grzip_stage(&dir),
+        "mmdet" => mmdet(&dir),
+        "lzma-gap" => lzma_gap(&dir),
         other => {
             eprintln!("corpusgen: unknown corpus {other:?}");
             std::process::exit(2);

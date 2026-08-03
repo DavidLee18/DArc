@@ -60,53 +60,11 @@ if [ "$c_types" != "$rs_types" ]; then
 fi
 
 # ── the corpus ──────────────────────────────────────────────────────────────
-gen() { # gen <name> <python-expression-producing-bytes>
-  python3 -c "
-import sys, random
-random.seed(12345)
-sys.stdout.buffer.write($2)
-" > "$W/in/$1"
-}
-mkdir -p "$W/in"
+( cd "$ROOT/rust" && cargo build --release -q -p darc-codecs --bin corpusgen ) || exit 1
 
-# Text-like: a small alphabet with real repetition, which is what the $text
-# branch keys on (17..80 'normal' characters and LZ matches over a tenth).
-gen text_english "(b'the quick brown fox jumps over the lazy dog. ' * 3000)"
-gen text_source  "(b'int main(void) { return compute(x, y); }\n' * 2500)"
-gen text_narrow  "(bytes(random.choice(b'abcdefghijklmnopqrst ') for _ in range(100000)))"
-# Right at the alphabet-size boundary: 17 and 80 distinct characters.
-gen text_17chars "(bytes(random.choice(bytes(range(97,114))) for _ in range(80000)))"
-gen text_80chars "(bytes(random.choice(bytes(range(33,113))) for _ in range(80000)))"
-# Incompressible: the $compressed branch.
-gen noise        "(bytes(random.getrandbits(8) for _ in range(200000)))"
-# Near the 0.95 order-0 threshold: noise with a modest bias.
-gen near_gate1   "(bytes(random.getrandbits(8) if random.random()<0.93 else 65 for _ in range(200000)))"
-gen near_gate2   "(bytes(random.getrandbits(8) if random.random()<0.85 else 65 for _ in range(200000)))"
-gen near_gate3   "(bytes(random.getrandbits(8) if random.random()<0.97 else 65 for _ in range(200000)))"
-# The band that actually discriminates -- see the note at the top. Every one of
-# these flips its verdict if the order-0 sum divides in floating point instead
-# of truncating, or uses log2() instead of log()/log(2).
-# Swept densely rather than sampled: the band's exact position depends on the
-# noise, so a handful of points can miss it entirely with a different seed.
-# Verified by sabotage -- with five points only one caught the float division,
-# and that one was luck.
-for bias in 1040 1050 1060 1070 1075 1080 1085 1088 1090 1092 1095 1100 1105 1110 1120 1130; do
-  gen "gate_$bias" "(bytes(65 if random.random()<$bias/10000.0 else random.getrandbits(8) for _ in range(400000)))"
-done
-# One byte repeated: every count but one is zero, so the integer division in
-# the order-0 sum matters most here.
-gen all_zeros    "(bytes(200000))"
-gen two_symbols  "(bytes(random.choice(b'ab') for _ in range(200000)))"
-# Structured binary, which should be neither.
-gen struct32     "(b''.join(int.to_bytes(i%7919,4,'little') for i in range(50000)))"
-gen wavlike      "(b'RIFF' + (36+8000).to_bytes(4,'little') + b'WAVEfmt ' + (16).to_bytes(4,'little') + (1).to_bytes(2,'little') + (2).to_bytes(2,'little') + (44100).to_bytes(4,'little') + (176400).to_bytes(4,'little') + (4).to_bytes(2,'little') + (16).to_bytes(2,'little') + b'data' + (8000).to_bytes(4,'little') + b''.join(int.to_bytes(int(8000+7000*__import__('math').sin(i/40.0))%65536,2,'little') for i in range(4000)))"
-# Sizes around the scan's own boundaries: the match loop needs bufsize>10 and
-# stops 10 bytes early, and mm_bytes changes shape at 64 KB and 1 MB.
-for n in 0 1 9 10 11 12 100 65535 65536 65537; do
-  gen "size_$n" "(bytes(random.getrandbits(8) for _ in range($n)))"
-done
-gen size_1m      "(bytes(random.getrandbits(8) for _ in range(1048576)))"
-gen size_2m      "(bytes(random.getrandbits(8) for _ in range(2097152)))"
+# Corpus from corpusgen -- a literal transcription of the python3 generators
+# that stood here, accepted on a byte comparison over all 41 files.
+"$ROOT/rust/target/release/corpusgen" mmdet "$W/in"
 
 fail=0 checked=0
 for f in "$W"/in/*; do
