@@ -39,6 +39,51 @@
 # ambiguous as history does.
 DARC_C_REF_SHA="5c2c6ce1244db759a17aea61cb243f3ace41fe61"
 
+# Fetch a pinned revision, retrying, and say what actually went wrong.
+#
+# Usage: darc_fetch_pinned <repo-root> <sha> <label>
+#
+# Both callers below used to do this inline as a single attempt with stderr
+# sent to /dev/null. That turns a transient network failure into the message
+# "pinned revision is not available", which names a cause that is not the
+# cause -- on 2026-08-03 it took rust-codecs-ppmd red on a run where nothing
+# relevant had changed, and the suggested fix in that message (fetch-depth: 0)
+# would not have helped. Keeping the last attempt's stderr is the point: a
+# harness that reports the wrong reason costs more than one that just fails.
+#
+# The post-fetch existence check is not redundant. `git fetch <sha>` can exit 0
+# on a server that accepted the request without delivering the object, and the
+# old code then fell through to a confusing failure much later.
+darc_fetch_pinned() {
+  local root="$1" sha="$2" label="$3"
+  local attempt err
+  err="$(mktemp)" || return 1
+  for attempt in 1 2 3; do
+    if git -C "$root" cat-file -e "$sha^{commit}" 2>/dev/null; then
+      rm -f "$err"; return 0
+    fi
+    # 2>| and not 2>: mktemp has already created $err, and under `noclobber`
+    # a plain 2> onto an existing file FAILS -- which would skip the fetch
+    # entirely and leave the retry reporting a failure it never attempted.
+    if git -C "$root" fetch --quiet --depth=1 origin "$sha" 2>|"$err"; then
+      if git -C "$root" cat-file -e "$sha^{commit}" 2>/dev/null; then
+        rm -f "$err"; return 0
+      fi
+      echo "$label: fetch of $sha reported success but the object is still absent" >&2
+    fi
+    if [ "$attempt" -lt 3 ]; then
+      sleep $((attempt * 5))
+    fi
+  done
+  echo "$label: could not fetch pinned revision $sha after 3 attempts." >&2
+  if [ -s "$err" ]; then
+    echo "$label: the last attempt said:" >&2
+    sed 's/^/  /' "$err" >&2
+  fi
+  rm -f "$err"
+  return 1
+}
+
 # Usage: darc_c_reference <repo-root>   → echoes the reference tree's path
 darc_c_reference() {
   local root="$1"
@@ -61,12 +106,9 @@ darc_c_reference() {
     # CI checks out shallow (actions/checkout defaults to fetch-depth: 1), so
     # the pinned commit is usually absent. Fetch just that one commit rather
     # than making every job clone full history.
-    if ! git -C "$root" rev-parse --verify --quiet "$sha^{commit}" >/dev/null; then
-      git -C "$root" fetch --depth=1 --quiet origin "$sha" 2>/dev/null || true
-    fi
-    git -C "$root" rev-parse --verify --quiet "$sha^{commit}" >/dev/null || {
-      echo "c-reference: pinned revision $sha is not available and could not be" >&2
-      echo "fetched. In CI, give the checkout enough history (fetch-depth: 0)." >&2
+    darc_fetch_pinned "$root" "$sha" "c-reference" || {
+      echo "c-reference: if this is CI and the fetch itself is fine, the checkout" >&2
+      echo "may need more history (fetch-depth: 0)." >&2
       return 1; }
     git -C "$root" archive "$sha" Compression | tar -x -C "$cref" || {
       echo "c-reference: could not extract Compression/ at $sha" >&2
@@ -180,12 +222,7 @@ darc_srep_reference() {
 
   if [ ! -f "$ref/.extracted-ok" ]; then
     rm -rf "$ref"; mkdir -p "$ref" || return 1
-    if ! git -C "$root" cat-file -e "$sha^{commit}" 2>/dev/null; then
-      git -C "$root" fetch --quiet --depth=1 origin "$sha" 2>/dev/null || {
-        echo "srep-reference: revision $sha is not available" >&2
-        rm -rf "$ref"; return 1
-      }
-    fi
+    darc_fetch_pinned "$root" "$sha" "srep-reference" || { rm -rf "$ref"; return 1; }
     git -C "$root" archive "$sha" Compression/SREP srep | tar -x -C "$ref" || {
       echo "srep-reference: could not extract the SREP sources at $sha" >&2
       rm -rf "$ref"; return 1
