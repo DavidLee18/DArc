@@ -55,33 +55,11 @@ cc() { local out="$1" lib="$2"; shift 2
 cc "$W/c"  ""                              || { echo "C reference build failed" >&2; exit 1; }
 cc "$W/rs" "$LIB" -DUSE_RUST -DDARC_RUST   || { echo "Rust driver build failed" >&2; exit 1; }
 
-python3 - "$W/in" <<'PY'
-import os,sys
-d=sys.argv[1]; os.makedirs(d,exist_ok=True)
-def prng(seed,n):
-    s=seed; o=bytearray()
-    for _ in range(n): s=(s*1103515245+12345)&0xffffffff; o.append((s>>16)&0xff)
-    return bytes(o)
-w=lambda n,b: open(f"{d}/{n}","wb").write(b)
-# LZP replaces a match with a flag once MinMatchLen bytes agree after a hash
-# hit, so the corpus must contain long repeats at varied distances -- random
-# data alone exercises only the literal path.
-w("text",     b"the quick brown fox jumps over the lazy dog. "*4000)
-w("english",  (b"compression algorithms rearrange data so that "
-               b"statistical redundancy can be removed by an entropy coder. ")*1200)
-w("longrep",  (b"A"*300 + prng(2,120))*400)
-w("onebyte",  b"\x5a"*200000)
-w("twobyte",  b"\x00\xff"*100000)
-w("runs",     b"".join(bytes([i%97])*(1+(i*7)%400) for i in range(3000)))
-w("noise",    prng(9, 300000))
-w("alphabet", bytes(i%256 for i in range(300000)))
-w("sparse",   b"".join((b"\x00"*500 + bytes([i%251])) for i in range(600)))
-# Straddle the default 8 MB block boundary is impractical here, but DO straddle
-# the smaller block sizes exercised below.
-w("big",      (b"repeatable-chunk-" + prng(11,900))*1200)
-for n in (0,1,2,63,64,65,255,256,257,4096,65537):
-    w(f"n_{n}", prng(3,n))
-PY
+( cd "$ROOT/rust" && cargo build --release -q -p darc-codecs --bin corpusgen ) || exit 1
+
+# Corpus from corpusgen -- a literal transcription of the python3 heredoc
+# that stood here, accepted on a byte comparison over every file it writes.
+"$ROOT/rust/target/release/corpusgen" lzp "$W/in"
 
 total=0; tested=0
 # Block size is a real axis: it bounds the hash table and forces the codec to

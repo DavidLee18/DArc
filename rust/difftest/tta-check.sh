@@ -44,42 +44,11 @@ cc "$W/rs" -DUSE_RUST "$LIB" || exit 1
 # near-silence -- built at raw byte level. The audio filters and the adaptive
 # Rice coder behave very differently across loud/quiet and smooth/noisy input,
 # so the corpus spans those. Sizes straddle the 1<<18-sample frame boundary too.
-python3 - "$W/in" <<'PY'
-import os,sys,math,struct
-d=sys.argv[1]; os.makedirs(d,exist_ok=True)
-def prng(seed,n):
-    s=seed; o=bytearray()
-    for _ in range(n): s=(s*1103515245+12345)&0xffffffff; o.append((s>>16)&0xff)
-    return bytes(o)
-w=lambda n,b: open(f"{d}/{n}","wb").write(b)
-def s16(vals): return b"".join(struct.pack("<h", max(-32768,min(32767,int(v)))) for v in vals)
-N=100000
-w("sine16_stereo",  s16([ v for i in range(N) for v in (int(20000*math.sin(i*0.03)), int(15000*math.sin(i*0.041))) ]))
-w("chord16_stereo", s16([ v for i in range(N) for v in
-                        (int(8000*math.sin(i*0.02)+6000*math.sin(i*0.05)),
-                         int(7000*math.sin(i*0.03)+5000*math.sin(i*0.07))) ]))
-w("quiet16_stereo", s16([ v for i in range(N) for v in (int(30*math.sin(i*0.03)), int(25*math.sin(i*0.05))) ]))
-w("ramp16_mono",  s16([ (i%2000)-1000 for i in range(2*N) ]))
-w("silence16",    b"\x00\x00"*(2*N))
-w("sine8_mono",   bytes([ (128+int(100*math.sin(i*0.05)))&0xff for i in range(2*N) ]))
-w("noise8",       prng(9, 2*N))
-for n in (0,1,3,4,8, 1<<18, (1<<18)+1, (1<<18)-1):
-    w(f"n16_{n}", s16([ int(9000*math.sin(i*0.03)) for i in range(n) ]))
-# A table of ascending 32-bit little-endian integers -- NOT audio, and the shape
-# that separates TTA's candidate model set from MM's.
-#
-# TTA has its own file-static channels[]={1,2} / bitvalues[]={8,16} in tta.cpp;
-# mmdet.cpp has same-named statics holding {1,2,3,4} / {8,16,24,32}. Both call
-# autodetect_by_entropy, so the set it sees depends only on the calling
-# translation unit. Audio-shaped input scores about the same under either, which
-# is why nothing above distinguishes them. On this input the wide set picks
-# 1 channel x 32 bits, which TTA REFUSES (byte_size >= 4, not float) and stores;
-# the narrow set picks 2 x 16 and compresses it ~6.7x. Passing the wrong array
-# stored 32 KB that the C reduced to 4,763 bytes -- and every case above stayed
-# green while it did.
-w("table32", b"".join(struct.pack("<I", i*3) for i in range(8000)))
-w("table32_wide", b"".join(struct.pack("<I", (i*2654435761)&0xffff) for i in range(8000)))
-PY
+( cd "$ROOT/rust" && cargo build --release -q -p darc-codecs --bin corpusgen ) || exit 1
+
+# Corpus from corpusgen -- a literal transcription of the python3 heredoc
+# that stood here, accepted on a byte comparison over every file it writes.
+"$ROOT/rust/target/release/corpusgen" tta "$W/in"
 
 decode_case () {   # $1=tag  $2..=encoder args ("LEVEL NUMCHAN WORDSIZE ISFLOAT [RAW]")
   local tag="$1"; shift

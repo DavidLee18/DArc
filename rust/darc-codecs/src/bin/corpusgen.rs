@@ -420,6 +420,451 @@ fn rep(dir: &std::path::Path) {
     }
 }
 
+/// CPython's `random.Random` — MT19937, seeded and consumed exactly as CPython
+/// does it.
+///
+/// Two corpora (`dict` and `ppmd`) were built with `random.Random(seed)`, and
+/// their bytes cannot be reproduced by any other generator. This is not a
+/// "good enough" random source: it is a transcription, and the only thing that
+/// makes it correct is that it produces the same files.
+struct MersenneTwister {
+    mt: [u32; 624],
+    index: usize,
+}
+
+impl MersenneTwister {
+    /// `init_by_array` with the key CPython derives from an integer seed: the
+    /// absolute value, little-endian, in 32-bit words.
+    fn new(seed: u64) -> Self {
+        let mut mt = [0u32; 624];
+        // init_genrand(19650218)
+        mt[0] = 19650218;
+        for i in 1..624 {
+            mt[i] = 1812433253u32
+                .wrapping_mul(mt[i - 1] ^ (mt[i - 1] >> 30))
+                .wrapping_add(i as u32);
+        }
+        let key: Vec<u32> = match seed {
+            0 => vec![0],
+            _ => {
+                let mut k = Vec::new();
+                let mut s = seed;
+                while s > 0 {
+                    k.push((s & 0xffff_ffff) as u32);
+                    s >>= 32;
+                }
+                k
+            }
+        };
+        let (mut i, mut j) = (1usize, 0usize);
+        for _ in 0..624.max(key.len()) {
+            mt[i] = (mt[i] ^ (mt[i - 1] ^ (mt[i - 1] >> 30)).wrapping_mul(1664525))
+                .wrapping_add(key[j])
+                .wrapping_add(j as u32);
+            i += 1;
+            j += 1;
+            if i >= 624 {
+                mt[0] = mt[623];
+                i = 1;
+            }
+            if j >= key.len() {
+                j = 0;
+            }
+        }
+        for _ in 0..623 {
+            mt[i] = (mt[i] ^ (mt[i - 1] ^ (mt[i - 1] >> 30)).wrapping_mul(1566083941))
+                .wrapping_sub(i as u32);
+            i += 1;
+            if i >= 624 {
+                mt[0] = mt[623];
+                i = 1;
+            }
+        }
+        mt[0] = 0x8000_0000;
+        MersenneTwister { mt, index: 624 }
+    }
+
+    fn genrand_u32(&mut self) -> u32 {
+        if self.index >= 624 {
+            for i in 0..624 {
+                let y = (self.mt[i] & 0x8000_0000) | (self.mt[(i + 1) % 624] & 0x7fff_ffff);
+                let mut next = self.mt[(i + 397) % 624] ^ (y >> 1);
+                if y & 1 != 0 {
+                    next ^= 0x9908_b0df;
+                }
+                self.mt[i] = next;
+            }
+            self.index = 0;
+        }
+        let mut y = self.mt[self.index];
+        self.index += 1;
+        y ^= y >> 11;
+        y ^= (y << 7) & 0x9d2c_5680;
+        y ^= (y << 15) & 0xefc6_0000;
+        y ^ (y >> 18)
+    }
+
+    /// `random()` — `genrand_res53`, 53 bits from two draws.
+    fn random(&mut self) -> f64 {
+        let a = self.genrand_u32() >> 5;
+        let b = self.genrand_u32() >> 6;
+        (a as f64 * 67108864.0 + b as f64) / 9007199254740992.0
+    }
+
+    /// `getrandbits(k)` for k <= 32.
+    fn getrandbits(&mut self, k: u32) -> u32 {
+        match k {
+            0 => 0,
+            _ => self.genrand_u32() >> (32 - k),
+        }
+    }
+
+    /// `_randbelow(n)` — rejection sampling on `n.bit_length()` bits, which is
+    /// what `randrange(n)` calls.
+    fn randbelow(&mut self, n: u32) -> u32 {
+        if n == 0 {
+            return 0;
+        }
+        let k = 32 - (n - 1).leading_zeros();
+        loop {
+            let r = self.getrandbits(k);
+            if r < n {
+                return r;
+            }
+        }
+    }
+
+    /// `choices(population, weights, k)` — cumulative weights and a bisect on
+    /// `random() * total`, with `hi = len-1` as CPython passes it.
+    fn choices(&mut self, cum_weights: &[f64], k: usize) -> Vec<usize> {
+        let total = *cum_weights.last().unwrap_or(&1.0);
+        let hi = cum_weights.len() - 1;
+        (0..k)
+            .map(|_| {
+                let x = self.random() * total;
+                // bisect_right over [0, hi)
+                let (mut lo, mut high) = (0usize, hi);
+                while lo < high {
+                    let mid = (lo + high) / 2;
+                    if x < cum_weights[mid] {
+                        high = mid;
+                    } else {
+                        lo = mid + 1;
+                    }
+                }
+                lo
+            })
+            .collect()
+    }
+}
+
+/// `b"".join(struct.pack("<I", v) for v in vals)`
+fn le32<I: IntoIterator<Item = u32>>(vals: I) -> Vec<u8> {
+    let mut out = Vec::new();
+    for v in vals {
+        out.extend_from_slice(&v.to_le_bytes());
+    }
+    out
+}
+
+/// `b"".join(struct.pack("<H", v) for v in vals)`
+fn le16<I: IntoIterator<Item = u16>>(vals: I) -> Vec<u8> {
+    let mut out = Vec::new();
+    for v in vals {
+        out.extend_from_slice(&v.to_le_bytes());
+    }
+    out
+}
+
+/// `struct.pack("<h", max(-32768, min(32767, int(v))))` over a sample list.
+///
+/// `int()` truncates TOWARD ZERO, which is what Rust's `as i32` does too, and
+/// the clamp is applied after truncation exactly as the Python writes it.
+fn s16<I: IntoIterator<Item = f64>>(vals: I) -> Vec<u8> {
+    let mut out = Vec::new();
+    for v in vals {
+        let n = (v as i32).clamp(-32768, 32767) as i16;
+        out.extend_from_slice(&n.to_le_bytes());
+    }
+    out
+}
+
+/// `tornado-check.sh` — the decoder sweep.
+fn tornado(dir: &std::path::Path) {
+    write(dir, "text", &repeat(FOX, 20000));
+    let mut repeats_unit = repeat(b"ABCDEFGHIJKLMNOP", 64);
+    repeats_unit.extend(prng(1, 256));
+    write(dir, "repeats", &repeats_unit.repeat(400));
+    write(dir, "noise", &prng(7, 900000));
+    write(dir, "zeros", &vec![0u8; 700000]);
+    let mut mixed = Vec::new();
+    for i in 0..300u32 {
+        mixed.extend(prng(i, 1000));
+        mixed.extend(repeat(b"pattern", 200));
+    }
+    write(dir, "mixed", &mixed);
+    // Tables of 4- and 2-byte little-endian counters: what the data-table
+    // detector is built to find.
+    write(dir, "table4", &le32((0..200000u32).map(|i| i.wrapping_mul(7).wrapping_add(3))));
+    write(dir, "table2", &le16((0..400000u32).map(|i| (i.wrapping_mul(11) & 0xffff) as u16)));
+    let mut table_mixed = le32(0..50000u32);
+    table_mixed.extend(prng(3, 200000));
+    table_mixed.extend(le16((0..100000u32).map(|i| (i & 0xffff) as u16)));
+    write(dir, "table_mixed", &table_mixed);
+    // Larger than HUGE_BUFFER_SIZE (8 MB), so the output window wraps and
+    // flushes mid-stream. A corpus without this passed while the port still had
+    // a panic in it.
+    write(dir, "big_table", &le32((0..2600000u32).map(|i| i.wrapping_mul(7).wrapping_add(3))));
+    for n in [0usize, 1, 15, 16, 17, 63, 64, 65, 4095, 4096, 65535, 65536, 65537] {
+        write(dir, &format!("n_{n}"), &truncated_repeat(b"the quick brown fox ", 10000, n));
+    }
+}
+
+/// `tornado-encode-check.sh` — a superset of the decoder corpus.
+fn tornado_encode(dir: &std::path::Path) {
+    write(dir, "text", &repeat(FOX, 20000));
+    let mut repeats_unit = repeat(b"ABCDEFGHIJKLMNOP", 64);
+    repeats_unit.extend(prng(1, 256));
+    write(dir, "repeats", &repeats_unit.repeat(400));
+    write(dir, "noise", &prng(7, 900000));
+    write(dir, "zeros", &vec![0u8; 700000]);
+    let mut mixed = Vec::new();
+    for i in 0..300u32 {
+        mixed.extend(prng(i, 1000));
+        mixed.extend(repeat(b"pattern", 200));
+    }
+    write(dir, "mixed", &mixed);
+    // Short unique prefix + noise, repeated. Diverges at preset 9 and nowhere
+    // else; the sweep was green on preset 9 until this was added.
+    let mut chunky = Vec::new();
+    for i in 0..2000u32 {
+        chunky.extend_from_slice(format!("chunk-{i}-").as_bytes());
+        chunky.extend(prng(i, 300));
+    }
+    write(dir, "chunky", &chunky);
+    write(dir, "table4", &le32((0..200000u32).map(|i| i.wrapping_mul(7).wrapping_add(3))));
+    // Distances either side of accept_match()'s 48 KB / 192 KB / 1 MB limits.
+    let seg = prng(5, 300000);
+    let mut far = seg.clone();
+    far.extend(prng(11, 40 * 1024));
+    far.extend_from_slice(&seg[..50000]);
+    far.extend(prng(13, 200 * 1024));
+    far.extend_from_slice(&seg[..50000]);
+    far.extend(prng(17, 1100 * 1024));
+    far.extend_from_slice(&seg[..50000]);
+    write(dir, "far_matches", &far);
+    // Past LARGE_BUFFER_SIZE (256 KB) many times over, so the input buffer is
+    // refilled and slid repeatedly rather than read once.
+    write(dir, "big_text", &repeat(FOX, 400000));
+    write(dir, "big_noise", &prng(23, 5 * 1024 * 1024));
+    for n in [
+        0usize, 1, 3, 4, 5, 15, 16, 17, 63, 64, 65, 255, 256, 257, 4095, 4096, 65535, 65536,
+        65537,
+    ] {
+        write(dir, &format!("n_{n}"), &truncated_repeat(b"the quick brown fox ", 10000, n));
+    }
+}
+
+/// `tta-check.sh` — audio-shaped input, which is what TTA models.
+fn tta(dir: &std::path::Path) {
+    const N: usize = 100000;
+    write(
+        dir,
+        "sine16_stereo",
+        &s16((0..N).flat_map(|i| {
+            let i = i as f64;
+            [20000.0 * (i * 0.03).sin(), 15000.0 * (i * 0.041).sin()]
+        })),
+    );
+    write(
+        dir,
+        "chord16_stereo",
+        &s16((0..N).flat_map(|i| {
+            let i = i as f64;
+            [
+                8000.0 * (i * 0.02).sin() + 6000.0 * (i * 0.05).sin(),
+                7000.0 * (i * 0.03).sin() + 5000.0 * (i * 0.07).sin(),
+            ]
+        })),
+    );
+    write(
+        dir,
+        "quiet16_stereo",
+        &s16((0..N).flat_map(|i| {
+            let i = i as f64;
+            [30.0 * (i * 0.03).sin(), 25.0 * (i * 0.05).sin()]
+        })),
+    );
+    write(dir, "ramp16_mono", &s16((0..2 * N).map(|i| ((i % 2000) as f64) - 1000.0)));
+    write(dir, "silence16", &vec![0u8; 2 * (2 * N)]);
+    write(
+        dir,
+        "sine8_mono",
+        &(0..2 * N)
+            .map(|i| (128i32 + (100.0 * (i as f64 * 0.05).sin()) as i32) as u8)
+            .collect::<Vec<u8>>(),
+    );
+    write(dir, "noise8", &prng(9, 2 * N));
+    for n in [0usize, 1, 3, 4, 8, 1 << 18, (1 << 18) + 1, (1 << 18) - 1] {
+        write(
+            dir,
+            &format!("n16_{n}"),
+            &s16((0..n).map(|i| 9000.0 * (i as f64 * 0.03).sin())),
+        );
+    }
+    // A table of ascending 32-bit LE integers -- NOT audio, and the shape that
+    // separates TTA's candidate model set from MM's. TTA's own channels/bits
+    // arrays are narrower, and on this input the wide set picks 1x32, which TTA
+    // refuses and stores.
+    write(dir, "table32", &le32((0..8000u32).map(|i| i.wrapping_mul(3))));
+    write(
+        dir,
+        "table32_wide",
+        &le32((0..8000u32).map(|i| i.wrapping_mul(2654435761) & 0xffff)),
+    );
+}
+
+/// `lzp-check.sh`.
+fn lzp(dir: &std::path::Path) {
+    write(dir, "text", &repeat(FOX, 4000));
+    write(dir, "english", &repeat(ENGLISH, 1200));
+    let mut longrep_unit = vec![b'A'; 300];
+    longrep_unit.extend(prng(2, 120));
+    write(dir, "longrep", &longrep_unit.repeat(400));
+    write(dir, "onebyte", &vec![0x5a; 200000]);
+    write(dir, "twobyte", &repeat(b"\x00\xff", 100000));
+    let mut r = Vec::new();
+    for i in 0..3000usize {
+        r.extend(std::iter::repeat_n((i % 97) as u8, 1 + (i * 7) % 400));
+    }
+    write(dir, "runs", &r);
+    write(dir, "noise", &prng(9, 300000));
+    write(dir, "alphabet", &alphabet(300000));
+    let mut sp = Vec::new();
+    for i in 0..600usize {
+        sp.extend(std::iter::repeat_n(0u8, 500));
+        sp.push((i % 251) as u8);
+    }
+    write(dir, "sparse", &sp);
+    let mut big_unit = b"repeatable-chunk-".to_vec();
+    big_unit.extend(prng(11, 900));
+    write(dir, "big", &big_unit.repeat(1200));
+    for n in [0usize, 1, 2, 63, 64, 65, 255, 256, 257, 4096, 65537] {
+        write(dir, &format!("n_{n}"), &prng(3, n));
+    }
+}
+
+/// `lz4hc-check.sh`.
+fn lz4hc(dir: &std::path::Path) {
+    write(dir, "text", &repeat(FOX, 3000));
+    write(dir, "english", &repeat(ENGLISH, 900));
+    write(dir, "runs", &runs(2000));
+    write(dir, "onebyte", &vec![0x5a; 80000]);
+    write(dir, "twobyte", &repeat(b"\x00\xff", 40000));
+    write(dir, "skew", &skew(150000));
+    write(dir, "sparse", &sparse(500));
+    write(dir, "noise", &prng(9, 200000));
+    write(dir, "alphabet", &alphabet(200000));
+    // For the OPTIMAL parser (levels 10-12): SHORT matches under
+    // `sufficient_len` interleaved with literal runs past 269 bytes, which is
+    // where `literalsPrice` picks up its extra length byte.
+    let pool: Vec<Vec<u8>> = (0..24usize)
+        .map(|i| (0..20 + (i % 21)).map(|j| ((i * 7 + j * 13) % 251) as u8).collect())
+        .collect();
+    let mut seg = Vec::new();
+    for i in 0..400usize {
+        seg.extend(prng(1000 + i as u32, 280 + (i * 37) % 400));
+        seg.extend_from_slice(&pool[i % pool.len()]);
+    }
+    write(dir, "priced", &seg);
+    // COMPETING matches: a small vocabulary in varying order, so phrases recur
+    // partially at many distances and the parser must weigh "short match now"
+    // against "literals now, longer match later".
+    let vocab: Vec<Vec<u8>> = (0..120usize)
+        .map(|i| (0..3 + (i % 10)).map(|j| (((i * 29 + j * 7) % 26) + 97) as u8).collect())
+        .collect();
+    let mut txt = Vec::new();
+    let mut st: u32 = 12345;
+    for i in 0..6000usize {
+        st = st.wrapping_mul(1103515245).wrapping_add(12345);
+        txt.extend_from_slice(&vocab[((st >> 16) as usize) % vocab.len()]);
+        txt.push(b' ');
+        if i % 200 == 0 {
+            txt.extend(prng(7000 + i as u32, 300 + (i % 300)));
+        }
+    }
+    write(dir, "competing", &txt);
+    // Offsets are 16 bits, so these straddle the 65535 window where an
+    // off-by-one in lowest_match_index shows.
+    let w1 = prng(3, 70000);
+    let mut window = w1.clone();
+    window.extend_from_slice(&w1[..2000]);
+    write(dir, "window", &window);
+    let mut farback = prng(5, 65000);
+    farback.extend(repeat(b"MARKER", 8));
+    farback.extend(prng(7, 60000));
+    farback.extend(repeat(b"MARKER", 8));
+    write(dir, "farback", &farback);
+    for n in [1usize, 4, 12, 13, 14, 17, 255, 256, 257, 4096, 65535, 65536, 65537] {
+        write(dir, &format!("n_{n}"), &prng(3, n));
+    }
+}
+
+/// `ppmd-check.sh`.
+fn ppmd(dir: &std::path::Path) {
+    write(dir, "text", &repeat(FOX, 6000));
+    write(
+        dir,
+        "english",
+        &repeat(
+            b"compression algorithms rearrange data so that statistical \
+              redundancy can be removed by an entropy coder. ",
+            2500,
+        ),
+    );
+    write(dir, "noise", &prng(7, 200000));
+    write(dir, "zeros", &vec![0u8; 120000]);
+    write(dir, "runs", &runs(2000));
+    write(dir, "full_alpha", &alphabet_full(500));
+    let mut sp = Vec::new();
+    for i in 0..400usize {
+        sp.extend(std::iter::repeat_n(0u8, 300));
+        sp.push((i % 251) as u8);
+    }
+    write(dir, "sparse", &sp);
+    write(
+        dir,
+        "binaryish",
+        &(0..150000u64).map(|i| ((i.wrapping_mul(2654435761) >> 16) & 0xff) as u8).collect::<Vec<u8>>(),
+    );
+    // `random.Random(3).choices(range(256), weights=[4000]+[1]*255, k=1500)`.
+    //
+    // A dominant symbol plus a long tail of rare ones, at LOW order: the only
+    // shape found that reaches rescale's shrink path, where the port's one real
+    // PPMd bug lived (EscFreq is UINT in rescale and int in refresh). Every
+    // other input passed with that bug present, so these exact 1500 bytes
+    // matter -- which is why this needs CPython's Mersenne Twister and not any
+    // other generator.
+    let mut cum = Vec::with_capacity(256);
+    let mut acc = 0.0f64;
+    for i in 0..256usize {
+        acc += match i {
+            0 => 4000.0,
+            _ => 1.0,
+        };
+        cum.push(acc);
+    }
+    let mut rng = MersenneTwister::new(3);
+    write(dir, "dominant", &rng.choices(&cum, 1500).into_iter().map(|i| i as u8).collect::<Vec<u8>>());
+    write(dir, "bignoise", &prng(3, 600000));
+    let mut mixed = prng(5, 300000);
+    mixed.extend(repeat(b"the quick brown fox ", 5000));
+    write(dir, "mixed", &mixed);
+    for n in [1usize, 2, 3, 17, 255, 256, 4096, 65536] {
+        write(dir, &format!("n_{n}"), &truncated_repeat(b"abracadabra", 10000, n));
+    }
+}
+
 /// `int(30000*math.sin(i/50.0)) >> (8*(i%2)) & 0xff` — a 16-bit sine, emitted
 /// little-endian one byte at a time, which is what `mm-reorder-check.sh` feeds
 /// MM's `:r1` transpose.
@@ -495,6 +940,12 @@ fn main() {
         "bsc-qlfc-transform" => bsc_qlfc_transform(&dir),
         "4x4" => fourx4(&dir),
         "rep" => rep(&dir),
+        "tornado" => tornado(&dir),
+        "tornado-encode" => tornado_encode(&dir),
+        "tta" => tta(&dir),
+        "lzp" => lzp(&dir),
+        "lz4hc" => lz4hc(&dir),
+        "ppmd" => ppmd(&dir),
         other => {
             eprintln!("corpusgen: unknown corpus {other:?}");
             std::process::exit(2);
