@@ -1766,6 +1766,122 @@ fn dispack_filter(dir: &std::path::Path, text: &[u8]) {
     }
 }
 
+/// The SYNTHETIC half of `bcj-check.sh`'s corpus.
+///
+/// The real x86-64 binaries are found and copied in by the shell, which is
+/// where host scanning belongs; everything here is generated.
+fn bcj(dir: &std::path::Path) {
+    // Plausible instruction soup with CALL/JMP rel32 whose displacements are
+    // small and signed -- i.e. whose most significant byte is 0x00 or 0xFF,
+    // which is exactly the Test86MSByte test that decides whether a branch is
+    // converted. Without this an input can be full of E8 bytes and never reach
+    // the conversion at all.
+    let synth = |seed: u32, n: usize| -> Vec<u8> {
+        let filler: [&[u8]; 11] = [
+            b"\x55",
+            b"\x48\x89\xe5",
+            b"\x8b\x45\xfc",
+            b"\x83\xc0\x01",
+            b"\x89\x45\xfc",
+            b"\x0f\xb6\x00",
+            b"\x48\x83\xec\x20",
+            b"\x31\xc0",
+            b"\xc3",
+            b"\x66\x90",
+            b"\x0f\x1f\x40\x00",
+        ];
+        let mut s = seed;
+        let mut out: Vec<u8> = Vec::with_capacity(n + 8);
+        while out.len() < n {
+            s = s.wrapping_mul(1103515245).wrapping_add(12345);
+            let r = ((s >> 16) & 0xffff) as usize;
+            if r % 7 == 0 {
+                out.push(match r & 1 {
+                    0 => 0xE9,
+                    _ => 0xE8,
+                });
+                // len(out) here INCLUDES the opcode just pushed.
+                let disp = (r % 30000) as i64 - 15000 - out.len() as i64;
+                out.extend_from_slice(&(disp as i32).to_le_bytes());
+            } else {
+                out.extend_from_slice(filler[r % filler.len()]);
+            }
+        }
+        out.truncate(n);
+        out
+    };
+    write(dir, "synth_small", &synth(1, 60_000));
+    // Crosses the 256 KiB buffer twice.
+    write(dir, "synth_big", &synth(2, 700_000));
+
+    // Every alignment, and every spacing from 1 to 8 bytes. Spacings of 1-3 are
+    // the only thing that makes prevMask nonzero, which is what selects the
+    // kMaskToBitNumber / kMaskToAllowedStatus paths and the inner re-encoding
+    // loop.
+    let mut buf = vec![0x90u8; 40_000];
+    let mut p = 16usize;
+    for _ in 0..60 {
+        for gap in 1..9usize {
+            for op in [0xE8u8, 0xE9] {
+                if p + 8 >= buf.len() {
+                    break;
+                }
+                buf[p] = op;
+                let v = ((p * 13) % 4096) as i32 - 2048;
+                buf[p + 1..p + 5].copy_from_slice(&v.to_le_bytes());
+                p += gap;
+            }
+        }
+    }
+    write(dir, "adjacent", &buf);
+    // A solid run of branch bytes: prevMask saturates and every allowed-status
+    // entry is visited.
+    write(dir, "e8_run", &vec![0xe8u8; 30_000]);
+    write(dir, "e9_run", &vec![0xe9u8; 30_000]);
+    write(dir, "e8e9", &repeat(b"\xe8\xe9", 15_000));
+
+    // Branches whose 5 bytes straddle the 256 KiB read boundary, where the
+    // wrapper's remainder memmove and the carried prevMask have to agree with a
+    // single-buffer run. LARGE_BUFFER_SIZE is 262144 (Compression.h:41).
+    const LB: usize = 262144;
+    for off in [LB - 5, LB - 4, LB - 3, LB - 2, LB - 1, LB, LB + 1] {
+        let mut b = prng((off & 0xff) as u32, LB + 64);
+        for x in b.iter_mut() {
+            if *x & 0xFE == 0xE8 {
+                *x = 0x90;
+            }
+        }
+        b[off] = 0xE8;
+        b[off + 1..off + 5].copy_from_slice(&(-64i32).to_le_bytes());
+        b[off - 9] = 0xE9;
+        b[off - 8..off - 4].copy_from_slice(&64i32.to_le_bytes());
+        write(dir, &format!("boundary_{off}"), &b);
+    }
+    // Branch bytes in the last few positions, never convertible, must pass
+    // through untouched.
+    for tail in 1..9usize {
+        let mut b = vec![0x90u8; 512];
+        let n = b.len();
+        b[n - tail] = 0xE8;
+        write(dir, &format!("tail_{tail}"), &b);
+    }
+    write(dir, "noise", &prng(9, 200_000));
+    write(dir, "zeros", &vec![0u8; 50_000]);
+    write(dir, "ff", &vec![0xffu8; 50_000]);
+    write(dir, "text", &repeat(FOX, 2000));
+    for n in [0usize, 1, 2, 4, 5, 6, 7, 9, 10, 255, 4096] {
+        write(dir, &format!("n_{n}"), &prng(3, n));
+        let mut b = prng(4, n);
+        if n >= 1 {
+            b[0] = 0xE8;
+        }
+        if n >= 6 {
+            b[5] = 0x00;
+        }
+        write(dir, &format!("e8_{n}"), &b);
+    }
+}
+
 /// `crypto-check.sh` -- sizes either side of the 256 KB pipeline buffer, each
 /// seeded by its own length so no two files share a prefix.
 fn crypto(dir: &std::path::Path) {
@@ -1880,6 +1996,7 @@ fn main() {
         "lzma-gap" => lzma_gap(&dir),
         "dispack" => dispack(&dir, &aux),
         "dispack-filter" => dispack_filter(&dir, &aux),
+        "bcj" => bcj(&dir),
         other => {
             eprintln!("corpusgen: unknown corpus {other:?}");
             std::process::exit(2);

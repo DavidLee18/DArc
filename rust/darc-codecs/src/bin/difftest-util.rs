@@ -135,6 +135,76 @@ fn elf_text(path: &str) -> Vec<u8> {
     Vec::new()
 }
 
+/// Up to `cap` bytes of `path`, but ONLY if it is x86-64 machine code.
+///
+/// Not "a binary" — a binary for the RIGHT architecture. An arm64 executable is
+/// as branch-free as noise for the BCJ filter's purposes, and would make the
+/// corpus look richer than it is. ELF, Mach-O (including the x86_64 slice of a
+/// fat binary) and PE are all recognised, so this finds something on a Linux
+/// runner, on an Apple-silicon Mac, and in a Windows cross-build tree.
+///
+/// Empty output means "not x86-64, or unreadable".
+fn x86_bytes(path: &str, cap: usize) -> Vec<u8> {
+    const CPU_TYPE_X86_64: i32 = 0x0100_0007;
+    let d = match std::fs::read(path) {
+        Ok(d) => d,
+        Err(_) => return Vec::new(),
+    };
+    if d.len() < 64 {
+        return Vec::new();
+    }
+    let take = |n: usize| -> Vec<u8> { d[..n.min(d.len())].to_vec() };
+    // ELF: e_machine == EM_X86_64
+    if d[..4] == *b"\x7fELF" {
+        return match d[18..20] == *b"\x3e\x00" {
+            true => take(cap),
+            false => Vec::new(),
+        };
+    }
+    // Mach-O 64, little endian
+    if d[..4] == *b"\xcf\xfa\xed\xfe" {
+        let cputype = i32::from_le_bytes([d[4], d[5], d[6], d[7]]);
+        return match cputype == CPU_TYPE_X86_64 {
+            true => take(cap),
+            false => Vec::new(),
+        };
+    }
+    // Fat Mach-O: walk the architecture table for the x86_64 slice.
+    if d[..4] == *b"\xca\xfe\xba\xbe" || d[..4] == *b"\xbe\xba\xfe\xca" {
+        let n = u32::from_be_bytes([d[4], d[5], d[6], d[7]]) as usize;
+        if n > 32 {
+            return Vec::new();
+        }
+        for i in 0..n {
+            let o = 8 + i * 20;
+            match d.get(o..o + 20) {
+                Some(e) => {
+                    let cputype = i32::from_be_bytes([e[0], e[1], e[2], e[3]]);
+                    let off = u32::from_be_bytes([e[8], e[9], e[10], e[11]]) as usize;
+                    let size = u32::from_be_bytes([e[12], e[13], e[14], e[15]]) as usize;
+                    if cputype == CPU_TYPE_X86_64 {
+                        let end = off + size.min(cap);
+                        return d.get(off..end).map(<[u8]>::to_vec).unwrap_or_default();
+                    }
+                }
+                None => return Vec::new(),
+            }
+        }
+        return Vec::new();
+    }
+    // PE: IMAGE_FILE_MACHINE_AMD64
+    if d[..2] == *b"MZ" {
+        let e = u32::from_le_bytes([d[0x3c], d[0x3d], d[0x3e], d[0x3f]]) as usize;
+        let sig = d.get(e..e + 4) == Some(b"PE\0\0");
+        let mach = d.get(e + 4..e + 6) == Some(b"\x64\x86");
+        return match sig && mach {
+            true => take(cap),
+            false => Vec::new(),
+        };
+    }
+    Vec::new()
+}
+
 fn read_file(path: &str) -> Vec<u8> {
     let mut v = Vec::new();
     std::fs::File::open(path)
@@ -166,6 +236,31 @@ fn main() {
         }
         // `d = read()[skip:]; print(int(d == bytes(len(d))))` -- 1 when every
         // remaining byte is zero.
+        "x86-bytes" => {
+            let cap: usize = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(usize::MAX);
+            let out = std::io::stdout();
+            out.lock()
+                .write_all(&x86_bytes(args.get(1).map(String::as_str).unwrap_or(""), cap))
+                .expect("write");
+        }
+        // `files total branch real` -- what the corpus actually contains, so a
+        // run that generated almost nothing cannot report a pass.
+        "bcj-manifest" => {
+            let dir = args.get(1).map(String::as_str).unwrap_or("");
+            let real: usize = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(0);
+            let mut names: Vec<std::path::PathBuf> = std::fs::read_dir(dir)
+                .map(|r| r.filter_map(|e| e.ok()).map(|e| e.path()).collect())
+                .unwrap_or_default();
+            names.sort();
+            let (mut branch, mut total, mut files) = (0usize, 0usize, 0usize);
+            for p in names {
+                let b = std::fs::read(&p).unwrap_or_default();
+                branch += b.iter().filter(|x| **x & 0xFE == 0xE8).count();
+                total += b.len();
+                files += 1;
+            }
+            println!("{files} {total} {branch} {real}");
+        }
         "all-zeros" => {
             let b = read_file(args.get(1).map(String::as_str).unwrap_or(""));
             let skip: usize = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(0);
