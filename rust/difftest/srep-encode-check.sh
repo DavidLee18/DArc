@@ -62,7 +62,8 @@ RS="$ROOT/rust/target/release/srep"
 # Same corpus shape as srep-check.sh: a long-range matcher needs far-apart
 # duplicates, repeats separated by noise, long runs, and incompressible data
 # where it finds nothing and stores literals.
-( cd "$ROOT/rust" && cargo build --release -q -p darc-codecs --bin corpusgen ) || exit 1
+( cd "$ROOT/rust" && cargo build --release -q -p darc-codecs --bin corpusgen --bin difftest-util ) || exit 1
+UTIL="$ROOT/rust/target/release/difftest-util"
 
 # Corpus from corpusgen -- a literal transcription of the python3 heredoc
 # that stood here, accepted on a byte comparison over every file it writes.
@@ -150,7 +151,7 @@ for opt in "-m3f" \
       # The helper passes ONLY when the two streams are the same multiset of
       # records per block with identical headers, hashes and literals. Any other
       # difference is still a failure.
-      if python3 "$ROOT/rust/difftest/srep_tie_order.py" "$W/c.srep" "$W/r.srep"; then
+      if "$UTIL" srep-tie-order "$W/c.srep" "$W/r.srep"; then
         tie=$((tie+1))
       else
         echo "  [$opt] $name: compressed streams differ ($(wc -c <"$W/c.srep") vs $(wc -c <"$W/r.srep") bytes)"

@@ -11,6 +11,8 @@
 //!   difftest-util genhex key|iv N EXTRA   the crypto harness's key/IV material
 //!   difftest-util all-zeros <file> [skip] 1 if the rest of the file is zero
 //!   difftest-util elf-text <obj>        the .text section of an i386 ELF
+//!   difftest-util srep-tie-order A B    do two SREP streams differ only by
+//!                                       the order of same-source matches?
 //! ```
 
 use std::io::{Read, Write};
@@ -205,6 +207,195 @@ fn x86_bytes(path: &str, cap: usize) -> Vec<u8> {
     Vec::new()
 }
 
+/// One SREP block: its header words and hash, its match records, and its
+/// literal bytes.
+type Block = ((u32, u32, u32, Vec<u8>), Vec<(u64, u64, u64)>, Vec<u8>);
+
+/// Parse a `.7z`-era SREP stream into its archive header and blocks.
+///
+/// Records are 4 words each — `lit_len, offset_lo, offset_hi, len` — and are
+/// SOURCE-anchored under both Future-LZ and Index-LZ.
+fn srep_parse(path: &str) -> Result<([u32; 4], Vec<Block>), String> {
+    let d = std::fs::read(path).map_err(|e| format!("{path}: {e}"))?;
+    if d.len() < 16 {
+        return Err(format!("{path}: too short to hold an archive header"));
+    }
+    let w = |o: usize| -> Result<u32, String> {
+        d.get(o..o + 4)
+            .map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
+            .ok_or_else(|| format!("{path}: read past the end at {o}"))
+    };
+    let hdr = [w(0)?, w(4)?, w(8)?, w(12)?];
+    let hash_seed_size = ((hdr[2] >> 16) & 255) as usize;
+    let hash_size = (((hdr[2] >> 24) + 16) & 255) as usize;
+    let base_len = u64::from(hdr[3]);
+    let version = hdr[2] & 255;
+    let mut off = 16 + hash_seed_size;
+
+    // Index-LZ (v4) puts every block's records in a FOOTER instead of beside the
+    // block, so the block region has to be bounded before it can be walked. The
+    // six-word footer is at the very end: word 2 is its own size including the
+    // statsize table, so the table length gives the block count and words 0-1
+    // give the total record bytes.
+    let index_lz = version == 4;
+    let mut stat_region: (usize, Vec<u32>) = (0, Vec::new());
+    let block_area_end = match index_lz {
+        false => d.len(),
+        true => {
+            if d.len() < 24 {
+                return Err(format!("{path}: too short for an Index-LZ footer"));
+            }
+            let base = d.len() - 24;
+            let f: Vec<u32> = (0..6)
+                .map(|i| w(base + 4 * i))
+                .collect::<Result<Vec<u32>, String>>()?;
+            let total_stat = u64::from(f[0]) | (u64::from(f[1]) << 32);
+            let footer_size = f[2] as usize;
+            let nblocks = footer_size
+                .checked_sub(24)
+                .ok_or_else(|| format!("{path}: Index-LZ footer size {footer_size} is too small"))?
+                / 4;
+            let stats_at = (d.len() as u64)
+                .checked_sub(footer_size as u64 + total_stat)
+                .ok_or_else(|| format!("{path}: Index-LZ regions run off the front"))?
+                as usize;
+            let sizes_at = base
+                .checked_sub(nblocks * 4)
+                .ok_or_else(|| format!("{path}: Index-LZ size table runs off the front"))?;
+            let sizes: Vec<u32> = (0..nblocks)
+                .map(|i| w(sizes_at + 4 * i))
+                .collect::<Result<Vec<u32>, String>>()?;
+            stat_region = (stats_at, sizes);
+            stats_at
+        }
+    };
+
+    let mut blocks: Vec<Block> = Vec::new();
+    let mut start = 0u64;
+    let mut bi = 0usize;
+    while off < block_area_end {
+        if off + 12 + hash_size > d.len() {
+            return Err(format!("{path}: truncated block header at {off}"));
+        }
+        let (literal_bytes, blen, stat_size) = (w(off)?, w(off + 4)?, w(off + 8)?);
+        let bh = (literal_bytes, blen, stat_size, d[off + 12..off + 12 + hash_size].to_vec());
+        off += 12 + hash_size;
+
+        let read_recs = |at: usize, nbytes: usize| -> Result<Vec<(u64, u64, u64)>, String> {
+            let (mut pos, mut out, mut o) = (start, Vec::new(), at);
+            let stop = at + nbytes;
+            while o < stop {
+                let (lit, lo, hi, ln) = (w(o)?, w(o + 4)?, w(o + 8)?, w(o + 12)?);
+                o += 16;
+                let src = pos + u64::from(lit);
+                out.push((src, src + (u64::from(lo) | (u64::from(hi) << 32)), u64::from(ln) + base_len));
+                pos = src;
+            }
+            Ok(out)
+        };
+
+        let recs = match index_lz {
+            // stat_size in the block header is 0; the real records live in the
+            // footer region, one run per block in block order.
+            true => {
+                let (base, sizes) = &stat_region;
+                let at = base + sizes.iter().take(bi).map(|s| *s as usize).sum::<usize>();
+                read_recs(at, sizes.get(bi).map_or(0, |s| *s as usize))?
+            }
+            false => {
+                let r = read_recs(off, stat_size as usize)?;
+                off += stat_size as usize;
+                r
+            }
+        };
+
+        let end = (off + literal_bytes as usize).min(d.len());
+        let literals = d.get(off..end).unwrap_or(&[]).to_vec();
+        off += literal_bytes as usize;
+        blocks.push((bh, recs, literals));
+        start += u64::from(blen);
+        bi += 1;
+    }
+    Ok((hdr, blocks))
+}
+
+/// Decide whether two SREP streams differ ONLY by the order of match records
+/// that share a source position.
+///
+/// `srep.cpp:756` sorts the collected matches with `std::sort`, whose
+/// comparator (`:85`) compares `src` alone. `std::sort` is **not stable**, so
+/// when two matches share a source the C++ standard library decides their
+/// relative order and nothing in the format or the algorithm pins it. Measured
+/// on this repo's macOS/libc++ build: of five corpus inputs containing a tied
+/// source, four came out in collection order and one — `runs`, whose stream has
+/// 240 records — came out reversed. libc++'s introsort insertion-sorts small
+/// ranges, which is stable, and only perturbs ties once quicksort partitioning
+/// engages, so a libstdc++ build can produce a *different* archive from the same
+/// input. Byte-identity across toolchains is not a property the C has here.
+///
+/// Reproducing it would mean reimplementing one particular libc++'s introsort,
+/// and would still be wrong on Linux. So the harness requires byte-identity and
+/// treats this one difference as a pass. Everything else stays a failure: the
+/// record multiset, every block header, every hash and all literal bytes must
+/// match exactly.
+fn srep_tie_order(a: &str, b: &str) -> Result<String, String> {
+    let (ha, ba) = srep_parse(a).map_err(|e| format!("cannot parse ({e})"))?;
+    let (hb, bb) = srep_parse(b).map_err(|e| format!("cannot parse ({e})"))?;
+    if ha != hb {
+        return Err("archive headers differ".to_owned());
+    }
+    if ba.len() != bb.len() {
+        return Err(format!("block count differs ({} vs {})", ba.len(), bb.len()));
+    }
+
+    let mut reordered = 0usize;
+    for (i, (x, y)) in ba.iter().zip(bb.iter()).enumerate() {
+        let ((bha, ra, la), (bhb, rb, lb)) = (x, y);
+        if bha != bhb {
+            return Err(format!("block {i} header or hash differs"));
+        }
+        if la != lb {
+            return Err(format!("block {i} literal bytes differ"));
+        }
+        if ra == rb {
+            continue;
+        }
+        let (mut sa, mut sb) = (ra.clone(), rb.clone());
+        sa.sort_unstable();
+        sb.sort_unstable();
+        if sa != sb {
+            return Err(format!("block {i} record SETS differ -- a real divergence"));
+        }
+        // Same multiset, different order. Confirm every difference is confined
+        // to a group of records sharing a source; anything else is real.
+        let group = |recs: &[(u64, u64, u64)]| {
+            let mut m: std::collections::BTreeMap<u64, Vec<(u64, u64)>> =
+                std::collections::BTreeMap::new();
+            for (s, dst, ln) in recs {
+                m.entry(*s).or_default().push((*dst, *ln));
+            }
+            m
+        };
+        let (ga, gb) = (group(ra), group(rb));
+        if ga.keys().ne(gb.keys()) {
+            return Err(format!("block {i} source positions differ"));
+        }
+        for (s, va) in &ga {
+            let vb = gb.get(s).ok_or_else(|| format!("block {i} source positions differ"))?;
+            let (mut xa, mut xb) = (va.clone(), vb.clone());
+            xa.sort_unstable();
+            xb.sort_unstable();
+            if xa != xb {
+                return Err(format!("block {i} src={s} records differ"));
+            }
+            if va != vb {
+                reordered += 1;
+            }
+        }
+    }
+    Ok(format!("identical except {reordered} tied-source group(s) reordered"))
+}
+
 fn read_file(path: &str) -> Vec<u8> {
     let mut v = Vec::new();
     std::fs::File::open(path)
@@ -266,6 +457,19 @@ fn main() {
             let skip: usize = args.get(2).and_then(|s| s.parse().ok()).unwrap_or(0);
             let rest = b.get(skip..).unwrap_or(&[]);
             println!("{}", i32::from(rest.iter().all(|x| *x == 0)));
+        }
+        // exit 0 when the only difference is the order of records sharing a
+        // source; exit 1 for anything else, including a stream we cannot parse.
+        "srep-tie-order" => {
+            let a = args.get(1).map(String::as_str).unwrap_or("");
+            let b = args.get(2).map(String::as_str).unwrap_or("");
+            match srep_tie_order(a, b) {
+                Ok(msg) => println!("  tie-check: {msg}"),
+                Err(msg) => {
+                    println!("  tie-check: {msg}");
+                    std::process::exit(1);
+                }
+            }
         }
         other => {
             eprintln!("difftest-util: unknown command {other:?}");

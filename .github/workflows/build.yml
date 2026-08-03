@@ -1172,7 +1172,7 @@ jobs:
     # srep.cpp:756 sorts them with an UNSTABLE std::sort keyed on src alone. That
     # is a property of the C++ standard library, not of the format -- a libstdc++
     # build can differ from a libc++ one on the same input -- so it cannot be
-    # reproduced, only bounded. srep_tie_order.py accepts it only when the
+    # reproduced, only bounded. `difftest-util srep-tie-order` accepts it only when the
     # archive header, every block header and hash, every literal byte and the
     # per-block record MULTISET are all identical.
     - name: SREP compressor differential test
