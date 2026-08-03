@@ -350,6 +350,12 @@ jobs:
         key: cargo-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust-toolchain.toml', 'rust/Cargo.lock') }}
         restore-keys: |
           cargo-${{ runner.os }}-${{ runner.arch }}-
+    # crt-static AND -static: the first run used -static alone, which removed
+    # the libc++ and libwinpthread imports but left libunwind.dll, because
+    # rustc adds its own -lunwind for the gnullvm targets and that resolved to
+    # the import library. crt-static is what tells rustc itself to link the
+    # runtime statically rather than merely asking the driver to.
+    #
     # -static, because llvm-mingw links libc++, libunwind and libwinpthread as
     # DLLs by default and only the .exe is uploaded below. Without it the
     # binary reaches the ARM64 runner and dies before main with "cannot open
@@ -359,7 +365,8 @@ jobs:
     # libc++ dependency.
     - name: Build (Windows ARM64 cross)
       run: |
-        RUSTFLAGS="-C link-arg=-static" cargo build --release --manifest-path rust/Cargo.toml \
+        RUSTFLAGS="-C target-feature=+crt-static -C link-arg=-static" \
+          cargo build --release --manifest-path rust/Cargo.toml \
           --target aarch64-pc-windows-gnullvm -p darc-arc --bin darc
         mkdir -p Tests
         cp rust/target/aarch64-pc-windows-gnullvm/release/darc.exe Tests/darc-win-arm64.exe
