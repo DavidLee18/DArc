@@ -1111,6 +1111,317 @@ Compression of text depends on repeated words appearing often. ";
     }
 }
 
+/// `geometric_bytes` from `mm-check.sh` — a geometric distribution over 256
+/// symbols whose rate is bisected until its entropy hits `target_bits`.
+///
+/// This exists to sit ON `autodetect_by_entropy`'s absolute gate
+/// (`model0_result < bufsize*0.80`, i.e. 6.4 bits/byte). Uniform data cannot
+/// reach it: `calc_results` scores a slot as `count * log2(total/count)` with
+/// that division done in INTEGER arithmetic, and for a uniform alphabet of k
+/// symbols the quotient is exactly k, so the truncation is a no-op. The
+/// distribution has to be skewed before `floor()` bites.
+///
+/// The bisection is 60 rounds of f64, so this is only correct if it matches
+/// CPython's arithmetic bit for bit — which is what `verify-corpus.sh` checks.
+fn geometric_bytes(target_bits: f64, n: usize, seed: u32) -> Vec<u8> {
+    let ent = |r: f64| -> (f64, Vec<f64>) {
+        let p: Vec<f64> = (0..256).map(|i| r.powi(i)).collect();
+        let s: f64 = p.iter().sum();
+        let p: Vec<f64> = p.iter().map(|x| x / s).collect();
+        let e: f64 = -p.iter().filter(|x| **x > 0.0).map(|x| x * x.log2()).sum::<f64>();
+        (e, p)
+    };
+    let (mut lo, mut hi) = (0.5f64, 0.99999f64);
+    for _ in 0..60 {
+        let mid = (lo + hi) / 2.0;
+        if ent(mid).0 < target_bits {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    let (_, p) = ent((lo + hi) / 2.0);
+    let mut cum = Vec::with_capacity(256);
+    let mut acc = 0.0f64;
+    for x in &p {
+        acc += x;
+        cum.push(acc);
+    }
+    let mut s = seed;
+    (0..n)
+        .map(|_| {
+            s = s.wrapping_mul(1103515245).wrapping_add(12345);
+            let x = (((s >> 8) & 0xffffff) as f64) / 0x1000000 as f64;
+            // `bisect.bisect_left(cum, x)`
+            let (mut a, mut b) = (0usize, cum.len());
+            while a < b {
+                let mid = (a + b) / 2;
+                if cum[mid] < x {
+                    a = mid + 1;
+                } else {
+                    b = mid;
+                }
+            }
+            a.min(255) as u8
+        })
+        .collect()
+}
+
+/// `mm-check.sh` — multimedia data, plus the inputs that sit on the detector's
+/// decision boundaries.
+fn mm(dir: &std::path::Path) {
+    const N: usize = 300000; // 300k stereo 16-bit samples = 1.2 MB
+    let pcm = s16((0..N).flat_map(|i| {
+        let i = i as f64;
+        [20000.0 * (i * 0.03).sin(), 15000.0 * (i * 0.041).sin()]
+    }));
+    write(dir, "sine16_stereo", &pcm);
+    write(
+        dir,
+        "chord16_stereo",
+        &s16((0..N).flat_map(|i| {
+            let i = i as f64;
+            [
+                8000.0 * (i * 0.02).sin() + 6000.0 * (i * 0.05).sin(),
+                7000.0 * (i * 0.03).sin() + 5000.0 * (i * 0.07).sin(),
+            ]
+        })),
+    );
+    write(
+        dir,
+        "quiet16_stereo",
+        &s16((0..N).flat_map(|i| {
+            let i = i as f64;
+            [30.0 * (i * 0.03).sin(), 25.0 * (i * 0.05).sin()]
+        })),
+    );
+    // A real 44-byte canonical WAV header, so autodetect_wav_header takes the
+    // offset path rather than the entropy analyzer.
+    let mut wav = Vec::new();
+    wav.extend_from_slice(b"RIFF");
+    wav.extend_from_slice(&((36 + pcm.len()) as u32).to_le_bytes());
+    wav.extend_from_slice(b"WAVEfmt ");
+    // `struct.pack("<IHHIIHH", 16,1,2,44100,44100*4,4,16)`
+    wav.extend_from_slice(&16u32.to_le_bytes());
+    wav.extend_from_slice(&1u16.to_le_bytes());
+    wav.extend_from_slice(&2u16.to_le_bytes());
+    wav.extend_from_slice(&44100u32.to_le_bytes());
+    wav.extend_from_slice(&(44100u32 * 4).to_le_bytes());
+    wav.extend_from_slice(&4u16.to_le_bytes());
+    wav.extend_from_slice(&16u16.to_le_bytes());
+    wav.extend_from_slice(b"data");
+    wav.extend_from_slice(&(pcm.len() as u32).to_le_bytes());
+    wav.extend_from_slice(&pcm);
+    write(dir, "wav16_stereo", &wav);
+    write(
+        dir,
+        "rgb24",
+        &(0..400000usize)
+            .flat_map(|i| {
+                [
+                    ((i * 7) % 256) as u8,
+                    ((128 + (100.0 * (i as f64 * 0.01).sin()) as i64) & 0xff) as u8,
+                    ((i / 97) % 256) as u8,
+                ]
+            })
+            .collect::<Vec<u8>>(),
+    );
+    // `struct.pack("<i", int(...) & 0xffffff)[:3]` -- Python's `&` on a negative
+    // int is two's complement with infinite sign extension, so the mask yields a
+    // positive value below 2^24 and the low three bytes are taken.
+    let mut pcm24 = Vec::new();
+    for i in 0..2 * N {
+        let v = (4000000.0 * (i as f64 * 0.02).sin()) as i64 & 0xffffff;
+        pcm24.extend_from_slice(&(v as u32).to_le_bytes()[..3]);
+    }
+    write(dir, "pcm24_stereo", &pcm24);
+    let mut f32s = Vec::new();
+    for i in 0..350000usize {
+        f32s.extend_from_slice(&((i as f64 * 0.01).sin() as f32).to_le_bytes());
+    }
+    write(dir, "float32_mono", &f32s);
+    write(dir, "ramp32", &le32((0..350000u32).map(|i| i.wrapping_mul(2654435761))));
+    write(dir, "noise8", &prng(9, 1300000));
+    write(dir, "silence", &vec![0u8; 1300000]);
+    write(dir, "text", &repeat(FOX, 30000));
+    // `(pcm*8)[:n]`
+    for n in [1usize, 3, 7, 8, 63, (1 << 20) - 1, 1 << 20, (1 << 20) + 1, (1 << 20) + 7] {
+        let mut v = pcm.repeat(8);
+        v.truncate(n);
+        write(dir, &format!("n_{n}"), &v);
+    }
+    // Blends of clean signal into noise, so some land inside the 5% bands the
+    // selection rules use and a small change in the estimate flips the model.
+    const M: usize = 60000;
+    for k in 0..12usize {
+        let amp = 1.0 - k as f64 / 12.0;
+        let noise = prng(1000 + k as u32, 4 * M);
+        write(
+            dir,
+            &format!("blend16_{k:02}"),
+            &s16((0..2 * M).map(|i| {
+                let n = noise[(2 * i) % noise.len()] as f64 - 128.0;
+                amp * 12000.0 * (i as f64 * 0.031).sin() + (1.0 - amp) * (n * 90.0)
+            })),
+        );
+    }
+    // Ambiguous between 8- and 16-bit: the low byte carries almost as much
+    // structure as the high one, so the two models score close together.
+    write(
+        dir,
+        "amb8_16",
+        &(0..500000usize)
+            .flat_map(|i| {
+                [
+                    ((i * 13) % 251) as u8,
+                    ((128 + (60.0 * (i as f64 * 0.02).sin()) as i64) & 0xff) as u8,
+                ]
+            })
+            .collect::<Vec<u8>>(),
+    );
+    // 24-bit with the top bit SET, so signed and unsigned readings differ --
+    // _24bit_run measures signed values, _24bit_diff_run unsigned differences.
+    let mut hi24 = Vec::new();
+    for i in 0..200000usize {
+        let v = (0xC00000i64 + (200000.0 * (i as f64 * 0.02).sin()) as i64) & 0xffffff;
+        hi24.extend_from_slice(&(v as u32).to_le_bytes()[..3]);
+    }
+    write(dir, "hi24", &hi24);
+    for (j, tb) in [6.20, 6.30, 6.35, 6.38, 6.40, 6.42, 6.45, 6.50, 6.60].iter().enumerate() {
+        write(dir, &format!("gate8_{j}"), &geometric_bytes(*tb, 200000, 7000 + j as u32));
+    }
+    // Quiet multimedia: low order-0 entropy AND a large diff advantage, so it
+    // fails one gate and passes the other. ~1000 sits inside the band while
+    // compressing 54% better than order-0 -- the detector stores it anyway,
+    // because the gate asks "is order-0 already good" rather than "would MM
+    // help". Pinning that behaviour is the point.
+    for amp in [700.0f64, 850.0, 950.0, 1000.0, 1050.0, 1150.0, 1400.0, 2200.0] {
+        let vals: Vec<f64> = (0..2 * 60000)
+            .flat_map(|i| {
+                let i = i as f64;
+                [amp * (i * 0.03).sin(), amp * 0.75 * (i * 0.041).sin()]
+            })
+            .take(2 * 60000)
+            .collect();
+        write(dir, &format!("quiet16_a{}", amp as i64), &s16(vals));
+    }
+}
+
+/// `grzip-stage-check.sh` — the LZP and record stages.
+///
+/// Several of these are placed rather than chosen: the record-shaped inputs
+/// exist because `GRZip_Rec_Test` returns 0 for everything else, so the record
+/// stage would be untested; the `exact_L` blocks exist because nothing else
+/// produces a match of exactly `MinMatchLen`, so flipping that `<` to `<=`
+/// changed no output at all.
+fn grzip_stage(dir: &std::path::Path) {
+    write(dir, "repeat8", &repeat(b"abcdefgh", 40000));
+    write(dir, "text", &repeat(FOX, 8000));
+    write(dir, "noise", &prng(7, 300000));
+    let mut mixed = Vec::new();
+    for i in 0..300u32 {
+        match i % 3 {
+            0 => mixed.extend(prng(i, 400)),
+            _ => mixed.extend(repeat(b"abcdefgh", 50)),
+        }
+    }
+    write(dir, "mixed", &mixed);
+    write(
+        dir,
+        "f2heavy",
+        &(0..200000usize)
+            .map(|i| match i % 5 {
+                0 => 0xF2,
+                _ => ((i * 7) & 0xff) as u8,
+            })
+            .collect::<Vec<u8>>(),
+    );
+    write(dir, "runs", &runs_fixed(300, 256, 1000));
+    write(dir, "zeros", &vec![0u8; 400000]);
+    // Inputs that make the BWT comparison's TIE loop run. `simple_cmp` only
+    // walks when two positions have identical ranks, and that loop executed 0%
+    // of the time on ordinary text -- so changing its stride from 2 to 1, a
+    // real semantic change, left the whole run green.
+    write(
+        dir,
+        "bwt_ties_runs",
+        &(0..200000usize)
+            .map(|i| match i % 100 < 90 {
+                true => 0x78,
+                false => (i % 251) as u8,
+            })
+            .collect::<Vec<u8>>(),
+    );
+    write(
+        dir,
+        "bwt_ties_blocks",
+        &(0..200000usize).map(|i| (((i / 64) % 4) + 0x70) as u8).collect::<Vec<u8>>(),
+    );
+    for n in [32usize, 33, 40, 63, 64, 65, 1000, 4096, 4097] {
+        write(dir, &format!("n_{n}"), &truncated_repeat(b"abcdefgh", 2000, n));
+    }
+    for n in [4096usize, 4097, 5000] {
+        write(dir, &format!("rnd_{n}"), &prng(3, n));
+    }
+    // Record-shaped inputs. Modes 1 and 2 are plain 2- and 4-byte
+    // de-interleaves, 3 and 4 the delta-coded versions; the harness asserts all
+    // four appear.
+    write(dir, "rec16_counter", &le16((0..60000u32).map(|i| ((i * 3) & 0xffff) as u16)));
+    write(
+        dir,
+        "rec16_noisy",
+        &le16((0..60000u32).map(|i| (((i * 3) & 0xffff) ^ u32::from(prng(i, 1)[0] & 0x7)) as u16)),
+    );
+    write(dir, "rec32_counter", &le32((0..30000u32).map(|i| i * 7)));
+    write(dir, "rec32_table", &le32((0..30000u32).map(|i| 0x40000000 + (i % 997) * 13)));
+    write(dir, "rec16_flat", &le16((0..60000u32).map(|i| ((i % 251) * 17) as u16)));
+    // `struct.pack("<HBB", i&0xffff, (i*5)&0xff, 0x20)`
+    let mut rec32_struct = Vec::new();
+    for i in 0..30000u32 {
+        rec32_struct.extend_from_slice(&((i & 0xffff) as u16).to_le_bytes());
+        rec32_struct.push(((i * 5) & 0xff) as u8);
+        rec32_struct.push(0x20);
+    }
+    write(dir, "rec32_struct", &rec32_struct);
+    write(
+        dir,
+        "rec16_desc",
+        &le16((0..60000u32).map(|i| (65535u32.wrapping_sub(i * 3) & 0xffff) as u16)),
+    );
+    // Modes 1 and 2 need de-interleaving to pay off while DELTA coding does
+    // not: one noisy field, the rest near constant.
+    let n16 = prng(41, 60000);
+    write(dir, "rec16_noise_lo", &le16((0..60000).map(|i| 0x2500u16 | u16::from(n16[i]))));
+    let n32 = prng(43, 30000);
+    write(dir, "rec32_noise_lo", &le32((0..30000).map(|i| 0x40302000u32 | u32::from(n32[i]))));
+    // Mode 2 additionally needs the record VALUES to stay small: the delta test
+    // compares Sum against `MinCode*(Size>>2)`, a `uint32 * int` product, and
+    // this is the non-overflowing side of it.
+    let n32b = prng(61, 30000);
+    write(dir, "rec32_small", &le32((0..30000).map(|i| 0x2000u32 | u32::from(n32b[i]))));
+    // `MinCode*(Size>>1)` is `int * int`, so with MinCode near 0xF000 and 60k
+    // records the product is 3.7e9 and wraps NEGATIVE. Without an input in this
+    // range, widening it to 64 bits changes nothing and the sabotage passes.
+    let n16b = prng(71, 60000);
+    write(dir, "rec16_high", &le16((0..60000).map(|i| 0xF000u16 | u16::from(n16b[i]))));
+    // Either side of the delta test's 6.25% slack band. Step 33 sits just above
+    // it (mode 4 either way), step 34 inside it (mode 2 only because of the
+    // slack). Derived by modelling the comparison and confirmed against the C.
+    write(dir, "rec32_band_out", &le32((0..4096u32).map(|i| 0x2000 | ((i * 33) & 0xFF))));
+    write(dir, "rec32_band_in", &le32((0..4096u32).map(|i| 0x2000 | ((i * 34) & 0xFF))));
+    // Matches of EXACTLY MinMatchLen: a repeated 4-byte context, then agreement
+    // for exactly L more bytes before one divergent byte.
+    for l in [7usize, 8, 9, 15, 16, 17, 31, 32, 33, 63, 64, 65] {
+        let mut blk = Vec::new();
+        for r in 0..400usize {
+            blk.extend_from_slice(&[0xA1, 0xB2, 0xC3, 0xD4]);
+            blk.extend((0..l).map(|i| ((r * 13 + i) & 0xff) as u8));
+            blk.push(((r * 77) & 0xff) as u8);
+        }
+        write(dir, &format!("exact_{l}"), &blk);
+    }
+}
+
 /// `crypto-check.sh` -- sizes either side of the 256 KB pipeline buffer, each
 /// seeded by its own length so no two files share a prefix.
 fn crypto(dir: &std::path::Path) {
@@ -1212,6 +1523,8 @@ fn main() {
         "lzma2-mt" => lzma2_mt(&dir),
         "dict" => dict(&dir),
         "crypto" => crypto(&dir),
+        "mm" => mm(&dir),
+        "grzip-stage" => grzip_stage(&dir),
         other => {
             eprintln!("corpusgen: unknown corpus {other:?}");
             std::process::exit(2);
