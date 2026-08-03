@@ -39,20 +39,11 @@ cc "$W/rs" -DUSE_RUST "$LIB" || exit 1
 
 # Inputs: REP matches only >=512-byte repeats, so cover long repeats, block
 # edges, incompressible data and the empty case.
-python3 - "$W/in" <<'PY'
-import os,sys
-d=sys.argv[1]; os.makedirs(d,exist_ok=True)
-def prng(seed,n):
-    s=seed; o=bytearray()
-    for _ in range(n): s=(s*1103515245+12345)&0xffffffff; o.append((s>>16)&0xff)
-    return bytes(o)
-w=lambda n,b: open(f"{d}/{n}","wb").write(b)
-w("empty",b""); w("tiny",b"hello"); w("nomatch",prng(1,20000))
-blk=prng(2,2000); w("one_match",blk+prng(3,5000)+blk+blk)
-w("many",(blk+prng(4,600))*40); w("zeros",b"\0"*100000)
-w("text",b"the quick brown fox jumps over the lazy dog. "*2000)
-for n in (511,512,513,1023,1024,1025): w(f"rep_{n}",prng(6,n)*3)
-PY
+( cd "$ROOT/rust" && cargo build --release -q -p darc-codecs --bin corpusgen ) || exit 1
+
+# Corpus from corpusgen -- a literal transcription of the python3 heredoc
+# that stood here, accepted on a byte comparison over every file it writes.
+"$ROOT/rust/target/release/corpusgen" rep "$W/in"
 
 fail=0 n=0
 for f in "$W"/in/*; do

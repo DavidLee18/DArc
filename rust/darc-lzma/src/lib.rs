@@ -19,6 +19,17 @@
 //! corpus, verified out-of-tree against the C oracle (see
 //! `docs/comparing-against-the-c-oracle.md`). The match finder, optimal parser,
 //! decoder, and symbol layer are all complete. See `ROADMAP.md`.
+//! ## `drop_non_drop` is allowed, and it is a direct consequence of a CI rule
+//!
+//! This workspace bans `let _ = expr;` and `let _name = expr;` -- a discard that
+//! reads as a binding, and that silences `unused_must_use`. The replacement is
+//! `drop(expr)`. Clippy's `drop_non_drop` fires on exactly that when the value
+//! is `Copy` or has no destructor, and its suggested fix is `let _ = expr` --
+//! the form the CI grep rejects. One of the two has to give, and it is this
+//! lint: the CI rule catches a class of bug that has actually occurred here (a
+//! computed comparison thrown away), while `drop_non_drop` only objects to the
+//! spelling of a deliberate discard.
+#![allow(dropping_copy_types, dropping_references, clippy::drop_non_drop)]
 
 mod price;
 mod props;

@@ -94,8 +94,28 @@ ENCRYPTION_METHOD::ENCRYPTION_METHOD()
 {
     cipher        = -1;
     mode          = -1;
-    numIterations = 1000;
+    // PBKDF2-HMAC-SHA512, OWASP's recommended count for that PRF. FreeArc's
+    // 1000 dates from 2008 and is about 200x too low against a modern GPU.
+    //
+    // Unlike hexfix below, this default is safe to move: ShowCompressionMethod
+    // always writes ":n%d", so every stored method string names its own count
+    // and an old archive is decrypted with the 1000 it recorded, not with this.
+    // Nothing here is retroactive -- a weak archive stays weak, and the only way
+    // to strengthen it is to repack it.
+    //
+    // COST, measured on a 200-file tree: a key is derived PER BLOCK, so this is
+    // ~70ms x the number of blocks. A normal archive has one data block (plus
+    // two more under -hp), which is 131ms to create and 112ms to test -- against
+    // 89/42 at n=1000. But "-s-" makes every file its own solid block, and there
+    // the same tree goes from 227ms to 13.9s. Use "-ae aes:n1000" if that
+    // combination is what you need; the count is stored per archive.
+    numIterations = 210000;
     rounds        = 0;
+    // 0, so a method string read from an ARCHIVE that says nothing about the
+    // hex decoding gets the old one. Every archive written before ":h1" existed
+    // is in exactly that position, and defaulting the other way would make all
+    // of them unreadable. New archives get ":h1" from Cmdline.hs, not from here.
+    hexfix        = 0;
     keySize       = -1;
     strcpy(key,  "");
     strcpy(iv,   "");
@@ -113,19 +133,32 @@ int ENCRYPTION_METHOD::doit (char *what, int param, void *data, CALLBACK_FUNC *c
     else                                      return COMPRESSION_METHOD::doit (what, param, data, callback);  // Pass the remaining calls to the parent procedure
 }
 
-// Decode a hexadecimal string into a sequence of bytes
-void decode16 (char *src, BYTE *dst)
+// Decode a hexadecimal string into a sequence of bytes.
+//
+// `corrected` selects WHICH decoding, and it is not a preference:
+//
+//   1  real hexadecimal, what every archive written from now on uses
+//   0  char2int_broken (Common.h), where 'a' is 0 and 'f' is 5 -- what every
+//      archive written before the ":h1" parameter existed used
+//
+// Only the key and the IV pass through here. The salt and the check code are
+// decoded on the Haskell side by Utils.hs's decode16, which was always real
+// hex -- which is why a build that decodes all four correctly still VERIFIES
+// every password and then fails every CRC. The check code never touched the
+// broken decoder, so it cannot detect the mismatch.
+void decode16 (char *src, BYTE *dst, int corrected)
 {
     for( ; src[0] && src[1]; src+=2)
-        *dst++ = char2int(src[0]) * 16 + char2int(src[1]);
+        *dst++ = corrected? hex2int(src[0]) * 16 + hex2int(src[1])
+                          : char2int_broken(src[0]) * 16 + char2int_broken(src[1]);
 }
 
 
 // Decompression function
 int ENCRYPTION_METHOD::decompress (CALLBACK_FUNC *callback, void *auxdata)
 {
-    BYTE key_bytes[MAXKEYSIZE];  decode16 (key, key_bytes);
-    BYTE iv_bytes [MAXKEYSIZE];  decode16 (iv,  iv_bytes);
+    BYTE key_bytes[MAXKEYSIZE];  decode16 (key, key_bytes, hexfix);
+    BYTE iv_bytes [MAXKEYSIZE];  decode16 (iv,  iv_bytes,  hexfix);
     return docrypt (DECRYPT, cipher, mode, key_bytes, strlen(key)/2, rounds, iv_bytes, callback, auxdata);
 }
 
@@ -134,19 +167,20 @@ int ENCRYPTION_METHOD::decompress (CALLBACK_FUNC *callback, void *auxdata)
 // Compression function
 int ENCRYPTION_METHOD::compress (CALLBACK_FUNC *callback, void *auxdata)
 {
-    BYTE key_bytes[MAXKEYSIZE];  decode16 (key, key_bytes);
-    BYTE iv_bytes [MAXKEYSIZE];  decode16 (iv,  iv_bytes);
+    BYTE key_bytes[MAXKEYSIZE];  decode16 (key, key_bytes, hexfix);
+    BYTE iv_bytes [MAXKEYSIZE];  decode16 (iv,  iv_bytes,  hexfix);
     return docrypt (ENCRYPT, cipher, mode, key_bytes, strlen(key)/2, rounds, iv_bytes, callback, auxdata);
 }
 
 // Write into buf[MAX_METHOD_STRLEN] a string describing the compression method and its parameters (inverse of parse_ENCRYPTION)
 void ENCRYPTION_METHOD::ShowCompressionMethod (char *buf)
 {
-    sprintf (buf, "%s-%d/%s:n%d:r%d%s%s%s%s%s%s%s%s"
+    sprintf (buf, "%s-%d/%s:n%d:r%d%s%s%s%s%s%s%s%s%s"
                                         , cipher_descriptor[cipher].name, keySize*8
                                         , EncryptionMode(mode).name()
                                         , numIterations
                                         , rounds
+                                        , hexfix?":h1":""
                                         , *key ?":k":"", key
                                         , *iv  ?":i":"", iv
                                         , *salt?":s":"", salt
@@ -197,6 +231,11 @@ COMPRESSION_METHOD* parse_ENCRYPTION (char** parameters)
         case 'c':  strncopy (p->code, param+1, sizeof (p->code));   continue;
         case 'n':  p->numIterations  = parseInt (param+1, &error);  continue;
         case 'r':  p->rounds         = parseInt (param+1, &error);  continue;
+        // ":h1" says the key and IV are real hexadecimal. An OLD build has no
+        // case for 'h', so it hits `default: error=1` and refuses the whole
+        // method string -- which is the point: it fails loudly rather than
+        // decoding with the wrong table and reporting a corrupt archive.
+        case 'h':  p->hexfix         = parseInt (param+1, &error);  continue;
         default :  error=1;                                         continue;
       }
     }

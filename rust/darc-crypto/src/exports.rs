@@ -14,10 +14,11 @@
 
 #![allow(unsafe_code)]
 
+use crate::cipher::{with_cipher, Cipher, Mode, WithCipher};
 use crate::ffi::{Io, CALLBACK_FUNC, OK};
 use crate::{cfb, ctr, pbkdf2_hmac_sha512, random};
 use crate::ffi::{FREEARC_ERRCODE_GENERAL, FREEARC_ERRCODE_INVALID_COMPRESSOR};
-use cipher::{BlockCipherEncrypt, BlockSizeUser, KeyInit};
+use ::cipher::{BlockCipherEncrypt, BlockSizeUser, KeyInit};
 use core::ffi::{c_int, c_void};
 
 /// docrypt reads and writes in 256 KB chunks (LARGE_BUFFER_SIZE). The size does
@@ -53,53 +54,64 @@ pub unsafe extern "C" fn darc_rs_docrypt(
         let key = std::slice::from_raw_parts(key, key_len as usize);
         let encrypting = do_encryption == ENCRYPT;
 
-        // Dispatch cipher x (aes key length) into a concrete type, then run the
-        // chosen mode over the callback loop. `_rounds` is unused: DArc always
-        // passes 0 (cipher default), the only case the fixed-round crates cover.
-        match cipher {
-            0 => match key.len() {
-                16 => run::<aes::Aes128>(key, iv, mode, encrypting, &io),
-                24 => run::<aes::Aes192>(key, iv, mode, encrypting, &io),
-                32 => run::<aes::Aes256>(key, iv, mode, encrypting, &io),
-                _ => FREEARC_ERRCODE_INVALID_COMPRESSOR,
-            },
-            1 => run::<blowfish::Blowfish>(key, iv, mode, encrypting, &io),
-            2 => run::<serpent::Serpent>(key, iv, mode, encrypting, &io),
-            3 => run::<twofish::Twofish>(key, iv, mode, encrypting, &io),
-            _ => FREEARC_ERRCODE_INVALID_COMPRESSOR,
+        // Cipher and mode ids come off a method string in the archive, so an
+        // unknown one is data, not a bug. The id-to-type table itself lives in
+        // `crate::cipher` and is shared with the in-memory path darc-arc uses;
+        // `_rounds` is unused: DArc always passes 0 (cipher default), the only
+        // case the fixed-round crates cover.
+        let c = match Cipher::from_id(cipher) {
+            Some(c) => c,
+            None => return FREEARC_ERRCODE_INVALID_COMPRESSOR,
+        };
+        let m = match Mode::from_id(mode) {
+            Some(m) => m,
+            None => return FREEARC_ERRCODE_INVALID_COMPRESSOR,
+        };
+        // SAFETY: the C side sizes iv to the cipher's block length (ivSize =
+        // cipher_descriptor[cipher].block_length), which is what this is.
+        let iv = std::slice::from_raw_parts(iv, c.block_length());
+
+        let key_len = key.len();
+        match with_cipher(c, key_len, Stream { key, iv, mode: m, encrypting, io: &io }) {
+            Some(code) => code,
+            None => FREEARC_ERRCODE_INVALID_COMPRESSOR,
         }
     })
 }
 
-fn run<C>(key: &[u8], iv: *const u8, mode: c_int, encrypting: bool, io: &Io) -> c_int
-where
-    C: BlockCipherEncrypt + BlockSizeUser + KeyInit,
-{
-    let cipher = match C::new_from_slice(key) {
-        Ok(c) => c,
-        Err(_) => return FREEARC_ERRCODE_INVALID_COMPRESSOR,
-    };
-    let bs = C::block_size();
-    // SAFETY: the C side sizes iv to the cipher's block length (ivSize =
-    // cipher_descriptor[cipher].block_length), which is what `bs` is.
-    let iv = unsafe { std::slice::from_raw_parts(iv, bs) };
+/// The streaming half of the cipher dispatch: build the mode state once, then
+/// run the read/encrypt/write loop over the callback.
+struct Stream<'a> {
+    key: &'a [u8],
+    iv: &'a [u8],
+    mode: Mode,
+    encrypting: bool,
+    io: &'a Io,
+}
 
-    match mode {
-        0 => {
-            let mut st = ctr::Ctr::new(&cipher, iv);
-            drive(io, |buf| st.apply(buf))
+impl WithCipher for Stream<'_> {
+    type Out = c_int;
+    fn call<C>(self) -> c_int
+    where
+        C: BlockCipherEncrypt + BlockSizeUser + KeyInit,
+    {
+        let cipher = match C::new_from_slice(self.key) {
+            Ok(c) => c,
+            Err(_) => return FREEARC_ERRCODE_INVALID_COMPRESSOR,
+        };
+        match self.mode {
+            Mode::Ctr => {
+                let mut st = ctr::Ctr::new(&cipher, self.iv);
+                drive(self.io, |buf| st.apply(buf))
+            }
+            Mode::Cfb => {
+                let mut st = cfb::Cfb::new(&cipher, self.iv);
+                drive(self.io, |buf| match self.encrypting {
+                    true => st.encrypt(buf),
+                    false => st.decrypt(buf),
+                })
+            }
         }
-        1 => {
-            let mut st = cfb::Cfb::new(&cipher, iv);
-            drive(io, |buf| {
-                if encrypting {
-                    st.encrypt(buf)
-                } else {
-                    st.decrypt(buf)
-                }
-            })
-        }
-        _ => FREEARC_ERRCODE_INVALID_COMPRESSOR,
     }
 }
 

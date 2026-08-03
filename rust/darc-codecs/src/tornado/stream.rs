@@ -62,7 +62,7 @@ impl<'a> InputByteStream<'a> {
     pub fn new(io: &'a Io, bufsize: usize) -> Self {
         // compress_all_at_once is false for the archiver's streaming path, so
         // the C picks LARGE_BUFFER_SIZE regardless of the header's bufsize.
-        let _ = bufsize;
+        drop(bufsize);
         let size = LARGE_BUFFER_SIZE;
         let mut s = InputByteStream {
             io,

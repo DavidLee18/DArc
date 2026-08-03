@@ -58,77 +58,11 @@ cc "$W/c"  ""                             || { echo "C reference build failed" >
 cc "$W/rs" "$LIB" -DUSE_RUST -DDARC_RUST  || { echo "Rust driver build failed" >&2; exit 1; }
 [ -x "$W/c" ] && [ -x "$W/rs" ] || { echo "a driver is missing after a clean build" >&2; exit 1; }
 
-python3 - "$W/in" <<'PY'
-import os,sys,random
-d=sys.argv[1]; os.makedirs(d,exist_ok=True)
-def prng(seed,n):
-    s=seed; o=bytearray()
-    for _ in range(n): s=(s*1103515245+12345)&0xffffffff; o.append((s>>16)&0xff)
-    return bytes(o)
-w=lambda n,b: open(f"{d}/{n}","wb").write(b)
+( cd "$ROOT/rust" && cargo build --release -q -p darc-codecs --bin corpusgen ) || exit 1
 
-# What Dict actually accepts is narrower than "repeated words", and the corpus
-# was rebuilt around measurement rather than intuition. Text made only of
-# lowercase letters and spaces is REFUSED outright -- DictEncode returns -1,
-# because MinWeakChars (20 by default) demands a good spread of non-word
-# characters before it will believe the input is text. Measured with the
-# driver's 'v' mode, over 256 KB blocks:
-#
-#   19-word vocabulary, lowercase + space   0/5 blocks   rc=-1
-#   one word repeated 120000 times          0/5 blocks   rc=-1
-#   source code, heavy punctuation          0/4 blocks   declined on ratio
-#   HTML-ish markup                         0/4 blocks   declined on ratio
-#   natural prose: mixed case, digits,
-#     commas, full stops, newlines          5/5 blocks   engaged
-#
-# So the engaging inputs are the `natural_*` ones below, and they are what make
-# the encoder comparison mean anything.
-COMMON=("the of and to in a is that for it as was with be by on not he this but have "
-        "from they which one you were all her she there would their we him been has "
-        "when who will more no if out so said what up its about into than them can").split()
-TOPIC=("compression algorithm dictionary preprocessor archive redundancy entropy encoder "
-       "decoder statistical frequency threshold occurrence substitution replacement "
-       "transformation implementation").split()
-def natural(seed, n, topic_every=6):
-    r=random.Random(seed); o=[]
-    for i in range(n):
-        ww = TOPIC[r.randrange(len(TOPIC))] if i%topic_every==0 else COMMON[r.randrange(len(COMMON))]
-        if i%17==0: ww=ww.capitalize()
-        o.append(ww)
-        if i%11==0: o.append(str(i%1000))
-        if i%13==0: o.append(",")
-        if i%29==0: o.append(".")
-        if i%97==0: o.append("\n")
-    return (" ".join(o)).encode()
-# Three vocabularies and three sizes, so the word-frequency buckets
-# (MinLargeCnt 2048 / MinMediumCnt 100 / MinSmallCnt 50) are populated
-# differently in each: 5, 4 and 2 engaged blocks respectively.
-w("natural_a", natural(7, 200000))
-w("natural_b", natural(11, 120000, topic_every=3))
-w("natural_c", natural(23, 60000, topic_every=12))
-
-# A small fixed vocabulary with punctuation: engages on its first block and
-# declines on the short tail, so one file covers both outcomes.
-sent = ("The quick brown fox jumps over the lazy dog, and the dog barks. "
-        "Compression of text depends on repeated words appearing often. ")
-w("english", (sent*3000).encode())
-
-# These DECLINE, and that is worth testing too: the stored path has its own
-# four-byte framing and the two implementations must agree on it byte for byte.
-src = ("static int compute_value(struct context *ctx, int index) {\n"
-       "    if (ctx == NULL || index < 0) return -1;\n"
-       "    return ctx->table[index] + ctx->offset;\n"
-       "}\n")
-w("source",  (src*6000).encode())
-w("markup",  ('<div class="row"><span id="x">value</span></div>\n'*20000).encode())
-w("noise",   prng(9, 300000))
-w("zeros",   b"\x00" * 200000)
-w("binary",  bytes(i % 256 for i in range(300000)))
-
-# Edge sizes, including empty and sub-word.
-for n in (0,1,2,3,63,64,65,255,256,257,4095,4096,65537):
-    w(f"n_{n}", (b"word " * ((n//5)+1))[:n])
-PY
+# Corpus from corpusgen -- a literal transcription of the python3 heredoc
+# that stood here, accepted on a byte comparison over every file it writes.
+"$ROOT/rust/target/release/corpusgen" dict "$W/in"
 
 # ── the comparison ──────────────────────────────────────────────────────────
 # Two axes. Block size bounds one dictionary; DICT_CHUNK bounds how much a

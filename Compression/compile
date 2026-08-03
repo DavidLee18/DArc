@@ -35,6 +35,17 @@ run_make () {
   fi
 }
 
+# The object directory. The makefiles compile INTO $(TEMPDIR) and none of them
+# creates it, so a tree where /tmp/out has been removed fails with
+# "unable to open output file '/tmp/out/FreeArc/Common.o'" -- and removing
+# /tmp/out is the documented remedy for the stale-object trap (CLAUDE.md: these
+# makefiles do not rebuild when a -D changes), so the remedy broke the build it
+# was meant to unbreak. Read TEMPDIR from common.mak rather than repeating the
+# path, so the two cannot drift.
+tempdir="$(sed -n 's/^TEMPDIR *= *//p' ../common.mak | tail -1)"
+[ -n "$tempdir" ] || fail "no TEMPDIR in common.mak -- has a compile script run?"
+mkdir -p "$tempdir" || fail "cannot create the object directory $tempdir"
+
 # Common.o / CompressionLibrary.o first -- the codecs include their headers.
 run_make || fail "failed to build Compression/ (Common.o, CompressionLibrary.o)"
 

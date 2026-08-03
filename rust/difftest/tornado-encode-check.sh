@@ -51,40 +51,11 @@ cc "$W/rs" -DUSE_RUST "$LIB" || exit 1
 # inputs long enough to slide the window, which is where the hash rebasing,
 # `read_point` arithmetic and `matchend` clamp all come into play. Anything
 # under one chunk exercises none of that.
-python3 - "$W/in" <<'PY'
-import os,sys,struct
-d=sys.argv[1]; os.makedirs(d,exist_ok=True)
-def prng(seed,n):
-    s=seed; o=bytearray()
-    for _ in range(n): s=(s*1103515245+12345)&0xffffffff; o.append((s>>16)&0xff)
-    return bytes(o)
-w=lambda n,b: open(f"{d}/{n}","wb").write(b)
-w("text",      b"the quick brown fox jumps over the lazy dog. "*20000)
-w("repeats",   (b"ABCDEFGHIJKLMNOP"*64 + prng(1,256))*400)
-w("noise",     prng(7, 900000))
-w("zeros",     b"\x00"*700000)
-w("mixed",     b"".join((prng(i,1000) + b"pattern"*200) for i in range(300)))
-# Short unique prefix + noise, repeated. This shape diverges at preset 9 and at
-# nothing else, and no other input here reproduces it -- the sweep was green on
-# preset 9 until this was added. Found via 4x4-check.sh, whose corpus happened
-# to contain it; the failure is NOT specific to all-at-once mode (it shows at
-# both settings), it is specific to this data against preset 9's match finder
-# (hashsize 2048mb, row 256, auxhash 512kb/4).
-w("chunky",    b"".join((b"chunk-%d-" % i) + prng(i, 300) for i in range(2000)))
-w("table4",    b"".join(struct.pack("<I", i*7+3) for i in range(200000)))
-# Distances placed either side of the 48 KB / 192 KB / 1 MB acceptance limits
-# in accept_match(), which is where a short match is rejected outright.
-seg = prng(5, 300000)
-w("far_matches", seg + prng(11, 40*1024) + seg[:50000]
-               + prng(13, 200*1024) + seg[:50000]
-               + prng(17, 1100*1024) + seg[:50000])
-# Past LARGE_BUFFER_SIZE (256 KB) many times over, so the input buffer is
-# refilled and slid repeatedly rather than read once.
-w("big_text",  (b"the quick brown fox jumps over the lazy dog. "*400000))
-w("big_noise", prng(23, 5*1024*1024))
-for n in (0,1,3,4,5,15,16,17,63,64,65,255,256,257,4095,4096,65535,65536,65537):
-    w(f"n_{n}", (b"the quick brown fox "*10000)[:n])
-PY
+( cd "$ROOT/rust" && cargo build --release -q -p darc-codecs --bin corpusgen ) || exit 1
+
+# Corpus from corpusgen -- a literal transcription of the python3 heredoc
+# that stood here, accepted on a byte comparison over every file it writes.
+"$ROOT/rust/target/release/corpusgen" tornado-encode "$W/in"
 
 total=0; ran=0; skipped=0
 # Each case is "preset notables". Presets 1 and 2 are the byte and bit coders at

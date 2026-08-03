@@ -34,64 +34,11 @@ clang++ -std=c++17 $CFLAGS_C -w -DFREEARC_UNIX -DFREEARC_INTEL_BYTE_ORDER -DFREE
   -I"$CREF" -I"$CREF/Compression" \
   "$CREF/rust/difftest/lz4hc_ref.cpp" "$LIB" -o "$W/t" || exit 1
 
-python3 - "$W/in" <<'PY'
-import os,sys
-d=sys.argv[1]; os.makedirs(d,exist_ok=True)
-def prng(seed,n):
-    s=seed; o=bytearray()
-    for _ in range(n): s=(s*1103515245+12345)&0xffffffff; o.append((s>>16)&0xff)
-    return bytes(o)
-w=lambda n,b: open(f"{d}/{n}","wb").write(b)
-w("text",     b"the quick brown fox jumps over the lazy dog. "*3000)
-w("english",  (b"compression algorithms rearrange data so that "
-               b"statistical redundancy can be removed by an entropy coder. ")*900)
-# Repetitive inputs are load-bearing, not filler. They are the ONLY ones that
-# exercise two branches: the hash chain's patternAnalysis (levels 9+, which
-# triggers on a run of one repeated byte) and lz4mid's catch-back. Both were
-# caught by these two files alone while every other input already matched.
-w("runs",     b"".join(bytes([i%97])*(1+(i*7)%200) for i in range(2000)))
-w("onebyte",  b"\x5a"*80000)
-w("twobyte",  b"\x00\xff"*40000)
-w("skew",     bytes((0 if (i*2654435761>>28)&7 else (i%251)) for i in range(150000)))
-w("sparse",   b"".join((b"\x00"*300 + bytes([i%251])) for i in range(500)))
-w("noise",    prng(9, 200000))
-w("alphabet", bytes(i%256 for i in range(200000)))
-# Built for the OPTIMAL parser (levels 10-12), which most inputs never really
-# exercise: a match longer than `sufficient_len` (64 at level 10) short-circuits
-# straight to immediate encoding, and incompressible data yields no matches to
-# price at all -- so highly repetitive AND random inputs both skip the price
-# table. This interleaves SHORT matches (20-40 bytes, under sufficient_len) with
-# literal runs past 269 bytes, which is where `literalsPrice` picks up its extra
-# length byte. Without it, changing the cost of every sequence moved only 2 of
-# 24 inputs.
-pool = [bytes(((i*7+j*13) % 251) for j in range(20 + (i % 21))) for i in range(24)]
-seg = bytearray()
-for i in range(400):
-    seg += prng(1000+i, 280 + (i*37) % 400)
-    seg += pool[i % len(pool)]
-w("priced", bytes(seg))
-# The above gives one candidate match per region, which makes the parser
-# degenerate to greedy -- prices never decide anything. This one supplies
-# COMPETING matches: a small vocabulary emitted in varying order, so phrases
-# recur partially at many distances and the parser must weigh "short match now"
-# against "literals now, longer match later". Long noise runs are injected so
-# some of those decisions carry a literal run past 269 bytes.
-vocab = [bytes(((i*29+j*7) % 26) + 97 for j in range(3 + (i % 10))) for i in range(120)]
-txt = bytearray(); st = 12345
-for i in range(6000):
-    st = (st*1103515245+12345) & 0xffffffff
-    txt += vocab[(st >> 16) % len(vocab)] + b" "
-    if i % 200 == 0:
-        txt += prng(7000+i, 300 + (i % 300))
-w("competing", bytes(txt))
-# Offsets are 16 bits, so a match further back than 65535 cannot be encoded.
-# These straddle that window, where an off-by-one in lowest_match_index shows.
-w("window",   prng(3,70000) + prng(3,70000)[:2000])
-w("farback",  prng(5,65000) + b"MARKER"*8 + prng(7,60000) + b"MARKER"*8)
-# Below LZ4_MIN_LENGTH (13) and around MFLIMIT, where the parser is skipped.
-for n in (1,4,12,13,14,17,255,256,257,4096,65535,65536,65537):
-    w(f"n_{n}", prng(3,n))
-PY
+( cd "$ROOT/rust" && cargo build --release -q -p darc-codecs --bin corpusgen ) || exit 1
+
+# Corpus from corpusgen -- a literal transcription of the python3 heredoc
+# that stood here, accepted on a byte comparison over every file it writes.
+"$ROOT/rust/target/release/corpusgen" lz4hc "$W/in"
 
 fail=0; tested=0; identical=0
 for lvl in 1 2 3 4 5 6 7 8 9 10 11 12; do

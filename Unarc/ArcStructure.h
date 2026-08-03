@@ -27,7 +27,10 @@ public:
   bool autodelete;                  // Automatically delete data when the array itself is deleted
 
   void setsize (int _size)          {size = _size; data = size? new T[size] : NULL; autodelete=TRUE;}
-  void resize (int _size)           {if(autodelete) delete data; setsize(_size);}   // Change the length of an already existing array
+  // delete[], not delete: setsize allocates with new T[]. Mismatching the two
+  // is undefined behaviour even for a trivially-destructible T, and every
+  // DIRECTORY_BLOCK does it several times -- ASan aborts on the first one.
+  void resize (int _size)           {if(autodelete) delete[] data; setsize(_size);}   // Change the length of an already existing array
   void set (int _size, void* ptr)   {resize(0); size=_size, data=(T*)ptr, autodelete=FALSE;}  // Use the given chunk of memory as the array contents
   ARRAY (int _size=0)               {setsize (_size);}       // Create an array of length _size
   ~ARRAY()                          {resize(0);}

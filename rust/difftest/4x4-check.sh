@@ -128,27 +128,11 @@ c_markers=$(strings -a "$W/c"  2>/dev/null | grep -c 'darc-codecs/src/')
   echo "the C reference driver contains $c_markers darc-codecs markers -- it is not pure C."
   exit 1; }
 
-python3 - "$W/in" <<'PY'
-import os,sys
-d=sys.argv[1]; os.makedirs(d,exist_ok=True)
-def prng(seed,n):
-    s=seed; o=bytearray()
-    for _ in range(n): s=(s*1103515245+12345)&0xffffffff; o.append((s>>16)&0xff)
-    return bytes(o)
-w=lambda n,b: open(f"{d}/{n}","wb").write(b)
-# Inputs must be big enough to span SEVERAL blocks at the sizes swept below,
-# because single-block input never exercises the framing this is here to test.
-w("text",    b"the quick brown fox jumps over the lazy dog. "*20000)
-w("english", (b"compression algorithms rearrange data so that statistical "
-              b"redundancy can be removed by an entropy coder. ")*8000)
-w("mixed",   b"".join((b"chunk-%d-" % i) + prng(i, 300) for i in range(2000)))
-w("runs",    b"".join(bytes([i%97])*(1+(i*7)%400) for i in range(4000)))
-w("noise",   prng(9, 900000))
-w("zeros",   b"\x00"*400000)
-w("exe",     (b"\x7fELF\x02\x01\x01" + prng(3,120))*4000)
-for n in (0,1,255,256,65537):
-    w(f"n_{n}", prng(5,n))
-PY
+( cd "$ROOT/rust" && cargo build --release -q -p darc-codecs --bin corpusgen ) || exit 1
+
+# Corpus from corpusgen -- a literal transcription of the python3 heredoc
+# that stood here, accepted on a byte comparison over every file it writes.
+"$ROOT/rust/target/release/corpusgen" 4x4 "$W/in"
 
 # Inner methods that have Rust drop-ins. `tor:3` and `tor:6` are exactly what
 # the 1xb/2xb presets use.

@@ -79,45 +79,11 @@ cc "$W/rs" -DUSE_RUST "$LIB" || { echo "Rust driver failed to build" >&2; exit 1
 # The corpus targets what the MODEL is sensitive to: order (how much context is
 # tracked), and memory pressure (whether the model restarts mid-stream). Sizes
 # are chosen so the small budgets below genuinely exhaust the allocator.
-python3 - "$W/in" <<'CORPUS'
-import os,sys
-d=sys.argv[1]; os.makedirs(d,exist_ok=True)
-def prng(seed,n):
-    s=seed; o=bytearray()
-    for _ in range(n): s=(s*1103515245+12345)&0xffffffff; o.append((s>>16)&0xff)
-    return bytes(o)
-w=lambda n,b: open(f"{d}/{n}","wb").write(b)
-def _dom():
-    # Small on purpose: PPMd is pathologically slow on this shape at low order
-    # (minutes for 8 KB in the C as much as in the port), and 1.5 KB already
-    # reaches the rescale path this input exists to cover.
-    import random
-    r = random.Random(3)
-    return r.choices(range(256), weights=[4000] + [1]*255, k=1500)
-w("text",       b"the quick brown fox jumps over the lazy dog. "*6000)
-w("english",    (b"compression algorithms rearrange data so that statistical "
-                 b"redundancy can be removed by an entropy coder. ")*2500)
-w("noise",      prng(7, 200000))          # exhausts a small budget
-w("zeros",      b"\x00"*120000)
-w("runs",       b"".join(bytes([i%97])*(1+(i*7)%200) for i in range(2000)))
-w("full_alpha", bytes(range(256))*500)
-w("sparse",     b"".join(b"\x00"*300 + bytes([i%251]) for i in range(400)))
-w("binaryish",  bytes((i*2654435761>>16)&0xff for i in range(150000)))
-# These three exhaust a 1 MB model and so reach the restart paths. Measured:
-# high-entropy data at 200 KB+ is what fills the heap; text and short runs
-# compress far too well to ever get there.
-# A dominant symbol plus a long tail of rare ones, at LOW order. This is the
-# only shape found that reaches rescale's shrink path -- zero-frequency states
-# dropped while the context keeps more than one -- and it is where the port's
-# one real bug lived: `EscFreq` is UINT in rescale but int in refresh, so a
-# signed port diverges exactly when it wraps. Every other input in this corpus
-# passed with that bug present.
-w("dominant",   bytes(_dom()))
-w("bignoise",   prng(3, 600000))
-w("mixed",      prng(5, 300000) + b"the quick brown fox "*5000)
-for n in (1,2,3,17,255,256,4096,65536):
-    w(f"n_{n}", (b"abracadabra"*10000)[:n])
-CORPUS
+( cd "$ROOT/rust" && cargo build --release -q -p darc-codecs --bin corpusgen ) || exit 1
+
+# Corpus from corpusgen -- a literal transcription of the python3 heredoc
+# that stood here, accepted on a byte comparison over every file it writes.
+"$ROOT/rust/target/release/corpusgen" ppmd "$W/in"
 
 fail=0; enc=0; dec=0; declined=0
 

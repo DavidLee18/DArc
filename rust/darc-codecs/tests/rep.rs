@@ -2,6 +2,7 @@
 //! malformed streams must return an error, never panic, since the decoder runs
 //! on raw archive bytes via `arc t`. (Byte-for-byte equivalence to the C
 //! encoder's output is proven separately by rust/difftest/rep_ref.cpp.)
+#![allow(dropping_copy_types, dropping_references, clippy::drop_non_drop)] // see darc-codecs/src/lib.rs
 
 use darc_codecs::rep;
 use darc_codecs::ffi::Io;
@@ -65,7 +66,7 @@ fn garbage_blocks_never_panic() {
         let mut s = le(1 << 20).to_vec();
         s.extend((0..n).map(|i| ((seed >> (i % 24)) & 0xff) as u8));
         // Any outcome is acceptable except a panic / hang.
-        let _ = decompress(&s);
+        drop(decompress(&s));
     }
 }
 

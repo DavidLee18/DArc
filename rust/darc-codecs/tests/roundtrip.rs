@@ -225,9 +225,9 @@ fn lzp_rejects_truncated_stream_without_panicking() {
             continue;
         }
         // Any status is acceptable; panicking or hanging is not.
-        let _ = with_io(&packed[..cut], |io| {
+        drop(with_io(&packed[..cut], |io| {
             lzp::decompress(io, LZP_BLOCK, LZP_MIN_LEN, LZP_HASH_LOG, LZP_BARRIER, LZP_SMALLEST)
-        });
+        }));
     }
 }
 
@@ -247,9 +247,9 @@ fn lzp_rejects_corrupt_stream_without_panicking() {
         for i in (0..bad.len()).step_by(97) {
             bad[i] ^= noise[i];
         }
-        let _ = with_io(&bad, |io| {
+        drop(with_io(&bad, |io| {
             lzp::decompress(io, LZP_BLOCK, LZP_MIN_LEN, LZP_HASH_LOG, LZP_BARRIER, LZP_SMALLEST)
-        });
+        }));
     }
 }
 
@@ -257,7 +257,7 @@ fn lzp_rejects_corrupt_stream_without_panicking() {
 fn dict_rejects_garbage_without_panicking() {
     for seed in [1u32, 2, 3, 99, 12345] {
         let garbage = prng(seed, 4096);
-        let _ = dict::decode(&garbage, 1 << 20);
+        drop(dict::decode(&garbage, 1 << 20));
     }
 }
 

@@ -22,7 +22,15 @@ fn main() {
     // The same defines the C build uses. Compression/Common.h errors out
     // without an OS and a byte-order define, so these are mandatory, not
     // decoration -- see Utils.hs:31 for the Haskell-side equivalent.
+    // `cfg!` is the HOST here, not the target, and that is deliberate --
+    // see darc-codecs/build.rs for why switching it breaks the cross-builds
+    // and why it cannot reach the generated bindings.
     let os_define = if cfg!(target_os = "windows") { "-DFREEARC_WIN" } else { "-DFREEARC_UNIX" };
+
+    // libclang does not know the `gnullvm` environment and rejects the whole
+    // triple; the `-gnu` spelling describes the same thing to a C header.
+    // Same fix as darc-codecs/build.rs, which has the long version.
+    let clang_target = env::var("TARGET").unwrap_or_default().replace("-gnullvm", "-gnu");
 
     let bindings = bindgen::Builder::default()
         .header("wrapper.h")
@@ -36,6 +44,7 @@ fn main() {
         ])
         .clang_arg(format!("-I{}", compression.display()))
         .clang_arg(format!("-I{}", root.display()))
+        .clang_arg(format!("--target={clang_target}"))
         // Only what the codec boundary actually needs. Without an allowlist
         // bindgen emits thousands of items from the C++ headers and the
         // signal is lost.

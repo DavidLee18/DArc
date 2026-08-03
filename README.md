@@ -3,108 +3,94 @@ Distended Arc - Based on FreeArc
 
 ## Overview
 
-DArc is a command-line (and optional GUI) archiver based on [FreeArc](http://freearc.org). It supports solid compression, strong encryption, recovery records, SFX archives, and a wide variety of compression algorithms.
+DArc is a command-line archiver based on [FreeArc](http://freearc.org). It supports solid compression, strong encryption, recovery records, SFX archives, and a wide variety of compression algorithms.
 
-The console binary is named `arc` (Unix) or `Arc.exe` (Windows).  
-The optional GUI binary is named `freearc` (Unix) or `FreeArc.exe` (Windows).
-
+The console binary is named `darc` (`darc.exe` on Windows).  
 Archives produced by DArc are format-compatible with [DArc86](https://github.com/YadeWira/DArc86).
-
 ---
 
 ## Building
 
 > **Build System Overview:**
-> DArc uses MicroHs (a lightweight Haskell compiler) for the Haskell code and Clang for C/C++ components (compiled with C++17 standard). The build process automatically compiles all compression libraries, HsLua bindings, and links everything into the final executable.
+> DArc's archiver is a single Rust binary, `darc`, built with `cargo`. Clang
+> still builds the C/C++ under `Compression/` (C++17), but only `unarc` and the
+> SFX modules link it — the archiver reaches every codec as a Rust crate.
+> There is no Haskell in the build any more; `mhs`, `cpphs` and GHC are all
+> unnecessary.
 
-### On Windows
+### Every platform
 
-1. Install [MSYS2](https://www.msys2.org/) with the `UCRT64` environment and ensure the MSYS2 binaries are in your `PATH` (specifically `sh.exe`, `clang`, `make`, `curl`, and `tar` should be available).
-   - The build scripts require `sh.exe` from MSYS2 or Git Bash to be accessible from the Windows command prompt.
-2. Install [MicroHs](https://github.com/augustss/MicroHs) (`mhs`) and add `%USERPROFILE%\.mcabal\bin` to your `PATH`.
-   - MicroHs is the Haskell compiler used for building DArc. No GHC installation is needed.
-3. Compile the console version (`Arc.exe`):
-   ```
-   compile-O2
-   ```
-   This will automatically build all necessary C/C++ components, HsLua, and the main executable.
-4. Compile the GUI version (`FreeArc.exe`):
-   ```
-   compile-GUI-O2
-   ```
-5. The compiled binaries are placed in the `Tests/` subdirectory.
-6. To compile SFX modules and Unarc (optional):
-   ```
-   cd Unarc
-   make windows
-   ```
-   This creates `unarc.exe` and various SFX modules (`arc.sfx`, `freearc.sfx`, etc.).
+```bash
+cargo build --release --manifest-path rust/Cargo.toml -p darc-arc --bin darc
+```
 
-### On Unix (Linux/macOS)
+That is the whole archiver, at `rust/target/release/darc`. It needs nothing
+outside the Rust toolchain — no ncurses, no libcurl, no system TLS.
 
-1. Install [MicroHs](https://github.com/augustss/MicroHs) (`mhs`) for Haskell compilation, plus `clang` and `make`.
-   - MicroHs installs both `mhs` and `cpphs` into `~/.mcabal/bin`. **Put that directory on your `PATH`** — `mhs` shells out to `cpphs` for every module using `{-# LANGUAGE CPP #-}`, which is most of this codebase, and its absence produces an unhelpful `callCommand: failed 32512`.
-   - **Required:** ncurses (`libncurses-dev` on Debian/Ubuntu; already present on macOS).
-   - **Optional:** libcurl (`libcurl4-openssl-dev`, or `curl` via Homebrew) for URL/network archive support. Auto-detected; the build succeeds without it.
-   - **Lua is *not* required.** Lua 5.1 is built from the copy vendored in `HsLua/src`, so there is nothing to install and no version skew with the HsLua bindings. This matters because Lua 5.1 is end-of-life: Homebrew has removed `lua@5.1` and distributions are dropping `liblua5.1-dev`.
-   - No GHC installation is needed.
-2. Make compile scripts executable (if needed):
-   ```bash
-   chmod +x compile*
-   ```
-3. Compile the console version (`arc`):
-   ```bash
-   ./compile-O2
-   ```
-   This will automatically build all necessary C/C++ components, HsLua, and the main executable.
-4. Compile the GUI version (`freearc`):
-   ```bash
-   ./compile-GUI-O2
-   ```
-5. The compiled binaries are placed in the `Tests/` subdirectory.
-6. To compile SFX modules and Unarc (optional):
-   ```bash
-   cd Unarc
-   make linux
-   ```
-   This creates `unarc` and various SFX modules (`arc.linux.sfx`, etc.).
+`--original http://…` fetches a remote copy by byte range and is on by default;
+`--no-default-features` removes it and its entire dependency subtree.
+
+For Windows, cross-compile rather than building on Windows:
+
+```bash
+cargo build --release --manifest-path rust/Cargo.toml \
+  --target x86_64-pc-windows-gnu      -p darc-arc --bin darc   # needs mingw-w64
+cargo build --release --manifest-path rust/Cargo.toml \
+  --target aarch64-pc-windows-gnullvm -p darc-arc --bin darc   # needs llvm-mingw
+```
+
+Both targets are listed in `rust-toolchain.toml`, so rustup installs them on
+demand.
+
+### The C side: `unarc` and the SFX modules (optional)
+
+```bash
+./compile-c            # generates common.mak, then builds the codec objects
+make -C Unarc linux    # or `make -C Unarc windows`
+```
+
+`./compile-c` must run first even on a clean checkout that only wants `unarc`:
+`common.mak` is generated rather than committed, and every makefile under
+`Compression/` and `Unarc/` begins by including it.
+
+This produces `unarc` and the SFX modules (`arc.linux.sfx`, `arc-mini.linux.sfx`,
+`arc-tiny.linux.sfx`). Requires `clang` and `make`; ncurses is *not* needed.
 
 ### Troubleshooting
 
-**Windows:**
-- **"sh.exe not found"**: Ensure MSYS2 is installed and its `bin` directory (e.g., `C:\msys64\usr\bin`) is in your system PATH.
-- **"mhs not found"**: Verify MicroHs is installed and `%USERPROFILE%\.mcabal\bin` is in your PATH. Run `mhs --version` to test.
-- **"clang not found"**: Install the UCRT64 toolchain in MSYS2: `pacman -S mingw-w64-ucrt-x86_64-clang mingw-w64-ucrt-x86_64-make`
-- **Compilation errors in C++ files**: Ensure you're using C++17 standard. The build scripts automatically set this via the makefiles.
+- **`make` fails immediately with "common.mak: No such file or directory"**:
+  run `./compile-c` once. It is generated from `unix-common.mak` /
+  `win32-common.mak` and is deliberately not committed.
+- **Stale object files after switching build paths**: the makefiles do not
+  rebuild when a `-D` changes, so remove `/tmp/out/` when switching defines.
+- **`cargo` cannot reach crates.io**: the archiver has real dependencies now
+  (rayon, and ureq/rustls for `--original`). `--no-default-features` drops the
+  HTTP half but not the rest.
 
-**macOS specifics:**
+**macOS specifics.** Covered by CI (`macos-latest`) and needs only the Xcode
+command line tools beyond `cargo`. Handled automatically by the C build:
+- Apple's clang ships no OpenMP, so `-fopenmp`/`-lgomp` are dropped on Darwin.
+  Nothing is lost — libbsc's OpenMP paths are compiled out regardless.
+- `objcopy` does not exist; the 7z codec uses `ld -r -exported_symbols_list` to
+  achieve the same symbol localization.
+- There is no `/proc`, so physical-memory queries go through `sysctl`.
 
-macOS is covered by CI (`macos-latest`) and builds with no extra dependencies beyond `mhs`/`cpphs` and the Xcode command line tools. Handled automatically by the build:
-- Apple's clang ships no OpenMP, so `-fopenmp`/`-lgomp` are dropped on Darwin. Nothing is lost — libbsc's OpenMP paths are compiled out regardless.
-- `objcopy` does not exist; the 7z codec uses `ld -r -exported_symbols_list` to achieve the same symbol localization.
-- There is no `/proc`, so physical-memory queries go through `sysctl` instead of `/proc/meminfo`.
+### What the archiver cannot do yet
 
-**Windows note:** the Windows CI jobs do not currently produce a binary — `create_dir` in `Compression/Common.h` calls the POSIX two-argument `mkdir`, which MinGW/UCRT does not provide. This is a long-standing failure, not a recent regression.
+Every compression method is supported for both reading and writing, and
+`Tests/run-tests.sh` scores the same 24/24 as the pre-port reference.
 
-**Linux/macOS:**
-- **"mhs not found"**: Install MicroHs from [the official repository](https://github.com/augustss/MicroHs) and ensure it's in your PATH.
-- **"lua5.1 not found"**: Install Lua development libraries:
-  - Ubuntu/Debian: `sudo apt-get install liblua5.1-0-dev libncurses-dev`
-  - Fedora/RHEL: `sudo dnf install lua-devel ncurses-devel`
-  - macOS: `brew install lua@5.1 ncurses`
-- **"curl not found" (optional)**: Install libcurl development package or build without URL support (automatic).
-- **Permission errors**: Make sure compile scripts are executable: `chmod +x compile*`
-
-**All Platforms:**
-- **"No such file or directory" during compilation**: The `compile` scripts generate `common.mak` (copied from `unix-common.mak` or `win32-common.mak`) before invoking `make`. Run a `compile` script rather than calling `make` directly in a fresh checkout.
-- **Stale object files after switching build paths**: the makefiles do not rebuild when a `-D` changes, so remove `/tmp/out/` when switching between a stock and a `DARC_RUST=1` build.
+Three `-m` sub-options are refused rather than implemented, because each one
+changes the compression chain and quietly ignoring it would write an archive
+that is not what was asked for: `-mm` (multimedia mode), `-ma` (file-type
+autodetection level) and `-mc` (disable an algorithm). The memory limits
+`-lc`/`-ld` are not accepted either.
 
 ---
-
 ## CLI Usage
 
 ```
-arc <command> [options...] <archive> [files... @listfiles...]
+darc <command> [options...] <archive> [files... @listfiles...]
 ```
 
 - **`<command>`** — one of the commands listed below.
@@ -115,7 +101,7 @@ arc <command> [options...] <archive> [files... @listfiles...]
 
 Multiple commands can be chained with `;` as a separator, for example:
 ```
-arc "a archive -r ; t archive ; x archive"
+darc "a archive -r ; t archive ; x archive"
 ```
 
 ---
@@ -151,37 +137,37 @@ arc "a archive -r ; t archive ; x archive"
 
 ```sh
 # Add all files in the current directory recursively
-arc a archive.arc -r .
+darc a archive.arc -r .
 
 # Extract all files from an archive
-arc x archive.arc
+darc x archive.arc
 
 # Extract, ignoring directory paths
-arc e archive.arc
+darc e archive.arc
 
 # Test archive integrity
-arc t archive.arc
+darc t archive.arc
 
 # List archive contents
-arc l archive.arc
+darc l archive.arc
 
 # Delete a file from an archive
-arc d archive.arc unwanted.txt
+darc d archive.arc unwanted.txt
 
 # Add a recovery record (5% of archive size)
-arc rr archive.arc -rr5%
+darc rr archive.arc -rr5%
 
 # Recover a damaged archive
-arc r archive.arc
+darc r archive.arc
 
 # Convert to self-extracting archive
-arc s archive.arc
+darc s archive.arc
 
 # Join multiple archives
-arc j output.arc part1.arc part2.arc
+darc j output.arc part1.arc part2.arc
 
 # Lock archive (prevent modifications)
-arc k archive.arc
+darc k archive.arc
 ```
 
 ---
@@ -283,7 +269,7 @@ Options that take a parameter use `-<opt><value>` or `--<option>=<value>`.
 | `--sync` |                | Synchronize archive and disk contents |
 | `-o MODE` | `--overwrite=MODE` | Overwrite mode: `+` (always), `-` (never), `p` (prompt) |
 | `-k`  | `--lock`          | Lock archive to prevent modifications |
-| `-rr SIZE` | `--recovery=SIZE` | Add recovery information of SIZE to archive |
+| `-rr SIZE` | `--recovery=SIZE` | Add recovery information of SIZE to archive (`-rr`/`-rr+` reuse the archive's own setting, or a recommended amount if it had none) |
 | `-sfx MODULE` |            | Add SFX module (`freearc.sfx` by default) |
 | `--noarcext` |              | Do not add the default `.arc` extension to archive name |
 | `-ag FMT` | `--autogenerate=FMT` | Autogenerate archive name using a time format string |
@@ -324,7 +310,7 @@ Options that take a parameter use `-<opt><value>` or `--<option>=<value>`.
 |-------------------|-------------|
 | `--proxy=PROXY`   | Set proxy server(s) for URL access |
 | `--bypass=LIST`   | Set proxy bypass list for URL access |
-| `--original=URL`  | Re-download broken archive parts from URL |
+| `--original=URL`  | Re-download broken archive parts from URL — a local path, an `http(s)://` URL fetched by byte range, `?CMD` to run `CMD <archive>` for the URL, or empty to read it from `files.bbs`/`descript.ion` |
 | `--save-bad-ranges=FILE` | Save list of broken archive parts to FILE |
 | `--cache=N`       | Use N MB for read-ahead cache |
 
@@ -373,7 +359,7 @@ The `FREEARC` environment variable is also read for default options (override wi
 You can pass a file containing a list of filenames (one per line) to any command by prefixing the filename with `@`:
 
 ```sh
-arc a archive.arc @myfiles.txt
+darc a archive.arc @myfiles.txt
 ```
 
 ---
@@ -382,34 +368,34 @@ arc a archive.arc @myfiles.txt
 
 ```sh
 # Create archive with maximum compression
-arc a -mx myarchive.arc documents/
+darc a -mx myarchive.arc documents/
 
 # Create encrypted archive
-arc a -p"my secret" secure.arc private/
+darc a -p"my secret" secure.arc private/
 
 # Extract archive to a specific directory
-arc x archive.arc -dp /home/user/extracted/
+darc x archive.arc -dp /home/user/extracted/
 
 # Add recovery record (10% of archive size)
-arc ch myarchive.arc -rr10%
+darc ch myarchive.arc -rr10%
 
 # List archive contents verbosely
-arc v myarchive.arc
+darc v myarchive.arc
 
 # Update archive with changed files
-arc u myarchive.arc documents/
+darc u myarchive.arc documents/
 
 # Create self-extracting archive
-arc s myarchive.arc
+darc s myarchive.arc
 
 # Freshen archive, then test it
-arc a archive.arc -r src/ -t
+darc a archive.arc -r src/ -t
 
 # Compress with specific algorithm and dictionary size
-arc a -m4 -md128m myarchive.arc bigfiles/
+darc a -m4 -md128m myarchive.arc bigfiles/
 
 # Exclude certain file types
-arc a myarchive.arc docs/ -x"*.tmp" -x"*.log"
+darc a myarchive.arc docs/ -x"*.tmp" -x"*.log"
 ```
 
 ---

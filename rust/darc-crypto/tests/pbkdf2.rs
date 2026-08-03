@@ -11,7 +11,11 @@ use darc_crypto::pbkdf2_hmac_sha512;
 
 fn check(password: &[u8], salt: &[u8], iterations: u32, expected_hex: &str) {
     let mut out = vec![0u8; expected_hex.len() / 2];
-    pbkdf2_hmac_sha512(password, salt, iterations, &mut out);
+    // The Result was being dropped here. A key-derivation failure would have
+    // left `out` as zeroes and the vector comparison would then have been
+    // checking a fixed string against all-zeroes -- failing for the right
+    // reason by accident, or passing if a vector were ever all zeroes.
+    pbkdf2_hmac_sha512(password, salt, iterations, &mut out).expect("derives a key");
     let got = out.iter().map(|b| format!("{b:02x}")).collect::<String>();
     assert_eq!(
         got, expected_hex,
@@ -65,9 +69,10 @@ fn key_length_is_independent_of_iteration_count() {
     for len in [16usize, 24, 32, 48, 64, 100] {
         let mut a = vec![0u8; len];
         let mut b = vec![0u8; len];
-        pbkdf2_hmac_sha512(b"pw", b"salt", 1, &mut a);
-        pbkdf2_hmac_sha512(b"pw", b"salt", 1, &mut b);
+        pbkdf2_hmac_sha512(b"pw", b"salt", 1, &mut a).expect("derives a key");
+        pbkdf2_hmac_sha512(b"pw", b"salt", 1, &mut b).expect("derives a key");
         assert_eq!(a, b);
+        assert!(a.iter().any(|&x| x != 0), "a failed derivation would leave zeroes");
         assert_eq!(a.len(), len);
     }
 }

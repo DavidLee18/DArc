@@ -110,33 +110,20 @@ done
 # at: the cipher block (8 or 16 bytes) and docrypt's LARGE_BUFFER_SIZE read
 # chunk (256 KB). CTR and CFB carry state across chunks, so a port that reset
 # it per read would pass every input below 256 KB.
-python3 - "$W/in" <<'PY'
-import os,sys
-d=sys.argv[1]; os.makedirs(d,exist_ok=True)
-def prng(seed,n):
-    s=seed; o=bytearray()
-    for _ in range(n): s=(s*1103515245+12345)&0xffffffff; o.append((s>>16)&0xff)
-    return bytes(o)
-for n in (0,1,8,15,16,17,255,4096,262143,262144,262145,300000):
-    open(f"{d}/n_{n}","wb").write(prng(n+1,n))
-PY
+( cd "$ROOT/rust" && cargo build --release -q -p darc-codecs --bin corpusgen --bin difftest-util ) || exit 1
+
+# Corpus from corpusgen -- a literal transcription of the python3 heredoc
+# that stood here, accepted on a byte comparison over every file it writes.
+"$ROOT/rust/target/release/corpusgen" crypto "$W/in"
 
 # Keys and IVs are built byte by byte rather than from a small integer padded
 # with zeroes. A 56-byte blowfish key that is 54 zeros and two data bytes is
 # satisfied by an implementation that reads only part of it, and a counter
 # starting at zero never carries -- both are exactly the mistakes this is
 # looking for.
-genhex() { python3 -c '
-import sys
-kind, n, extra = sys.argv[1], int(sys.argv[2]), int(sys.argv[3])
-if kind == "key":
-    b = bytes((0x5a + 7*i + extra) & 0xff for i in range(n))
-else:
-    # The two low-order bytes are 0xff, so the little-endian counter carries out
-    # of byte 0 on the very first increment and out of byte 1 soon after.
-    b = bytes([0xff, 0xff] + [(0xa3 + 11*i) & 0xff for i in range(2, n)])
-print(b.hex())
-' "$1" "$2" "$3"; }
+# The IV's two low bytes are 0xff so the little-endian counter carries out of
+# byte 0 on the very first increment, and out of byte 1 soon after.
+genhex() { "$ROOT/rust/target/release/difftest-util" genhex "$1" "$2" "$3"; }
 
 # Key sizes per cipher: every length DArc can select with -ae CIPHER-BITS, plus
 # each cipher's maximum (what parse_ENCRYPTION uses when no size is given).
@@ -249,7 +236,7 @@ KDF
 # buffer before the call, so "the C wrote nothing" reads as all zeros.
 "$W/c"  kdf "" "0011223344556677" 1 32 >| "$W/kc"
 "$W/rs" kdf "" "0011223344556677" 1 32 >| "$W/kr"
-zeros=$(python3 -c "import sys;d=open(sys.argv[1],'rb').read()[4:];print(int(d==bytes(len(d))))" "$W/kc")
+zeros=$("$ROOT/rust/target/release/difftest-util" all-zeros "$W/kc" 4)
 if [ "$zeros" != 1 ]; then
   echo "empty-password KDF: the C now writes a key where it used to fail; the"
   echo "divergence documented above no longer holds and should be re-examined."

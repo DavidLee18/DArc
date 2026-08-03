@@ -171,7 +171,7 @@ pub fn decompress_full(
     _hash_bits: c_int,
     _amplifier: c_int,
 ) -> c_int {
-    let _ = NOMEM; // allocation-failure code, kept for parity with the C
+    drop(NOMEM); // allocation-failure code, kept for parity with the C
     decompress(io)
 }
 

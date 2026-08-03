@@ -86,69 +86,36 @@ jobs:
       if: runner.os == 'Linux'
       run: |
         sudo apt-get update
-        # cpphs is required by mhs to preprocess {-# LANGUAGE CPP #-} modules.
-        # Its absence is why the build silently failed on every platform while
-        # CI still reported success.
-        sudo apt-get install -y liblua5.1-dev libncurses-dev libcurl4-openssl-dev cpphs
-    # `make minstall` dominates the short jobs. Keyed on the pinned
-    # MicroHs commit, so bumping the pin invalidates it.
-    - name: Cache MicroHs
-      if: runner.os == 'Linux'
-      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
-      with:
-        path: |
-          ~/.mcabal
-          ~/.local/bin
-        key: mcabal-${{ runner.os }}-${{ runner.arch }}-05a3fbd5d73ae6a37111a6ced5b57bb1717b8975
-    - name: Install MicroHs (Linux)
-      if: runner.os == 'Linux'
-      run: |
-        # Outside the guard: the cp below needs this directory whether or not
-        # the cache hit. The mcabal cache key is shared by every Linux x64 job,
-        # but only this one creates ~/.local/bin, so a cache saved by another
-        # job restores ~/.mcabal without it.
-        mkdir -p "$HOME/.local/bin"
-        if [ ! -x "$HOME/.mcabal/bin/mhs" ]; then
-          # Pin to a known-good commit used for this repository's MicroHs-only
-          # architecture migration to keep CI deterministic across reruns.
-          microhs_sha="05a3fbd5d73ae6a37111a6ced5b57bb1717b8975"
-          microhs_tar="/tmp/microhs.tar.gz"
-          # SHA-256 computed from the pinned archive URL:
-          # https://github.com/augustss/MicroHs/archive/05a3fbd5d73ae6a37111a6ced5b57bb1717b8975.tar.gz
-          microhs_expected_sha256="a1f85821cbae877d0ea3e173235d45c833d9145b2ca9e92e77d284b6730c63b6"
-          curl -fsSL "https://github.com/augustss/MicroHs/archive/$microhs_sha.tar.gz" -o "$microhs_tar"
-          echo "$microhs_expected_sha256  $microhs_tar" | sha256sum -c -
-          tar -xzf "$microhs_tar" -C /tmp
-          cd "/tmp/MicroHs-$microhs_sha"
-          make minstall
-        fi
-        cp "$HOME/.mcabal/bin/mhs" "$HOME/.local/bin/mhs"
-        echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-        # MicroHs also installs cpphs here, and mhs shells out to it for every
-        # {-# LANGUAGE CPP #-} module. Copying only mhs left cpphs unreachable,
-        # which is what broke the build while CI still reported success.
-        echo "$HOME/.mcabal/bin" >> "$GITHUB_PATH"
+        # No cpphs and no libcurl any more. cpphs preprocessed the Haskell's
+        # {-# LANGUAGE CPP #-} modules; libcurl backed URL.cpp, which served
+        # `--original` and is now ureq inside darc-arc. Nothing in the C or the
+        # Rust links either.
+        sudo apt-get install -y libncurses-dev
     - name: Build (Linux)
       if: runner.os == 'Linux'
       run: |
-        chmod +x compile*
-        ./compile-O2
+        # The archiver is Rust now. compile-c is what is left of ./compile:
+        # it generates common.mak (which every Compression/*/makefile and
+        # Unarc/makefile include and which is NOT committed) and compiles the
+        # codecs, so a C-side break still fails this job.
+        cargo build --release --manifest-path rust/Cargo.toml -p darc-arc --bin darc
+        chmod +x compile-c
+        ./compile-c
 
     # A build step that cannot fail is not a check. Assert the artifact exists
     # and actually runs before anything downstream is allowed to claim success.
     - name: Verify binary (Linux)
       if: runner.os == 'Linux'
       run: |
-        test -f Tests/arc || { echo "::error::build produced no Tests/arc"; exit 1; }
-        test -s Tests/arc || { echo "::error::Tests/arc is empty"; exit 1; }
-        chmod +x Tests/arc
+        test -s rust/target/release/darc || {
+          echo "::error::build produced no rust/target/release/darc"; exit 1; }
         # Exercise it for real: a binary that exists but cannot list its own
         # help is not a working archiver.
-        ./Tests/arc --help > /tmp/arc-help.txt 2>&1 || true
+        ./rust/target/release/darc --help > /tmp/arc-help.txt 2>&1 || true
         grep -qi 'command' /tmp/arc-help.txt || {
-          echo "::error::Tests/arc did not produce recognisable help output"
+          echo "::error::darc did not produce recognisable help output"
           head -20 /tmp/arc-help.txt; exit 1; }
-        echo "binary verified: $(wc -c < Tests/arc) bytes"
+        echo "binary verified: $(wc -c < rust/target/release/darc) bytes"
 
     # Round-trip every compression method and solid mode over a deterministic
     # corpus, then compare each archive against a recorded fingerprint.
@@ -159,7 +126,16 @@ jobs:
       if: runner.os == 'Linux'
       run: |
         chmod +x Tests/*.sh
-        Tests/run-tests.sh Tests/arc
+        Tests/run-tests.sh rust/target/release/darc
+
+    # The archive-format gate. Every arc-*-check.sh compares the port against
+    # the Haskell reference, which no longer exists to compare against and
+    # which CI never built anyway -- so the archiver has never been gated here
+    # at all. This replays 43 recorded cases against the bytes that reference
+    # actually produced. See rust/difftest/golden/manifest.txt.
+    - name: Golden archive format (Linux)
+      if: runner.os == 'Linux'
+      run: bash rust/difftest/arc-golden-check.sh
 
     # MM's ':r1' byte reordering, which run-tests.sh does not reach: its edges
     # are at BLOCK boundaries, not file boundaries, so a normal corpus walks
@@ -172,7 +148,10 @@ jobs:
       if: runner.os == 'Linux'
       run: |
         chmod +x Tests/mm-reorder-check.sh
-        Tests/mm-reorder-check.sh
+        # Takes the binary now, and SKIPs cleanly: darc-arc cannot write -mmm,
+        # so there is no archive for this to sweep. The MM encoder itself stays
+        # gated by rust/difftest/mm-check.sh.
+        Tests/mm-reorder-check.sh rust/target/release/darc
 
     # ── macOS steps ────────────────────────────────────────────────────────────
     # macOS is in the matrix so the portability work stays honest. The README
@@ -181,62 +160,35 @@ jobs:
     - name: Install packages (macOS)
       if: runner.os == 'macOS'
       run: |
-        # No lua@5.1 here: Homebrew removed the formula, and ./compile builds
-        # Lua from the copy vendored in HsLua/src regardless. Asking for it
-        # only produced a red "No available formula" line in every macOS run
-        # that had nothing to do with the build.
         brew install ncurses || true
-
-    # `make minstall` dominates the short jobs. Keyed on the pinned
-    # MicroHs commit, so bumping the pin invalidates it.
-    - name: Cache MicroHs
-      if: runner.os == 'macOS'
-      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
-      with:
-        path: |
-          ~/.mcabal
-          ~/.local/bin
-        key: mcabal-${{ runner.os }}-${{ runner.arch }}-05a3fbd5d73ae6a37111a6ced5b57bb1717b8975
-    - name: Install MicroHs (macOS)
-      if: runner.os == 'macOS'
-      run: |
-        if [ ! -x "$HOME/.mcabal/bin/mhs" ]; then
-          microhs_sha="05a3fbd5d73ae6a37111a6ced5b57bb1717b8975"
-          microhs_tar="/tmp/microhs.tar.gz"
-          microhs_expected_sha256="a1f85821cbae877d0ea3e173235d45c833d9145b2ca9e92e77d284b6730c63b6"
-          curl -fsSL "https://github.com/augustss/MicroHs/archive/$microhs_sha.tar.gz" -o "$microhs_tar"
-          echo "$microhs_expected_sha256  $microhs_tar" | shasum -a 256 -c -
-          tar -xzf "$microhs_tar" -C /tmp
-          cd "/tmp/MicroHs-$microhs_sha"
-          make minstall
-        fi
-        # mhs and cpphs both land here; putting the directory on PATH keeps them
-        # at the same pinned version.
-        echo "$HOME/.mcabal/bin" >> "$GITHUB_PATH"
 
     - name: Build (macOS)
       if: runner.os == 'macOS'
       run: |
-        chmod +x compile*
-        ./compile-O2
+        cargo build --release --manifest-path rust/Cargo.toml -p darc-arc --bin darc
+        chmod +x compile-c
+        ./compile-c
 
     - name: Verify binary (macOS)
       if: runner.os == 'macOS'
       run: |
-        test -f Tests/arc || { echo "::error::build produced no Tests/arc"; exit 1; }
-        test -s Tests/arc || { echo "::error::Tests/arc is empty"; exit 1; }
-        chmod +x Tests/arc
-        ./Tests/arc --help > /tmp/arc-help.txt 2>&1 || true
+        test -s rust/target/release/darc || {
+          echo "::error::build produced no rust/target/release/darc"; exit 1; }
+        ./rust/target/release/darc --help > /tmp/arc-help.txt 2>&1 || true
         grep -qi 'command' /tmp/arc-help.txt || {
-          echo "::error::Tests/arc did not produce recognisable help output"
+          echo "::error::darc did not produce recognisable help output"
           head -20 /tmp/arc-help.txt; exit 1; }
-        echo "binary verified: $(wc -c < Tests/arc) bytes"
+        echo "binary verified: $(wc -c < rust/target/release/darc) bytes"
 
     - name: Test (macOS)
       if: runner.os == 'macOS'
       run: |
         chmod +x Tests/*.sh
-        Tests/run-tests.sh Tests/arc
+        Tests/run-tests.sh rust/target/release/darc
+
+    - name: Golden archive format (macOS)
+      if: runner.os == 'macOS'
+      run: bash rust/difftest/arc-golden-check.sh
 
   # ── Windows (cross-compiled from Linux) ─────────────────────────────────────
   # Windows is built here rather than on a Windows runner under MSYS2.
@@ -265,29 +217,10 @@ jobs:
     - name: Install cross toolchain and Wine
       run: |
         sudo apt-get update
-        sudo apt-get install -y --no-install-recommends mingw-w64 mingw-w64-tools cpphs wine64 wine
-    # `make minstall` dominates the short jobs. Keyed on the pinned
-    # MicroHs commit, so bumping the pin invalidates it.
-    - name: Cache MicroHs
-      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
-      with:
-        path: |
-          ~/.mcabal
-          ~/.local/bin
-        key: mcabal-${{ runner.os }}-${{ runner.arch }}-05a3fbd5d73ae6a37111a6ced5b57bb1717b8975
-    - name: Install MicroHs
-      run: |
-        if [ ! -x "$HOME/.mcabal/bin/mhs" ]; then
-          microhs_sha="05a3fbd5d73ae6a37111a6ced5b57bb1717b8975"
-          microhs_tar="/tmp/microhs.tar.gz"
-          microhs_expected_sha256="a1f85821cbae877d0ea3e173235d45c833d9145b2ca9e92e77d284b6730c63b6"
-          curl -fsSL "https://github.com/augustss/MicroHs/archive/$microhs_sha.tar.gz" -o "$microhs_tar"
-          echo "$microhs_expected_sha256  $microhs_tar" | sha256sum -c -
-          tar -xzf "$microhs_tar" -C /tmp
-          cd "/tmp/MicroHs-$microhs_sha"
-          make minstall
-        fi
-        echo "$HOME/.mcabal/bin" >> "$GITHUB_PATH"
+        # mingw-w64 is still needed: the x86_64-pc-windows-gnu Rust target links
+        # through it, and `ring` (under rustls, under ureq) compiles C and asm.
+        # cpphs is gone with the Haskell.
+        sudo apt-get install -y --no-install-recommends mingw-w64 mingw-w64-tools wine64 wine
     # The Rust codecs are built by default now, so this must precede the first
     # build, not follow it. Targets come from rust-toolchain.toml.
     - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
@@ -303,16 +236,23 @@ jobs:
         key: cargo-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust-toolchain.toml', 'rust/Cargo.lock') }}
         restore-keys: |
           cargo-${{ runner.os }}-${{ runner.arch }}-
+    # compile-mhs-win64 built the Haskell against mingw. With the archiver in
+    # Rust the cross-build is just a target flag, and the FREEARC_WIN C path it
+    # used to fight is no longer in the archiver at all.
     - name: Build (Windows cross)
       run: |
-        chmod +x compile-win64-c compile-mhs-win64
-        ./compile-mhs-win64
-    # compile-mhs-win64 already checks the MZ signature, so this is about the
-    # artifact reaching the workspace rather than re-deriving the same fact.
+        cargo build --release --manifest-path rust/Cargo.toml \
+          --target x86_64-pc-windows-gnu -p darc-arc --bin darc
+        mkdir -p Tests
+        cp rust/target/x86_64-pc-windows-gnu/release/darc.exe Tests/darc-win64.exe
     - name: Verify binary
       run: |
-        test -f Tests/arc-mhs-win64.exe || { echo "::error::no Tests/arc-mhs-win64.exe"; exit 1; }
-        echo "binary verified: $(wc -c < Tests/arc-mhs-win64.exe) bytes"
+        test -s Tests/darc-win64.exe || { echo "::error::no Tests/darc-win64.exe"; exit 1; }
+        # The MZ signature used to be checked inside compile-mhs-win64; with
+        # that script gone it has to be checked here or not at all.
+        head -c 2 Tests/darc-win64.exe | grep -q '^MZ' || {
+          echo "::error::Tests/darc-win64.exe is not a PE image"; exit 1; }
+        echo "binary verified: $(wc -c < Tests/darc-win64.exe) bytes"
     # A PE header only proves the toolchain was wired up. The first working
     # cross-build produced a valid image that printed its help and then failed
     # every archive operation, so run the thing.
@@ -326,37 +266,19 @@ jobs:
     - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
       with:
         name: arc-win-amd64
-        path: Tests/arc-mhs-win64.exe
+        path: Tests/darc-win64.exe
         if-no-files-found: error
 
-    # The C-vs-Rust comparison this used to do went away with DARC_NO_RUST.
-    # What replaced it is stronger and does not need a second build: each
-    # ported codec is compared byte-for-byte against a *pinned* revision of the
-    # C by its own harness in rust/difftest, so the check survives the C being
-    # deleted from the tree.
-    - name: Verify the Rust codecs actually linked
-      run: |
-        test -f Tests/arc-mhs-win64.exe || { echo "::error::no Windows binary"; exit 1; }
-        # Presence alone would only prove the staticlib was linked, not that
-        # anything reaches it. Absence of the C entry points is the stronger
-        # half: tor_compress0 is the C encoder's template and would appear as an
-        # instantiation if any C Tornado encoder were still being built, so if
-        # it is gone the Rust one is necessarily what runs.
-        syms=$("${LLVM_MINGW:-x86_64-w64-mingw32}-nm" Tests/arc-mhs-win64.exe 2>/dev/null)
-        grep -q darc_rs_ <<< "$syms" \
-          || { echo "::error::no darc_rs_* symbols -- the Rust codecs were not linked"; exit 1; }
-        # Rust-mangled names are excluded before matching, and that is not
-        # cosmetic. A v0 symbol length-prefixes each component and appends a
-        # closure disambiguator, so wrapping darc_rs_tor_compress's body in a
-        # closure produces `...exports20darc_rs_tor_compress0E...` -- which
-        # contains the substring `tor_compress0` and made this check fail on a
-        # tree with no C Tornado in it at all. Match the C symbol, not any symbol
-        # that happens to spell it.
-        c_tornado=$(grep tor_compress0 <<< "$syms" | grep -v darc_rs_ || true)
-        [ -z "$c_tornado" ] \
-          || { echo "::error::C Tornado encoder is still present -- the Rust port is not what runs"; \
-               echo "$c_tornado" | head -3; exit 1; }
-        echo "Rust codecs linked; no C Tornado encoder present"
+    # The "are the Rust codecs actually linked?" symbol check that used to close
+    # this job is gone, and deliberately rather than by oversight. It looked for
+    # darc_rs_* in the archiver and for the absence of the C tor_compress0,
+    # which made sense while the archiver was Haskell reaching the codecs
+    # through the C ABI. darc.exe is one Rust binary that calls darc-codecs as a
+    # crate: there is no C in it to find, so the check could no longer fail and
+    # a check that cannot fail is not a check.
+    #
+    # The question it asked still matters for the SFX modules, which DO link the
+    # C forwarders -- and unarc-sfx asks it there, where it can still fail.
 
   # ── Windows on ARM64 ────────────────────────────────────────────────────────
   # Split across two jobs because neither half can be done alone:
@@ -389,32 +311,6 @@ jobs:
         echo "$sha256  /tmp/$tarball" | sha256sum -c -
         tar -xJf /tmp/"$tarball" -C /opt
         echo "/opt/llvm-mingw-$ver-ucrt-ubuntu-22.04-x86_64/bin" >> "$GITHUB_PATH"
-    - name: Install packages
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y --no-install-recommends cpphs
-    # `make minstall` dominates the short jobs. Keyed on the pinned
-    # MicroHs commit, so bumping the pin invalidates it.
-    - name: Cache MicroHs
-      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
-      with:
-        path: |
-          ~/.mcabal
-          ~/.local/bin
-        key: mcabal-${{ runner.os }}-${{ runner.arch }}-05a3fbd5d73ae6a37111a6ced5b57bb1717b8975
-    - name: Install MicroHs
-      run: |
-        if [ ! -x "$HOME/.mcabal/bin/mhs" ]; then
-          microhs_sha="05a3fbd5d73ae6a37111a6ced5b57bb1717b8975"
-          microhs_tar="/tmp/microhs.tar.gz"
-          microhs_expected_sha256="a1f85821cbae877d0ea3e173235d45c833d9145b2ca9e92e77d284b6730c63b6"
-          curl -fsSL "https://github.com/augustss/MicroHs/archive/$microhs_sha.tar.gz" -o "$microhs_tar"
-          echo "$microhs_expected_sha256  $microhs_tar" | sha256sum -c -
-          tar -xzf "$microhs_tar" -C /tmp
-          cd "/tmp/MicroHs-$microhs_sha"
-          make minstall
-        fi
-        echo "$HOME/.mcabal/bin" >> "$GITHUB_PATH"
     # bindgen parses DArc's headers as C++, so it reads llvm-mingw's libc++ --
     # whose headers use __builtin_clzg (Clang 19+). llvm-mingw ships the clang
     # driver but no libclang.so, so bindgen otherwise falls back to whatever
@@ -454,17 +350,60 @@ jobs:
         key: cargo-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust-toolchain.toml', 'rust/Cargo.lock') }}
         restore-keys: |
           cargo-${{ runner.os }}-${{ runner.arch }}-
+    # crt-static AND -static: the first run used -static alone, which removed
+    # the libc++ and libwinpthread imports but left libunwind.dll, because
+    # rustc adds its own -lunwind for the gnullvm targets and that resolved to
+    # the import library. crt-static is what tells rustc itself to link the
+    # runtime statically rather than merely asking the driver to.
+    #
+    # -static, because llvm-mingw links libc++, libunwind and libwinpthread as
+    # DLLs by default and only the .exe is uploaded below. Without it the
+    # binary reaches the ARM64 runner and dies before main with "cannot open
+    # shared object file" -- which is what it did the first time this job got
+    # far enough to run at all. The x86_64 mingw target does not need this:
+    # Rust already passes -static-libgcc there and that toolchain has no
+    # libc++ dependency.
     - name: Build (Windows ARM64 cross)
       run: |
-        chmod +x compile-win64-c compile-mhs-win64
-        DARC_WIN_ARCH=aarch64 ./compile-mhs-win64
-    # compile-mhs-win64 already checks the PE machine field against the
-    # requested architecture, so a build that silently fell back to the host
-    # toolchain fails there rather than being uploaded here.
+        RUSTFLAGS="-C target-feature=+crt-static -C link-arg=-static" \
+          cargo build --release --manifest-path rust/Cargo.toml \
+          --target aarch64-pc-windows-gnullvm -p darc-arc --bin darc
+        mkdir -p Tests
+        cp rust/target/aarch64-pc-windows-gnullvm/release/darc.exe Tests/darc-win-arm64.exe
+    # compile-mhs-win64 used to check the PE machine field, so that a build
+    # which silently fell back to the host toolchain failed before upload. With
+    # that script gone the check lives here: cargo targets the architecture by
+    # name, but an artifact of the wrong machine type is exactly the failure
+    # that would otherwise surface only on the ARM64 runner, a job away.
+    - name: Verify it is an ARM64 image
+      run: |
+        test -s Tests/darc-win-arm64.exe || {
+          echo "::error::no Tests/darc-win-arm64.exe"; exit 1; }
+        # `file` reads the PE machine field and names it, which beats decoding
+        # e_lfanew by hand here -- the arithmetic is easy to get wrong and would
+        # fail open.
+        desc=$(file -b Tests/darc-win-arm64.exe)
+        echo "$desc"
+        case "$desc" in
+          *Aarch64*|*ARM64*|*aarch64*) ;;
+          *) echo "::error::not an ARM64 PE image: $desc"; exit 1 ;;
+        esac
+        echo "ARM64 image verified: $(wc -c < Tests/darc-win-arm64.exe) bytes"
+        # Only the .exe is uploaded, so an import of a toolchain DLL is a
+        # binary that cannot start on the test runner. Checking it HERE rather
+        # than discovering it a job away is the whole point: the failure mode
+        # is a loader error before main, which reads like a broken build.
+        imports=$(llvm-objdump -p Tests/darc-win-arm64.exe | grep -i "DLL Name" || true)
+        echo "$imports"
+        case "$imports" in
+          *libc++*|*libunwind*|*libwinpthread*)
+            echo "::error::the ARM64 binary imports a toolchain DLL that is not shipped with it"
+            exit 1 ;;
+        esac
     - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
       with:
         name: arc-win-arm64
-        path: Tests/arc-mhs-win-arm64.exe
+        path: Tests/darc-win-arm64.exe
         if-no-files-found: error
 
   windows-arm64-test:
@@ -484,7 +423,7 @@ jobs:
     # preserve the executable bit.
     - name: Smoke-test on native ARM64 Windows
       shell: bash
-      run: bash Tests/win-test.sh Tests/arc-mhs-win-arm64.exe
+      run: bash Tests/win-test.sh Tests/darc-win-arm64.exe
 
     - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
       with:
@@ -500,13 +439,13 @@ jobs:
       run: |
         set -euo pipefail
         tar -xf interop/corpus.tar -C interop
-        bash Tests/interop-test.sh make  Tests/arc-mhs-win-arm64.exe interop/corpus out-arm64
-        bash Tests/interop-test.sh check Tests/arc-mhs-win-arm64.exe interop/corpus out-arm64
+        bash Tests/interop-test.sh make  Tests/darc-win-arm64.exe interop/corpus out-arm64
+        bash Tests/interop-test.sh check Tests/darc-win-arm64.exe interop/corpus out-arm64
     - name: Read Linux-written archives
       shell: bash
       run: |
         set -euo pipefail
-        bash Tests/interop-test.sh check Tests/arc-mhs-win-arm64.exe interop/corpus interop/archives
+        bash Tests/interop-test.sh check Tests/darc-win-arm64.exe interop/corpus interop/archives
     - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
       with:
         name: interop-win-arm64
@@ -550,42 +489,20 @@ jobs:
     - name: Install packages
       run: |
         sudo apt-get update
-        sudo apt-get install -y liblua5.1-dev libncurses-dev libcurl4-openssl-dev cpphs
-    # `make minstall` dominates the short jobs. Keyed on the pinned
-    # MicroHs commit, so bumping the pin invalidates it.
-    - name: Cache MicroHs
-      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
-      with:
-        path: |
-          ~/.mcabal
-          ~/.local/bin
-        key: mcabal-${{ runner.os }}-${{ runner.arch }}-05a3fbd5d73ae6a37111a6ced5b57bb1717b8975
-    - name: Install MicroHs
-      run: |
-        if [ ! -x "$HOME/.mcabal/bin/mhs" ]; then
-          microhs_sha="05a3fbd5d73ae6a37111a6ced5b57bb1717b8975"
-          microhs_expected_sha256="a1f85821cbae877d0ea3e173235d45c833d9145b2ca9e92e77d284b6730c63b6"
-          curl -fsSL "https://github.com/augustss/MicroHs/archive/$microhs_sha.tar.gz" -o /tmp/microhs.tar.gz
-          echo "$microhs_expected_sha256  /tmp/microhs.tar.gz" | sha256sum -c -
-          tar -xzf /tmp/microhs.tar.gz -C /tmp
-          cd "/tmp/MicroHs-$microhs_sha"
-          make minstall
-        fi
-        echo "$HOME/.mcabal/bin" >> "$GITHUB_PATH"
+        sudo apt-get install -y libncurses-dev
     - name: Build
       run: |
-        chmod +x compile*
-        ./compile-O2
+        cargo build --release --manifest-path rust/Cargo.toml -p darc-arc --bin darc
     - name: Write reference archives
       run: |
         set -euo pipefail
         chmod +x Tests/make-corpus.sh Tests/interop-test.sh
         ( cd Tests && ./make-corpus.sh corpus )
-        Tests/interop-test.sh make Tests/arc Tests/corpus interop/archives
+        Tests/interop-test.sh make rust/target/release/darc Tests/corpus interop/archives
         # Tarred rather than shipped as loose files: artifact upload/download
         # does not preserve modes, and 218 files move faster as one.
         tar -cf interop/corpus.tar -C Tests corpus
-        cp Tests/arc interop/arc
+        cp rust/target/release/darc interop/arc
     - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
       with:
         name: interop-linux
@@ -621,14 +538,14 @@ jobs:
         chmod +x Tests/interop-test.sh
         # A .exe is not executable after an artifact round-trip, and the script
         # refuses to run a non-executable archiver.
-        chmod +x winbin/arc-mhs-win64.exe
+        chmod +x winbin/darc-win64.exe
         export WINEDEBUG=-all WINEPREFIX="$HOME/.darc-wineprefix"
         wineboot -i >/dev/null 2>&1 || true
         # interop-test.sh runs one archiver binary; give it a Wine-invoking
         # shim so the script needs no notion of which platform it is driving.
         { echo '#!/bin/sh'
           echo 'export WINEDEBUG=-all WINEPREFIX="$HOME/.darc-wineprefix"'
-          echo 'exec wine "$(dirname "$0")/arc-mhs-win64.exe" "$@"'
+          echo 'exec wine "$(dirname "$0")/darc-win64.exe" "$@"'
         } > winbin/arc
         chmod +x winbin/arc
     # Own archives first, for the same reason as the arm64 job: a build that
@@ -809,6 +726,61 @@ jobs:
         fi
         echo 'no if let anywhere under rust/ (excluding target)'
 
+    # A `let` binding whose name is `_` or starts with `_` throws a value away
+    # without saying so. It reads as a binding, so the eye slides over it, and
+    # `let _ =` additionally silences `unused_must_use` -- the lint that exists
+    # to catch exactly this.
+    #
+    # It cost a real bug: the directory reader computed `tag == TAG_END` and
+    # discarded the comparison, paying for a check and throwing the answer away,
+    # so a malformed terminator read as valid.
+    #
+    # `drop(expr)` is the replacement. Same semantics, and it says "discarded on
+    # purpose" in a way a reader cannot mistake for a forgotten binding.
+    #
+    # SCOPE: `let` bindings only. Underscore-prefixed FUNCTION PARAMETERS are a
+    # different thing and are not touched -- `darc_lzma_decompress` takes nine
+    # arguments and uses four, because the other five are the C ABI it must
+    # keep. Closure parameters and `let (_a, b) = ...` destructuring are also out
+    # of scope.
+    #
+    # KNOWN COST: `let _guard = mutex.lock()` is the idiomatic way to hold an
+    # RAII guard alive, and `let _ = ...` would drop it immediately instead.
+    # Nothing in this workspace does that today. If something needs to, bind a
+    # real name and `drop(guard)` at the end of the scope, which says when the
+    # guard is released instead of leaving it to a `}`.
+    #
+    # HONEST LIMIT: this is a grep. A discard still re-spells as `expr.ok();` or
+    # `match expr { _ => {} }`. It cannot be a totality guarantee the way the
+    # `if let` rule is. What it guarantees is that the forms which LOOK like a
+    # binding and are not cannot come back. The lint step below is what catches
+    # the underlying hazard -- discarding a Result, an Option, or anything
+    # #[must_use] -- whatever it is spelled.
+    - name: no discarding `let` bindings in the Rust workspace
+      run: |
+        set -uo pipefail
+        # `let _` and `let _name`, with any spacing. `while let Some(..)` does
+        # not match: that is `let Some`, not `let _`.
+        hits=$(grep -rnE '\blet +_' rust --include='*.rs' --exclude-dir=target \
+                 | grep -Ev ':[0-9]+: *//' | grep -v '//!' || true)
+        if [ -n "$hits" ]; then
+          echo '::error::use drop(expr) to discard a value, not let _ / let _name. Offenders:'
+          echo "$hits"
+          exit 1
+        fi
+        echo 'no discarding let bindings anywhere under rust/ (excluding target)'
+
+    - name: discarding a must_use value is denied, however it is spelled
+      run: |
+        set -uo pipefail
+        cd rust
+        # let_underscore_must_use fires on `let _ = <must_use expr>` and
+        # drop_non_drop on `drop()` of a value with no destructor -- together
+        # they cover the re-spellings the grep above cannot see.
+        cargo clippy --workspace --all-targets \
+          -- -D clippy::let_underscore_must_use -D unused_must_use
+        echo 'no must_use value is discarded anywhere in the workspace'
+
   # ── Rust codec ports ────────────────────────────────────────────────────────
   # Two things are checked, and they are not the same thing:
   #
@@ -867,7 +839,7 @@ jobs:
     - name: Install packages
       run: |
         sudo apt-get update
-        sudo apt-get install -y liblua5.1-dev libncurses-dev libcurl4-openssl-dev cpphs
+        sudo apt-get install -y libncurses-dev
     - name: Codec differential test (Rust vs C)
       run: |
         chmod +x rust/difftest/run.sh
@@ -898,7 +870,7 @@ jobs:
     - name: Install packages
       run: |
         sudo apt-get update
-        sudo apt-get install -y liblua5.1-dev libncurses-dev libcurl4-openssl-dev cpphs
+        sudo apt-get install -y libncurses-dev
     # A differential test that has never failed proves nothing. This mutates the
     # port and asserts every mutation is caught by at least one input; it also
     # aborts if a mutation pattern no longer matches, because a mutation that
@@ -948,7 +920,7 @@ jobs:
         # implementation, not from either reader being compared. The harness
         # fails rather than passing if no 7z binary is found, so this is a hard
         # dependency and not a nice-to-have.
-        sudo apt-get install -y liblua5.1-dev libncurses-dev libcurl4-openssl-dev cpphs p7zip-full
+        sudo apt-get install -y libncurses-dev p7zip-full
     - name: Per-codec differential tests (REP, TTA, MM, LZP, Dict, LZ4-HC)
       run: |
         chmod +x rust/difftest/*.sh
@@ -1052,7 +1024,7 @@ jobs:
     - name: Install packages
       run: |
         sudo apt-get update
-        sudo apt-get install -y liblua5.1-dev libncurses-dev libcurl4-openssl-dev cpphs
+        sudo apt-get install -y libncurses-dev
     - name: Codecs under debug assertions
       run: |
         chmod +x rust/difftest/*.sh
@@ -1080,7 +1052,7 @@ jobs:
     - name: Install packages
       run: |
         sudo apt-get update
-        sudo apt-get install -y liblua5.1-dev libncurses-dev libcurl4-openssl-dev cpphs
+        sudo apt-get install -y libncurses-dev
     - name: Per-codec differential tests (Tornado, GRZip, DisPack)
       run: |
         chmod +x rust/difftest/*.sh
@@ -1136,7 +1108,7 @@ jobs:
     - name: Install packages
       run: |
         sudo apt-get update
-        sudo apt-get install -y liblua5.1-dev libncurses-dev libcurl4-openssl-dev cpphs
+        sudo apt-get install -y libncurses-dev
     - name: BSC decoder differential tests
       run: |
         chmod +x rust/difftest/*.sh
@@ -1205,7 +1177,7 @@ jobs:
     - name: Install packages
       run: |
         sudo apt-get update
-        sudo apt-get install -y liblua5.1-dev libncurses-dev libcurl4-openssl-dev cpphs
+        sudo apt-get install -y libncurses-dev
     # Both SREP harnesses build their own oracle from the PINNED revision now --
     # Compression/SREP and srep/ are deleted from the working tree, so there is
     # no C here to build. c-reference.sh extracts both and runs srep/compile
@@ -1225,7 +1197,7 @@ jobs:
     # srep.cpp:756 sorts them with an UNSTABLE std::sort keyed on src alone. That
     # is a property of the C++ standard library, not of the format -- a libstdc++
     # build can differ from a libc++ one on the same input -- so it cannot be
-    # reproduced, only bounded. srep_tie_order.py accepts it only when the
+    # reproduced, only bounded. `difftest-util srep-tie-order` accepts it only when the
     # archive header, every block header and hash, every literal byte and the
     # per-block record MULTISET are all identical.
     - name: SREP compressor differential test
@@ -1260,7 +1232,7 @@ jobs:
     - name: Install packages
       run: |
         sudo apt-get update
-        sudo apt-get install -y liblua5.1-dev libncurses-dev libcurl4-openssl-dev cpphs
+        sudo apt-get install -y libncurses-dev
     - name: Encryption differential test (Rust vs C)
       run: |
         chmod +x rust/difftest/*.sh
@@ -1324,7 +1296,7 @@ jobs:
     - name: Install packages
       run: |
         sudo apt-get update
-        sudo apt-get install -y liblua5.1-dev libncurses-dev libcurl4-openssl-dev cpphs
+        sudo apt-get install -y libncurses-dev
     - name: PPMd differential test, wide grid (Rust vs the C as shipped)
       run: |
         chmod +x rust/difftest/*.sh
@@ -1365,39 +1337,17 @@ jobs:
     - name: Install packages
       run: |
         sudo apt-get update
-        sudo apt-get install -y liblua5.1-dev libncurses-dev libcurl4-openssl-dev cpphs
-    # `make minstall` dominates the short jobs. Keyed on the pinned
-    # MicroHs commit, so bumping the pin invalidates it.
-    - name: Cache MicroHs
-      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
-      with:
-        path: |
-          ~/.mcabal
-          ~/.local/bin
-        key: mcabal-${{ runner.os }}-${{ runner.arch }}-05a3fbd5d73ae6a37111a6ced5b57bb1717b8975
-    - name: Install MicroHs
-      run: |
-        if [ ! -x "$HOME/.mcabal/bin/mhs" ]; then
-          microhs_sha="05a3fbd5d73ae6a37111a6ced5b57bb1717b8975"
-          microhs_tar="/tmp/microhs.tar.gz"
-          microhs_expected_sha256="a1f85821cbae877d0ea3e173235d45c833d9145b2ca9e92e77d284b6730c63b6"
-          curl -fsSL "https://github.com/augustss/MicroHs/archive/$microhs_sha.tar.gz" -o "$microhs_tar"
-          echo "$microhs_expected_sha256  $microhs_tar" | sha256sum -c -
-          tar -xzf "$microhs_tar" -C /tmp
-          cd "/tmp/MicroHs-$microhs_sha"
-          make minstall
-        fi
-        echo "$HOME/.mcabal/bin" >> "$GITHUB_PATH"
-
+        sudo apt-get install -y libncurses-dev
     # Builds the archiver itself. The deleted "archives identical with and
-    # without the Rust codecs" step used to leave Tests/arc behind as a side
+    # without the Rust codecs" step used to leave the binary behind as a side
     # effect, and an earlier version of this silently depended on that.
     - name: Encrypted archives round-trip
       run: |
-        chmod +x compile* Tests/*.sh
-        ./compile > /tmp/build-enc.log 2>&1 || { tail -30 /tmp/build-enc.log; exit 1; }
-        test -x Tests/arc || { echo "::error::./compile produced no Tests/arc"; exit 1; }
-        Tests/enc-roundtrip.sh Tests/arc Tests/arc < /dev/null
+        chmod +x Tests/*.sh
+        cargo build --release --manifest-path rust/Cargo.toml -p darc-arc --bin darc
+        test -x rust/target/release/darc || {
+          echo "::error::cargo produced no rust/target/release/darc"; exit 1; }
+        Tests/enc-roundtrip.sh rust/target/release/darc rust/target/release/darc < /dev/null
 
   unarc-sfx:
     runs-on: ubuntu-latest
@@ -1433,35 +1383,19 @@ jobs:
     - name: Install packages
       run: |
         sudo apt-get update
-        sudo apt-get install -y liblua5.1-dev libncurses-dev libcurl4-openssl-dev cpphs
-    - name: Cache MicroHs
-      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
-      with:
-        path: |
-          ~/.mcabal
-          ~/.local/bin
-        key: mcabal-${{ runner.os }}-${{ runner.arch }}-05a3fbd5d73ae6a37111a6ced5b57bb1717b8975
-    - name: Install MicroHs
-      run: |
-        if [ ! -x "$HOME/.mcabal/bin/mhs" ]; then
-          microhs_sha="05a3fbd5d73ae6a37111a6ced5b57bb1717b8975"
-          microhs_tar="/tmp/microhs.tar.gz"
-          microhs_expected_sha256="a1f85821cbae877d0ea3e173235d45c833d9145b2ca9e92e77d284b6730c63b6"
-          curl -fsSL "https://github.com/augustss/MicroHs/archive/$microhs_sha.tar.gz" -o "$microhs_tar"
-          echo "$microhs_expected_sha256  $microhs_tar" | sha256sum -c -
-          tar -xzf "$microhs_tar" -C /tmp
-          cd "/tmp/MicroHs-$microhs_sha"
-          make minstall
-        fi
-        echo "$HOME/.mcabal/bin" >> "$GITHUB_PATH"
-
+        sudo apt-get install -y libncurses-dev
     # The archiver, because the round-trip needs something to write archives
-    # with. ./compile also produces common.mak, which Unarc/makefile includes.
-    - name: Build the archiver
+    # with -- and compile-c, which is what still produces common.mak. That file
+    # is generated rather than committed, and Unarc/makefile begins by including
+    # it, so without this step `make -C Unarc` fails before it compiles a line.
+    - name: Build the archiver and the C side
       run: |
-        chmod +x compile* Tests/*.sh
-        ./compile > /tmp/build-arc.log 2>&1 || { tail -30 /tmp/build-arc.log; exit 1; }
-        test -x Tests/arc || { echo "::error::./compile produced no Tests/arc"; exit 1; }
+        chmod +x compile-c Tests/*.sh
+        cargo build --release --manifest-path rust/Cargo.toml -p darc-arc --bin darc
+        test -x rust/target/release/darc || {
+          echo "::error::cargo produced no rust/target/release/darc"; exit 1; }
+        ./compile-c > /tmp/build-c.log 2>&1 || { tail -30 /tmp/build-c.log; exit 1; }
+        test -f common.mak || { echo "::error::compile-c produced no common.mak"; exit 1; }
 
     - name: Build unarc and the SFX modules
       run: |
@@ -1489,7 +1423,7 @@ jobs:
         ls -la Unarc/unarc Unarc/*.sfx
 
     - name: Round-trip through unarc and a self-extracting archive
-      run: Tests/sfx-roundtrip.sh Tests/arc Unarc/unarc Unarc/arc.linux.sfx
+      run: Tests/sfx-roundtrip.sh rust/target/release/darc Unarc/unarc Unarc/arc.linux.sfx
 
   # ── AddressSanitizer on x86-64 ──────────────────────────────────────────────
   # Added to diagnose a double free that only appeared on this runner. It found
@@ -1526,44 +1460,44 @@ jobs:
     - name: Install packages
       run: |
         sudo apt-get update
-        sudo apt-get install -y liblua5.1-dev libncurses-dev libcurl4-openssl-dev cpphs
-    # `make minstall` dominates the short jobs. Keyed on the pinned
-    # MicroHs commit, so bumping the pin invalidates it.
-    - name: Cache MicroHs
-      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
-      with:
-        path: |
-          ~/.mcabal
-          ~/.local/bin
-        key: mcabal-${{ runner.os }}-${{ runner.arch }}-05a3fbd5d73ae6a37111a6ced5b57bb1717b8975
-    - name: Install MicroHs
+        sudo apt-get install -y libncurses-dev
+    # ASan now covers UNARC, not the archiver, and that is where it belongs.
+    #
+    # It used to build the whole tree and drive the C codecs through the Haskell
+    # archiver. The archiver is Rust and reaches the codecs as a crate, so it no
+    # longer executes a line of the C -- pointing ASan at it would sanitize a
+    # binary with nothing to sanitize. Unarc and the SFX modules are the only
+    # things left that run the C, and they are also the ones that parse
+    # untrusted archive bytes, which is the interesting half.
+    - name: Build unarc with AddressSanitizer
       run: |
-        if [ ! -x "$HOME/.mcabal/bin/mhs" ]; then
-          microhs_sha="05a3fbd5d73ae6a37111a6ced5b57bb1717b8975"
-          microhs_tar="/tmp/microhs.tar.gz"
-          microhs_expected_sha256="a1f85821cbae877d0ea3e173235d45c833d9145b2ca9e92e77d284b6730c63b6"
-          curl -fsSL "https://github.com/augustss/MicroHs/archive/$microhs_sha.tar.gz" -o "$microhs_tar"
-          echo "$microhs_expected_sha256  $microhs_tar" | sha256sum -c -
-          tar -xzf "$microhs_tar" -C /tmp
-          cd "/tmp/MicroHs-$microhs_sha"
-          make minstall
-        fi
-        echo "$HOME/.mcabal/bin" >> "$GITHUB_PATH"
-    - name: Build with AddressSanitizer
-      run: |
-        chmod +x compile* Compression/compile
-        DARC_SANITIZE=address ./compile
-    # detect_leaks=0: this is a hunt for a specific heap-corruption bug, and
-    # LeakSanitizer would otherwise bury the report under leaks inherited from
-    # a codebase that has never been leak-clean.
+        chmod +x compile-c Compression/compile Tests/*.sh
+        cargo build --release --manifest-path rust/Cargo.toml -p darc-arc --bin darc
+        ./compile-c > /tmp/build-c.log 2>&1 || { tail -30 /tmp/build-c.log; exit 1; }
+        mkdir -p /tmp/out/FreeArc-unarc
+        # STRIP_FLAG= keeps the symbols an ASan report needs; EXTRA_LINK_FLAGS
+        # puts -fsanitize=address on the link line, where DEBUG_FLAGS does not
+        # reach.
+        make -C Unarc linux \
+          DEBUG_FLAGS="-fsanitize=address -fno-omit-frame-pointer -g" \
+          EXTRA_LINK_FLAGS="-fsanitize=address" \
+          STRIP_FLAG= > /tmp/build-unarc-asan.log 2>&1 \
+          || { tail -40 /tmp/build-unarc-asan.log; exit 1; }
+        test -x Unarc/unarc || { echo "::error::no Unarc/unarc"; exit 1; }
+        # A build that quietly dropped the sanitizer would pass every step
+        # below without ever instrumenting anything.
+        nm -C Unarc/unarc 2>/dev/null | grep -q '__asan' || {
+          echo "::error::Unarc/unarc has no __asan symbols -- it was not instrumented"; exit 1; }
+    # detect_leaks=0: this is a hunt for heap corruption, and LeakSanitizer
+    # would otherwise bury the report under leaks inherited from a codebase that
+    # has never been leak-clean.
     # abort_on_error=1 makes the first report terminate rather than letting a
     # corrupted process wander on and produce a confusing second failure.
-    - name: Run suite under ASan
+    - name: Extract every archive under ASan
       env:
         ASAN_OPTIONS: detect_leaks=0:abort_on_error=1:print_stacktrace=1
       run: |
-        chmod +x Tests/*.sh
-        Tests/run-tests.sh Tests/arc
+        Tests/sfx-roundtrip.sh rust/target/release/darc Unarc/unarc Unarc/arc.linux.sfx
     # The suite hides per-case output on success, so surface any ASan report
     # that landed in a per-configuration log even when the case was recorded
     # as a failure rather than a crash.

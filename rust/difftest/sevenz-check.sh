@@ -110,33 +110,13 @@ done
   echo "no 7zz/7z/7za in PATH -- cannot generate the corpus, refusing to report a pass" >&2
   exit 1; }
 
-SRC="$W/src"; mkdir -p "$SRC/nested/deep" "$SRC/emptydir"
-python3 - "$SRC" <<'PY'
-import os, sys
-d = sys.argv[1]
-def prng(seed, n):
-    s = seed; o = bytearray()
-    for _ in range(n):
-        s = (s * 1103515245 + 12345) & 0xffffffff
-        o.append((s >> 16) & 0xff)
-    return bytes(o)
-w = lambda p, b: open(os.path.join(d, p), "wb").write(b)
-w("empty.bin", b"")
-w("tiny.txt", b"hello")
-w("text.txt", b"the quick brown fox jumps over the lazy dog.\n" * 5000)
-w("random.bin", prng(7, 300000))
-w("zeros.bin", b"\0" * 200000)
-w("nested/a.txt", b"nested file\n" * 100)
-w("nested/deep/b.bin", prng(11, 65536))
-# An x86-ish body, so BCJ/BCJ2 has something to transform rather than passing
-# incompressible noise straight through.
-body = bytearray()
-for i in range(20000):
-    body += b"\xe8" + (i * 7 % 4294967296).to_bytes(4, "little") + b"\x90\x8b\xc0"
-w("codeish.bin", bytes(body))
-# Non-ASCII name, since names are UTF-16 in the container and UTF-8 out of it.
-w("ünicode-日本語.txt", "unicode name\n".encode())
-PY
+SRC="$W/src"
+( cd "$ROOT/rust" && cargo build --release -q -p darc-codecs --bin corpusgen ) || exit 1
+
+# Corpus from corpusgen -- a literal transcription of the python3 heredoc that
+# stood here, accepted on a byte comparison over every file it writes. It also
+# creates nested/deep and emptydir, which the shell used to make first.
+"$ROOT/rust/target/release/corpusgen" sevenz "$SRC"
 
 mkarc() { # mkarc <name> <7z args...>
   local name="$1"; shift

@@ -314,12 +314,12 @@ impl MtHash {
     /// at all.
     pub(super) fn feed(&mut self, data: &[u8]) {
         // A closed channel means the worker is gone; `next` will report that.
-        let _ = self.feed.send(Feed::Data(data.to_vec()));
+        drop(self.feed.send(Feed::Data(data.to_vec())));
     }
 
     /// No more bytes will follow.
     pub(super) fn end(&mut self) {
-        let _ = self.feed.send(Feed::End);
+        drop(self.feed.send(Feed::End));
     }
 
     /// The next position's hash output, or `None` if the worker stopped early.
@@ -376,14 +376,14 @@ impl Drop for MtHash {
     fn drop(&mut self) {
         // Both directions, because the worker may be parked in either one: `End`
         // releases a `recv`, dropping the receiver makes a parked `send` fail.
-        let _ = self.feed.send(Feed::End);
+        drop(self.feed.send(Feed::End));
         self.recs = None;
         match self.handle.take() {
             // A worker that panicked yields `Err` here, which is discarded rather
             // than resumed: re-raising it would unwind through whatever dropped
             // the finder, and that can be a C frame.
             Some(h) => {
-                let _ = h.join();
+                drop(h.join());
             }
             None => {}
         }
@@ -465,7 +465,7 @@ fn hash_thread(cfg: HashConfig, feed: &Receiver<Feed>, out: &SyncSender<Vec<RawH
     }
 
     if !batch.is_empty() {
-        let _ = out.send(batch);
+        drop(out.send(batch));
     }
 }
 

@@ -244,7 +244,7 @@ pub fn list(archive: &Path) -> c_int {
     let stdout = std::io::stdout();
     let mut out = stdout.lock();
     let result = list_lines(&reader, &mut out);
-    let _ = out.flush();
+    drop(out.flush());
 
     match result {
         Ok(()) => sres::OK,
@@ -357,7 +357,7 @@ pub fn extract_or_test(archive: &Path, out_dir: Option<&Path>) -> c_int {
         }
     });
 
-    let _ = out.flush();
+    drop(out.flush());
 
     match failure {
         sres::OK => {}

@@ -85,7 +85,7 @@ fn empty_input_is_rejected_cleanly() {
 fn garbage_never_panics() {
     for seed in [1u32, 2, 3, 7, 42, 99, 1234, 65535] {
         for len in [1usize, 2, 3, 4, 5, 8, 16, 64, 256, 4096] {
-            let _ = decode(&prng(seed, len));
+            drop(decode(&prng(seed, len)));
         }
     }
 }
@@ -101,7 +101,7 @@ fn every_header_byte_combination_is_survivable() {
                 for &word_size in &[0u8, 8, 16, 24, 32, 255] {
                     let mut v = vec![level, flags, num_chan, word_size];
                     v.extend_from_slice(&prng(level as u32 * 7 + word_size as u32, 64));
-                    let _ = decode(&v);
+                    drop(decode(&v));
                 }
             }
         }
@@ -122,7 +122,7 @@ fn valid_header_then_truncation_is_survivable() {
 
     for cut in [8usize, 9, 12, 13, 16, 20, 100, frame.len()] {
         if cut <= frame.len() {
-            let _ = decode(&frame[..cut]);
+            drop(decode(&frame[..cut]));
         }
     }
 }

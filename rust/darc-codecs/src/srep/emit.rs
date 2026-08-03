@@ -210,7 +210,7 @@ mod tests {
         assert_eq!(rec.lz_match.src, 100);
         assert_eq!(rec.lz_match.dest, 5000);
         assert_eq!(rec.lz_match.len, 512);
-        let _ = base;
+        drop(base);
     }
 
     #[test]

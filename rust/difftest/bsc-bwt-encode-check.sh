@@ -50,34 +50,11 @@ cc "$W/rs" -DUSE_RUST "$LIB" || { echo "Rust driver failed to build" >&2; exit 1
 # naming step cannot terminate early), a single repeated byte (the degenerate
 # case), sorted data, the full alphabet, and the small-n boundaries around the
 # aux sampling rate.
-python3 - "$W/in" <<'CORPUS'
-import os,sys
-d=sys.argv[1]; os.makedirs(d,exist_ok=True)
-def prng(seed,n):
-    s=seed; o=bytearray()
-    for _ in range(n): s=(s*1103515245+12345)&0xffffffff; o.append((s>>16)&0xff)
-    return bytes(o)
-w=lambda n,b: open(f"{d}/{n}","wb").write(b)
-w("text",        b"the quick brown fox jumps over the lazy dog. "*2000)
-w("runs",        b"".join(bytes([i%251])*200 for i in range(400)))
-w("longruns",    b"".join(bytes([i%7])*5000 for i in range(60)))
-w("noise",       prng(7, 150000))
-w("zeros",       b"\x00"*80000)
-w("one_byte",    b"Q"*40000)
-w("sorted",      bytes(sorted(prng(11, 120000))))
-w("full_alpha",  bytes(range(256))*300)
-w("ends_zero",   prng(3, 50000)[:-1] + b"\x00")
-# Periodic and near-periodic: the shapes that make LMS substrings collide, so
-# SA-IS must recurse rather than resolve names in one pass.
-w("periodic3",   b"abc"*30000)
-w("periodic2",   b"ab"*45000)
-w("fibonacci",   (lambda: (lambda f: f(f,24))(lambda f,k: b"a" if k==0 else (b"ab" if k==1 else f(f,k-1)+f(f,k-2))))())
-w("almost_per",  (b"abcabcabcabd"*8000))
-w("two_symbols", bytes((i*i)%2 for i in range(100000)))
-w("bwt_like",    bytes(sorted(prng(5, 90000))))
-for n in (2,3,4,5,17,255,256,257,1000,65535,65536):
-    w(f"n_{n}", (b"abracadabra"*10000)[:n])
-CORPUS
+( cd "$ROOT/rust" && cargo build --release -q -p darc-codecs --bin corpusgen ) || exit 1
+
+# Corpus from corpusgen -- a literal transcription of the python3 heredoc
+# that stood here, accepted on a byte comparison over every file it writes.
+"$ROOT/rust/target/release/corpusgen" bsc-bwt-encode "$W/in"
 
 fail=0; nb=0; na=0; nf=0; skipped_a=0
 

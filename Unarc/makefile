@@ -55,10 +55,19 @@ LINK_FLAGS = -Xlinker --large-address-aware -s
 # librt was folded into glibc long ago and does not exist on macOS at all;
 # `-s` is obsolete there and only produces a warning.
 ifeq ($(UNAME_S),Darwin)
-UNIX_LINK_FLAGS = -lpthread
+UNIX_LINK_FLAGS = -lpthread $(EXTRA_LINK_FLAGS)
 else
-UNIX_LINK_FLAGS = -lrt -lpthread -s
+UNIX_LINK_FLAGS = -lrt -lpthread $(STRIP_FLAG) $(EXTRA_LINK_FLAGS)
 endif
+# `-s` is the default and stays that way, but it has to be overridable: a
+# sanitizer build needs its symbols to say anything useful, and stripping them
+# turns an ASan report into a list of addresses. Set STRIP_FLAG= to keep them.
+#
+# EXTRA_LINK_FLAGS exists for the same reason. -fsanitize=address has to appear
+# on the LINK line as well as the compile line, and DEBUG_FLAGS only reaches the
+# former -- so before this, an ASan build of Unarc compiled and then failed to
+# link.
+STRIP_FLAG ?= -s
 
 
 # This builds unarc and the SFX modules, which parse attacker-supplied archives
@@ -77,8 +86,14 @@ CFLAGS1= $(CODE_FLAGS) $(OPT_FLAGS) -O1 $(DEBUG_FLAGS) $(DEFINES) $(Extractor_DE
 # tta_decompress and the rest) that the C wrappers here call by name. Without it
 # the library builds and links nothing.
 .PHONY: windows linux rustlib
+# The check afterwards is not redundant: rust/ is one workspace, so any
+# rust/difftest run -- which deliberately builds WITHOUT dropin -- overwrites
+# this same libdarc_codecs.a. Cargo repairs it by re-uplifting its cached
+# per-feature artifact, so the build above is usually enough; the check is what
+# turns "usually" into a build error instead of a runtime one.
 rustlib:
 	cd ../rust && cargo build --release -p darc-codecs -p darc-crypto --features darc-codecs/dropin
+	bash ../rust/check-dropin.sh ../rust/target/release/libdarc_codecs.a
 
 
 unarc.exe: $(OBJDIR)/unarc.o $(LINKOBJ) | rustlib

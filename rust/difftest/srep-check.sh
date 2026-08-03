@@ -62,23 +62,11 @@ DEC="$ROOT/rust/target/release/srep -d"
 # Inputs aimed at a long-range matcher: far-apart duplicate regions, repeated
 # sections separated by noise, long runs, and incompressible data where the
 # encoder finds nothing and stores literals.
-python3 - "$W/in" <<'PY'
-import os,sys
-d=sys.argv[1]; os.makedirs(d,exist_ok=True)
-def prng(seed,n):
-    s=seed; o=bytearray()
-    for _ in range(n): s=(s*1103515245+12345)&0xffffffff; o.append((s>>16)&0xff)
-    return bytes(o)
-w=lambda n,b: open(f"{d}/{n}","wb").write(b)
-w("text",    b"the quick brown fox jumps over the lazy dog. "*20000)
-w("dup",     (prng(1,100000)+prng(2,50000))*6)
-w("noise",   prng(9,900000))
-w("runs",    b"".join(bytes([i%251])*997 for i in range(900)))
-w("mixed",   b"".join(prng(i,2000)+b"COMMON-SECTION"*400 for i in range(120)))
-w("farapart",prng(4,300000)+prng(5,300000)+prng(4,300000))
-for n in (0,1,100,4096,65536):
-    w(f"n_{n}", prng(3,n))
-PY
+( cd "$ROOT/rust" && cargo build --release -q -p darc-codecs --bin corpusgen ) || exit 1
+
+# Corpus from corpusgen -- a literal transcription of the python3 heredoc
+# that stood here, accepted on a byte comparison over every file it writes.
+"$ROOT/rust/target/release/corpusgen" srep "$W/in"
 
 # All four format versions, and both block regimes.
 #

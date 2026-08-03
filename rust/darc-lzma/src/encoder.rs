@@ -679,7 +679,7 @@ impl<'a> Encoder<'a> {
         }
         // RangeEnc_FlushData + RangeEnc_FlushStream. The result is read back out of
         // the coder by `check_errors`, exactly as the C reads `p->rc.res`.
-        let _ = self.rc.finish();
+        drop(self.rc.finish());
         self.check_errors()
     }
 

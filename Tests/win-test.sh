@@ -15,7 +15,7 @@
 # branch exists to fix, reintroduced in the check itself.
 set -uo pipefail
 
-EXE=${1:-Tests/arc-mhs-win64.exe}
+EXE=${1:-Tests/darc-win64.exe}
 
 [ -f "$EXE" ] || { echo "error: $EXE not found -- run ./compile-mhs-win64 first" >&2; exit 2; }
 

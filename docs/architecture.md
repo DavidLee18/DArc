@@ -10,7 +10,7 @@ Load this when changing `Arc*.hs`, the archive format, or the UI. It is the half
 
 `Command` (`Options.hs:39`) is a large record carrying both the parsed command and every relevant option (`opt_*` fields). It is threaded through essentially the entire codebase, and drivers pass modified copies downward (see `findArchives` at `Arc.hs:149`, which rewrites `cmd_arcname`/`opt_disk_basedir` per matched archive). Options are declared in `Options.hs` and parsed generically by `Cmdline.hs`. Learn this record early.
 
-Two dispatch escapes sit ahead of the main table: `.7z` archives are detected by `is7zArchive` and diverted to `Arc7z.hs` (native read via the `darc-sevenz` crate, which replaced the vendored 7-Zip SDK; *writing* shells out to the system `7zz`/`7z`), and under `FREEARC_GUI` an invocation with fewer than two arguments launches the file manager instead of running a command.
+Two dispatch escapes sit ahead of the main table: `.7z` archives are detected by `is7zArchive` and diverted to `Arc7z.hs` (native read via the `darc-sevenz` crate, which replaced the vendored 7-Zip SDK; *writing* shells out to the system `7zz`/`7z`). (A second escape used to launch a GTK file manager when given fewer than two arguments; the GUI has been removed.)
 
 ## The process pipeline (the core abstraction)
 
@@ -67,25 +67,46 @@ Two directories look dead and are **not** — check before deleting: `Compressio
 
 `Encryption.hs` / `EncryptionLib.hs` follow the identical pattern: **encryption is just another method in the chain** (`isEncryption = compressionIs "encryption?"`), with PBKDF2-HMAC and a Fortuna PRNG imported from `Compression.h` and OS entropy via `systemRandomData` in `Environment.cpp`. AES/Blowfish/Serpent/Twofish now come from `rust/darc-crypto`; `Compression/_Encryption/` is the wrapper that forwards to it.
 
+> **The `:h1` parameter, and the archives that predate it.** `decode16` in `C_Encryption.cpp` decodes the encryption key and IV from the hex in the method string. It used to do that through `char2int` (`Common.h`), which is missing its `+10`: `'a'` decoded to `0` and `'f'` to `5`, folding the key's 16 hex values onto 10 and costing roughly 0.75 bits per nibble — about 208 bits of entropy in a nominally 256-bit AES key, with the IV folded the same way. It stayed invisible because the same function ran when writing and when reading, so every build agreed with itself.
+>
+> Archives now carry `:h1` in the encryption method, meaning "the key and IV are real hexadecimal", inserted by `addHexFix` (`Cmdline.hs`) immediately after the algorithm name. Archives *without* it are still read the old way, via `char2int_broken` — the default in `ENCRYPTION_METHOD`'s constructor is `hexfix = 0` precisely because that constructor is also what parses a method string read from an archive. `-ae aes:h0` writes the old format on purpose; the parameter goes after the name so a user's own `h` overrides it rather than the reverse.
+>
+> A build without a case for `'h'` hits `default: error=1` and refuses the whole method string, so an old binary meeting a new archive reports "invalid compression method or parameters" rather than a corrupt archive. **Encrypted archives are therefore not wire-compatible with DArc86 or with FreeArc 0.67**; unencrypted ones are unaffected.
+>
+> The trap for anyone changing this: the salt and the check code never went through the broken decoder — they are decoded in Haskell by `Utils.hs`'s `decode16`, which was always real hex. So a build that decodes all four fields correctly **verifies every password** and then fails every CRC. The check code cannot detect the mismatch.
+
+> **PBKDF2 iterations, and why they cost what they cost.** The default moved from FreeArc's `1000` to **`210000`**, OWASP's recommendation for PBKDF2-HMAC-SHA512. Unlike `hexfix`, this default is safe to move: `ShowCompressionMethod` always writes `:n%d`, so every stored method names its own count and an old archive is decrypted with the 1000 it recorded. Nothing is retroactive — a weak archive stays weak until it is repacked.
+>
+> The cost is **per block, not per archive**, because `generateEncryption` draws a fresh salt for every block and therefore derives a fresh key. Measured on a 200-file tree: a normal archive has one data block (three under `-hp`), so creating it goes 89 ms → 131 ms and testing it 42 ms → 112 ms. But `-s-` makes every file its own solid block, and there the same tree goes **227 ms → 13.9 s**. That combination is the one to know about; `-ae aes:n1000` opts out, per archive.
+>
+> Making a high count cheap would mean deriving the salt once per archive and keeping the per-block IVs — the standard design, and a behaviour change beyond a default. It is not done here.
+
+> **File selection is one predicate, reused.** `opt_file_filter` (`Cmdline.hs:493`) is built once from `-n`/`-x` and the size and time options; what varies per command is only whether the filespecs are ANDed in and whether the result is negated (`Arc.hs:243-272`) — the disk scan uses the filter alone, `ch`/`c`/`k`/`t`/`l` use filespecs AND filter, `d` uses its negation, and `a`/`u`/`f`/`j` set `cmd_archive_filter = const True` because for them the filespecs select *disk* files.
+>
+> Directories never go through the name filter, on either side: `test_dirs` (`Arc.hs:270`) when reading and `accept_f` (`FileInfo.hs:462`) when writing both decide them from `--dirs`/`--nodirs`, or failing that from whether any *n/s/t* filter exists. `-x` is not one of those (`nst_filters` lists `-n` and the size/time filters only), which is why `arc a -x*.dat` keeps a `sub` entry and `arc a -n*.txt` drops it. Reading those two outcomes as "directories are filtered by name" fits both and is wrong; `--dirs -n*.txt` is what separates the readings.
+>
+> `c`, `ch`, `k`, `s…` and `rr…` take **no filespecs** — `is_CMD_WITHOUT_ARGS` (`Options.hs:305`). `d` and `j` are the exceptions, and their arguments mean different things: archive members for `d`, archive names for `j`.
+>
+> The size and time filters are part of the same predicate, with comparisons that are not uniform: `-sm`/`-sl` are strict, `-ta`/`-tn` are inclusive, `-tb`/`-to` are exclusive. `-sm`/`-sl` take a `parseSize` argument (a bare number is **bytes**), `-ta`/`-tb` a positional `YYYYMMDDHHMMSS` in local time, and `-tn`/`-to` a period where a bare number means **days**. A note on reaching them: `-ta`, `-tb`, `-tn` and `-to` are all ambiguous with `--type`, which is in `aPREFFERED_OPTIONS` and wins — `arc a -ta20240101 …` is `--type=a20240101: only arc format is supported`, in the reference as much as in this port. Use the long spellings. `-sm`/`-sl` are themselves preferred and so survive their own clash with `-s`.
+>
+> **A directory named outright is a separate pass.** `find_filter_and_process_files` (`FileInfo.hs:403`) rewrites a filespec that names a directory into two — the directory itself, scanned non-recursively by the *addDir* pass, and `dir/`, scanned by the main walk — so `arc a x.arc work/data` stores an entry for `work/data` as well as its contents. The two passes share `accept_f` but must not share an answer: the addDir pass tests `include_dirs `defaultVal` True`, decided by `--dirs`/`--nodirs` alone and never by the *n/s/t* filters, which is why `arc a -n*.txt x.arc work/data` keeps `work/data` while dropping `work/data/sub`.
+>
+> Letting `--dirs` force *both* passes true was a bug on the Haskell side, fixed in `FileInfo.hs:462`. It made the addDir pass accept every *sibling* of the named directory, so `arc a --dirs x.arc .` wrote the top-level entry twice and `arc a --dirs x.arc work/data` also stored `work/other` — a directory the user never named, and the same leak the `recursive` guard beside it already fixed for `-r`. The two builds are byte-identical under `--dirs` again.
+
 `Environment.cpp` (62KB, 1,917 lines — the largest C++ file left) provides OS-level services to the Haskell side: file/console/memory primitives that differ across Windows and Unix. It goes with the Haskell layer, not with the codecs.
 
 ## UI layer
 
-`UI.hs:5–11` is the backend switch, and the *only* place the GUI/console choice is made:
+`UI.hs` re-exports `CUI`, the console backend:
 
 ```haskell
-#ifdef FREEARC_GUI
-module UI (module UI, module UIBase, module GUI) where
-import GUI
-#else
 module UI (module UI, module UIBase, module CUI) where
 import CUI
-#endif
 ```
 
-`UI` **re-exports its backend**, so every caller just writes `import UI` and gets `uiStartProgram`, `uiScanning`, `askPassword`, etc. regardless of build. `UIBase.hs` holds backend-independent state (progress counters, timers, terminal detection); `CUI.hs` is console, `GUI.hs` is GTK. Adding a UI operation means adding it to `UIBase` or to *both* backends.
+Every caller writes `import UI` and gets `uiStartProgram`, `uiScanning`, `askPassword` and the rest. `UIBase.hs` holds backend-independent state (progress counters, timers, terminal detection); `CUI.hs` is the console implementation.
 
-The GUI build additionally pulls in the GTK Archive Manager — `FileManager.hs`, `FileManPanel.hs`, `FileManDialogs.hs`, `FileManDialogAdd.hs`, `FileManUtils.hs` — a two-pane browser layered on `ArhiveDirectory` and `ArcExtract`. `Arc.hs` imports `FileManager` only under `#ifdef FREEARC_GUI`, so a GUI build exercises considerably more code than the console build CI covers.
+**There used to be a second backend.** `GUI.hs` and the GTK Archive Manager — `FileManager.hs`, `FileManPanel.hs`, `FileManDialogs.hs`, `FileManDialogAdd.hs`, `FileManUtils.hs`, about 3,500 lines — were selected by `#ifdef FREEARC_GUI`, which also made `Arc.hs` launch the file manager when invoked with fewer than two arguments. All of it was **removed**: CI never built it, it carried no format risk, and it was the only thing keeping `UI.hs` a switch rather than a re-export. `uiScanning` is now the no-op the console build always saw — its body only ever ran under the GUI.
 
 `Charsets.hs`, `UTF8Z.hs`, and `FilePath.hs` handle the encoding minefield — archives store filenames that must round-trip across Windows/Unix and across codepages. `-sc` and `--language` route through here.
 
@@ -130,5 +151,5 @@ These build separately from the main binary and are not covered by `./compile-O2
 
   The one to know about, because it is the shape the next one will take: `ArcStructure.h` read the per-file time field as **4 bytes** while `ByteStream.hs:599` writes `CTime` as a fixed 64-bit value. Everything stored after it — the directory flags and the CRCs — therefore came out of the wrong offset, so directories were recreated as zero-byte *files* and every extracted file failed its CRC. Sizes and names, which are stored *before* the time field, were perfect. A reader that lists an archive correctly can still be reading the second half of every directory block from nowhere.
 - **SREP** — a huge-dictionary LZ77 preprocessor, and the one codec DArc reaches by spawning a binary rather than calling a symbol (`arc.ini`'s `[External compressor:srep]`). Both directions are now `rust/darc-codecs/src/srep/`, and `./compile` installs the port as `Tests/srep`; the vendored C (`Compression/SREP/` and `srep/`, 16,075 lines) is deleted. Its oracle lives on in the pinned reference — `rust/difftest/srep-check.sh` and `srep-encode-check.sh` build the C from `git archive` of `DARC_C_REF_SHA` rather than from the tree.
-- **`HsLua/`** — vendored Lua 5.1 plus Haskell bindings, used by `Options.hs` for `arc.*.lua` config scripts. `./compile` builds the vendored Lua from `HsLua/src`; the Windows cross-build sets `FREEARC_NO_LUA` and links none of it.
+- **Lua scripting — REMOVED.** `HsLua/` held a vendored Lua 5.1 (16,338 lines) plus Haskell bindings, and `Options.hs` dispatched eight advisory events (`ProgramStart`/`Done`, `CommandStart`/`Done`, `ArchiveStart`/`Done`, `Error`, `Warning`) to handlers registered by `arc.*.lua` config scripts. Every exception from a handler was swallowed, so a script could not affect an archive; nothing in the format or the CLI depended on it. The `luaLevel`/`luaEvent` call sites remain as no-ops — the stubs the `FREEARC_NO_LUA` build always used.
 - **`Installer/`** — NSIS installer scripts and packaging assets (Windows).

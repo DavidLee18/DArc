@@ -42,36 +42,11 @@ cc "$W/rs" -DUSE_RUST "$LIB" || exit 1
 # huffman tree rebuilds often), incompressible noise (literal-heavy), tables of
 # fixed-width numbers (the data-table diffing path), and sizes around the
 # buffer and flag-word boundaries.
-python3 - "$W/in" <<'PY'
-import os,sys,struct
-d=sys.argv[1]; os.makedirs(d,exist_ok=True)
-def prng(seed,n):
-    s=seed; o=bytearray()
-    for _ in range(n): s=(s*1103515245+12345)&0xffffffff; o.append((s>>16)&0xff)
-    return bytes(o)
-w=lambda n,b: open(f"{d}/{n}","wb").write(b)
-w("text",      b"the quick brown fox jumps over the lazy dog. "*20000)
-w("repeats",   (b"ABCDEFGHIJKLMNOP"*64 + prng(1,256))*400)
-w("noise",     prng(7, 900000))
-w("zeros",     b"\x00"*700000)
-w("mixed",     b"".join((prng(i,1000) + b"pattern"*200) for i in range(300)))
-# Tables of 4- and 2-byte little-endian counters: what the data-table
-# detector is built to find.
-w("table4",    b"".join(struct.pack("<I", i*7+3) for i in range(200000)))
-w("table2",    b"".join(struct.pack("<H", (i*11)&0xffff) for i in range(400000)))
-w("table_mixed", b"".join(struct.pack("<I", i) for i in range(50000))
-               + prng(3,200000)
-               + b"".join(struct.pack("<H", i&0xffff) for i in range(100000)))
-# Larger than HUGE_BUFFER_SIZE (8 MB), so the output window actually wraps and
-# flushes mid-stream. Everything below that size sees exactly one flush, at the
-# very end, which leaves the window-wrap path, the cross-chunk data-table
-# bookkeeping and any match reaching back further than `output` has advanced
-# entirely unexercised. A corpus without this passed while the port still had a
-# panic in it.
-w("big_table",  b"".join(struct.pack("<I", i*7+3) for i in range(2600000)))
-for n in (0,1,15,16,17,63,64,65,4095,4096,65535,65536,65537):
-    w(f"n_{n}", (b"the quick brown fox "*10000)[:n])
-PY
+( cd "$ROOT/rust" && cargo build --release -q -p darc-codecs --bin corpusgen ) || exit 1
+
+# Corpus from corpusgen -- a literal transcription of the python3 heredoc
+# that stood here, accepted on a byte comparison over every file it writes.
+"$ROOT/rust/target/release/corpusgen" tornado "$W/in"
 
 total=0
 for preset in 1 2 3 4 5 7 9 11; do

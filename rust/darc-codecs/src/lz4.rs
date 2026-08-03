@@ -61,6 +61,159 @@ pub fn decompress_block(src: &[u8], out: &mut [u8]) -> Result<usize, c_int> {
     lz4_flex::block::decompress_into(src, out).map_err(|_| crate::ffi::FREEARC_ERRCODE_BAD_COMPRESSED_DATA as c_int)
 }
 
+
+// ---------------------------------------------------------------------------
+// The stream framing
+// ---------------------------------------------------------------------------
+//
+// This is DArc's own framing, not LZ4's, and it lived in `C_LZ4.cpp` for as
+// long as the archiver was Haskell -- the C driver owned the loop and Rust
+// owned only the block primitives above. `darc-arc` has no C to call, so the
+// loop has to exist here for `-mlz4` archives to be written or read at all.
+//
+// The layout is one version byte, then per block an `int32` length whose SIGN
+// says whether the payload is compressed:
+//
+//     [01] ([+n][n compressed bytes] | [-n][n stored bytes])*
+//
+// ## What is NOT guaranteed
+//
+// Byte-identity with the C. LZ4 is a match finder and `lz4_flex` legitimately
+// picks different matches, as the module header above already says. The
+// framing here is exact, so archives cross-decode in both directions -- that
+// is the property to test, and byte-comparing an `-mlz4` archive against the
+// reference is not.
+
+use crate::ffi::{Io, FREEARC_ERRCODE_BAD_COMPRESSED_DATA, FREEARC_ERRCODE_IO};
+
+/// `LZ4_VERSION_BYTE` (`C_LZ4.cpp:8`).
+const VERSION_BYTE: u8 = 1;
+
+/// `LZ4_compressBound` (`C_LZ4.cpp:28`) — `n + n/255 + 16`.
+///
+/// Deliberately the C's formula and not `lz4_flex`'s ~110% one; see
+/// `compress_block` above for what happens when the two are confused.
+fn c_compress_bound(n: usize) -> usize {
+    n + n / 255 + 16
+}
+
+/// `LZ4_METHOD::compress` (`C_LZ4.cpp:75`).
+pub fn compress_stream(
+    io: &Io,
+    compressor: c_int,
+    block_size: u32,
+    min_compression: c_int,
+) -> c_int {
+    let block_size = block_size.max(1) as usize;
+    let dst_cap = c_compress_bound(block_size);
+    let mut inbuf = vec![0u8; block_size];
+    let mut out = vec![0u8; dst_cap];
+    let mut first = true;
+    loop {
+        // READ_LEN_OR_EOF: one read, and anything <= 0 ends the stream.
+        let got = io.read(&mut inbuf);
+        if got <= 0 {
+            return match got {
+                0 => crate::ffi::OK,
+                e => e,
+            };
+        }
+        let in_size = got as usize;
+        if first {
+            match io.write_all(&[VERSION_BYTE]) {
+                Ok(()) => {}
+                Err(e) => return e,
+            }
+            first = false;
+        }
+        let produced = match compressor {
+            0 => compress_block(&inbuf[..in_size], &mut out).unwrap_or(0),
+            level => crate::lz4hc::compress_hc(&inbuf[..in_size], &mut out, level),
+        };
+        // `OutSize<=0 || (MinCompression>0 && OutSize >= (double(InSize)*MinCompression)/100)`
+        // -- the ratio test is done in floating point, so it is done that way
+        // here too rather than as integer arithmetic that rounds differently.
+        let too_big = min_compression > 0
+            && produced as f64 >= (in_size as f64 * f64::from(min_compression)) / 100.0;
+        let stored = produced == 0 || too_big;
+        let (len, payload): (i32, &[u8]) = match stored {
+            true => (-(in_size as i32), &inbuf[..in_size]),
+            false => (produced as i32, &out[..produced]),
+        };
+        match io
+            .write_all(&len.to_le_bytes())
+            .and_then(|()| io.write_all(payload))
+        {
+            Ok(()) => {}
+            Err(e) => return e,
+        }
+    }
+}
+
+/// `LZ4_METHOD::decompress` (`C_LZ4.cpp:44`).
+pub fn decompress_stream(io: &Io, block_size: u32) -> c_int {
+    let block_size = block_size.max(1) as usize;
+    // Sized to the COMPRESSED bound, not to block_size. A block is only stored
+    // compressed when it got smaller, so block_size is enough for every archive
+    // the encoder above can write -- but `-mlz4:0%` disables that test, and the
+    // C then reads such a block into a BlockSize buffer and overruns it. Taking
+    // the larger bound cannot reject anything valid and removes the overrun.
+    let mut inbuf = vec![0u8; c_compress_bound(block_size)];
+    let mut out = vec![0u8; block_size];
+
+    let mut version = [0u8; 1];
+    let got = io.read(&mut version);
+    if got <= 0 {
+        // READ_LEN_OR_EOF: an empty stream is an empty file, not an error.
+        return match got {
+            0 => crate::ffi::OK,
+            e => e,
+        };
+    }
+    if version[0] != VERSION_BYTE {
+        return FREEARC_ERRCODE_BAD_COMPRESSED_DATA as c_int;
+    }
+    loop {
+        let mut header = [0u8; 4];
+        let got = io.read(&mut header);
+        if got <= 0 {
+            return match got {
+                0 => crate::ffi::OK,
+                e => e,
+            };
+        }
+        if got != 4 {
+            return FREEARC_ERRCODE_IO as c_int;
+        }
+        let len = i32::from_le_bytes(header);
+        let (want, stored) = match len < 0 {
+            true => (len.unsigned_abs() as usize, true),
+            false => (len as usize, false),
+        };
+        if want > inbuf.len() {
+            return FREEARC_ERRCODE_BAD_COMPRESSED_DATA as c_int;
+        }
+        // READ: a single call that must satisfy the whole request.
+        let got = io.read(&mut inbuf[..want]);
+        if got < 0 {
+            return got;
+        }
+        if got as usize != want {
+            return FREEARC_ERRCODE_IO as c_int;
+        }
+        let result = match stored {
+            true => io.write_all(&inbuf[..want]),
+            false => match decompress_block(&inbuf[..want], &mut out) {
+                Ok(n) => io.write_all(&out[..n]),
+                Err(e) => return e,
+            },
+        };
+        match result {
+            Ok(()) => {}
+            Err(e) => return e,
+        }
+    }
+}
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -105,7 +258,7 @@ mod tests {
         for seed in 0..64u32 {
             let junk: Vec<u8> = (0..200u32).map(|i| (i.wrapping_mul(seed).wrapping_add(11) % 256) as u8).collect();
             let mut out = vec![0u8; 4096];
-            let _ = decompress_block(&junk, &mut out);
+            drop(decompress_block(&junk, &mut out));
         }
     }
 }

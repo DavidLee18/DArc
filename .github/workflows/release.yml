@@ -5,9 +5,10 @@ name: Release
 # should stay fast, while this only runs when a version is cut.
 #
 # The install steps below are copied from build.yml rather than shared, and the
-# MicroHs pin (commit + sha256) must be kept identical to it. A release built
-# against a different compiler revision than CI validates would be a silent
-# difference between what is tested and what is shipped.
+# toolchain pin must be kept identical to it. A release built against a
+# different compiler revision than CI validates would be a silent difference
+# between what is tested and what is shipped. That pin is rust-toolchain.toml
+# now; the MicroHs one went with the Haskell layer.
 #
 # The two Windows targets use different toolchains -- Debian's mingw-w64 (GCC)
 # for amd64, llvm-mingw (Clang) for arm64, because Debian packages x86_64 and
@@ -31,10 +32,6 @@ permissions:
 concurrency:
   group: release-${{ github.event.inputs.tag || github.ref }}
   cancel-in-progress: false
-
-env:
-  MICROHS_SHA: "05a3fbd5d73ae6a37111a6ced5b57bb1717b8975"
-  MICROHS_SHA256: "a1f85821cbae877d0ea3e173235d45c833d9145b2ca9e92e77d284b6730c63b6"
 
 jobs:
   # ── Native builds: Linux amd64/arm64 and macOS arm64 ─────────────────────────
@@ -67,7 +64,7 @@ jobs:
       if: runner.os == 'Linux'
       run: |
         sudo apt-get update
-        sudo apt-get install -y liblua5.1-dev libncurses-dev libcurl4-openssl-dev cpphs
+        sudo apt-get install -y libncurses-dev
 
     - name: Install packages (macOS)
       if: runner.os == 'macOS'
@@ -89,56 +86,20 @@ jobs:
         key: cargo-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust-toolchain.toml', 'rust/Cargo.lock') }}
         restore-keys: |
           cargo-${{ runner.os }}-${{ runner.arch }}-
-    # MicroHs is built from source in every job; `make minstall` dominates the
-    # short jobs. Keyed on the pinned commit, so a pin bump invalidates it.
-    - name: Cache MicroHs
-      id: cache-mhs
-      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
-      with:
-        path: ~/.mcabal
-        key: mcabal-${{ runner.os }}-${{ runner.arch }}-05a3fbd5d73ae6a37111a6ced5b57bb1717b8975
-    # `make minstall` dominates the short jobs. Keyed on the pinned
-    # MicroHs commit, so bumping the pin invalidates it.
-    - name: Cache MicroHs
-      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
-      with:
-        path: |
-          ~/.mcabal
-          ~/.local/bin
-        key: mcabal-${{ runner.os }}-${{ runner.arch }}-05a3fbd5d73ae6a37111a6ced5b57bb1717b8975
-    - name: Install MicroHs
-      run: |
-        if [ ! -x "$HOME/.mcabal/bin/mhs" ]; then
-          set -euo pipefail
-          curl -fsSL "https://github.com/augustss/MicroHs/archive/$MICROHS_SHA.tar.gz" -o /tmp/microhs.tar.gz
-          if command -v sha256sum >/dev/null; then
-            echo "$MICROHS_SHA256  /tmp/microhs.tar.gz" | sha256sum -c -
-          else
-            echo "$MICROHS_SHA256  /tmp/microhs.tar.gz" | shasum -a 256 -c -
-          fi
-          tar -xzf /tmp/microhs.tar.gz -C /tmp
-          cd "/tmp/MicroHs-$MICROHS_SHA"
-          make minstall
-        fi
-        echo "$HOME/.mcabal/bin" >> "$GITHUB_PATH"
-
     - name: Build
       run: |
-        chmod +x compile*
-        ./compile-O2
+        cargo build --release --manifest-path rust/Cargo.toml -p darc-arc --bin darc
 
     - name: Verify binary
       run: |
-        test -s Tests/arc || { echo "::error::build produced no Tests/arc"; exit 1; }
-        chmod +x Tests/arc
-        ./Tests/arc | head -1
+        test -s rust/target/release/darc || { echo "::error::build produced no darc"; exit 1; }
+        ./rust/target/release/darc | head -1
 
     # Round-tripping here rather than trusting Build CI: this is the artifact
     # users actually receive, and it is built by a different workflow.
     - name: Round-trip the release binary
       run: |
-        cd Tests
-        ./run-tests.sh ./arc
+        Tests/run-tests.sh rust/target/release/darc
 
     - name: Package
       run: |
@@ -153,7 +114,7 @@ jobs:
         ver="${ver#v}"
         stage="darc-$ver-${{ matrix.label }}"
         mkdir -p "dist/$stage"
-        cp Tests/arc "dist/$stage/arc"
+        cp rust/target/release/darc "dist/$stage/darc"
         # arc.groups is the solid-ordering config the binary reads; shipping the
         # binary without it changes how archives are grouped.
         cp Tests/arc.groups "dist/$stage/arc.groups"
@@ -184,10 +145,12 @@ jobs:
         include:
           - arch: x86_64
             label: windows-amd64
-            exe: arc-mhs-win64.exe
+            exe: darc-win64.exe
+            rust-target: x86_64-pc-windows-gnu
           - arch: aarch64
             label: windows-arm64
-            exe: arc-mhs-win-arm64.exe
+            exe: darc-win-arm64.exe
+            rust-target: aarch64-pc-windows-gnullvm
     steps:
     - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
       with:
@@ -198,15 +161,14 @@ jobs:
       if: matrix.arch == 'x86_64'
       run: |
         sudo apt-get update
-        sudo apt-get install -y --no-install-recommends mingw-w64 mingw-w64-tools cpphs wine64 wine
+        sudo apt-get install -y --no-install-recommends mingw-w64 mingw-w64-tools wine64 wine
 
     - name: Install llvm-mingw
       if: matrix.arch == 'aarch64'
       run: |
         set -euo pipefail
         sudo apt-get update
-        sudo apt-get install -y --no-install-recommends cpphs
-        # Pinned with a checksum for the same reason MicroHs is: the compiler is
+        # Pinned with a checksum for the same reason the Rust toolchain is: the compiler is
         # part of what produces the shipped binary.
         ver="20260616"
         tarball="llvm-mingw-$ver-ucrt-ubuntu-22.04-x86_64.tar.xz"
@@ -232,47 +194,28 @@ jobs:
         key: cargo-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust-toolchain.toml', 'rust/Cargo.lock') }}
         restore-keys: |
           cargo-${{ runner.os }}-${{ runner.arch }}-
-    # MicroHs is built from source in every job; `make minstall` dominates the
-    # short jobs. Keyed on the pinned commit, so a pin bump invalidates it.
-    - name: Cache MicroHs
-      id: cache-mhs
-      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
-      with:
-        path: ~/.mcabal
-        key: mcabal-${{ runner.os }}-${{ runner.arch }}-05a3fbd5d73ae6a37111a6ced5b57bb1717b8975
-    # `make minstall` dominates the short jobs. Keyed on the pinned
-    # MicroHs commit, so bumping the pin invalidates it.
-    - name: Cache MicroHs
-      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
-      with:
-        path: |
-          ~/.mcabal
-          ~/.local/bin
-        key: mcabal-${{ runner.os }}-${{ runner.arch }}-05a3fbd5d73ae6a37111a6ced5b57bb1717b8975
-    - name: Install MicroHs
-      run: |
-        if [ ! -x "$HOME/.mcabal/bin/mhs" ]; then
-          set -euo pipefail
-          curl -fsSL "https://github.com/augustss/MicroHs/archive/$MICROHS_SHA.tar.gz" -o /tmp/microhs.tar.gz
-          echo "$MICROHS_SHA256  /tmp/microhs.tar.gz" | sha256sum -c -
-          tar -xzf /tmp/microhs.tar.gz -C /tmp
-          cd "/tmp/MicroHs-$MICROHS_SHA"
-          make minstall
-        fi
-        echo "$HOME/.mcabal/bin" >> "$GITHUB_PATH"
-
     - name: Build (Windows cross)
       run: |
-        chmod +x compile-win64-c compile-mhs-win64
-        DARC_WIN_ARCH=${{ matrix.arch }} ./compile-mhs-win64
+        cargo build --release --manifest-path rust/Cargo.toml \
+          --target ${{ matrix.rust-target }} -p darc-arc --bin darc
+        mkdir -p Tests
+        cp "rust/target/${{ matrix.rust-target }}/release/darc.exe" "Tests/${{ matrix.exe }}"
 
-    # compile-mhs-win64 checks the PE machine field against the requested
+    # compile-mhs-win64 used to check the PE machine field against the requested
     # architecture, so a build that silently fell back to the wrong toolchain
-    # fails there. Note the old `file ... | grep PE32+` check here could not
-    # have caught it: that string is identical for both targets.
+    # failed there. With that script gone the check lives here. Note the old
+    # `file ... | grep PE32+` form could not have caught it: that string is
+    # identical for both targets, which is why this matches the machine name.
     - name: Verify binary
       run: |
         test -s "Tests/${{ matrix.exe }}" || { echo "::error::no Tests/${{ matrix.exe }}"; exit 1; }
+        desc=$(file -b "Tests/${{ matrix.exe }}")
+        echo "$desc"
+        case "${{ matrix.arch }}:$desc" in
+          x86_64:*x86-64*|x86_64:*x86_64*)      ;;
+          aarch64:*Aarch64*|aarch64:*ARM64*|aarch64:*aarch64*) ;;
+          *) echo "::error::${{ matrix.arch }} build produced: $desc"; exit 1 ;;
+        esac
         echo "binary: $(wc -c < "Tests/${{ matrix.exe }}") bytes"
 
     # Only amd64 can be exercised on this runner. arm64 is exercised on real
@@ -296,7 +239,7 @@ jobs:
         ver="${ver#v}"
         stage="darc-$ver-${{ matrix.label }}"
         mkdir -p "dist/$stage"
-        cp "Tests/${{ matrix.exe }}" "dist/$stage/arc.exe"
+        cp "Tests/${{ matrix.exe }}" "dist/$stage/darc.exe"
         cp Tests/arc.groups "dist/$stage/arc.groups"
         cp README.md LICENSE "dist/$stage/" 2>/dev/null || true
         (cd dist && zip -r "$stage.zip" "$stage" >/dev/null)

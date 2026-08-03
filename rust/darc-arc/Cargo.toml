@@ -1,0 +1,54 @@
+[package]
+name = "darc-arc"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+# The archive format layer: the Rust port of ByteStream.hs, ArhiveStructure.hs
+# and ArhiveDirectory.hs.
+#
+# Ported against the GHC semantics, not the MicroHs build's. Under __MHS__ a
+# data block is one darc_compress_solid_block_w call that bypasses the Haskell
+# pipeline entirely (ArcvProcessCompress.hs:106), and the uncaught-exception
+# handler is compiled out (Arc.hs:75) -- so `Tests/arc` is a sound reference for
+# archive BYTES and a poor one for behaviour. `./compile-ghc-probe` builds the
+# reference this crate is gated against; see docs/testing.md.
+
+[lib]
+name = "darc_arc"
+crate-type = ["staticlib", "rlib"]
+
+[dependencies]
+# Solid blocks are independent by construction -- ArcvProcessRead.hs:104 splits
+# them with splitToSolidBlocks, a PURE function (ArhiveFileList.hs:291), so the
+# boundaries are fixed before any concurrency exists. Measured: the threaded GHC
+# build is byte-identical to itself across -N1/-N2/-N8 x -mt1/-mt8. That is what
+# licenses decoding blocks in parallel.
+rayon = "1.10"
+# The LZMA decoder, called directly rather than through the C ABI: DArc writes
+# no .lzma header, so the property bytes come only from the method string and
+# a buffer-to-buffer call is all this needs.
+darc-lzma = { path = "../darc-lzma" }
+# The ported codec engines, driven through the same read/write callback protocol
+# the C archiver drives them with -- see src/codec_io.rs. Reusing them is the
+# only version that has been differential-tested against the C.
+darc-codecs = { path = "../darc-codecs" }
+# The ported crypto. -p appends an encryption method to a block's chain, so the
+# archive layer needs the cipher table and the KDF, not just the C ABI exports.
+darc-crypto = { path = "../darc-crypto" }
+# `--original http://...` -- the second copy of the archive a damaged download
+# is repaired from. The reference does this with libcurl (URL.cpp), which makes
+# it a build-time system dependency and is why `-DFREEARC_NOURL` exists at all.
+#
+# ureq instead: pure Rust, blocking, and TLS through rustls with the CA roots
+# COMPILED IN (`rustls-webpki-roots`, no `platform-verifier`, no `native-tls`).
+# That is what makes it cross-compile -- the mingw and aarch64 targets get HTTPS
+# without an OpenSSL or a system trust store on the far side. MIT OR Apache-2.0,
+# so GPLv3-compatible; see THIRD-PARTY.md.
+ureq = { version = "3.3.0", default-features = false, features = ["rustls"], optional = true }
+
+[features]
+# On by default, and switchable off the way `-DFREEARC_NOURL` switches off the
+# C's URL support: without it `--original` takes local paths only.
+default = ["url"]
+url = ["dep:ureq"]

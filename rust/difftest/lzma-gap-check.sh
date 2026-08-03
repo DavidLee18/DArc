@@ -78,53 +78,11 @@ RS="$ROOT/rust/target/release/lzma_rs_ref"
 [ -x "$RS" ] || { echo "no darc-lzma driver at $RS" >&2; exit 1; }
 
 # ---- corpus ------------------------------------------------------------------
-python3 - "$W/in" <<'PY'
-import os, sys
-d = sys.argv[1]; os.makedirs(d, exist_ok=True)
-def prng(seed, n):
-    s = seed & 0xffffffff; o = bytearray()
-    for _ in range(n):
-        s = (s * 1103515245 + 12345) & 0xffffffff
-        o.append((s >> 16) & 0xff)
-    return bytes(o)
-w = lambda n, b: open(f"{d}/{n}", "wb").write(b)
-# Shapes chosen to hit different parse decisions: long matches, short matches,
-# incompressible data, and the boundaries where maxDist[] would bite.
-w("text",    b"the quick brown fox jumps over the lazy dog. " * 700)
-w("zeros",   bytes(40000))
-w("runs",    b"".join(bytes([i % 251]) * (1 + (i * 7) % 300) for i in range(300)))
-w("noise",   prng(9, 40000))
-w("mixed",   b"".join((b"chunk-%d-" % i) + prng(i, 200) for i in range(150)))
-w("nearby",  b"".join(prng(i % 5, 500) for i in range(60)))   # repeats at short distance
-w("distant", prng(1, 30000) + prng(2, 30000) + prng(1, 30000)) # repeat past 64 KB
-for n in (1, 2, 17, 4096):
-    w(f"n_{n}", prng(5, n))
+( cd "$ROOT/rust" && cargo build --release -q -p darc-codecs --bin corpusgen ) || exit 1
 
-# ---- inputs that force the sliding window ------------------------------------
-# Everything above is at most ~40 KB, which is smaller than the smallest dict
-# below: the window never slides for any of it, so it cannot tell a correct
-# window from a broken one. These are deliberately many times the dict size, and
-# are used only with the STREAM_CASES dictionaries.
-def prng4(seed, n):
-    # 4 bytes per step so multi-megabyte corpora stay cheap to generate.
-    s = seed & 0xffffffff; o = bytearray()
-    while len(o) < n:
-        s = (s * 1103515245 + 12345) & 0xffffffff
-        o += s.to_bytes(4, "little")
-    return bytes(o[:n])
-sd = f"{d}/stream"; os.makedirs(sd, exist_ok=True)
-ws = lambda n, b: open(f"{sd}/{n}", "wb").write(b)
-# Incompressible: worst case for the window, every position searched.
-ws("big_noise", prng4(11, 3_000_000))
-# Long-range repeats *beyond* the dictionary, so matches fall out of the window
-# as it slides -- the case where an off-by-one in MoveBlock changes the parse.
-blk = prng4(12, 250_000)
-ws("big_far_repeat", blk + prng4(13, 600_000) + blk + prng4(14, 600_000) + blk)
-# Highly compressible, so the parse takes long matches across slide boundaries.
-ws("big_text", b"the quick brown fox jumps over the lazy dog. " * 60_000)
-# Runs whose lengths straddle the fast-bytes cap.
-ws("big_runs", b"".join(bytes([i % 251]) * (1 + (i * 13) % 900) for i in range(6000)))
-PY
+# Corpus from corpusgen -- a literal transcription of the python3 heredoc
+# that stood here, accepted on a byte comparison over every file it writes.
+"$ROOT/rust/target/release/corpusgen" lzma-gap "$W/in"
 
 # ---- compare ------------------------------------------------------------------
 # dictSize lc lp pb fb mc mf algo
@@ -201,7 +159,7 @@ compare_one () { # $1..$8 = params, $9 = input file, ${10} = "stream" to count a
     # `sed -E`, not BRE: `\(a\|b\)` alternation is a GNU extension and matches
     # nothing under BSD sed, which is how this offset silently printed as "?".
     off=$(cmp "$W/oc" "$W/or" 2>/dev/null | sed -n -E 's/.*(char|byte) ([0-9]+).*/\2/p' | head -1)
-    pct=$(python3 -c "print(f'{100*int('${off:-0}')/max(int('$rs'),1):.1f}')" 2>/dev/null || echo "?")
+    pct=$(awk -v o="${off:-0}" -v r="$rs" 'BEGIN{printf "%.1f", 100*o/(r<1?1:r)}' 2>/dev/null || echo "?")
     [ "${#DIVERGE_DETAIL[@]}" -lt 8 ] && DIVERGE_DETAIL+=("  [$1 lc$2 lp$3 pb$4 fb$5 mc$6 mf$7 algo$8] $bn: first differs at byte ${off:-?} of $rs ($pct% in), C=$cs")
   fi
 }
@@ -246,7 +204,7 @@ for case in "${CASES[@]}"; do
       diverged=$((diverged+1))
       # BSD cmp says "differ: char N, line M"; GNU says "differ: byte N, line M".
       off=$(cmp "$W/oc" "$W/or" 2>/dev/null | sed -n -E 's/.*(char|byte) ([0-9]+).*/\2/p' | head -1)
-      pct=$(python3 -c "print(f'{100*int('${off:-0}')/max(int('$rs'),1):.1f}')" 2>/dev/null || echo "?")
+      pct=$(awk -v o="${off:-0}" -v r="$rs" 'BEGIN{printf "%.1f", 100*o/(r<1?1:r)}' 2>/dev/null || echo "?")
       [ "${#DIVERGE_DETAIL[@]}" -lt 8 ] && DIVERGE_DETAIL+=("  [$1 lc$2 lp$3 pb$4 fb$5 mc$6 mf$7 algo$8] $bn: first differs at byte ${off:-?} of $rs ($pct% in), C=$cs")
     fi
   done

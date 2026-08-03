@@ -77,25 +77,11 @@ cc() { local out="$1"; shift
 cc "$W/rs" || { echo "debug driver build failed" >&2; exit 1; }
 [ -x "$W/rs" ] || { echo "driver missing after a clean build" >&2; exit 1; }
 
-python3 - "$W/in" <<'PY'
-import os,sys
-d=sys.argv[1]; os.makedirs(d,exist_ok=True)
-def prng(seed,n):
-    s=seed; o=bytearray()
-    for _ in range(n): s=(s*1103515245+12345)&0xffffffff; o.append((s>>16)&0xff)
-    return bytes(o)
-w=lambda n,b: open(f"{d}/{n}","wb").write(b)
-# Deliberately small -- a debug build is slow and this is looking for a fired
-# assertion, not for coverage of every byte pattern. `chunky` is the shape that
-# exposed the Hash3 dispatch bug, so it stays first.
-w("chunky",  b"".join((b"chunk-%d-" % i) + prng(i, 300) for i in range(400)))
-w("text",    b"the quick brown fox jumps over the lazy dog. "*1500)
-w("runs",    b"".join(bytes([i%97])*(1+(i*7)%400) for i in range(600)))
-w("noise",   prng(9, 80000))
-w("tables",  b"".join(int.to_bytes(i*7+3, 4, "little") for i in range(20000)))
-for n in (0,1,255,256,65537):
-    w(f"n_{n}", prng(5,n))
-PY
+( cd "$ROOT/rust" && cargo build --release -q -p darc-codecs --bin corpusgen ) || exit 1
+
+# Corpus from corpusgen -- a literal transcription of the python3 heredoc
+# that stood here, accepted on a byte comparison over every file it writes.
+"$ROOT/rust/target/release/corpusgen" debug-assert "$W/in"
 
 # Every preset, both `all_at_once` settings, both directions. `notables` is
 # swept on the presets whose data-table detector is reachable, matching

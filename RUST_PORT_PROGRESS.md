@@ -66,6 +66,16 @@ true today -- see the GRZip row.
 | zstd | `zstd` (`zstd-safe` binding) | yes | **YES — 2.2 MB deleted** |
 | Encryption | `darc-crypto` | yes | no |
 
+The encryption **method string** gained a parameter in the process: `:h1`, saying
+the key and IV are real hexadecimal. `decode16` used to decode them through
+`char2int` (`Common.h`), which is missing its `+10` -- `'a'` became 0 and `'f'`
+became 5, folding 16 hex values onto 10 and costing about 0.75 bits per nibble.
+Archives without the parameter are still read the old way. What made this
+expensive to find: the salt and check code are decoded in Haskell and were
+always real hex, so a correct decoder **verifies every password** and then fails
+every CRC. It was caught by recovering the keystream from an archive of 64 known
+bytes; no cipher, mode or key length reproduced it under real hex.
+
 **Not ported at all:** 4x4 (700), LZMA (25,385 — stays on the 7-Zip SDK), and
 the Haskell layer (17,843).
 

@@ -21,9 +21,36 @@
 # So this sweeps s across every residue for each geometry, and pins sizes just
 # above the 1 MB first-block cut. Run from Tests/ with ./arc already built.
 set -e
-cd "$(dirname "$0")"
-ARC=./arc
-[ -x "$ARC" ] || { echo "no ./arc -- build first"; exit 1; }
+HERE="$(cd "$(dirname "$0")" && pwd)"
+# Takes the binary as $1 now. It used to be `./arc` beside this script, which
+# stopped existing when the Haskell layer was deleted.
+ARC="${1:-$HERE/../rust/target/release/darc}"
+case "$ARC" in /*) ;; *) ARC="$PWD/$ARC" ;; esac
+cd "$HERE"
+[ -x "$ARC" ] || { echo "no archiver at $ARC -- build first"; exit 1; }
+
+# The corpora are binary, so they come from corpusgen rather than awk -- awk's
+# printf "%c" is not byte-safe above 127. This replaced ~20 lines of embedded
+# python3; the generator is a literal transcription of it, accepted on `cmp`.
+GEN="$HERE/../rust/target/release/corpusgen"
+[ -x "$GEN" ] || {
+  echo "no corpusgen at $GEN -- cargo build --release -p darc-codecs --bin corpusgen"
+  exit 1
+}
+
+# A build that cannot WRITE -mmm has nothing here to test. darc-arc can since
+# the mm method was added; the guard stays because it costs one archive and
+# names the next such gap instead of failing obscurely.
+PROBE=/tmp/mm-probe.$$
+mkdir -p "$PROBE/in" && head -c 4096 /dev/zero | tr '\0' 'M' > "$PROBE/in/probe.bin"
+if ! "$ARC" a -y -mmm "$PROBE/t.arc" "$PROBE/in" >"$PROBE/log" 2>&1; then
+  if grep -q 'cannot write yet' "$PROBE/log"; then
+    rm -rf "$PROBE"
+    echo "SKIP: $ARC cannot write -mmm; the MM encoder is gated by rust/difftest/mm-check.sh"
+    exit 0
+  fi
+fi
+rm -rf "$PROBE"
 
 WORK=/tmp/mm-reorder-check.$$
 mkdir -p "$WORK"
@@ -44,17 +71,10 @@ for cfg in "1 8" "1 16" "2 8" "2 16" "2 32" "3 24" "4 16" "6 8" "5 16"; do
     # final block = two whole samples plus an s-byte partial one
     n=$(( BUFSIZE + X * 2 + s ))
     f="$WORK/in.raw"
-    python3 -c "
-import sys, math
-n = $n
-b = bytearray()
-for i in range(n):
-    b.append((int(30000*math.sin(i/50.0)) >> (8*(i%2))) & 0xff)
-sys.stdout.buffer.write(bytes(b))
-" > "$f"
+    "$GEN" sine "$n" > "$f"
     a="$WORK/t.arc"
     rm -f "$a"
-    ( cd "$WORK" && "$OLDPWD/$ARC" a -m"mm:c$ch:w$ws:o0:r1" -mc- t.arc in.raw ) >/dev/null 2>&1
+    ( cd "$WORK" && "$ARC" a -m"mm:c$ch:w$ws:o0:r1" -mc- t.arc in.raw ) >/dev/null 2>&1
     total=$(( total + 1 ))
     if "$ARC" t "$a" 2>&1 | grep -q "All OK"; then
       :
@@ -74,20 +94,13 @@ done
 # is real rather than forced.
 for kind in text random; do
   f="$WORK/nomm.raw"
-  python3 -c "
-import sys
-if '$kind' == 'text':
-    sys.stdout.buffer.write(b'the quick brown fox jumps over the lazy dog. ' * 30000)
-else:
-    s = 12345; o = bytearray()
-    for _ in range(1350000):
-        s = (s * 1103515245 + 12345) & 0xffffffff
-        o.append((s >> 16) & 0xff)
-    sys.stdout.buffer.write(bytes(o))
-" > "$f"
+  case "$kind" in
+    text) "$GEN" repeat "the quick brown fox jumps over the lazy dog. " 30000 > "$f" ;;
+    *)    "$GEN" prng 12345 1350000 > "$f" ;;
+  esac
   a="$WORK/t.arc"
   rm -f "$a"
-  ( cd "$WORK" && "$OLDPWD/$ARC" a -m"mm:r1" -mc- t.arc nomm.raw ) >/dev/null 2>&1
+  ( cd "$WORK" && "$ARC" a -m"mm:r1" -mc- t.arc nomm.raw ) >/dev/null 2>&1
   total=$(( total + 1 ))
   if "$ARC" t "$a" 2>&1 | grep -q "All OK"; then
     :

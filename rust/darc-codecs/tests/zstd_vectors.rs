@@ -91,12 +91,12 @@ fn rejects_corrupt_frames_without_panicking() {
     let frame = unhex(VECTORS[0].2);
     let len = VECTORS[0].1;
     for cut in [0usize, 1, 4, 8, frame.len() / 3, frame.len() / 2, frame.len() - 1] {
-        let _ = zstd::decompress(&frame[..cut.min(frame.len())], len);
+        drop(zstd::decompress(&frame[..cut.min(frame.len())], len));
     }
     for i in (0..frame.len()).step_by(11) {
         let mut bad = frame.clone();
         bad[i] ^= 0xff;
-        let _ = zstd::decompress(&bad, len);
+        drop(zstd::decompress(&bad, len));
     }
 }
 

@@ -1515,7 +1515,7 @@ impl MatchFinder for CycledCachingMatchFinder {
     fn clear_hash(&mut self, _buf: &[u8]) {
         self.b.table.fill(0);
         self.head.fill(0);
-        let _ = self.head_size;
+        drop(self.head_size);
     }
 
     fn shift(&mut self, shift: usize) {

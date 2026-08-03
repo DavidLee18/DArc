@@ -33,36 +33,6 @@ int systemRandomData (char *rand_buf, int rand_size);
 long darc_urandom_read (void *buf, long size);
 void BuildPathTo (CFILENAME name);                         // Create the directories on the path to name
 
-// GuiEnvironment.cpp
-int BrowseForFolder(TCHAR *prompt, TCHAR *in_filename, TCHAR *out_filename);                      // Let the user choose a directory
-int BrowseForFile(TCHAR *prompt, TCHAR *filters, TCHAR *in_filename, TCHAR *out_filename);        // Let the user choose a file
-void GuiFormatDateTime (time_t t, char *buf, int bufsize, char *date_format, char *time_format);  // Convert a file's time/date into a string according to the locale settings or the given time and date formats
-
-// MHS C-side compression/decompression pipeline
-void darc_pipeline_init(long initial_cap);
-void darc_pipeline_append(const void *data, long len);
-void darc_pipeline_get_buf_w(void **out_buf, long *out_size);
-void darc_pipeline_free(void);
-void darc_pipeline_compress_step_w(const char *method, long *out_result);
-void darc_pipeline_decompress_step_w(const char *method, long orig_size_hint, long *out_result);
-// Full solid-block C hot path
-void darc_compress_solid_block_w(
-    const char **input_files, int num_files, void *archive_bfile,
-    const char **methods, int num_methods,
-    long *out_compressed_size, unsigned int *out_crcs,
-    long *out_orig_size, unsigned int *out_block_crc,
-    int *out_result, int *out_failed_file_idx);
-void darc_extract_solid_block_w(
-    void *archive_bfile, long block_comp_size,
-    const char **methods, int num_methods,
-    const char **output_files, const long *file_offsets, const long *file_sizes,
-    int num_files, unsigned int *out_crcs, int *out_result);
-
-#ifdef __MHS__
-// MicroHs callback trampoline: returns address of darc_haskell_callback for use as FunPtr CALLBACK_FUNC.
-void *darc_get_haskell_callback_ptr(void);
-#endif
-
 // FreeArc 0.67 --shutdown / -ioff: power off the machine after archive op.
 void PowerOffComputer(void);
 
@@ -98,15 +68,11 @@ void darc_fill_tm (int *out, int sec, int min_, int hour, int mday, int mon, int
 int darc_get_nprocs (void);
 void darc_gmtime (long secs, int *out);
 void darc_install_sigint (void);
-int darc_join_volumes (const char *dst_prefix, const char *dst_path);
 void darc_localtime (long secs, int *out);
 long darc_mktime_tz (int year, int mon, int mday, int hour, int min, int sec, int gmtoff_min);
 void darc_mktime_tz_w (int year, int mon, int mday, int hour, int min, int sec, int gmtoff_min, long *out);
-int darc_queue_acquire (const char *path);
-void darc_queue_release (int fd);
 int darc_realpath (const char *path, char *out);
 int darc_sizeof_stat (void);
-int darc_split_file (const char *src_path, const char *dst_prefix, const char *volume_size_str);
 unsigned int darc_st_mode (struct stat *p);
 long darc_st_mtime (struct stat *p);
 void darc_st_mtime_w (struct stat *p, long *out);
@@ -117,12 +83,6 @@ long darc_time (void);
 void darc_time_w (long *out);
 void darc_urandom_read_w (void *buf, long size, long *out);
 int darc_utimes (const char *path, long atime, long mtime);
-void darc_volfile_close (int slot);
-int darc_volfile_open (const char *prefix);
-void darc_volfile_pos_out (int slot, long long *out);
-int darc_volfile_read (int slot, void *buf, int n);
-void darc_volfile_seek (int slot, long long pos);
-void darc_volfile_size_out (int slot, long long *out);
 
 
 #ifdef  __cplusplus

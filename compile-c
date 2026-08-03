@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+# Build the C side: the codec objects and everything Unarc links.
+#
+# This is what is left of ./compile after the Haskell layer was deleted. The
+# archiver itself is now `cargo build --release -p darc-arc --bin darc`, and
+# nothing here produces it.
+#
+# The reason this script still has to exist is `common.mak`. It is GENERATED,
+# not committed -- every makefile under Compression/ and Unarc/makefile begin
+# with `include common.mak`, and until something copies the platform variant
+# into place, `make` in a clean tree fails with no useful message.
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "$0")" && pwd)"
+cd "$ROOT"
+
+case "$(uname -s)" in
+  MINGW*|MSYS*|CYGWIN*) src=win32-common.mak ;;
+  *)                    src=unix-common.mak  ;;
+esac
+cp "$src" common.mak
+echo "== common.mak <- $src"
+
+# The staticlibs Unarc links, with the drop-in aliases: most C codecs are now
+# thin forwarders into rust/darc-codecs, so the extractor and the archiver get
+# their decoders from the same library. Unarc/makefile has its own `rustlib`
+# target that does this too -- it is repeated here so `./compile-c && make -C
+# Unarc linux` works from a clean tree in either order.
+echo "== Rust staticlibs"
+( cd rust && cargo build --release -p darc-codecs -p darc-crypto -p darc-sevenz \
+    --features darc-codecs/dropin )
+bash rust/check-dropin.sh rust/target/release/libdarc_codecs.a
+
+# Compiling every codec is the only check that the C still builds; nothing
+# links these objects any more, since Unarc compiles its own from the same
+# sources with -DFREEARC_DECOMPRESS_ONLY.
+echo "== codecs"
+export DARC_EXTRA_DEFINES="${DARC_EXTRA_DEFINES:--DDARC_RUST}"
+( cd Compression && chmod +x compile && ./compile )
+
+echo "C side built. The archiver is: cargo build --release -p darc-arc --bin darc"

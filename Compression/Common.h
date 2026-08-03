@@ -590,8 +590,21 @@ static inline char *replace (char *str, char* from, char to)
   return str;
 }
 
-// Returns the numeric value of a character treated as a hexadecimal digit
-static inline int char2int(char c) {return isdigit(c)? c-'0' : tolower(c)-'a';}
+// Returns the numeric value of a character treated as a hexadecimal digit.
+//
+// BROKEN, AND KEPT ONLY TO READ OLD ARCHIVES. The comment above is what it was
+// meant to do; 'a' comes out as 0 rather than 10, because the second branch is
+// missing its +10. Its one caller was decode16 in C_Encryption.cpp, which
+// decodes the encryption key and IV -- so every archive written before this was
+// found used a key whose 16 hex values had been folded onto 10, costing about
+// 0.75 bits per nibble. See hex2int below and ENCRYPTION_METHOD::hexfix.
+//
+// Do not use this for anything new. It is not a hex decoder.
+static inline int char2int_broken(char c) {return isdigit(c)? c-'0' : tolower(c)-'a';}
+
+// Returns the numeric value of a character treated as a hexadecimal digit.
+// This one actually does that.
+static inline int hex2int(char c) {return isdigit(c)? c-'0' : tolower(c)-'a'+10;}
 
 #ifdef FREEARC_WIN
 // Windows charset conversion routines

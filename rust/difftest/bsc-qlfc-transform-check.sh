@@ -47,32 +47,11 @@ cc "$W/rs" -DUSE_RUST "$LIB" || exit 1
 # alphabet, blocks ending in 0 (the one special case in the table setup), a
 # ranks-only-just-fit alphabet of 255 symbols, and BWT-like output, which is
 # what it actually sees in a real archive.
-python3 - "$W/in" <<'PY'
-import os,sys
-d=sys.argv[1]; os.makedirs(d,exist_ok=True)
-def prng(seed,n):
-    s=seed; o=bytearray()
-    for _ in range(n): s=(s*1103515245+12345)&0xffffffff; o.append((s>>16)&0xff)
-    return bytes(o)
-w=lambda n,b: open(f"{d}/{n}","wb").write(b)
+( cd "$ROOT/rust" && cargo build --release -q -p darc-codecs --bin corpusgen ) || exit 1
 
-w("text",     b"the quick brown fox jumps over the lazy dog. "*3000)
-w("runs",     b"".join(bytes([i%251])*200 for i in range(500)))
-w("noise",    prng(7, 200000))
-w("zeros",    b"\x00"*100000)
-w("one_byte", b"Q"*50000)
-# The `input[n-1] == 0` special case, which reorders the table before the walk.
-w("ends_zero", prng(3, 60000)[:-1] + b"\x00")
-w("all_zero_runs", b"".join(b"\x00"*50 + bytes([i%255+1])*7 for i in range(2000)))
-# Every byte value present, and 255 of them (one short of the alphabet), since
-# the preamble's terminating repeat depends on an unused entry existing.
-w("full_alphabet", bytes(range(256))*400)
-w("alphabet_255",  bytes((i%255)+1 for i in range(120000)))
-# Sorted-ish data, which is the shape a block sorter actually hands over.
-w("bwt_like", bytes(sorted(prng(11, 150000))))
-for n in (1,2,3,4,17,255,256,257,65536):
-    w(f"n_{n}", (b"abracadabra"*10000)[:n])
-PY
+# Corpus from corpusgen -- a literal transcription of the python3 heredoc
+# that stood here, accepted on a byte comparison over every file it writes.
+"$ROOT/rust/target/release/corpusgen" bsc-qlfc-transform "$W/in"
 
 fail=0; tested=0
 for f in "$W"/in/*; do

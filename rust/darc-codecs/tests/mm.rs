@@ -14,6 +14,7 @@
 //! forever, which is the one place this port deliberately refuses to be
 //! bug-compatible. nextest's per-test process isolation is what keeps a panic
 //! reported as one failing test rather than taking the whole run down.
+#![allow(dropping_copy_types, dropping_references, clippy::drop_non_drop)] // see darc-codecs/src/lib.rs
 
 use darc_codecs::ffi::Io;
 use darc_codecs::mm;
@@ -191,7 +192,7 @@ fn garbage_never_panics() {
             let mut input = prng(seed, len);
             input[0] = 1;
             let (rc, _) = decode(&input);
-            let _ = rc; // any status is fine; not panicking or hanging is the test
+            drop(rc); // any status is fine; not panicking or hanging is the test
         }
     }
 }
@@ -204,7 +205,7 @@ fn every_header_byte_combination_is_survivable() {
     for num_chan in [0u8, 1, 2, 3, 4, 5, 255] {
         for word_size in [0u8, 1, 7, 8, 9, 16, 17, 24, 32, 33, 64, 255] {
             let (rc, _) = decode(&stream(num_chan, word_size, &[], 0, &payload));
-            let _ = rc;
+            drop(rc);
         }
     }
 }

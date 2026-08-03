@@ -43,29 +43,11 @@ cc "$W/rs" -DUSE_RUST "$LIB" || exit 1
 # scan and the PSI follow depend on the bigram distribution): text, long runs, a
 # single byte, two bytes, flat noise, a full alphabet, sparse. Sizes span the
 # 64 KiB aux-index boundary so both the single-index and strided paths run.
-python3 - "$W/in" <<'PY'
-import os,sys
-d=sys.argv[1]; os.makedirs(d,exist_ok=True)
-def prng(seed,n):
-    s=seed; o=bytearray()
-    for _ in range(n): s=(s*1103515245+12345)&0xffffffff; o.append((s>>16)&0xff)
-    return bytes(o)
-w=lambda n,b: open(f"{d}/{n}","wb").write(b)
-w("text",     b"the quick brown fox jumps over the lazy dog. "*4000)   # >64K
-w("text_sm",  b"the quick brown fox jumps over the lazy dog. "*200)    # <64K
-w("runs",     b"".join(bytes([i%97])*(1+(i*7)%200) for i in range(3000)))
-w("onebyte",  b"\x5a"*80000)
-w("onebyte_s",b"\x5a"*5000)
-w("twobyte",  b"\x00\xff"*45000)
-w("noise",    prng(9, 200000))
-w("noise_sm", prng(9, 4000))
-w("alphabet", bytes(i%256 for i in range(200000)))
-w("sparse",   b"".join((b"\x00"*300 + bytes([i%251])) for i in range(500)))
-w("skew",     bytes((0 if (i*2654435761>>28)&7 else (i%251)) for i in range(150000)))
-# straddle the boundary precisely
-for n in (2,3,16,255,256,257,4095,4096,65535,65536,65537,131072):
-    w(f"n_{n}", prng(3,n))
-PY
+( cd "$ROOT/rust" && cargo build --release -q -p darc-codecs --bin corpusgen ) || exit 1
+
+# Corpus from corpusgen -- a literal transcription of the python3 heredoc
+# that stood here, accepted on a byte comparison over every file it writes.
+"$ROOT/rust/target/release/corpusgen" bsc-bwt "$W/in"
 
 fail=0; n=0; enc=0
 for f in "$W"/in/*; do

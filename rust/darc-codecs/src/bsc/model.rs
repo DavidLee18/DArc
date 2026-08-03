@@ -243,12 +243,12 @@ mod tests {
     #[test]
     fn state_lookups_stay_inside_their_tables() {
         // Maximum legal indices per the C's packing.
-        let _ = model_rank_state(255, 15, 7);
+        drop(model_rank_state(255, 15, 7));
         // run: contextRank0 fills bits 10..12, so it is 3 bits wide here.
-        let _ = model_run_state(7, 15, 7, 7);
+        drop(model_run_state(7, 15, 7, 7));
         // The clamps must hold for out-of-range rank/history rather than
         // indexing past the table.
-        let _ = model_run_state(7, 15, 255, 255);
+        drop(model_run_state(7, 15, 255, 255));
         // And the table sizes themselves.
         assert_eq!(super::super::tables::MODEL_RANK_STATE_TABLE.len(), 32768);
         assert_eq!(super::super::tables::MODEL_RUN_STATE_TABLE.len(), 8192);
