@@ -260,6 +260,166 @@ fn bsc_st_encode(dir: &std::path::Path) {
     }
 }
 
+/// `bsc-lzp-encode-check.sh` — the LZP match finder.
+fn bsc_lzp_encode(dir: &std::path::Path) {
+    write(dir, "text", &repeat(FOX, 4000));
+    write(dir, "runs", &runs_fixed(600, 251, 300));
+    write(dir, "noise", &prng(7, 300000));
+    write(dir, "zeros", &vec![0u8; 200000]);
+    // Near-repeats: a long block repeated with one byte changed each time, so a
+    // match starts, runs and dies. A corpus of exact repeats never reaches the
+    // `heuristic` short-circuit this is for.
+    let base = prng(11, 4096);
+    let mut near = Vec::new();
+    for i in 0..80usize {
+        let cut = i % 4000;
+        near.extend_from_slice(&base[..cut]);
+        near.push(((i * 7) & 0xff) as u8);
+        near.extend_from_slice(&base[cut..]);
+    }
+    write(dir, "near", &near);
+    // Matches far longer than 254, so the length continuation bytes are emitted.
+    let mut longmatch_unit = vec![b'A'; 100000];
+    longmatch_unit.extend(prng(3, 64));
+    write(dir, "longmatch", &longmatch_unit.repeat(3));
+    // Literal flag bytes (0xF2) in otherwise compressible data: each is escaped.
+    write(
+        dir,
+        "flagbyte",
+        &(0..150000usize)
+            .map(|i| match i % 13 {
+                0 => 0xF2,
+                _ => ((i * 5) & 0xff) as u8,
+            })
+            .collect::<Vec<u8>>(),
+    );
+    write(dir, "flagtext", &repeat(b"lorem ipsum dolor \xf2 sit amet ", 6000));
+    for n in [0usize, 1, 32, 33, 64, 4096, 65536, 65537] {
+        write(dir, &format!("n_{n}"), &truncated_repeat(b"abcdefgh", 20000, n));
+    }
+}
+
+/// `bsc-qlfc-encode-check.sh`, main corpus.
+fn bsc_qlfc_encode(dir: &std::path::Path) {
+    write(dir, "text", &repeat(FOX, 2000));
+    write(dir, "runs", &runs_fixed(400, 251, 200));
+    write(dir, "longruns", &runs_fixed(60, 7, 5000));
+    write(dir, "noise", &prng(7, 150000));
+    write(dir, "zeros", &vec![0u8; 80000]);
+    write(dir, "one_byte", &vec![b'Q'; 40000]);
+    write(dir, "sorted", &sorted_prng(11, 120000));
+    write(dir, "full_alpha", &alphabet_full(300));
+    let mut ends_zero = prng(3, 50000);
+    ends_zero.pop();
+    ends_zero.push(0);
+    write(dir, "ends_zero", &ends_zero);
+    for n in [256usize, 1024, 65536] {
+        write(dir, &format!("n_{n}"), &truncated_repeat(b"abracadabra", 10000, n));
+    }
+}
+
+/// The second, LARGE corpus of `bsc-qlfc-encode-check.sh`.
+///
+/// Sized to force 2 and 4 blocks: `bsc_coder_compress`'s splitter only runs
+/// above `2*2*65536` bytes, and without these every case takes the
+/// single-block shortcut and the splitter is never executed at all.
+fn bsc_qlfc_encode_big(dir: &std::path::Path) {
+    let mut two = repeat(b"the quick brown fox ", 20000);
+    two.extend(prng(5, 60000));
+    write(dir, "two", &two.repeat(2));
+    write(dir, "four", &sorted_prng(3, 1200000));
+}
+
+/// `bsc-qlfc-transform-check.sh`.
+fn bsc_qlfc_transform(dir: &std::path::Path) {
+    write(dir, "text", &repeat(FOX, 3000));
+    write(dir, "runs", &runs_fixed(500, 251, 200));
+    write(dir, "noise", &prng(7, 200000));
+    write(dir, "zeros", &vec![0u8; 100000]);
+    write(dir, "one_byte", &vec![b'Q'; 50000]);
+    let mut ends_zero = prng(3, 60000);
+    ends_zero.pop();
+    ends_zero.push(0);
+    write(dir, "ends_zero", &ends_zero);
+    // `b"".join(b"\x00"*50 + bytes([i%255+1])*7 for i in range(2000))`
+    let mut azr = Vec::new();
+    for i in 0..2000usize {
+        azr.extend(std::iter::repeat_n(0u8, 50));
+        azr.extend(std::iter::repeat_n(((i % 255) + 1) as u8, 7));
+    }
+    write(dir, "all_zero_runs", &azr);
+    write(dir, "full_alphabet", &alphabet_full(400));
+    // 255 distinct values, one short of the alphabet: the preamble's
+    // terminating repeat depends on an unused entry existing.
+    write(
+        dir,
+        "alphabet_255",
+        &(0..120000usize).map(|i| ((i % 255) + 1) as u8).collect::<Vec<u8>>(),
+    );
+    write(dir, "bwt_like", &sorted_prng(11, 150000));
+    for n in [1usize, 2, 3, 4, 17, 255, 256, 257, 65536] {
+        write(dir, &format!("n_{n}"), &truncated_repeat(b"abracadabra", 10000, n));
+    }
+}
+
+/// `4x4-check.sh`.
+fn fourx4(dir: &std::path::Path) {
+    // Big enough to span SEVERAL blocks at the sizes the harness sweeps:
+    // single-block input never exercises the framing this exists to test.
+    write(dir, "text", &repeat(FOX, 20000));
+    write(
+        dir,
+        "english",
+        &repeat(
+            b"compression algorithms rearrange data so that statistical \
+              redundancy can be removed by an entropy coder. ",
+            8000,
+        ),
+    );
+    // `b"".join((b"chunk-%d-" % i) + prng(i, 300) for i in range(2000))`
+    let mut mixed = Vec::new();
+    for i in 0..2000u32 {
+        mixed.extend_from_slice(format!("chunk-{i}-").as_bytes());
+        mixed.extend(prng(i, 300));
+    }
+    write(dir, "mixed", &mixed);
+    // `runs` with a 400 modulus rather than 200.
+    let mut r = Vec::new();
+    for i in 0..4000usize {
+        r.extend(std::iter::repeat_n((i % 97) as u8, 1 + (i * 7) % 400));
+    }
+    write(dir, "runs", &r);
+    write(dir, "noise", &prng(9, 900000));
+    write(dir, "zeros", &vec![0u8; 400000]);
+    let mut exe_unit = b"\x7fELF\x02\x01\x01".to_vec();
+    exe_unit.extend(prng(3, 120));
+    write(dir, "exe", &exe_unit.repeat(4000));
+    for n in [0usize, 1, 255, 256, 65537] {
+        write(dir, &format!("n_{n}"), &prng(5, n));
+    }
+}
+
+/// `rep-check.sh`.
+fn rep(dir: &std::path::Path) {
+    write(dir, "empty", b"");
+    write(dir, "tiny", b"hello");
+    write(dir, "nomatch", &prng(1, 20000));
+    let blk = prng(2, 2000);
+    let mut one_match = blk.clone();
+    one_match.extend(prng(3, 5000));
+    one_match.extend_from_slice(&blk);
+    one_match.extend_from_slice(&blk);
+    write(dir, "one_match", &one_match);
+    let mut many_unit = blk.clone();
+    many_unit.extend(prng(4, 600));
+    write(dir, "many", &many_unit.repeat(40));
+    write(dir, "zeros", &vec![0u8; 100000]);
+    write(dir, "text", &repeat(FOX, 2000));
+    for n in [511usize, 512, 513, 1023, 1024, 1025] {
+        write(dir, &format!("rep_{n}"), &prng(6, n).repeat(3));
+    }
+}
+
 /// `int(30000*math.sin(i/50.0)) >> (8*(i%2)) & 0xff` — a 16-bit sine, emitted
 /// little-endian one byte at a time, which is what `mm-reorder-check.sh` feeds
 /// MM's `:r1` transpose.
@@ -329,6 +489,12 @@ fn main() {
         "bsc-bwt-encode" => bsc_bwt_encode(&dir),
         "bsc-st" => bsc_st(&dir),
         "bsc-st-encode" => bsc_st_encode(&dir),
+        "bsc-lzp-encode" => bsc_lzp_encode(&dir),
+        "bsc-qlfc-encode" => bsc_qlfc_encode(&dir),
+        "bsc-qlfc-encode-big" => bsc_qlfc_encode_big(&dir),
+        "bsc-qlfc-transform" => bsc_qlfc_transform(&dir),
+        "4x4" => fourx4(&dir),
+        "rep" => rep(&dir),
         other => {
             eprintln!("corpusgen: unknown corpus {other:?}");
             std::process::exit(2);

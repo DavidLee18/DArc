@@ -51,33 +51,11 @@ cc "$W/rs" -DUSE_RUST "$LIB" || exit 1
 # match then diverge (the heuristic's reason to exist), matches longer than 254
 # (the length continuation), literal 0xF2 bytes (the escape), and data with no
 # repeats at all (every position a literal, and the whole block incompressible).
-python3 - "$W/in" <<'PY'
-import os,sys
-d=sys.argv[1]; os.makedirs(d,exist_ok=True)
-def prng(seed,n):
-    s=seed; o=bytearray()
-    for _ in range(n): s=(s*1103515245+12345)&0xffffffff; o.append((s>>16)&0xff)
-    return bytes(o)
-w=lambda n,b: open(f"{d}/{n}","wb").write(b)
+( cd "$ROOT/rust" && cargo build --release -q -p darc-codecs --bin corpusgen ) || exit 1
 
-w("text",     b"the quick brown fox jumps over the lazy dog. "*4000)
-w("runs",     b"".join(bytes([i%251])*300 for i in range(600)))
-w("noise",    prng(7, 300000))
-w("zeros",    b"\x00"*200000)
-# Near-repeats: a long block repeated with one byte changed each time, so a
-# match starts, runs, and dies. This is what the `heuristic` short-circuit is
-# for, and a corpus of exact repeats never reaches it.
-base = prng(11, 4096)
-w("near",     b"".join(base[:i%4000] + bytes([(i*7)&0xff]) + base[i%4000:] for i in range(80)))
-# Matches far longer than 254, so the length continuation bytes are emitted.
-w("longmatch", (b"A"*100000 + prng(3, 64)) * 3)
-# Literal flag bytes (0xF2) in otherwise compressible data: each must be escaped.
-w("flagbyte", bytes(0xF2 if i % 13 == 0 else (i*5) & 0xff for i in range(150000)))
-# Text with the flag byte sprinkled in, so escapes land INSIDE matches too.
-w("flagtext", (b"lorem ipsum dolor \xf2 sit amet "*6000))
-for n in (0,1,32,33,64,4096,65536,65537):
-    w(f"n_{n}", (b"abcdefgh"*20000)[:n])
-PY
+# Corpus from corpusgen -- a literal transcription of the python3 heredoc
+# that stood here, accepted on a byte comparison over every file it writes.
+"$ROOT/rust/target/release/corpusgen" bsc-lzp-encode "$W/in"
 
 fail=0; tested=0; ncmp=0; outstanding=0; outstanding_names=""
 
@@ -135,7 +113,8 @@ coded=0
 for hash in 15 23; do
   for f in "$W"/in/text "$W"/in/runs "$W"/in/longmatch; do
     "$W/c" "$hash" 72 < "$f" >| "$W/oc" 2>/dev/null || continue
-    rc=$(python3 -c "import sys;d=open(sys.argv[1],'rb').read()[:4];print(int.from_bytes(d,'little',signed=True))" "$W/oc")
+    # The 4-byte prefix is the result code, little-endian and signed.
+    rc=$(od -An -N4 -td4 < "$W/oc" | tr -d ' ')
     [ "$rc" -gt 0 ] && coded=$((coded+1))
   done
 done
