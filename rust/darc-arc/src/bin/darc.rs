@@ -572,15 +572,93 @@ fn add(
     // explicitly, so the port had never once been asked to pick a default. It
     // surfaced as "-m expanded to nothing" the moment a copy command was run
     // the way a user would run it.
-    let method = match parsed.arg("method", "") {
-        "" => "4",
-        m => m,
+    //
+    // Every -m VALUE is scanned first, because `-m` is really two options in
+    // one: `-mt1` is a thread count, `-ms` adds a $compressed chain, `-md16m`
+    // is a dictionary size. Treating those as method names -- which is what
+    // this did -- rejected each of them as a codec that does not exist.
+    let m_values = parsed.all("method");
+    let mopts = match darc_arc::methodtable::scan_m_options(&m_values) {
+        Ok(o) => o,
+        Err(e) => {
+            eprintln!("ERROR: {e}");
+            return 2;
+        }
     };
-    let decoded = darc_arc::methodtable::decode_method(method);
+    // The knobs this port does not implement are REFUSED, not ignored: acting
+    // on part of a -m spec and dropping the rest writes an archive that is not
+    // what was asked for, which is the same rule the HONOURED list applies.
+    let mut unimplemented: Vec<String> = Vec::new();
+    if mopts.multimedia != "--" {
+        unimplemented.push(format!("-mm{}", mopts.multimedia));
+    }
+    if mopts.autodetect != "--" {
+        unimplemented.push(format!("-ma{}", mopts.autodetect));
+    }
+    for d in &mopts.disabled {
+        unimplemented.push(format!("-mc({d})"));
+    }
+    if !unimplemented.is_empty() {
+        eprintln!(
+            "ERROR: this port does not implement {} yet, and ignoring it would \
+             write an archive that is not what you asked for",
+            unimplemented.join(", ")
+        );
+        return 2;
+    }
+    // `(mainMethod ||| aDEFAULT_COMPRESSOR) ++ userMethods` (Cmdline.hs:334):
+    // the per-type suffixes are appended to the main method, and the whole
+    // string is what decode_method expands.
+    let method = format!(
+        "{}{}",
+        match mopts.method.is_empty() {
+            true => "4",
+            false => &mopts.method,
+        },
+        mopts.methods
+    );
+    let decoded = darc_arc::methodtable::decode_method(&method);
     if decoded.is_empty() {
         eprintln!("ERROR: -m{method} expanded to nothing");
         return 2;
     }
+    // `.$ setDictionary dictionary` (Cmdline.hs:338). -md SETS the dictionary,
+    // overriding whatever the chain said: measured, `-mlzma:1m -md64m` writes
+    // exactly what `-mlzma:64m` writes, and `-mlzma:64m -md1m` exactly what
+    // `-mlzma:1m` writes.
+    //
+    // `setDictionary = mapLast . setDictionary` (Compression.hs:179) -- the
+    // LAST method of each chain, not every method. That distinction is
+    // invisible on a one-method chain and wrong on every other: applying it to
+    // all of them also resized `rep`'s block in `-m9 -md1m`, for 2.207 bytes.
+    //
+    // Each method has its own idea of what its dictionary is, which is why this
+    // goes through set_dictionary rather than editing a field -- LZP and GRZip
+    // also cap their hash when the block shrinks.
+    let decoded: Vec<(String, Vec<String>)> = match mopts.dictionary {
+        0 => decoded,
+        d => {
+            let d = u32::try_from(d).unwrap_or(u32::MAX);
+            decoded
+                .into_iter()
+                .map(|(ty, mut chain)| {
+                    match chain.last_mut() {
+                        Some(m) => match darc_arc::method::Method::parse(m) {
+                            Some(mut parsed) => {
+                                darc_arc::memlimit::set_dictionary(&mut parsed, d);
+                                *m = darc_arc::canonize::show(&parsed);
+                            }
+                            // A method this port cannot parse keeps whatever it
+                            // said; the check below reports it as unsupported.
+                            None => {}
+                        },
+                        None => {}
+                    }
+                    (ty, chain)
+                })
+                .collect()
+        }
+    };
     // NOT validated here. A level defines chains for types no file can be given
     // -- $wav and $bmp need an arc.groups entry, and getDefaultType maps every
     // autodetectable type to $binary -- so refusing a level because its dead

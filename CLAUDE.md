@@ -17,16 +17,17 @@ part of the archiver and are not built by anything.
 **The reference the port was gated against no longer exists.** Every
 `rust/difftest/arc-*-check.sh` compares two binaries and needs a Haskell build
 passed in; `9a127e6` is the last commit that can produce one. What runs without
-it is `arc-golden-check.sh`, which replays 43 recorded cases against the bytes
+it is `arc-golden-check.sh`, which replays 65 recorded cases against the bytes
 that reference actually wrote. **Read `docs/testing.md` before changing anything
 that touches archive bytes.**
 
-**The port is not feature-complete, and the gap is visible.** It cannot *write*
-`mm`, `tta` or `bsc` chains, nor the `-ms`/`-mt1` method modifiers, and does not
-accept `-lc-`/`-ld-`. The codecs themselves are ported — `darc-arc`'s method
-table has no variant to emit. `Tests/run-tests.sh` reports these as SKIP with
-the binary's own words, so they stay counted: 17 passed, 7 skipped, against the
-reference's 24 passed.
+**Every method the reference can write, this can write** -- `Tests/run-tests.sh`
+scores 24/0/0, the same as the reference. `mm`, `tta`, `bsc`, `lz4` and `zstd`
+had no `Method` variant until recently, which made archives using them
+unreadable as well as unwritable; the `-m` VALUE grammar (`-mt`, `-ms`, `-md`,
+`-ma`, `-mc`, `-mm`) was read as method NAMES. Both are fixed and gated. What
+is still refused rather than implemented: `-mm`/`-ma`/`-mc` change the chain
+and are rejected outright, and `-lc-`/`-ld-` are not accepted at all.
 
 ## Deeper references — load when the work calls for it
 

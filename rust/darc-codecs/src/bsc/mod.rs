@@ -87,3 +87,153 @@ pub const CODER_NONE: u32 = 0;
 pub const CODER_QLFC_STATIC: u32 = 1;
 pub const CODER_QLFC_ADAPTIVE: u32 = 2;
 pub const CODER_QLFC_FAST: u32 = 3;
+
+// ---------------------------------------------------------------------------
+// The stream framing
+// ---------------------------------------------------------------------------
+//
+// `bsc_stream_compress` / `bsc_stream_decompress` (`C_BSC.cpp:79`, `:131`),
+// which lived in the C driver while the archiver was Haskell. `darc-arc` has no
+// C to call, so the loop has to exist here for `-mbsc` archives to be written
+// or read at all.
+//
+// The framing is an `int32` length before each block and a zero length as the
+// end marker:
+//
+//     ([+n][n bytes])* [0]
+//
+// A block is emitted with a length of zero ONLY as that terminator, which is
+// why a short read writes the terminator and stops rather than looping again.
+
+use crate::ffi::{Io, FREEARC_ERRCODE_BAD_COMPRESSED_DATA, FREEARC_ERRCODE_GENERAL};
+use std::os::raw::c_int;
+
+/// `full_read` — keep reading until the buffer is full or the input ends.
+///
+/// `Io::read` is one callback call and may return a short count; the C helper
+/// loops, and so must this. Reading once and treating a short count as EOF
+/// would silently truncate every block after the first.
+fn full_read(io: &Io, buf: &mut [u8]) -> c_int {
+    let mut done = 0usize;
+    while done < buf.len() {
+        let got = io.read(&mut buf[done..]);
+        if got < 0 {
+            return got;
+        }
+        if got == 0 {
+            break;
+        }
+        done += got as usize;
+    }
+    done as c_int
+}
+
+/// `bsc_stream_compress` (`C_BSC.cpp:79`).
+pub fn compress_stream(
+    io: &Io,
+    block_size: u32,
+    lzp_hash_size: c_int,
+    lzp_min_len: c_int,
+    block_sorter: c_int,
+    coder: c_int,
+) -> c_int {
+    let block_size = block_size.max(1) as usize;
+    let mut inbuf = vec![0u8; block_size];
+    let mut outbuf = vec![0u8; block_size + HEADER_SIZE + 1024];
+    loop {
+        let got = full_read(io, &mut inbuf);
+        if got < 0 {
+            return got;
+        }
+        if got == 0 {
+            return match io.write_all(&0i32.to_le_bytes()) {
+                Ok(()) => crate::ffi::OK,
+                Err(e) => e,
+            };
+        }
+        let n = got as usize;
+        let mut produced = crate::bsc::qlfc_enc::compress(
+            &inbuf[..n],
+            &mut outbuf,
+            lzp_hash_size.max(0) as u32,
+            lzp_min_len.max(0) as u32,
+            block_sorter.max(0) as u32,
+            coder.max(0) as u32,
+        );
+        if produced < 0 {
+            // "bsc_compress already stores internally when a block will not
+            // compress, so this only catches a genuine refusal (ST7/ST8)."
+            produced = crate::bsc::qlfc_enc::store(&inbuf[..n], &mut outbuf);
+            if produced < 0 {
+                return FREEARC_ERRCODE_GENERAL as c_int;
+            }
+        }
+        let len = produced as usize;
+        match io
+            .write_all(&produced.to_le_bytes())
+            .and_then(|()| io.write_all(&outbuf[..len]))
+        {
+            Ok(()) => {}
+            Err(e) => return e,
+        }
+        if n < block_size {
+            return match io.write_all(&0i32.to_le_bytes()) {
+                Ok(()) => crate::ffi::OK,
+                Err(e) => e,
+            };
+        }
+    }
+}
+
+/// `bsc_stream_decompress` (`C_BSC.cpp:131`).
+pub fn decompress_stream(io: &Io) -> c_int {
+    let bad = FREEARC_ERRCODE_BAD_COMPRESSED_DATA as c_int;
+    let mut inbuf: Vec<u8> = Vec::new();
+    let mut outbuf: Vec<u8> = Vec::new();
+    loop {
+        let mut header = [0u8; 4];
+        // `if (got != 4) result = BAD` -- note this is NOT an EOF check: a
+        // well-formed stream always ends with the zero marker below, so running
+        // out of input here IS corruption.
+        if full_read(io, &mut header) != 4 {
+            return bad;
+        }
+        let compressed = i32::from_le_bytes(header);
+        if compressed == 0 {
+            return crate::ffi::OK;
+        }
+        if compressed < HEADER_SIZE as i32 {
+            return bad;
+        }
+        let want = compressed as usize;
+        if inbuf.len() < want {
+            inbuf.resize(want, 0);
+        }
+        if full_read(io, &mut inbuf[..want]) != compressed {
+            return bad;
+        }
+        let parsed = match crate::bsc::header::parse(&inbuf[..HEADER_SIZE]) {
+            Ok(p) => p,
+            Err(_) => return bad,
+        };
+        // The framed length and the header's own must agree, or the stream has
+        // been cut somewhere this loop cannot see.
+        if parsed.block_size != compressed {
+            return bad;
+        }
+        let data_size = match usize::try_from(parsed.data_size) {
+            Ok(n) => n,
+            Err(_) => return bad,
+        };
+        if outbuf.len() < data_size {
+            outbuf.resize(data_size, 0);
+        }
+        if crate::bsc::dispatch::decompress(&inbuf[..want], &mut outbuf[..data_size]) != 0 {
+            return bad;
+        }
+        match io.write_all(&outbuf[..data_size]) {
+            Ok(()) => {}
+            Err(e) => return e,
+        }
+    }
+}

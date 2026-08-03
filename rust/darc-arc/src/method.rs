@@ -219,6 +219,86 @@ pub struct DeltaParams {
     pub extended_tables: i32,
 }
 
+/// `tta:...` (`C_TTA.cpp:72`) and `mm:...` (`C_MM.cpp:79`).
+///
+/// One struct for both: the field lists are identical apart from the first
+/// (TTA's `level`, MM's `mode`) and the last (TTA's `raw_data`, MM's
+/// `reorder`), and their parsers differ only in which letters name those two.
+/// Keeping them together keeps the `c*w` fallback -- the one genuinely fiddly
+/// part -- in one place.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MmParams {
+    /// TTA's `level` (default 3) or MM's `mode` (default 9).
+    pub level: i32,
+    pub skip_header: i32,
+    pub is_float: i32,
+    pub num_chan: i32,
+    pub word_size: i32,
+    pub offset: i32,
+    /// TTA's `raw_data` or MM's `reorder`.
+    pub extra: i32,
+}
+
+/// `bsc:...` (`C_BSC.cpp:218`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct BscParams {
+    pub block_size: u32,
+    pub lzp_hash_size: i32,
+    pub lzp_min_len: i32,
+    pub block_sorter: i32,
+    pub coder: i32,
+}
+
+impl Default for BscParams {
+    /// `BSC_METHOD::BSC_METHOD()` (`C_BSC.cpp:184`) and libbsc's own defaults:
+    /// a 25 MB block, a 15-bit LZP hash, a 72-byte minimum match, BWT, and the
+    /// static QLFC coder.
+    fn default() -> Self {
+        BscParams {
+            block_size: 25 * 1024 * 1024,
+            lzp_hash_size: 15,
+            lzp_min_len: 72,
+            block_sorter: 1,
+            coder: 1,
+        }
+    }
+}
+
+/// `lz4:...` (`C_LZ4.cpp:143`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Lz4Params {
+    /// 0 is the fast codec; 1..12 select an HC level.
+    pub compressor: i32,
+    pub block_size: u32,
+    /// Parsed and printed but unused by modern LZ4, exactly as in the C.
+    pub hash_size: u32,
+    pub min_compression: i32,
+}
+
+impl Default for Lz4Params {
+    /// `LZ4_METHOD::LZ4_METHOD()` (`C_LZ4.cpp:135`).
+    fn default() -> Self {
+        Lz4Params { compressor: 0, block_size: 1024 * 1024, hash_size: 0, min_compression: 100 }
+    }
+}
+
+/// `zstd:LEVEL[:longN][:wN]` (`C_Zstd.cpp:105`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ZstdParams {
+    pub level: i32,
+    /// 0 leaves the library default; >0 turns on long-range matching.
+    pub window_log: u32,
+    /// 0 is single-threaded.
+    pub workers: u32,
+}
+
+impl Default for ZstdParams {
+    /// `ZSTD_METHOD::ZSTD_METHOD()` (`C_Zstd.cpp:42`).
+    fn default() -> Self {
+        ZstdParams { level: 3, window_log: 0, workers: 0 }
+    }
+}
+
 /// One link of a compression chain.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Method {
@@ -240,6 +320,16 @@ pub enum Method {
     Lzp(LzpParams),
     Delta(DeltaParams),
     Dispack(DeltaParams),
+    /// `tta` — lossless audio. Its `level` defaults to 3.
+    Tta(MmParams),
+    /// `mm` — the multimedia transform. Its `mode` defaults to 9.
+    Mm(MmParams),
+    /// `zstd`.
+    Zstd(ZstdParams),
+    /// `lz4`, fast or HC.
+    Lz4(Lz4Params),
+    /// `bsc` -- BWT/ST plus QLFC.
+    Bsc(BscParams),
     /// `4x4` — the chunking meta-codec every level from -m1 up wraps its real
     /// compressor in. See [`crate::fourx4`].
     FourX4(crate::fourx4::FourX4Params),
@@ -288,6 +378,13 @@ impl Method {
             "lzp" => parse_lzp(&params).map(Method::Lzp),
             "delta" => parse_delta(&params).map(Method::Delta),
             "dispack" | "dispack070" => parse_delta(&params).map(Method::Dispack),
+            // TTA's first field is `m`, MM's is `d`, and MM alone rejects a
+            // reorder that is not 0 or 1.
+            "tta" => parse_mm_like(&params, 3, b'm', false).map(Method::Tta),
+            "mm" => parse_mm_like(&params, 9, b'd', true).map(Method::Mm),
+            "zstd" => parse_zstd(&params).map(Method::Zstd),
+            "lz4" => parse_lz4(&params).map(Method::Lz4),
+            "bsc" => parse_bsc(&params).map(Method::Bsc),
             "4x4" => crate::fourx4::parse(&params).map(Method::FourX4),
             // The C tries every registered parser in turn, and parse_ENCRYPTION
             // is one of them. Splitting on whether the NAME is a cipher keeps
@@ -767,6 +864,196 @@ fn parse_dict(params: &[&str]) -> Option<DictParams> {
     Some(p)
 }
 
+/// `parse_TTA` (`C_TTA.cpp:72`) and `parse_MM` (`C_MM.cpp:79`).
+///
+/// `first` is the letter naming the leading field — `m` for TTA's level, `d`
+/// for MM's mode — and `strict_extra` is MM's extra rule that `:r` must be 0
+/// or 1, since `:r2` named a transform whose C implementation was `return buf;`
+/// and which no decoder accepts.
+///
+/// The unnamed parameter is `c*w`, optionally suffixed `f`. It is matched with
+/// `sscanf("%d*%d%s")`, so a THIRD component that is not exactly `f` is an
+/// error rather than being ignored — `2*16x` must not silently become `2*16`.
+fn parse_mm_like(
+    params: &[&str],
+    default_level: i32,
+    first: u8,
+    strict_extra: bool,
+) -> Option<MmParams> {
+    let mut p = MmParams {
+        level: default_level,
+        skip_header: 0,
+        is_float: 0,
+        num_chan: 0,
+        word_size: 0,
+        offset: 0,
+        extra: 0,
+    };
+    for param in params {
+        let param: &str = param;
+        let head = *param.as_bytes().first()?;
+        let rest = &param[1..];
+        // The named parameters. `s` and `f` are flags and take no value.
+        if head == first {
+            p.level = parse_int(rest)? as i32;
+            continue;
+        }
+        let handled = match head {
+            b's' => {
+                p.skip_header = 1;
+                true
+            }
+            b'f' => {
+                p.is_float = 1;
+                true
+            }
+            b'c' => {
+                p.num_chan = parse_int(rest)? as i32;
+                true
+            }
+            b'w' => {
+                p.word_size = parse_int(rest)? as i32;
+                true
+            }
+            b'o' => {
+                p.offset = parse_int(rest)? as i32;
+                true
+            }
+            b'r' => {
+                p.extra = parse_int(rest)? as i32;
+                if strict_extra && p.extra != 0 && p.extra != 1 {
+                    return None;
+                }
+                true
+            }
+            _ => false,
+        };
+        if handled {
+            continue;
+        }
+        // `%d*%d` with an optional `f`.
+        let (chan, tail) = param.split_once('*')?;
+        let a = parse_int(chan)? as i32;
+        let digits = tail.chars().take_while(char::is_ascii_digit).count();
+        let b = parse_int(&tail[..digits])? as i32;
+        // `sscanf("%d*%d%s")==3 && s=="f"` sets the float flag; anything else
+        // falls to `sscanf("%d*%d")==2`, which succeeds and DISCARDS the rest.
+        // So `2*16x` is `2*16` with the `x` ignored, not an error -- measured,
+        // the reference writes an archive for `-mmm:2*16x`. Rejecting it here
+        // was the one thing this parser got wrong.
+        p.is_float = i32::from(&tail[digits..] == "f");
+        p.num_chan = a;
+        p.word_size = b;
+    }
+    Some(p)
+}
+
+/// `parse_BSC` (`C_BSC.cpp:218`).
+///
+/// The bare parameter is the block size, and unlike every other parser here a
+/// FAILED `parseMem` still assigns -- the C writes `p->BlockSize = parseMem(...)`
+/// and only checks `error` after the loop, so a bad value rejects the method
+/// rather than being ignored.
+fn parse_bsc(params: &[&str]) -> Option<BscParams> {
+    let mut p = BscParams::default();
+    for param in params {
+        let param: &str = param;
+        let (head, rest) = param.split_at(1.min(param.len()));
+        let handled = match head {
+            "b" => { p.block_sorter = parse_int(rest)? as i32; true }
+            "l" => { p.lzp_min_len = parse_int(rest)? as i32; true }
+            "h" => { p.lzp_hash_size = parse_int(rest)? as i32; true }
+            "c" => { p.coder = parse_int(rest)? as i32; true }
+            _ => false,
+        };
+        if handled {
+            continue;
+        }
+        p.block_size = parse_mem(param)?;
+    }
+    Some(p)
+}
+
+/// `parse_LZ4` (`C_LZ4.cpp:143`).
+///
+/// Note the trailing `error=1`: unlike `parse_DICT`, an unrecognised parameter
+/// here is a hard error rather than a fallback, so `lz4:junk` is not the lz4
+/// method at all.
+fn parse_lz4(params: &[&str]) -> Option<Lz4Params> {
+    let mut p = Lz4Params::default();
+    for param in params {
+        let param: &str = param;
+        if param == "hc" {
+            p.compressor = 9;
+            continue;
+        }
+        let (head, rest) = param.split_at(1.min(param.len()));
+        let handled = match head {
+            "c" => {
+                p.compressor = parse_int(rest)? as i32;
+                true
+            }
+            "b" => {
+                p.block_size = parse_mem(rest)?;
+                true
+            }
+            "h" => {
+                p.hash_size = parse_mem(rest)?;
+                true
+            }
+            _ => false,
+        };
+        if handled {
+            continue;
+        }
+        match param.strip_suffix('%') {
+            Some(pct) => p.min_compression = parse_int(pct)? as i32,
+            None => return None,
+        }
+    }
+    Some(p)
+}
+
+/// `parse_ZSTD` (`C_Zstd.cpp:105`).
+fn parse_zstd(params: &[&str]) -> Option<ZstdParams> {
+    let mut p = ZstdParams::default();
+    for param in params {
+        let param: &str = param;
+        match param.strip_prefix("long") {
+            Some(rest) => {
+                // `zstd:3:long` on its own is REFUSED, not a 27-bit window.
+                // C_Zstd.cpp:116 says "long alone enables LDM with w=27", but
+                // `parseInt("")` sets error (Common.cpp:197) and the parser
+                // then returns NULL, so that line is unreachable -- measured,
+                // the reference writes no archive for `-mzstd:3:long`. The 27
+                // below is reached only by an explicit `long0`.
+                p.window_log = match parse_int(rest)? {
+                    0 => 27,
+                    n => n,
+                };
+                continue;
+            }
+            None => {}
+        }
+        match param.strip_prefix('w') {
+            Some(rest) => {
+                p.workers = parse_int(rest)?;
+                continue;
+            }
+            None => {}
+        }
+        // A bare number is the level, and zero is ignored rather than stored.
+        let lvl = parse_int(param)? as i32;
+        if lvl != 0 {
+            p.level = lvl;
+        }
+    }
+    // "Clamp to zstd's advertised range" -- done at PARSE time, so the clamped
+    // value is what gets written into the archive's method string.
+    p.level = p.level.clamp(darc_codecs::zstd::min_c_level(), darc_codecs::zstd::max_c_level());
+    Some(p)
+}
+
 /// `parse_LZP` (`C_LZP.cpp:110`).
 fn parse_lzp(params: &[&str]) -> Option<LzpParams> {
     let mut p = LzpParams::default();
@@ -960,7 +1247,17 @@ pub fn block_size(m: &Method) -> u64 {
         Method::Dispack(p) => u64::from(p.block_size),
         Method::FourX4(p) => u64::from(p.block_size),
         // `{return 0;}`, either explicitly or from COMPRESSION_METHOD.
-        Method::Storing
+        // `GetBlockSize` is BlockSize for LZ4 (C_LZ4.h:25) and for BSC
+        // (C_BSC.h), so both DO cap their solid blocks.
+        Method::Lz4(p) => u64::from(p.block_size),
+        Method::Bsc(p) => u64::from(p.block_size),
+        // TTA and MM are block algorithms internally but report 0 here
+        // (C_TTA.h:36, C_MM.h:50), so neither ever caps a solid block; Zstd
+        // likewise (C_Zstd.h:44).
+        Method::Tta(_)
+        | Method::Mm(_)
+        | Method::Zstd(_)
+        | Method::Storing
         | Method::Lzma(_)
         | Method::Ppmd(_)
         | Method::Tornado(_)
@@ -1181,13 +1478,17 @@ mod tests {
         assert_eq!(Method::parse("lzma:mf=nosuch"), None);
     }
 
-    /// An unknown method is named, not swallowed: "cannot decode tta" is a
+    /// An unknown method is named, not swallowed: "cannot decode ecm" is a
     /// usable message and "archive is corrupt" is not.
+    ///
+    /// `tta:1` used to stand here, and stopped being unsupported when TTA got a
+    /// variant. `ecm` is one of the external precompressors -- listed in
+    /// builtinMethodSubsts under -max, and not something this port can run.
     #[test]
     fn an_unknown_method_is_carried_by_name() {
         assert_eq!(
-            Method::parse("tta:1"),
-            Some(Method::Unsupported("tta:1".to_string()))
+            Method::parse("ecm"),
+            Some(Method::Unsupported("ecm".to_string()))
         );
     }
 

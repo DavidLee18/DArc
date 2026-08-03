@@ -77,10 +77,14 @@ command line tools beyond `cargo`. Handled automatically by the C build:
 
 ### What the archiver cannot do yet
 
-The port refuses, rather than mis-writes, what it has no encoder variant for:
-`-mmm`, `-mtta`, `-mbsc`, the `-ms` and `-mt1` method modifiers, and the
-`-lc-`/`-ld-` limits. Archives using those methods still *extract* — only
-writing is missing. `Tests/run-tests.sh` lists them as SKIP on every run.
+Every compression method is supported for both reading and writing, and
+`Tests/run-tests.sh` scores the same 24/24 as the pre-port reference.
+
+Three `-m` sub-options are refused rather than implemented, because each one
+changes the compression chain and quietly ignoring it would write an archive
+that is not what was asked for: `-mm` (multimedia mode), `-ma` (file-type
+autodetection level) and `-mc` (disable an algorithm). The memory limits
+`-lc`/`-ld` are not accepted either.
 
 ---
 ## CLI Usage

@@ -18,7 +18,10 @@
 //! must equal `m` for every method, and it is checked below over a spread of
 //! parameter combinations.
 
-use crate::method::{DeltaParams, DictParams, LzmaParams, LzpParams, Method, PpmdParams};
+use crate::method::{
+    BscParams, DeltaParams, DictParams, Lz4Params, LzmaParams, LzpParams, Method, MmParams,
+    PpmdParams, ZstdParams,
+};
 
 /// `showMem` (`Common.cpp:223`) — the largest unit that divides exactly.
 ///
@@ -63,6 +66,11 @@ pub fn show(method: &Method) -> String {
         // `dispack070` is the name parse_DISPACK prints (C_DisPack.cpp:131).
         Method::Dispack(p) => show_delta("dispack070", p),
         Method::Lzp(p) => show_lzp(p),
+        Method::Tta(p) => show_mm_like("tta", p, 3, 'm', 'r'),
+        Method::Mm(p) => show_mm_like("mm", p, 9, 'd', 'r'),
+        Method::Zstd(p) => show_zstd(p),
+        Method::Lz4(p) => show_lz4(p),
+        Method::Bsc(p) => show_bsc(p),
         Method::Dict(p) => show_dict(p),
         Method::Exe => "exe".to_string(),
         Method::Tornado(p) => show_tornado(p),
@@ -147,6 +155,93 @@ fn show_lzp(p: &LzpParams) -> String {
     }
     if p.smallest_len != d.smallest_len {
         s += &format!(":s{}", p.smallest_len);
+    }
+    s
+}
+
+/// `TTA_METHOD::ShowCompressionMethod` (`C_TTA.cpp:54`) and `MM_METHOD`'s
+/// (`C_MM.cpp:60`).
+///
+/// The two differ only in the name, the letter and default of the leading
+/// field, and the ORDER the pieces are concatenated in — TTA writes
+/// `level`, geometry, extra; MM writes `mode`, geometry, extra but builds the
+/// extra before the mode. Both come out as name + level + geometry + extra, so
+/// one function serves.
+///
+/// The geometry is an either/or, not two independent fields: when a channel
+/// count or word size is set it prints `:c*w[f][:oN]` and `skip_header` is not
+/// printed at all, which is why `:s` and `:2*16` never appear together.
+fn show_mm_like(name: &str, p: &MmParams, default_level: i32, first: char, extra: char) -> String {
+    let mut s = name.to_string();
+    if p.level != default_level {
+        s += &format!(":{first}{}", p.level);
+    }
+    if p.num_chan != 0 || p.word_size != 0 {
+        s += &format!(
+            ":{}*{}{}",
+            p.num_chan,
+            p.word_size,
+            match p.is_float {
+                0 => "",
+                _ => "f",
+            }
+        );
+        if p.offset != 0 {
+            s += &format!(":o{}", p.offset);
+        }
+    } else if p.skip_header != 0 {
+        s += ":s";
+    }
+    // Both print this on non-zero rather than on "differs from the default",
+    // and both default it to zero, so the two readings coincide.
+    if p.extra != 0 {
+        s += &format!(":{extra}{}", p.extra);
+    }
+    s
+}
+
+/// `BSC_METHOD::ShowCompressionMethod` (`C_BSC.cpp:209`).
+///
+/// Every field is printed unconditionally and in a fixed order, so `bsc`
+/// canonicalises to `bsc:25mb:b1:l72:h15:c1` rather than to itself.
+fn show_bsc(p: &BscParams) -> String {
+    format!(
+        "bsc:{}:b{}:l{}:h{}:c{}",
+        show_mem(p.block_size), p.block_sorter, p.lzp_min_len, p.lzp_hash_size, p.coder
+    )
+}
+
+/// `LZ4_METHOD::ShowCompressionMethod` (`C_LZ4.cpp:119`).
+///
+/// The block size prints as `:b<size>` and only when it differs; `HashSize` is
+/// parsed but never printed, so `lz4:h64k` canonicalises to plain `lz4` and the
+/// value is lost — faithfully, since the C does the same.
+fn show_lz4(p: &Lz4Params) -> String {
+    let d = Lz4Params::default();
+    let mut s = "lz4".to_string();
+    if p.compressor != d.compressor {
+        s += &format!(":c{}", p.compressor);
+    }
+    if p.block_size != d.block_size {
+        s += &format!(":b{}", show_mem(p.block_size));
+    }
+    if p.min_compression != d.min_compression {
+        s += &format!(":{}%", p.min_compression);
+    }
+    s
+}
+
+/// `ZSTD_METHOD::ShowCompressionMethod` (`C_Zstd.cpp:81`).
+///
+/// The level is ALWAYS printed, unlike every other method here, which only
+/// prints a field that differs from its default.
+fn show_zstd(p: &ZstdParams) -> String {
+    let mut s = format!("zstd:{}", p.level);
+    if p.window_log > 0 {
+        s += &format!(":long{}", p.window_log);
+    }
+    if p.workers > 0 {
+        s += &format!(":w{}", p.workers);
     }
     s
 }
@@ -351,6 +446,33 @@ mod tests {
             "4x4:tor:3:434kb",
             "4x4:b8mb:lzma:379kb:a0:mc8",
             "4x4:t4:b1mb:tor",
+            // The five that had no variant at all until recently. TTA and MM
+            // share a printer, so both spellings of the geometry are here --
+            // `:s` and `:c*w` are mutually exclusive in the output, and a
+            // printer that emitted both would fail to re-parse.
+            "tta",
+            "tta:m1",
+            "tta:s",
+            "tta:2*16",
+            "tta:2*16f",
+            "tta:2*16:o8",
+            "tta:r1",
+            "mm",
+            "mm:d1",
+            "mm:s",
+            "mm:2*16",
+            "mm:2*16f:o4",
+            "mm:r1",
+            "bsc:25mb:b1:l72:h15:c1",
+            "bsc:1mb:b2:l32:h0:c2",
+            "lz4",
+            "lz4:c9",
+            "lz4:b64kb",
+            "lz4:c12:b4mb:50%",
+            "zstd:3",
+            "zstd:19",
+            "zstd:3:long20",
+            "zstd:5:w2",
         ];
         for c in cases {
             let once = canonize(c).unwrap_or_else(|| panic!("{c} did not parse"));

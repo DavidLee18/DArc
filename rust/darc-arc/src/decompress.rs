@@ -94,6 +94,19 @@ fn undo(method: &Method, src: &[u8], hint: usize) -> Result<Vec<u8>, Error> {
         Method::Dispack(p) => drive("dispack", src, hint, |io| {
             darc_codecs::dispack::decode::decompress(io, p.block_size)
         }),
+        // TTA and MM read their geometry back out of the stream header, so the
+        // decoders take no parameters at all.
+        Method::Tta(_) => drive("tta", src, hint, darc_codecs::tta::decompress),
+        Method::Mm(_) => drive("mm", src, hint, darc_codecs::mm::decompress),
+        Method::Zstd(_) => drive("zstd", src, hint, darc_codecs::zstd::decompress_stream),
+        // BSC's framing carries each block's own size, so the decoder needs no
+        // parameters at all.
+        Method::Bsc(_) => drive("bsc", src, hint, darc_codecs::bsc::decompress_stream),
+        // LZ4's framing carries no block size, so the one from the method
+        // string is what sizes the buffers -- exactly as `C_LZ4.cpp` does.
+        Method::Lz4(p) => {
+            drive("lz4", src, hint, |io| darc_codecs::lz4::decompress_stream(io, p.block_size))
+        }
         // 4x4 recurses: its chunks are decoded by whatever inner method its
         // parameters named, through this same function.
         Method::FourX4(p) => crate::fourx4::decode(p, src, |inner, chunk, orig| {
@@ -162,6 +175,19 @@ pub fn decompress_chain(
     // `if compressor == aNO_COMPRESSION` does.
     if chain.iter().all(|m| *m == Method::Storing) {
         return Ok(src.to_vec());
+    }
+    // An EMPTY block decodes to nothing without running the codec, which is
+    // what the reference and `unarc` both do -- an archive whose only file is
+    // zero bytes has a data block of `orig 0, comp 0`.
+    //
+    // Not a special case for tidiness: a decoder that is handed no bytes has no
+    // header to read, and the ones that check for that report a short read.
+    // TTA does (`read_exact` on its four-byte header, tta.rs:589), so
+    // `arc t` on `-mtta` over a zero-byte file failed with a bare
+    // "codec returned -6" until this was here. Every codec already in the port
+    // happened to tolerate it, which is why it went unnoticed for all of them.
+    if src.is_empty() && orig_size == 0 {
+        return Ok(Vec::new());
     }
     let mut buf = src.to_vec();
     for (i, method) in chain.iter().enumerate().rev() {
@@ -351,6 +377,53 @@ pub fn compress_one_with(method: &Method, src: &[u8], all_at_once: bool) -> Resu
         Method::Dispack(p) => drive_enc("dispack", src, |io| {
             darc_codecs::dispack::encode::compress(io, p.block_size)
         }),
+        Method::Tta(p) => drive_enc("tta", src, |io| {
+            darc_codecs::tta::compress(
+                io,
+                p.level,
+                p.skip_header,
+                p.is_float,
+                p.num_chan,
+                p.word_size,
+                p.offset,
+                p.extra,
+            )
+        }),
+        Method::Mm(p) => drive_enc("mm", src, |io| {
+            darc_codecs::mm::compress(
+                io,
+                p.level,
+                p.skip_header,
+                p.is_float,
+                p.num_chan,
+                p.word_size,
+                p.offset,
+                p.extra,
+            )
+        }),
+        Method::Bsc(p) => drive_enc("bsc", src, |io| {
+            darc_codecs::bsc::compress_stream(
+                io,
+                p.block_size,
+                p.lzp_hash_size,
+                p.lzp_min_len,
+                p.block_sorter,
+                p.coder,
+            )
+        }),
+        Method::Lz4(p) => drive_enc("lz4", src, |io| {
+            darc_codecs::lz4::compress_stream(io, p.compressor, p.block_size, p.min_compression)
+        }),
+        Method::Zstd(p) => drive_enc("zstd", src, |io| {
+            darc_codecs::zstd::compress_stream(
+                io,
+                darc_codecs::zstd::Params {
+                    level: p.level,
+                    window_log: p.window_log,
+                    workers: p.workers,
+                },
+            )
+        }),
         // The encryption step of a chain. It must be the REAL method here --
         // the one carrying `:k` -- not the one the archive will store, so
         // `compress_chain` is given the real chain and the writer stores the
@@ -470,8 +543,8 @@ mod tests {
 
     #[test]
     fn an_unsupported_method_is_named() {
-        let err = decompress_chain(&["tta".to_string()], b"x", 1).expect_err("refuses");
-        assert_eq!(err, Error::Unsupported("tta".to_string()));
+        let err = decompress_chain(&["ecm".to_string()], b"x", 1).expect_err("refuses");
+        assert_eq!(err, Error::Unsupported("ecm".to_string()));
     }
 
     #[test]

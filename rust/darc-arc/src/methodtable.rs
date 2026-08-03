@@ -313,9 +313,205 @@ const BUILTIN: &[&str] = &[
     "2x$compressed  = rep:8m  + tor:3",
 ];
 
+/// `aCOMPRESSED_METHOD` (`Compression.hs:81`) — what `-ms` gives `$compressed`.
+const COMPRESSED_METHOD: &str = "tor:8m:c3";
+
+/// Everything the `-m` options say, after `Cmdline.hs:241` has taken them apart.
+///
+/// `-m` is not one option. Its VALUE carries a second grammar, and the
+/// command-line parser cannot see that: `-mt1` matches both `m` and `mt` by
+/// prefix, `aPREFFERED_OPTIONS` breaks the tie in favour of `method`, and the
+/// value `"t1"` is then scanned HERE and turns into a thread count.
+///
+/// The port implemented only the last rule — "anything else is the main
+/// method" — so `-mt1`, `-ms`, `-md16m`, `-ma1` and `-mc-` all became method
+/// names, and were rejected as codecs that do not exist.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct MOptions {
+    /// `method` — the main compression method. Empty when none was given.
+    pub method: String,
+    /// `methods` — the per-type suffixes, each already `/`-prefixed.
+    pub methods: String,
+    /// `mc'` — algorithms to disable.
+    pub disabled: Vec<String>,
+    /// `dict` — `-md`, in bytes. 0 is "not given".
+    pub dictionary: u64,
+    /// `mm'` — multimedia mode. `"--"` is "not given".
+    pub multimedia: String,
+    /// `threads` — `-mt`. 0 is "as many as the machine has".
+    pub threads: u32,
+    /// `ma'` — autodetection level. `"--"` is "not given".
+    pub autodetect: String,
+}
+
+/// `parseDict` (`Cmdline.hs:232`) — the `-md` value, or `None` if this is not
+/// the `-md` option at all but a method whose name begins with `d`.
+///
+/// That second case is the whole reason this returns an Option: `-mdict:32k`
+/// and `-mdelta` both start with `d`, and both must fall through to the main
+/// method rather than be read as dictionary sizes.
+fn parse_dict(s: &str) -> Option<u64> {
+    let mut chars = s.chars();
+    let first = chars.next()?;
+    match (first.is_ascii_alphabetic(), chars.next()) {
+        // `-mda`..`-mdz`: a single letter, 2^(16 + c - 'a').
+        (true, None) => Some(1u64 << (16 + (first as u8 - b'a') as u32)),
+        _ => match first.is_ascii_digit() {
+            true => crate::method::parse_mem(s).map(u64::from),
+            false => None,
+        },
+    }
+}
+
+/// `changeTo` — replace the whole string when it matches, else keep it.
+fn change_to<'a>(s: &'a str, table: &[(&str, &'a str)]) -> &'a str {
+    match table.iter().find(|(from, _)| *from == s) {
+        Some((_, to)) => to,
+        None => s,
+    }
+}
+
+/// The `forM_ compression_options` loop (`Cmdline.hs:241`).
+///
+/// Order matters and so do the guards: each arm applies only when its value
+/// parses, and falls through to "this is the main method" when it does not.
+/// `-mmm` reaches the mm codec exactly because `"m"` is not one of the
+/// multimedia modes, and `-mtor:3` reaches Tornado because `"or:3"` is not all
+/// digits.
+pub fn scan_m_options(values: &[&str]) -> Result<MOptions, String> {
+    let mut o = MOptions {
+        multimedia: "--".to_string(),
+        autodetect: "--".to_string(),
+        ..MOptions::default()
+    };
+    for value in values {
+        let value: &str = value;
+        let (head, rest) = match value.chars().next() {
+            Some(c) => (c, &value[c.len_utf8()..]),
+            None => (' ', ""),
+        };
+        // -mcd-, -mc-rep: disable an algorithm. Only when the value is fenced
+        // by a dash, so `-mcabbage` is still a method name.
+        if head == 'c' && (rest.starts_with('-') || rest.ends_with('-')) {
+            let name = rest.trim_start_matches('-').trim_end_matches('-');
+            o.disabled.push(
+                change_to(
+                    name,
+                    &[
+                        ("d", "delta"),
+                        ("e", "exe"),
+                        ("l", "lzp"),
+                        ("r", "rep"),
+                        ("z", "dict"),
+                        ("a", "$wav"),
+                        ("c", "$bmp"),
+                        ("t", "$text"),
+                    ],
+                )
+                .to_string(),
+            );
+            continue;
+        }
+        if head == 'd' {
+            match parse_dict(rest) {
+                Some(md) => {
+                    o.dictionary = md;
+                    continue;
+                }
+                None => {}
+            }
+        }
+        if head == 'm' {
+            let flag = rest.strip_prefix('=').unwrap_or(rest);
+            if matches!(flag, "" | "--" | "+" | "-" | "max" | "fast") {
+                o.multimedia = flag.to_string();
+                continue;
+            }
+        }
+        // -ms / -ms-, which are exact matches rather than prefixes.
+        if value == "s" {
+            o.methods += &format!("/$compressed={COMPRESSED_METHOD}");
+            continue;
+        }
+        if value == "s-" {
+            o.disabled.push("$compressed".to_string());
+            continue;
+        }
+        if head == 'a' {
+            let flag = rest.strip_prefix('=').unwrap_or(rest);
+            let flag = change_to(flag, &[("+", "--"), ("", "--"), ("-", "0")]);
+            if flag == "--" || (flag.len() == 1 && flag.chars().all(|c| c.is_ascii_digit())) {
+                o.autodetect = flag.to_string();
+                continue;
+            }
+        }
+        if head == 't' {
+            let flag = rest.strip_prefix('=').unwrap_or(rest);
+            let flag = change_to(flag, &[("-", "1"), ("+", "0"), ("", "0"), ("--", "0")]);
+            if !flag.is_empty() && flag.chars().all(|c| c.is_ascii_digit()) {
+                o.threads = flag.parse().map_err(|_| format!("-mt{rest}: not a number"))?;
+                continue;
+            }
+        }
+        // -m$type=method.
+        if head == '$' {
+            match value.find(['=', ':', '.']) {
+                Some(i) if value.as_bytes()[i] == b'=' => {
+                    o.methods += &format!("/{value}");
+                    continue;
+                }
+                _ => return Err(format!("bad option format: -m{value}")),
+            }
+        }
+        // Everything else is the main method. `-m0=…` is a spelling of it.
+        o.method = value.strip_prefix("0=").unwrap_or(value).to_string();
+    }
+    Ok(o)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Measured against the reference: `-m4`, `-m4 -mt1`, `-m4 -ms`,
+    /// `-m4 -md16m` and `-m4 -mc-` all produce the SAME archive over a corpus
+    /// with no `$compressed` files, because each of those is its own knob and
+    /// none of them is the method name.
+    #[test]
+    fn the_m_value_grammar_separates_the_knobs_from_the_method() {
+        let scan = |v: &[&str]| scan_m_options(v).expect("scans");
+
+        assert_eq!(scan(&["4"]).method, "4");
+        assert_eq!(scan(&["4", "t1"]).threads, 1);
+        assert_eq!(scan(&["4", "t1"]).method, "4", "-mt1 is not a method");
+        assert_eq!(scan(&["t1"]).method, "", "and does not become one on its own");
+        assert_eq!(scan(&["t-"]).threads, 1);
+        assert_eq!(scan(&["t+"]).threads, 0);
+
+        assert_eq!(scan(&["4", "s"]).methods, "/$compressed=tor:8m:c3");
+        assert_eq!(scan(&["4", "s"]).method, "4");
+        assert_eq!(scan(&["s-"]).disabled, vec!["$compressed"]);
+
+        assert_eq!(scan(&["4", "d16m"]).dictionary, 16 << 20);
+        assert_eq!(scan(&["da"]).dictionary, 1 << 16);
+        assert_eq!(scan(&["dz"]).dictionary, 1 << 41);
+
+        assert_eq!(scan(&["m"]).multimedia, "");
+        assert_eq!(scan(&["m=max"]).multimedia, "max");
+        assert_eq!(scan(&["a1"]).autodetect, "1");
+        assert_eq!(scan(&["a-"]).autodetect, "0");
+        assert_eq!(scan(&["cd-"]).disabled, vec!["delta"]);
+        assert_eq!(scan(&["c-rep"]).disabled, vec!["rep"]);
+
+        // The fall-through cases, which are what make the codecs reachable at
+        // all. Every one of these begins with a letter that also names a knob.
+        for m in ["mm", "tta", "tor:3", "dict:32k", "delta", "dispack", "as", "cabbage"] {
+            assert_eq!(scan(&[m]).method, m, "-m{m} must stay a method name");
+        }
+        assert_eq!(scan(&["$text=ppmd"]).methods, "/$text=ppmd");
+        assert!(scan_m_options(&["$text"]).is_err(), "-m$type with no = is an error");
+    }
+
 
     fn chain_for(spec: &str, ty: &str) -> String {
         decode_method(spec)

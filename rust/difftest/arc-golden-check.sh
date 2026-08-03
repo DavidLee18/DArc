@@ -98,6 +98,11 @@ build_tree() {
   awk 'BEGIN{for(i=0;i<4000;i++) printf "line %d of compressible text\n", i%97}' \
     > "$d/text.txt"
   head -c 65536 /dev/zero | tr '\0' 'Z' > "$d/zeros.bin"
+  # A zero-byte file, which is its own decoder case: it produces an EMPTY data
+  # block, and a decoder handed no bytes has no header to read. `-mtta` over
+  # one failed with a bare "codec returned -6" until `decompress_chain` learned
+  # to skip the codec for an empty block.
+  : > "$d/empty.bin"
 }
 
 results="$W/results.txt"
@@ -186,8 +191,49 @@ run m-rep-lzma           a --nodates -y -r -mrep:8m+lzma:1m "$A" .
 run m-delta-lzma         a --nodates -y -r -mdelta+lzma:1m "$A" .
 run m-lzp                a --nodates -y -r -mlzp:8m:64 "$A" .
 run m-dict-lzma          a --nodates -y -r -mdict:32k+lzma:1m "$A" .
-run m-lzma-solid-off     a --nodates -y -mt1 -r -s- -mlzma:1m:normal "$A" .
-run m-lzma-rr            a --nodates -y -mt1 -r -rr4096b -mlzma:1m:normal "$A" .
+run m-lzma-solid-off     a --nodates -y -r -s- -mlzma:1m:normal "$A" .
+run m-lzma-rr            a --nodates -y -r -rr4096b -mlzma:1m:normal "$A" .
+
+# ── the five methods darc-arc could not write OR READ until recently ────────
+#
+# mm, tta, bsc, lz4 and zstd had no `Method` variant, so an archive using any
+# of them was rejected in both directions -- `arc x` exited 2 with "compression
+# method ... is not supported yet" and extracted nothing.
+#
+# None of the five reads the processor count, so none needs the exclusion
+# above. bsc and lz4 DO cap their solid blocks by their own block size, which
+# is why each gets a row with an explicit one.
+run m-tta                a --nodates -y -r -mtta "$A" .
+run m-tta-level          a --nodates -y -r -mtta:m1 "$A" .
+run m-tta-geometry       a --nodates -y -r -mtta:2*16 "$A" .
+run m-mm                 a --nodates -y -r -mmm "$A" .
+run m-mm-mode            a --nodates -y -r -mmm:d1 "$A" .
+run m-mm-geometry        a --nodates -y -r -mmm:2*16f "$A" .
+run m-mm-reorder         a --nodates -y -r -mmm:r1 "$A" .
+run m-bsc                a --nodates -y -r -mbsc:1m "$A" .
+run m-bsc-sorter         a --nodates -y -r -mbsc:1m:b2 "$A" .
+run m-bsc-nolzp          a --nodates -y -r -mbsc:1m:h0 "$A" .
+run m-lz4                a --nodates -y -r -mlz4 "$A" .
+run m-lz4-hc             a --nodates -y -r -mlz4:hc "$A" .
+run m-lz4-block          a --nodates -y -r -mlz4:b64k "$A" .
+run m-zstd               a --nodates -y -r -mzstd "$A" .
+run m-zstd-level         a --nodates -y -r -mzstd:19 "$A" .
+run m-zstd-long          a --nodates -y -r -mzstd:3:long20 "$A" .
+
+# ── the -m VALUE grammar ────────────────────────────────────────────────────
+#
+# `-m` carries a second grammar in its value (Cmdline.hs:241): `-mt` is a
+# thread count, `-ms` adds a $compressed chain, `-md` a dictionary size. The
+# port read every one of them as a method NAME and rejected them as codecs that
+# do not exist. `-md` is the archive-visible one, and `setDictionary` is
+# `mapLast` -- the LAST method of the chain only, which a one-method chain
+# cannot tell apart from "all of them".
+run mopt-threads          a --nodates -y -r -m4 -mt1 "$A" .
+run mopt-store-compressed a --nodates -y -r -m4 -ms "$A" .
+run mopt-dict-16m         a --nodates -y -r -m4 -md16m "$A" .
+run mopt-dict-letter      a --nodates -y -r -m4 -mda "$A" .
+run mopt-dict-explicit    a --nodates -y -r -mlzma:1m -md64m "$A" .
+run mopt-dict-chain       a --nodates -y -r -mrep:8m+lzma:1m -md1m "$A" .
 
 sort -o "$results" "$results"
 

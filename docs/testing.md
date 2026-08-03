@@ -62,7 +62,7 @@ Note that `compile-ghc-probe` writes objects into the shared `/tmp/out/`, so run
 
 ### What runs without a reference: `arc-golden-check.sh`
 
-43 cases, one SHA-256 each, recorded from `Tests/arc-ghc` at `d6ebeb6` while all
+65 cases, one SHA-256 each, recorded from `Tests/arc-ghc` while all
 19 harnesses were green. It is the only archive-format gate CI runs, and the
 only one that will still be meaningful in a year.
 
@@ -85,12 +85,20 @@ sort-order decision, and `addBlockSizeCrit` having been ported and never called.
 
 ### What the port cannot do
 
-`Tests/run-tests.sh` reports 17 passed / 7 skipped against the reference's 24
-passed. The seven are configurations the port refuses outright — `mm`, `tta`,
-`bsc`, `-ms`, `-mt1` — because `darc-arc`'s method table has no variant to emit,
-not because they produce wrong bytes. They are matched on the binary's own
-"cannot write yet" wording, so a case that starts failing for any other reason
-is a failure, not a skip.
+`Tests/run-tests.sh` scores 24 passed / 0 failed / 0 skipped — the same as the
+reference. The five methods that had no `Method` variant (`mm`, `tta`, `bsc`,
+`lz4`, `zstd`) and the `-m` value grammar (`-mt`, `-ms`, `-md`) are implemented
+and gated by the golden corpus.
+
+The SKIP machinery in `run-tests.sh` and `sfx-roundtrip.sh` is kept even though
+nothing trips it now. It matches on the binary's own "cannot write yet" wording,
+so the next unimplemented method gets listed rather than silently failing — and
+a case that fails for any *other* reason is still a failure.
+
+Still refused rather than implemented: `-mm` (multimedia mode), `-ma`
+(autodetect level) and `-mc` (disable an algorithm) each change the chain, so
+they are rejected outright rather than ignored, on the same rule the HONOURED
+option list follows. `-lc-`/`-ld-` are not accepted at all.
 
 ## End-to-end
 

@@ -66,7 +66,14 @@ pub fn get_dictionary(m: &Method) -> u32 {
         Method::Grzip(p) => p.block_size,
         // 4x4 forwards to its inner method (`C_4x4.h:31`).
         Method::FourX4(p) => get_dictionary(&p.inner),
+        // GetDictionary is BlockSize (C_LZ4.h:24); BSC reports its own too.
+        Method::Lz4(p) => p.block_size,
+        Method::Bsc(p) => p.block_size,
         Method::Ppmd(_)
+        // TTA, MM and Zstd all return 0 (C_TTA.h:35, C_MM.h:49, C_Zstd.h:43).
+        | Method::Tta(_)
+        | Method::Mm(_)
+        | Method::Zstd(_)
         | Method::Delta(_)
         | Method::Dispack(_)
         | Method::Exe
@@ -104,7 +111,15 @@ pub fn set_dictionary(m: &mut Method, dict: u32) {
             p.inner_name = crate::canonize::show(&inner);
             p.inner = Box::new(inner);
         }
+        // `if (dict) BlockSize = dict;` (C_LZ4.h:28) and BSC's SetBlockSize
+        // (C_BSC.cpp:204). The `if (dict)` is handled by the early return.
+        Method::Lz4(p) => p.block_size = dict,
+        Method::Bsc(p) => p.block_size = dict,
         Method::Ppmd(_)
+        // SetDictionary is an empty body for all three (C_TTA.h:39, C_MM.h:53).
+        | Method::Tta(_)
+        | Method::Mm(_)
+        | Method::Zstd(_)
         | Method::Delta(_)
         | Method::Dispack(_)
         | Method::Exe
@@ -296,6 +311,21 @@ pub fn get_decompression_mem(m: &Method) -> u64 {
         Method::Ppmd(p) => u64::from(p.mem),
         Method::Tornado(p) => u64::from(p.buffer),
         Method::Rep(p) => u64::from(p.block_size),
+        // Flat constants (C_TTA.h:34, C_MM.h:48).
+        Method::Tta(_) | Method::Mm(_) => MB,
+        // BSC needs the block plus its working set; the C reports BlockSize.
+        Method::Bsc(p) => u64::from(p.block_size),
+        // `BlockSize*2` (C_LZ4.h:23).
+        Method::Lz4(p) => u64::from(p.block_size) * 2,
+        // `(1 << (WindowLog ?: 23)) + 128kb` (C_Zstd.cpp:96) -- dominated by the
+        // window, which is only known when long-range mode named it.
+        Method::Zstd(p) => {
+            let wl = match p.window_log {
+                0 => 23,
+                w => w,
+            };
+            (1u64 << wl.min(40)) + 128 * 1024
+        }
         // A flat 1 MB: the C comments out the BlockSize*2 it used to return.
         Method::Dict(_) => MB,
         Method::Lzp(p) => {
@@ -367,8 +397,19 @@ pub fn set_decompression_mem(m: &mut Method, mem: u64) {
             }
         }
         // `virtual void SetDecompressionMem (MemSize) {}` -- 4x4 does nothing,
-        // so a limit never reaches its inner method this way.
-        Method::FourX4(_)
+        // so a limit never reaches its inner method this way. TTA's and MM's
+        // are empty too (C_TTA.h:38, C_MM.h:52), and Zstd's is `{}`
+        // (C_Zstd.h:45).
+        // LZ4's `SetDecompressionMem` forwards to `SetCompressionMem`
+        // (C_LZ4.h:27), which resizes the block. Nothing here models that
+        // heuristic, so the block is left alone rather than resized wrongly --
+        // this only ever loosens a memory limit, never changes what is written.
+        Method::Lz4(_)
+        | Method::Bsc(_)
+        | Method::Tta(_)
+        | Method::Mm(_)
+        | Method::Zstd(_)
+        | Method::FourX4(_)
         | Method::Dispack(_)
         | Method::Exe
         | Method::Storing
