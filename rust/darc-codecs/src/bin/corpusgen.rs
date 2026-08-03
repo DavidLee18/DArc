@@ -53,6 +53,13 @@ fn repeat(pattern: &[u8], n: usize) -> Vec<u8> {
 
 fn write(dir: &std::path::Path, name: &str, bytes: &[u8]) {
     let path = dir.join(name);
+    // Some corpora name files inside subdirectories (`nested/deep/b.bin`), which
+    // the Python got for free from the shell having made them.
+    match path.parent() {
+        Some(p) => std::fs::create_dir_all(p)
+            .unwrap_or_else(|e| panic!("mkdir {}: {e}", p.display())),
+        None => {}
+    }
     let mut f = std::fs::File::create(&path)
         .unwrap_or_else(|e| panic!("create {}: {e}", path.display()));
     f.write_all(bytes).unwrap_or_else(|e| panic!("write {}: {e}", path.display()));
@@ -865,6 +872,78 @@ fn ppmd(dir: &std::path::Path) {
     }
 }
 
+/// `srep-check.sh` and `srep-encode-check.sh`, which share a corpus.
+fn srep(dir: &std::path::Path) {
+    write(dir, "text", &repeat(FOX, 20000));
+    let mut dup_unit = prng(1, 100000);
+    dup_unit.extend(prng(2, 50000));
+    write(dir, "dup", &dup_unit.repeat(6));
+    write(dir, "noise", &prng(9, 900000));
+    write(dir, "runs", &runs_fixed(900, 251, 997));
+    let mut mixed = Vec::new();
+    for i in 0..120u32 {
+        mixed.extend(prng(i, 2000));
+        mixed.extend(repeat(b"COMMON-SECTION", 400));
+    }
+    write(dir, "mixed", &mixed);
+    let mut far = prng(4, 300000);
+    far.extend(prng(5, 300000));
+    far.extend(prng(4, 300000));
+    write(dir, "farapart", &far);
+    for n in [0usize, 1, 100, 4096, 65536] {
+        write(dir, &format!("n_{n}"), &prng(3, n));
+    }
+}
+
+/// `debug-assert-check.sh` — deliberately small, since a debug build is slow
+/// and this looks for a fired assertion rather than for byte coverage.
+fn debug_assert(dir: &std::path::Path) {
+    // `chunky` is the shape that exposed the Hash3 dispatch bug, so it is first.
+    let mut chunky = Vec::new();
+    for i in 0..400u32 {
+        chunky.extend_from_slice(format!("chunk-{i}-").as_bytes());
+        chunky.extend(prng(i, 300));
+    }
+    write(dir, "chunky", &chunky);
+    write(dir, "text", &repeat(FOX, 1500));
+    let mut r = Vec::new();
+    for i in 0..600usize {
+        r.extend(std::iter::repeat_n((i % 97) as u8, 1 + (i * 7) % 400));
+    }
+    write(dir, "runs", &r);
+    write(dir, "noise", &prng(9, 80000));
+    write(dir, "tables", &le32((0..20000u32).map(|i| i.wrapping_mul(7).wrapping_add(3))));
+    for n in [0usize, 1, 255, 256, 65537] {
+        write(dir, &format!("n_{n}"), &prng(5, n));
+    }
+}
+
+/// `sevenz-check.sh` — the tree `7z` is asked to archive.
+fn sevenz(dir: &std::path::Path) {
+    write(dir, "empty.bin", b"");
+    write(dir, "tiny.txt", b"hello");
+    write(dir, "text.txt", &repeat(b"the quick brown fox jumps over the lazy dog.\n", 5000));
+    write(dir, "random.bin", &prng(7, 300000));
+    write(dir, "zeros.bin", &vec![0u8; 200000]);
+    write(dir, "nested/a.txt", &repeat(b"nested file\n", 100));
+    write(dir, "nested/deep/b.bin", &prng(11, 65536));
+    // An x86-ish body, so BCJ/BCJ2 has something to transform rather than
+    // passing incompressible noise straight through.
+    let mut body = Vec::new();
+    for i in 0..20000u64 {
+        body.push(0xe8);
+        body.extend_from_slice(&(((i * 7) % 4294967296) as u32).to_le_bytes());
+        body.extend_from_slice(b"\x90\x8b\xc0");
+    }
+    write(dir, "codeish.bin", &body);
+    // Non-ASCII name: names are UTF-16 in the container and UTF-8 outside it.
+    write(dir, "ünicode-日本語.txt", b"unicode name\n");
+    // An EMPTY directory, which the harness used to create in the shell before
+    // calling the Python. It is a corpus entry in its own right: 7z stores a
+    // directory record with no stream, and a reader that skips those loses it.
+    std::fs::create_dir_all(dir.join("emptydir")).expect("emptydir");
+}
+
 /// `int(30000*math.sin(i/50.0)) >> (8*(i%2)) & 0xff` — a 16-bit sine, emitted
 /// little-endian one byte at a time, which is what `mm-reorder-check.sh` feeds
 /// MM's `:r1` transpose.
@@ -946,6 +1025,9 @@ fn main() {
         "lzp" => lzp(&dir),
         "lz4hc" => lz4hc(&dir),
         "ppmd" => ppmd(&dir),
+        "srep" => srep(&dir),
+        "debug-assert" => debug_assert(&dir),
+        "sevenz" => sevenz(&dir),
         other => {
             eprintln!("corpusgen: unknown corpus {other:?}");
             std::process::exit(2);
