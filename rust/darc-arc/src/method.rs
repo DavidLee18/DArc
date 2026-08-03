@@ -945,9 +945,122 @@ fn parse_lzma<'a, I: Iterator<Item = &'a str>>(params: I) -> Option<LzmaParams> 
     Some(p)
 }
 
+/// `GetBlockSize` (`Compression.h:341`) — how much data the method processes at
+/// one time, and `0` for the ones that stream.
+///
+/// Only six methods have one, and the default in the base class is what makes
+/// the rest zero. This is not a resource knob: `addBlockSizeCrit` turns it into
+/// a solid-block boundary, so it decides where blocks END and is therefore
+/// archive-visible.
+pub fn block_size(m: &Method) -> u64 {
+    match m {
+        Method::Dict(p) => u64::from(p.block_size),
+        Method::Lzp(p) => u64::from(p.block_size),
+        Method::Grzip(p) => u64::from(p.block_size),
+        Method::Dispack(p) => u64::from(p.block_size),
+        Method::FourX4(p) => u64::from(p.block_size),
+        // `{return 0;}`, either explicitly or from COMPRESSION_METHOD.
+        Method::Storing
+        | Method::Lzma(_)
+        | Method::Ppmd(_)
+        | Method::Tornado(_)
+        | Method::Rep(_)
+        | Method::Exe
+        | Method::Delta(_)
+        | Method::Encryption(_) => 0,
+        // A method this port cannot parse has no parameters to read a block
+        // size out of. Zero means "impose no boundary", which leaves the user's
+        // -s criteria alone -- the safe direction.
+        Method::Unsupported(_) => 0,
+    }
+}
+
+/// `makeNonSolid` (`ArhiveFileList.hs:334`) — a multimedia method whose files
+/// must each get their own block.
+///
+/// The exception is a chain that already treats its input as one continuous
+/// byte sequence, which is what `*8` without `:o` means; then there is nothing
+/// to gain from splitting. Both tests are on the raw method STRING, not on
+/// parsed parameters, because that is how `substr` reads it.
+pub fn make_non_solid(method: &str) -> bool {
+    let name = method.split(':').next().unwrap_or("");
+    matches!(name, "tta" | "mm" | "jpg")
+        && (!method.contains("*8") || method.contains(":o"))
+}
+
+/// `isFakeCompressor` (`Compression.hs:84`) — a lone `fake` or `crc` method.
+///
+/// Together with `aNO_COMPRESSION` this is what short-circuits `splitOneType`:
+/// "for fake compressors or -m0 there is no point in splitting the block into
+/// parts".
+pub fn is_fake_compressor(chain: &[String]) -> bool {
+    match chain {
+        [one] => matches!(one.split(':').next().unwrap_or(""), "fake" | "crc"),
+        _ => false,
+    }
+}
+
+/// Whether this compressor makes the solid sort order pointless
+/// (`Cmdline.hs:635`).
+///
+/// `getMainCompressor dataCompressor .$ anyf [(==aNO_COMPRESSION),
+/// isFakeCompressor, isVeryFastCompressor]` — when it holds, `sort_order` is
+/// `""` and files are packed in scan order instead of `"gerpn"`. The reasoning
+/// is that grouping similar files only pays if the compressor is slow enough to
+/// exploit the similarity; below that the reordering costs more than it saves.
+///
+/// Only `aNO_COMPRESSION` was implemented, so `-mtor:3` and `-mlzp:8m:64`
+/// silently sorted. Nothing caught it: the difftest harnesses drive `-m0`, and
+/// `-m0` takes the first clause. It is a FORMAT difference, not a ratio one —
+/// the files land in a different order inside the block.
+///
+/// Both `isFakeCompressor` and `isVeryFastCompressor` are
+/// `(method:xs) = … && null xs`: a chain of two methods is neither, however
+/// fast its parts are. That is why `-mdict:32k+lzma:1m` still sorts.
+pub fn disables_solid_sorting(chain: &[String]) -> bool {
+    let only = match chain {
+        [one] => one.as_str(),
+        _ => return false,
+    };
+    match only.split(':').next().unwrap_or("") {
+        // `aNO_COMPRESSION`, and the fake methods `--nodata`/`--crconly` write.
+        "storing" | "fake" | "crc" => true,
+        // `m.hash_row_width <= 2` (`C_Tornado.h:20`) — presets 0..4.
+        "tor" => match Method::parse(only) {
+            Some(Method::Tornado(p)) => p.hash_row_width <= 2,
+            Some(_) | None => false,
+        },
+        // `HashSizeLog <= 15` (`C_LZP.h:26`) — a hash of 128Kb or less.
+        "lzp" => match Method::parse(only) {
+            Some(Method::Lzp(p)) => p.hash_size_log <= 15,
+            Some(_) | None => false,
+        },
+        _ => false,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The boundaries, both of which are off-by-one-able: Tornado turns over
+    /// between preset 4 (row width 2) and 5 (row width 4), and LZP between a
+    /// 15-bit hash and a 16-bit one.
+    #[test]
+    fn only_a_single_fast_method_disables_the_solid_sort() {
+        let c = |s: &str| vec![s.to_string()];
+        for fast in ["storing", "fake", "crc", "tor:0", "tor:1", "tor:4", "lzp:8m:64:h15"] {
+            assert!(disables_solid_sorting(&c(fast)), "{fast} should disable sorting");
+        }
+        for slow in ["tor:5", "tor:9", "lzp:8m:64:h16", "lzma:1m", "ppmd:8m:o6"] {
+            assert!(!disables_solid_sorting(&c(slow)), "{slow} should keep sorting");
+        }
+        // `null xs`: two methods are never "a very fast compressor", so a chain
+        // built out of fast parts still sorts.
+        assert!(!disables_solid_sorting(&["tor:1".to_string(), "tor:1".to_string()]));
+        assert!(!disables_solid_sorting(&["dict:32k".to_string(), "lzma:1m".to_string()]));
+        assert!(!disables_solid_sorting(&[]));
+    }
 
     /// The suffix is ONE character. "16kb" is 16 KiB, and the 'b' is never
     /// looked at -- stripping it first yields "16k" and, in a previous life,

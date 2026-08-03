@@ -588,8 +588,6 @@ fn add(
     // are actually reached are checked below, once the split is known.
     let type_names: Vec<String> = decoded.iter().map(|(t, _)| t.clone()).collect();
     let chains: Vec<String> = decoded.iter().map(|(_, c)| c.join("+")).collect();
-    // The main chain, used for the single-block paths below.
-    let chain: &str = &chains[0];
     // `parseSolidOption` (Cmdline.hs:757).
     //
     // `-s` has NO command form. The `s…` command is `ch -sfx…`, not `ch -s…`
@@ -606,13 +604,14 @@ fn add(
             return 2;
         }
     };
-    // sort_order (Cmdline.hs:617): "" when the main compressor is
-    // aNO_COMPRESSION, and ALSO "" when group_data is [GroupNone] -- there is
-    // nothing to gain from ordering files that do not share a block. -m0 is the
-    // one level where the first clause applies, which is why it packs in scan
-    // order.
+    // sort_order (Cmdline.hs:617): "" when group_data is [GroupNone] -- there
+    // is nothing to gain from ordering files that do not share a block -- and
+    // "" again when the MAIN compressor is one whose speed makes the ordering
+    // not worth its cost. `getMainCompressor` is `snd . head`, the unnamed
+    // default type's chain, which is `decoded[0]`.
     let per_file = solid.data == vec![darc_arc::grouping::Grouping::None];
-    let sort_order = if chain == "storing" || per_file { "" } else { "gerpn" };
+    let fast_main = darc_arc::method::disables_solid_sorting(&decoded[0].1);
+    let sort_order = if fast_main || per_file { "" } else { "gerpn" };
     let recursive = parsed.flag("recursive");
     let nodates = parsed.flag("nodates");
     // `runDelete = runArchiveAdd . setArcFilter ((not.) . fullFileFilter)`
@@ -718,73 +717,101 @@ fn add(
     // (Arc.hs:200). Scanning them as a tree makes the port try to walk an
     // archive as a directory.
     let reads_disk = !(archive_only || command == "j");
-    for spec in if reads_disk { &specs[..] } else { &[][..] } {
+    let spec_list: &[String] = match reads_disk {
+        true => &specs[..],
+        false => &[],
+    };
+
+    // A filespec that NAMES A DIRECTORY is rewritten as the two wildcards `dir`
+    // and `dir/` (`FileInfo.hs:403`) -- the first for the addDir pass, the
+    // second for the walk. The trailing separator sets `dir_slash`, which is
+    // OR-ed into `recursive`, so such a spec is scanned recursively even
+    // without -r. Without that, `arc u -y archive .` silently missed every
+    // subdirectory.
+    let named_dir = |spec: &str| spec.ends_with('/') || std::path::Path::new(spec).is_dir();
+
+    // Pass one: addDir, in the order the specs were given, because the
+    // reference runs every filespec's addDir pass before any main walk.
+    for spec in spec_list {
         let root = spec.trim_end_matches('/');
-        // A filespec that NAMES A DIRECTORY is scanned recursively even without
-        // -r. find_filter_and_process_files (FileInfo.hs:403) rewrites it as the
-        // two wildcards "dir" and "dir/", and the trailing separator sets
-        // `dir_slash`, which is OR-ed into `recursive` (FileInfo.hs:461).
-        //
-        // Without this, `arc u -y archive .` silently misses every
-        // subdirectory -- 32 bytes on the update harness's tree, and an
-        // archive that lists as if the files had never existed.
-        let names_a_dir = spec.ends_with('/')
-            || std::path::Path::new(spec).is_dir();
-        if names_a_dir {
-            // `baseName fi `elem` masks`, where the masks are this filespec's
-            // last component and the pass scans its parent. That match can only
-            // succeed when the filespec HAS a last component, so `.`, `..` and
-            // `/` contribute nothing -- exactly what `file_name()` reports.
-            if std::path::Path::new(root).file_name().is_some() {
-                named_dirs.push((root.to_string(), std::path::PathBuf::from(root), true));
-            }
-            match scan(std::path::Path::new(spec), root, recursive || names_a_dir, &mut found) {
-                Ok(()) => {}
-                Err(e) => {
-                    eprintln!("ERROR: {spec}: {e}");
-                    return 2;
-                }
-            }
-            continue;
+        // `baseName fi `elem` masks`, where the masks are this filespec's last
+        // component and the pass scans its parent. That match can only succeed
+        // when the filespec HAS a last component, so `.`, `..` and `/`
+        // contribute nothing -- exactly what `file_name()` reports.
+        if named_dir(spec) && std::path::Path::new(root).file_name().is_some() {
+            named_dirs.push((root.to_string(), std::path::PathBuf::from(root), true));
         }
-        // A spec that does NOT name a directory is a directory part plus a
-        // MASK -- `a.txt`, `*.txt`, `sub/*.bin`. `scan` only walks directories,
-        // so before this every such spec failed with ENOTDIR and the port
-        // could archive nothing but a whole tree. Found through `@listfile`,
-        // whose whole output is names of this shape.
-        let (dir_part, mask) = match root.rfind('/') {
-            Some(i) => (&root[..i], &root[i + 1..]),
-            None => ("", root),
+    }
+
+    // Pass two: the walk. `mapM_ (find_files_in_one_dir curdir False) $
+    // sort_and_groupOn (filenameLower . takeDirectory) filespecs1` --
+    // specs are GROUPED by their directory and the groups run in SORTED order,
+    // neither of which is the order the user wrote them in. Both were missing,
+    // and each is invisible to a single-filespec case:
+    //
+    //   `arc a x.arc sub other` stores other/o.txt FIRST, because "other" sorts
+    //   before "sub" -- while the addDir entries stay `sub`, `other`.
+    //   `arc a x.arc '*.txt' '*.dat'` interleaves them in directory order
+    //   (a.txt, b.dat), because one scan of one directory serves both masks;
+    //   scanning per-spec emits every .txt and then every .dat.
+    //
+    // With -m0 nothing re-sorts afterwards (`aDEFAULT_SOLID_SORT_ORDER` is ""
+    // for the fake compressors), so this order IS the archive's order.
+    let mut groups: Vec<(String, Vec<String>, bool)> = Vec::new();
+    for spec in spec_list {
+        let root = spec.trim_end_matches('/');
+        let is_dir = named_dir(spec);
+        // `takeDirectory`/`takeFileName` of the rewritten spec. A directory
+        // spec becomes `dir/`, whose file name is empty -- and an empty mask is
+        // exactly what `dir_slash` tests for.
+        let (dir_part, mask) = match is_dir {
+            true => (root.to_string(), String::new()),
+            false => match root.rfind('/') {
+                Some(i) => (root[..i].to_string(), root[i + 1..].to_string()),
+                None => (String::new(), root.to_string()),
+            },
         };
+        match groups.iter_mut().find(|g| g.0.eq_ignore_ascii_case(&dir_part)) {
+            Some(g) => {
+                g.1.push(mask);
+                g.2 = g.2 || is_dir;
+            }
+            None => groups.push((dir_part, vec![mask], is_dir)),
+        }
+    }
+    // `filenameLower`, so the grouping and the ordering are case-insensitive.
+    groups.sort_by_key(|g| g.0.to_lowercase());
+
+    for (dir_part, masks, dir_slash) in groups {
         let base = match dir_part.is_empty() {
             true => std::path::Path::new("."),
-            false => std::path::Path::new(dir_part),
+            false => std::path::Path::new(dir_part.as_str()),
         };
-        // A mask with no wildcard and an existing file is that file, named as
-        // the user wrote it.
-        let literal = !mask.contains('*') && !mask.contains('?');
-        if literal && base.join(mask).is_file() {
-            found.push((root.to_string(), base.join(mask), false));
-            continue;
-        }
-        // Otherwise collect the directory and keep what matches. With -r the
-        // mask applies at every level, which is `scan_subdirs` feeding
-        // `recursive` in find_filter_and_process_files.
+        // `recursive = scan_subdirs || dir_slash` and `include_all = dir_slash
+        // || masks `contains` reANY_FILE` (FileInfo.hs:456).
+        let rec = recursive || dir_slash;
+        let include_all = dir_slash || masks.iter().any(|m| m == "*");
         let mut candidates: Vec<(String, std::path::PathBuf, bool)> = Vec::new();
-        match scan(base, dir_part, recursive, &mut candidates) {
+        match scan(base, &dir_part, rec, &mut candidates) {
             Ok(()) => {}
             Err(e) => {
-                eprintln!("ERROR: {spec}: {e}");
+                eprintln!("ERROR: {}: {e}", dir_part.as_str());
                 return 2;
             }
         }
-        let masks = [mask.to_string()];
         for (stored, disk, is_dir) in candidates {
-            // Directories are decided by --dirs/--nodirs, never by the mask.
-            if is_dir {
-                continue;
-            }
-            if darc_arc::sort::match_filespecs(&masks, &stored, false) {
+            let keep = match is_dir {
+                // A directory's name is never matched against the masks:
+                // `accept_f`'s directory arm tests `no_nst_filters && recursive
+                // && include_all` and nothing else. The n/s/t half is
+                // `keep_dirs`, applied below.
+                true => rec && include_all,
+                false => {
+                    include_all
+                        || darc_arc::sort::match_filespecs(&masks, &stored, false)
+                }
+            };
+            if keep {
                 found.push((stored, disk, is_dir));
             }
         }
@@ -1404,9 +1431,39 @@ fn add(
     let mut reordered: Vec<Entry> = Vec::new();
     for (ty, group) in &type_groups {
         let chain = &chains[*ty];
+        // `addBlockSizeCrit` (`ArhiveFileList.hs:323`) -- criteria the
+        // COMPRESSOR imposes on top of the user's -s. It was ported and then
+        // never called, so a `dict:32k` chain packed one solid block of
+        // whatever size -s allowed instead of capping at 32Kb, and a tta/mm/jpg
+        // chain stayed solid when it must not be. Both are format differences:
+        // they move where blocks end.
+        let methods = &decoded[*ty].1;
         let crits: Vec<darc_arc::grouping::Grouping> = match chain.as_str() {
             "storing" => Vec::new(),
-            _ => solid.data.clone(),
+            _ if darc_arc::method::is_fake_compressor(methods) => Vec::new(),
+            _ => {
+                let first = methods.first().map(String::as_str).unwrap_or("");
+                let parsed = darc_arc::method::Method::parse(first);
+                let size = parsed.as_ref().map_or(0, darc_arc::method::block_size);
+                // A DICT chain is capped at its block size wherever dict sits
+                // first; any OTHER block algorithm only when it is alone.
+                let is_dict = first.split(':').next() == Some("dict");
+                let dict_block = match is_dict {
+                    true => Some(size),
+                    false => None,
+                };
+                let lone_block = match size > 0 {
+                    true => Some(size),
+                    false => None,
+                };
+                darc_arc::grouping::add_block_size_crit(
+                    methods,
+                    darc_arc::method::make_non_solid(first),
+                    dict_block,
+                    lone_block,
+                    &solid.data,
+                )
+            }
         };
         let items: Vec<darc_arc::grouping::Item> = group
             .iter()
