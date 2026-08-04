@@ -2168,7 +2168,11 @@ fn add(
                 // one, and the port wrote one either way until this.
                 let parsed = darc_arc::method::Method::parse(first).map(|m| {
                     let mut one = [m];
+                    // BOTH limits, in the reference's order (`Cmdline.hs`), and
+                    // NOT the dictionary limit -- that is per block, and the
+                    // criteria are what DECIDE the blocks.
                     darc_arc::memlimit::limit_compression_mem(&mut one, climit);
+                    darc_arc::memlimit::limit_decompression_mem(&mut one, dlimit);
                     let [m] = one;
                     m
                 });

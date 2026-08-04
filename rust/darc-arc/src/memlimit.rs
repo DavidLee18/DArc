@@ -137,8 +137,19 @@ pub fn set_dictionary(m: &mut Method, dict: u32) {
     }
 }
 
-/// `GRZ_MaxBlockSize`, which bounds what GRZip's `SetBlockSize` accepts.
-const GRZ_MAX_BLOCK_SIZE: u32 = 1024 * 1024 * 1024;
+/// `GRZ_MaxBlockSize` (`C_GRZip.h:11`), which bounds what GRZip's
+/// `SetBlockSize` accepts.
+///
+/// `8*1024*1024-512`, and the 512 matters. This was 1 GB here, which is not a
+/// cap at all: `-mgrzip -md20m` over a corpus larger than 8 MB then wrote
+/// `grzip:17mb` where the reference writes `grzip:8388096b`, a different method
+/// string and a different archive.
+///
+/// It hid because `limitDictionary` only ever SHRINKS, so the ordinary path can
+/// never push a block past the cap — only an explicit `-md` above 8 MB reaches
+/// it, and only on a solid block big enough that the data does not shrink it
+/// first. A smaller corpus makes the test pass while proving nothing.
+const GRZ_MAX_BLOCK_SIZE: u32 = 8 * 1024 * 1024 - 512;
 
 /// `lb` — floor(log2), as the C's bit-length helper computes it.
 fn lb(n: u32) -> u32 {
@@ -363,8 +374,10 @@ pub fn get_decompression_mem(m: &Method) -> u64 {
         Method::Rep(p) => u64::from(p.block_size),
         // Flat constants (C_TTA.h:34, C_MM.h:48).
         Method::Tta(_) | Method::Mm(_) => MB,
-        // BSC needs the block plus its working set; the C reports BlockSize.
-        Method::Bsc(p) => u64::from(p.block_size),
+        // `BlockSize * 3` (C_BSC.h:49). This returned BlockSize, with a
+        // comment asserting that is what the C reports -- it is not, and the
+        // wrong figure meant `-ld` never bound on a bsc chain.
+        Method::Bsc(p) => u64::from(p.block_size) * 3,
         // `BlockSize*2` (C_LZ4.h:23).
         Method::Lz4(p) => u64::from(p.block_size) * 2,
         // `(1 << (WindowLog ?: 23)) + 128kb` (C_Zstd.cpp:96) -- dominated by the
@@ -458,13 +471,24 @@ pub fn set_decompression_mem(m: &mut Method, mem: u64) {
         // so a limit never reaches its inner method this way. TTA's and MM's
         // are empty too (C_TTA.h:38, C_MM.h:52), and Zstd's is `{}`
         // (C_Zstd.h:45).
-        // LZ4's `SetDecompressionMem` forwards to `SetCompressionMem`
-        // (C_LZ4.h:27), which resizes the block. Nothing here models that
-        // heuristic, so the block is left alone rather than resized wrongly --
-        // this only ever loosens a memory limit, never changes what is written.
-        Method::Lz4(_)
-        | Method::Bsc(_)
-        | Method::Tta(_)
+        // `SetBlockSize (mem / 3)` (C_BSC.h:53), and `SetBlockSize` is
+        // `if (bs > 0) BlockSize = bs` with no clamp.
+        Method::Bsc(p) => {
+            let bs = (mem / 3).min(u64::from(u32::MAX)) as u32;
+            if bs > 0 {
+                p.block_size = bs;
+            }
+        }
+        // `SetDecompressionMem` forwards to `SetCompressionMem` (C_LZ4.h:27).
+        // This used to do nothing, on the reasoning that leaving the block
+        // alone "only ever loosens a memory limit, never changes what is
+        // written" -- which is wrong twice over: the block size is stored in
+        // the method string, and it is also a solid-block criterion, so it
+        // moves where blocks end.
+        Method::Lz4(_) => {
+            set_compression_mem(m, mem);
+        }
+        Method::Tta(_)
         | Method::Mm(_)
         | Method::Zstd(_)
         | Method::FourX4(_)
@@ -1056,7 +1080,7 @@ pub fn compression_mem_is_known(chain: &[Method]) -> bool {
 #[cfg(test)]
 mod lzma2_and_lc_tests {
     use super::*;
-    use crate::method::Method;
+    use crate::method::{Lz4Params, Method};
 
     fn m(s: &str) -> Method {
         Method::parse(s).expect("parses")
@@ -1141,6 +1165,38 @@ mod lzma2_and_lc_tests {
         // this port cannot canonicalise would be rewritten behind the user.
         assert_eq!(real_compressor("anything:at:all", u64::MAX), "anything:at:all");
         set_compression_threads(0);
+    }
+
+    /// Three bugs that all hid the same way: the limit never bound, because
+    /// every corpus the harnesses used was smaller than the codec's own
+    /// constant. Each of these needs a block ABOVE 8 MB to fail.
+    #[test]
+    fn limits_that_only_bind_on_a_large_block() {
+        // GRZip's cap is 8 MB - 512, not "big". At 1 GB, `-mgrzip -md20m` wrote
+        // grzip:17mb where the reference writes grzip:8388096b.
+        let mut g = m("grzip");
+        set_dictionary(&mut g, 20 * MB as u32);
+        assert_eq!(get_dictionary(&g), 8 * 1024 * 1024 - 512);
+        // Under the cap the value passes through untouched, which is why a
+        // small corpus never noticed.
+        let mut small = m("grzip");
+        set_dictionary(&mut small, 4 * MB as u32);
+        assert_eq!(get_dictionary(&small), 4 * MB as u32);
+
+        // BSC decompression is BlockSize*3, and its setter is mem/3. Both were
+        // wrong: the getter returned BlockSize and the setter did nothing, so
+        // `-ld` never bound on a bsc chain at all.
+        assert_eq!(get_decompression_mem(&m("bsc:1m")), 3 * MB);
+        let mut b = m("bsc");
+        set_decompression_mem(&mut b, 8 * MB);
+        assert_eq!(get_dictionary(&b), (8 * MB / 3) as u32);
+
+        // LZ4's SetDecompressionMem forwards to SetCompressionMem; it used to
+        // be a no-op "because it only loosens a limit". It does not: the block
+        // size is stored AND is a solid-block criterion.
+        let mut l = m("lz4");
+        set_decompression_mem(&mut l, 8 * MB);
+        assert_ne!(get_dictionary(&l), Lz4Params::default().block_size);
     }
 
     /// `1<<lb(mem/7*6)`, integer division first. `*6/7` would give 3 670 016
