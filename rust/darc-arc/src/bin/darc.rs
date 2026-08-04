@@ -317,7 +317,7 @@ fn main() {
         "recovery", "volume", "sfx", "noarcext", "charset", "original", "overwrite",
         "keepbroken", "keeptime", "timetolast", "test", "autogenerate",
         "pause-before-exit", "queue", "pretest", "logfile", "proxy", "bypass",
-        "type", "dirmethod", "adddir", "nodata", "crconly", "LimitDecompMem", "nodir", "LimitCompMem", "sort", "config", "env", "workdir", "create-in-workdir", "save-bad-ranges",
+        "type", "dirmethod", "adddir", "nodata", "crconly", "LimitDecompMem", "nodir", "LimitCompMem", "sort", "config", "env", "workdir", "create-in-workdir", "save-bad-ranges", "BrokenArchive",
         // Accepted and deliberately ignored: UI only.
         "yes", "indicator", "display",
         // Accepted and deliberately ignored: these change SPEED or a Windows
@@ -380,30 +380,6 @@ fn main() {
                 }
                 std::process::exit(2);
             }
-        }
-        // -ba is refused rather than half-implemented, and the reason is
-        // worth stating: it reads the block list by SCANNING for descriptors
-        // instead of following the footer (ArhiveDirectory.hs:79,
-        // findBlocksInBrokenArchive at ArhiveStructure.hs:96), so an archive
-        // whose footer is gone can still be read.
-        //
-        // A scan built on this port's `block::find_descriptor` produced no
-        // blocks at all, and there is no oracle to debug it against: the
-        // 9a127e6 reference's OWN -ba fails for every value, on an intact
-        // archive as well as a truncated one, with "archive directory not
-        // found". Measured on both, not assumed.
-        //
-        // A scanner that quietly returns nothing would list a GOOD archive as
-        // empty, which reads as "no files" rather than as a failure. That is
-        // the outcome refusing avoids.
-        if names.contains(&"BrokenArchive") {
-            eprintln!(
-                "ERROR: -ba is not implemented: reading an archive by scanning \
-                 for block descriptors, rather than through its footer, is a \
-                 feature this port does not have. Repair the archive with the \
-                 `r` command instead."
-            );
-            std::process::exit(2);
         }
         eprintln!(
             "ERROR: this port does not implement {} yet, and ignoring it would \
@@ -550,7 +526,23 @@ fn main() {
     // the default "-" reads the block list by SCANNING for descriptors rather
     // than following the footer, so an archive whose footer is gone can still
     // be listed and extracted. `-ba` bare is "0" (Cmdline.hs:128).
-    let open_existing = || match archive::read_info(path, &pw) {
+    // `findReqArg o "BrokenArchive" "-" ||| "0"` (Cmdline.hs:128): absent is
+    // "-", a BARE -ba is the empty string and becomes "0". The value is only
+    // ever tested against "-" (ArhiveDirectory.hs:79), so 0 and 1 behave
+    // identically -- the option is on or off -- but the other values are still
+    // refused, as `testOption` refuses them.
+    let broken = match parsed.arg("BrokenArchive", "-") {
+        "" => "0",
+        v => v,
+    };
+    if !matches!(broken, "-" | "0" | "1") {
+        eprintln!("ERROR: -ba{broken}: expected one of -, 0, 1");
+        std::process::exit(2);
+    }
+    let open_existing = || match match broken {
+        "-" => archive::read_info(path, &pw),
+        _ => archive::read_info_broken(path, &pw),
+    } {
         Ok(i) => i,
         Err(e) => {
             eprintln!("ERROR: {e}");
