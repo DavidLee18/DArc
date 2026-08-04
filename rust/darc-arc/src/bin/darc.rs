@@ -951,15 +951,20 @@ fn add(
     // `SetCompressionThreads (cthreads)` (Cmdline.hs:294) -- "before the command
     // starts, tell the compression library how many threads it should use".
     //
-    // Here that is rayon's global pool, which is what parallelises 4x4's chunks
-    // and the block decoder. Zero means "as many as the machine has", which is
-    // already rayon's default, so only a positive value does anything.
+    // Two consumers. `memlimit::set_compression_threads` is the C's global,
+    // which GRZip's and 4x4's memory formulas divide by and which LZMA2 hands
+    // straight to its encoder -- there it decides whether the stream is one
+    // solid block or several, so it is archive-visible. The rayon pool below is
+    // this port's own parallelism, and is not.
     //
-    // This does NOT change any archive: measured, `-mgrzip`, `-m4x4:tor` and
-    // `-m9` are byte-identical to the reference under -mt1 and -mt8 alike. The
-    // thread count only reaches GRZip's and 4x4's MEMORY formulas, and those
-    // move the output only when a limit forces a refit. Without this the option
-    // parsed correctly and then controlled nothing at all.
+    // Measured before LZMA2 existed here: `-mgrzip`, `-m4x4:tor` and `-m9` are
+    // byte-identical to the reference under -mt1 and -mt8 alike, because the
+    // thread count reaches only those memory formulas and they move the output
+    // only when a limit forces a refit. `-mlzma2` is the method that breaks
+    // that pattern.
+    darc_arc::memlimit::set_compression_threads(mopts.threads);
+    // Zero means "as many as the machine has", which is already rayon's
+    // default, so only a positive value does anything to the pool.
     if mopts.threads > 0 {
         // Errors only if a pool already exists, which cannot happen this early;
         // either way a failure here just leaves the default pool in place.
@@ -1074,16 +1079,15 @@ fn add(
 
     // An EXPLICIT -lc over a chain this port cannot measure is refused.
     //
-    // `get_compression_mem` returns None for Tornado, REP, LZP, GRZip, LZ4,
-    // Zstd and 4x4, and `limit_compression_mem` leaves those alone -- so
-    // `-mtor -lc8m` would exit 0 with Tornado UNLIMITED. The user asked for a
-    // memory cap and would not get one, which on a small machine is an OOM
-    // rather than a smaller chain. That is the silent no-op this port refuses
-    // everywhere else, and refusing it here too is the consistent answer.
+    // Every method DArc can parse now has a formula, so the only chain that
+    // reaches this is one containing a method with no `Method` variant at all --
+    // and that is refused at write time anyway. The check stays because the
+    // failure it guards against is silent: `limit_compression_mem` leaves a
+    // method with no formula ALONE, so `-lc8m` would exit 0 having capped
+    // nothing, which on a small machine is an OOM rather than a smaller chain.
     //
-    // The DEFAULT limit deliberately does not refuse: it is 75% of RAM, it
-    // does not bind for the chains DArc ships, and refusing there would make
-    // every -mtor archive fail.
+    // The DEFAULT limit deliberately does not refuse: it is 75% of RAM, and
+    // refusing there would make an archive fail for a limit nobody asked for.
     if parsed.arg("LimitCompMem", "--") != "--" {
         for (ty, chain) in &decoded {
             let parsed_chain = darc_arc::method::Method::parse_chain(chain);
@@ -2114,7 +2118,13 @@ fn add(
                     }
                 };
                 let compressor: Vec<String> = fitted.split('+').map(str::to_string).collect();
-                match w.write_compressed_data(&body, compressor, group.len()) {
+                // The chain that COMPRESSES is limited a second time, per block and
+                // after the dictionary was fitted -- and it is not the one stored.
+                let real: Vec<String> = darc_arc::memlimit::real_compressor(&fitted, climit)
+                    .split('+')
+                    .map(str::to_string)
+                    .collect();
+                match w.write_compressed_data(&body, compressor, real, group.len()) {
                     Ok(b) => b,
                     Err(e) => {
                         eprintln!("ERROR: {e}");
@@ -2149,7 +2159,19 @@ fn add(
             _ if darc_arc::method::is_fake_compressor(methods) => Vec::new(),
             _ => {
                 let first = methods.first().map(String::as_str).unwrap_or("");
-                let parsed = darc_arc::method::Method::parse(first);
+                // `-lc` reaches the GROUPING, not just the chain. The criteria
+                // come from `compressor` in `ArhiveFileList.hs`, and that has
+                // already been through `limitCompressionMem climit`
+                // (`Cmdline.hs`) -- so a limit that shrinks a block method's
+                // block size moves where solid blocks END. Measured:
+                // `-mgrzip -lc2m` writes TWO data blocks where `-lc4m` writes
+                // one, and the port wrote one either way until this.
+                let parsed = darc_arc::method::Method::parse(first).map(|m| {
+                    let mut one = [m];
+                    darc_arc::memlimit::limit_compression_mem(&mut one, climit);
+                    let [m] = one;
+                    m
+                });
                 let size = parsed.as_ref().map_or(0, darc_arc::method::block_size);
                 // A DICT chain is capped at its block size wherever dict sits
                 // first; any OTHER block algorithm only when it is alone.
@@ -2200,7 +2222,13 @@ fn add(
                 }
             };
             let compressor: Vec<String> = fitted.split('+').map(str::to_string).collect();
-            match w.write_compressed_data(&body, compressor, len) {
+            // The chain that COMPRESSES is limited a second time, per block and
+            // after the dictionary was fitted -- and it is not the one stored.
+            let real: Vec<String> = darc_arc::memlimit::real_compressor(&fitted, climit)
+                .split('+')
+                .map(str::to_string)
+                .collect();
+            match w.write_compressed_data(&body, compressor, real, len) {
                 Ok(b) => data_blocks.push(b),
                 Err(e) => {
                     eprintln!("ERROR: {e}");

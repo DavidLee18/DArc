@@ -239,6 +239,43 @@ pub struct MmParams {
     pub extra: i32,
 }
 
+/// `lzma2:...` (`C_LZMA2.cpp:118`).
+///
+/// The same knobs as [`LzmaParams`] minus `hash_size`: `LZMA2_METHOD` has no
+/// `h` parameter, so `lzma2:h4mb` is a rejected string where `lzma:h4mb` is not.
+/// Kept as its own struct rather than reusing `LzmaParams` for exactly that
+/// reason — a shared struct would carry a field the format cannot express, and
+/// the printer would have to remember never to print it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Lzma2Params {
+    pub dictionary_size: u32,
+    pub algorithm: u32,
+    pub num_fast_bytes: u32,
+    pub match_finder: u32,
+    pub match_finder_cycles: u32,
+    pub pos_state_bits: u32,
+    pub lit_context_bits: u32,
+    pub lit_pos_bits: u32,
+}
+
+impl Default for Lzma2Params {
+    /// `LZMA2_METHOD::LZMA2_METHOD()` (`C_LZMA2.cpp:40`) — field for field the
+    /// same values as LZMA's constructor, which is why a bare `lzma2` and a bare
+    /// `lzma` differ only in the container.
+    fn default() -> Self {
+        Lzma2Params {
+            dictionary_size: 64 * 1024 * 1024,
+            algorithm: 1,
+            num_fast_bytes: 32,
+            match_finder: MF_HT4,
+            match_finder_cycles: 0,
+            pos_state_bits: 2,
+            lit_context_bits: 3,
+            lit_pos_bits: 0,
+        }
+    }
+}
+
 /// `bsc:...` (`C_BSC.cpp:218`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct BscParams {
@@ -312,6 +349,9 @@ pub enum Method {
     /// CRC32s recorded, but the data is still not stored.
     Crc,
     Lzma(LzmaParams),
+    /// `lzma2` — the same LZMA coder inside the chunked LZMA2 container, which
+    /// is a different wire format and so a different method, not a parameter.
+    Lzma2(Lzma2Params),
     Ppmd(PpmdParams),
     /// Tornado. The decoder reads everything it needs from the stream header;
     /// the parameters here exist so the method string can be printed back.
@@ -371,6 +411,7 @@ impl Method {
             "fake" => Some(Method::Fake),
             "crc" => Some(Method::Crc),
             "lzma" => parse_lzma(params.into_iter()).map(Method::Lzma),
+            "lzma2" => parse_lzma2(&params).map(Method::Lzma2),
             "ppmd" => parse_ppmd(&params).map(Method::Ppmd),
             "tor" => parse_tornado(&params).map(Method::Tornado),
             "rep" => parse_rep(&params).map(Method::Rep),
@@ -1241,6 +1282,114 @@ fn parse_lzma<'a, I: Iterator<Item = &'a str>>(params: I) -> Option<LzmaParams> 
     Some(p)
 }
 
+/// `parse_LZMA2` (`C_LZMA2.cpp:118`).
+///
+/// Deliberately a separate walk from [`parse_lzma`] rather than a shared one,
+/// because the two grammars differ in three places and every difference is a
+/// string one side accepts and the other rejects:
+///
+/// * no `h` — LZMA2 has no hash-size parameter;
+/// * `mf=NAME` only. `start_from2(param, "mf=")` is the whole test, so the bare
+///   `mfBT4` spelling `parse_LZMA` also takes is an error here;
+/// * a bare match-finder name (`BT4`) is still accepted, before either.
+fn parse_lzma2(params: &[&str]) -> Option<Lzma2Params> {
+    let mut p = Lzma2Params::default();
+    for param in params {
+        match *param {
+            "max" | "normal" => {
+                p.algorithm = 1;
+                continue;
+            }
+            "fast" | "fastest" => {
+                p.algorithm = 0;
+                continue;
+            }
+            // The end marker is always written, so asking for it is a no-op.
+            "eos" => continue,
+            _ => {}
+        }
+        match find_match_finder(param) {
+            Some(mf) => {
+                p.match_finder = mf;
+                continue;
+            }
+            None => {}
+        }
+        match param.strip_prefix("mf=") {
+            // `if (mf < 0) { error=1; break; }` -- an unknown name after `mf=`
+            // rejects the whole string rather than falling through to the
+            // switch, which would read the 'm' as the start of `mc`.
+            Some(rest) => {
+                p.match_finder = find_match_finder(rest)?;
+                continue;
+            }
+            None => {}
+        }
+        let two = param.get(..2).unwrap_or("");
+        let handled = match two {
+            "pb" => {
+                p.pos_state_bits = parse_int(&param[2..])?;
+                true
+            }
+            "lc" => {
+                p.lit_context_bits = parse_int(&param[2..])?;
+                true
+            }
+            "lp" => {
+                p.lit_pos_bits = parse_int(&param[2..])?;
+                true
+            }
+            "fb" => {
+                p.num_fast_bytes = parse_int(&param[2..])?;
+                true
+            }
+            "mc" => {
+                p.match_finder_cycles = parse_int(&param[2..])?;
+                true
+            }
+            _ => false,
+        };
+        if handled {
+            continue;
+        }
+        match param.chars().next() {
+            Some('d') => {
+                p.dictionary_size = parse_mem(&param[1..])?;
+                continue;
+            }
+            Some('a') => {
+                p.algorithm = parse_int(&param[1..])?;
+                continue;
+            }
+            // As in `parse_lzma`: a leading digit is a dictionary size only
+            // when a b/k/m/g suffix follows the digits, and a fast-byte count
+            // otherwise. A `d`-less `64m` therefore sets the dictionary, while
+            // a bare `64` sets fb.
+            Some(c) if c.is_ascii_digit() => {
+                let digits = param.chars().take_while(char::is_ascii_digit).count();
+                match param[digits..].chars().next() {
+                    Some('b') | Some('k') | Some('m') | Some('g') => match parse_mem(param) {
+                        Some(m) => {
+                            p.dictionary_size = m;
+                            continue;
+                        }
+                        // `error = 0` -- the C clears it and tries fb.
+                        None => {}
+                    },
+                    Some(_) | None => {}
+                }
+                p.num_fast_bytes = parse_int(param)?;
+                continue;
+            }
+            // Anything else, including a `p`/`l`/`f`/`m` whose second letter did
+            // not match above: the C's switch `break`s, the digit test fails on
+            // a non-digit, and `error = 1`.
+            Some(_) | None => return None,
+        }
+    }
+    Some(p)
+}
+
 /// `GetBlockSize` (`Compression.h:341`) — how much data the method processes at
 /// one time, and `0` for the ones that stream.
 ///
@@ -1270,6 +1419,9 @@ pub fn block_size(m: &Method) -> u64 {
         | Method::Zstd(_)
         | Method::Storing
         | Method::Lzma(_)
+        // `{return 0;}` (C_LZMA2.h:28). LZMA2 does chunk its input internally,
+        // but it never asks the archiver for a boundary.
+        | Method::Lzma2(_)
         | Method::Ppmd(_)
         | Method::Tornado(_)
         | Method::Rep(_)
@@ -1595,5 +1747,106 @@ mod tests {
             }
             other => panic!("{other:?}"),
         }
+    }
+}
+
+#[cfg(test)]
+mod lzma2_tests {
+    use super::{Lzma2Params, Method};
+
+    fn p(s: &str) -> Lzma2Params {
+        match Method::parse(s) {
+            Some(Method::Lzma2(p)) => p,
+            other => panic!("{s} parsed as {other:?}"),
+        }
+    }
+
+    /// A bare `lzma2` is the constructor's values, and those are format: they
+    /// are what every `-mlzma2` block is written with.
+    #[test]
+    fn bare_lzma2_is_the_constructor_defaults() {
+        let d = Lzma2Params::default();
+        assert_eq!(Method::parse("lzma2"), Some(Method::Lzma2(d)));
+        assert_eq!(d.dictionary_size, 64 * 1024 * 1024);
+        assert_eq!(d.num_fast_bytes, 32);
+        assert_eq!(d.match_finder, 4);
+        assert_eq!(d.pos_state_bits, 2);
+        assert_eq!(d.lit_context_bits, 3);
+    }
+
+    /// The digit rule: a memory suffix makes it a dictionary, its absence makes
+    /// it a fast-byte count. Getting this backwards silently rewrites the
+    /// dictionary of every `-mlzma2:64` archive.
+    #[test]
+    fn a_leading_digit_is_a_dictionary_only_with_a_unit() {
+        assert_eq!(p("lzma2:1m").dictionary_size, 1024 * 1024);
+        assert_eq!(p("lzma2:1m").num_fast_bytes, 32);
+        assert_eq!(p("lzma2:64").num_fast_bytes, 64);
+        assert_eq!(p("lzma2:64").dictionary_size, 64 * 1024 * 1024);
+        assert_eq!(p("lzma2:d64k").dictionary_size, 64 * 1024);
+    }
+
+    /// Where the grammar differs from LZMA's, and each difference is a string
+    /// one accepts and the other rejects.
+    #[test]
+    fn lzma2_grammar_is_not_lzmas() {
+        // No `h`: LZMA takes a hash size, LZMA2 has no such field.
+        assert!(Method::parse("lzma:h4m").is_some());
+        assert_eq!(Method::parse("lzma2:h4m"), None);
+        // `mf=NAME` only -- `start_from2(param,"mf=")` is the whole test.
+        assert_eq!(p("lzma2:mf=BT4").match_finder, 2);
+        assert_eq!(Method::parse("lzma2:mfBT4"), None);
+        // A bare match-finder name is still taken, before either.
+        assert_eq!(p("lzma2:BT2").match_finder, 0);
+        assert_eq!(p("lzma2:hc4").match_finder, 3);
+        // An unknown name after `mf=` rejects the whole string rather than
+        // falling through to reading the 'm' as `mc`.
+        assert_eq!(Method::parse("lzma2:mf=nope"), None);
+    }
+
+    #[test]
+    fn lzma2_named_parameters() {
+        assert_eq!(p("lzma2:a0").algorithm, 0);
+        assert_eq!(p("lzma2:fast").algorithm, 0);
+        assert_eq!(p("lzma2:fastest").algorithm, 0);
+        assert_eq!(p("lzma2:max").algorithm, 1);
+        assert_eq!(p("lzma2:normal").algorithm, 1);
+        assert_eq!(p("lzma2:fb128").num_fast_bytes, 128);
+        assert_eq!(p("lzma2:mc48").match_finder_cycles, 48);
+        assert_eq!(p("lzma2:pb1").pos_state_bits, 1);
+        assert_eq!(p("lzma2:lc0").lit_context_bits, 0);
+        assert_eq!(p("lzma2:lp1").lit_pos_bits, 1);
+        // "eos" is accepted and ignored: the end marker is always written.
+        assert_eq!(Method::parse("lzma2:eos"), Method::parse("lzma2"));
+        // A `p`, `l`, `f` or `m` whose second letter is not one of the known
+        // pairs is an error, not a silently ignored parameter.
+        assert_eq!(Method::parse("lzma2:px1"), None);
+        assert_eq!(Method::parse("lzma2:zz"), None);
+    }
+
+    /// Parse then print must round-trip, because the printed string is what
+    /// goes into the archive and what a later read parses back.
+    #[test]
+    fn lzma2_round_trips_through_the_printer() {
+        for s in [
+            "lzma2",
+            "lzma2:1mb",
+            "lzma2:64kb:a0",
+            "lzma2:1mb:fb128",
+            "lzma2:1mb:mf=BT4",
+            "lzma2:1mb:mc48",
+            "lzma2:1mb:pb1:lc1:lp1",
+        ] {
+            let first = crate::canonize::show(&Method::parse(s).expect(s));
+            let again = crate::canonize::show(&Method::parse(&first).expect(&first));
+            assert_eq!(first, again, "{s} did not round-trip");
+        }
+        // The canonical spelling of the defaults, which is what a bare -mlzma2
+        // stores.
+        assert_eq!(crate::canonize::show(&Method::parse("lzma2").unwrap()), "lzma2:64mb");
+        assert_eq!(
+            crate::canonize::show(&Method::parse("lzma2:1m:BT4:fb64").unwrap()),
+            "lzma2:1mb:fb64:mf=BT4"
+        );
     }
 }

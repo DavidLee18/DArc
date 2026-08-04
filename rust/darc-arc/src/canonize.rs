@@ -19,7 +19,8 @@
 //! parameter combinations.
 
 use crate::method::{
-    BscParams, DeltaParams, DictParams, Lz4Params, LzmaParams, LzpParams, Method, MmParams,
+    BscParams, DeltaParams, DictParams, Lz4Params, Lzma2Params, LzmaParams, LzpParams, Method,
+    MmParams,
     PpmdParams, ZstdParams,
 };
 
@@ -63,6 +64,7 @@ pub fn show(method: &Method) -> String {
         Method::Fake => "fake".to_string(),
         Method::Crc => "crc".to_string(),
         Method::Lzma(p) => show_lzma(p),
+        Method::Lzma2(p) => show_lzma2(p),
         Method::Ppmd(p) => show_ppmd(p),
         Method::Delta(p) => show_delta("delta", p),
         // `dispack070` is the name parse_DISPACK prints (C_DisPack.cpp:131).
@@ -88,6 +90,39 @@ pub fn show(method: &Method) -> String {
 fn show_lzma(p: &LzmaParams) -> String {
     let d = LzmaParams::default();
     let mut s = format!("lzma:{}", show_mem(p.dictionary_size));
+    if p.algorithm != d.algorithm {
+        s += &format!(":a{}", p.algorithm);
+    }
+    if p.num_fast_bytes != d.num_fast_bytes {
+        s += &format!(":fb{}", p.num_fast_bytes);
+    }
+    if p.match_finder != d.match_finder {
+        s += &format!(":mf={}", match_finder_name(p.match_finder));
+    }
+    if p.match_finder_cycles != d.match_finder_cycles {
+        s += &format!(":mc{}", p.match_finder_cycles);
+    }
+    if p.pos_state_bits != d.pos_state_bits {
+        s += &format!(":pb{}", p.pos_state_bits);
+    }
+    if p.lit_context_bits != d.lit_context_bits {
+        s += &format!(":lc{}", p.lit_context_bits);
+    }
+    if p.lit_pos_bits != d.lit_pos_bits {
+        s += &format!(":lp{}", p.lit_pos_bits);
+    }
+    s
+}
+
+/// `LZMA2_METHOD::ShowCompressionMethod` (`C_LZMA2.cpp:102`).
+///
+/// The same shape as `show_lzma` and in the same field order, which is the
+/// order the C's `sprintf`s run in. Not shared with it: LZMA's printer also has
+/// an `h` clause, and the two default sets are separate constructors that the
+/// format is entitled to move apart.
+fn show_lzma2(p: &Lzma2Params) -> String {
+    let d = Lzma2Params::default();
+    let mut s = format!("lzma2:{}", show_mem(p.dictionary_size));
     if p.algorithm != d.algorithm {
         s += &format!(":a{}", p.algorithm);
     }

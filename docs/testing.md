@@ -113,9 +113,17 @@ sort-order decision, and `addBlockSizeCrit` having been ported and never called.
 ### What the port cannot do
 
 `Tests/run-tests.sh` scores 24 passed / 0 failed / 0 skipped — the same as the
-reference. The five methods that had no `Method` variant (`mm`, `tta`, `bsc`,
-`lz4`, `zstd`) and the `-m` value grammar (`-mt`, `-ms`, `-md`) are implemented
-and gated by the golden corpus.
+reference. The six methods that had no `Method` variant (`mm`, `tta`, `bsc`,
+`lz4`, `zstd`, `lzma2`) and the `-m` value grammar (`-mt`, `-ms`, `-md`) are
+implemented and gated by the golden corpus.
+
+`lzma2` was the last of them, and it is the one to copy if another turns up. It
+was gated on 23 method strings byte-identical to the reference, on `-mt1` versus
+`-mt8` — which write *different* archives on both sides, so the pair proves the
+thread count is really plumbed rather than merely accepted — and on all four
+cross-extractions per case, since a missing variant makes an archive unreadable
+as well as unwritable. That last direction is the half a write-side matrix
+cannot see.
 
 The SKIP machinery in `run-tests.sh` and `sfx-roundtrip.sh` is kept even though
 nothing trips it now. It matches on the binary's own "cannot write yet" wording,
@@ -126,6 +134,36 @@ Still refused rather than implemented: `-mm` (multimedia mode), `-ma`
 (autodetect level) and `-mc` (disable an algorithm) each change the chain, so
 they are rejected outright rather than ignored, on the same rule the HONOURED
 option list follows. `-lc-`/`-ld-` are not accepted at all.
+
+`-lc` is served for every method, and getting there is the cautionary tale in
+this file.
+
+Every method has a `GetCompressionMem`/`SetCompressionMem`, checked by reading
+the stored method string back out of the archive rather than by trusting the
+arithmetic — `-mgrzip -lc4m` stores `grzip:466033b` on both sides, and 466033 is
+4194304/9 exactly. **All of those agreed, and the archives still differed.**
+
+Agreeing on the stored method string is not evidence that the same bytes were
+written, because under `-lc` the stored chain is *not* the chain that
+compresses. `-lc` is applied three times: at parse time to what is stored, to
+the solid-block grouping (a shrunk block method moves where blocks end), and per
+block after the dictionary is fitted to produce `real_compressor`
+(`ArcvProcessRead.hs:134`), which also sees a different thread count because
+`setup_command` has run by then. The port implemented only the first, so it
+stored the right string and compressed with the wrong chain.
+
+Two habits earned here:
+
+* **A canonicalisation check would have called this green.** So would any
+  harness comparing method strings. Only comparing archive bytes caught it.
+* **When the artefacts differ and every intermediate agrees, ask the reference
+  what it did rather than modelling it.** Two threshold models were fitted and
+  both were wrong — one fitted Tornado and mispredicted GRZip, the other the
+  reverse, and a `tempfile` mechanism was blamed that turned out to have no
+  effect on the bytes at all. `-di'$'` makes the reference print
+  `"Using " ++ real_compressor` per block (`ArcvProcessRead.hs:170`), which
+  showed both the real chain and the block split in one run and ended the
+  guessing immediately.
 
 ## End-to-end
 
