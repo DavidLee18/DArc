@@ -36,12 +36,21 @@ reference too. Note that the *memory formulas* never see `-mt`: the C's
 to `setup_command`, which runs after every limit has been applied. Two different
 numbers, same C function.
 
-**`-lc` is served for every method except top-level `tor` and `grzip`**, which
-are refused. Their memory formulas are ported and produce exactly the
-reference's method strings; what still differs is `genericLimitMemoryUsage`
-splicing a `tempfile` stage into the chain, which changes how the data is fed to
-a chunk-sensitive codec. LZMA is unaffected. `-m4`/`-m9` carry `tor`/`grzip` at
-the top level and so are refused under `-lc` as well.
+**`-lc` is applied THREE times, to three different things**, and missing any of
+them writes a valid archive that is not the reference's:
+
+1. at parse time, to the chain that gets **stored** in the block header;
+2. to the **solid-block grouping**, because a shrunk block method moves where
+   blocks end (`-mgrzip -lc2m` writes two data blocks where `-lc4m` writes one);
+3. per block, *after* the dictionary is fitted, to produce the chain that
+   actually **compresses** -- `real_compressor`, which `ArcvProcessRead.hs:134`
+   passes separately from the stored one, and which sees a **different thread
+   count** because `setup_command` has run by then.
+
+The second pass is why an archive can store `grzip:1181kb` and be compressed
+with `grzip:233016b`. Do not assume the stored method string describes what
+compressed the bytes -- for a DATA_BLOCK under `-lc`, it frequently does not.
+Control blocks are exempt: `writeControlBlock` passes its chain twice.
 
 ## Deeper references — load when the work calls for it
 

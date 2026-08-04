@@ -370,7 +370,11 @@ impl Writer {
         compressor: Vec<String>,
         files: usize,
     ) -> Result<ArchiveBlock, crate::decompress::Error> {
-        self.write_compressed_data(body, compressor, files)
+        // The two chains are the same here, which is what the reference does
+        // for every block that is not a DATA_BLOCK: `writeControlBlock` passes
+        // its compressor twice (`ArcvProcessRead.hs:273`).
+        let real = compressor.clone();
+        self.write_compressed_data(body, compressor, real, files)
     }
 
     /// A data block whose bytes are COMPRESSED with `compressor`.
@@ -381,12 +385,19 @@ impl Writer {
         &mut self,
         body: &[u8],
         compressor: Vec<String>,
+        real_compressor: Vec<String>,
         files: usize,
     ) -> Result<ArchiveBlock, crate::decompress::Error> {
         let (real_suffix, stored_suffix) = self
             .encryption_for(BlockType::Data)
             .map_err(|e| crate::decompress::Error::BadMethod(e.to_string()))?;
-        let mut real = compressor.clone();
+        // Two chains, and the split is the reference's: `compressor` is written
+        // into the block header, `real_compressor` is what compresses the bytes
+        // (`ArcvProcessRead.hs:134`). Encryption already worked this way for
+        // its own reason -- the stored form carries salt and check code, the
+        // real one carries the key -- so this is the same shape widened, not a
+        // new concept.
+        let mut real = real_compressor;
         real.extend(real_suffix);
         let mut compressor = compressor;
         compressor.extend(stored_suffix);

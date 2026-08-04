@@ -135,16 +135,35 @@ Still refused rather than implemented: `-mm` (multimedia mode), `-ma`
 they are rejected outright rather than ignored, on the same rule the HONOURED
 option list follows. `-lc-`/`-ld-` are not accepted at all.
 
-`-lc` is the subtler one. Every method now has a `GetCompressionMem` /
-`SetCompressionMem`, and they were checked by reading the method string back out
-of the archive rather than by trusting the arithmetic — `-mgrzip -lc4m` writes
-`grzip:466033b` on both sides, and 466033 is 4194304/9 exactly. But `tor` and
-`grzip` at the top level are still refused, because agreeing on the method
-string turned out not to be enough: `compressionLimitMemoryUsage`
-(`Compression.hs:217`) also splices a `tempfile` stage into the chain, and the
-two codecs' output follows the chunking they are handed. **The archives differed
-while storing the identical method string**, which is worth remembering as a
-failure mode: a canonicalisation check would have called this green.
+`-lc` is served for every method, and getting there is the cautionary tale in
+this file.
+
+Every method has a `GetCompressionMem`/`SetCompressionMem`, checked by reading
+the stored method string back out of the archive rather than by trusting the
+arithmetic — `-mgrzip -lc4m` stores `grzip:466033b` on both sides, and 466033 is
+4194304/9 exactly. **All of those agreed, and the archives still differed.**
+
+Agreeing on the stored method string is not evidence that the same bytes were
+written, because under `-lc` the stored chain is *not* the chain that
+compresses. `-lc` is applied three times: at parse time to what is stored, to
+the solid-block grouping (a shrunk block method moves where blocks end), and per
+block after the dictionary is fitted to produce `real_compressor`
+(`ArcvProcessRead.hs:134`), which also sees a different thread count because
+`setup_command` has run by then. The port implemented only the first, so it
+stored the right string and compressed with the wrong chain.
+
+Two habits earned here:
+
+* **A canonicalisation check would have called this green.** So would any
+  harness comparing method strings. Only comparing archive bytes caught it.
+* **When the artefacts differ and every intermediate agrees, ask the reference
+  what it did rather than modelling it.** Two threshold models were fitted and
+  both were wrong — one fitted Tornado and mispredicted GRZip, the other the
+  reverse, and a `tempfile` mechanism was blamed that turned out to have no
+  effect on the bytes at all. `-di'$'` makes the reference print
+  `"Using " ++ real_compressor` per block (`ArcvProcessRead.hs:170`), which
+  showed both the real chain and the block split in one run and ended the
+  guessing immediately.
 
 ## End-to-end
 

@@ -1105,27 +1105,6 @@ fn add(
                 );
                 return 2;
             }
-            // The formulas agree; the chain SPLITTING around them does not.
-            let divergent = match &parsed_chain {
-                Some(ms) => darc_arc::memlimit::lc_divergent(ms),
-                None => None,
-            };
-            match divergent {
-                Some(name) => {
-                    eprintln!(
-                        "ERROR: -lc over {} (file type {:?}) is refused: the reference \
-                         reroutes {name} through a temp-file stage once the limit binds, \
-                         which changes the bytes it writes without changing the method \
-                         string. This port would write a valid archive that is not the \
-                         one the reference writes. Use -lc- , or reach {name} through \
-                         4x4 (-m4x4:{name}), which is byte-identical.",
-                        chain.join("+"),
-                        ty
-                    );
-                    return 2;
-                }
-                None => {}
-            }
         }
     }
 
@@ -2139,7 +2118,13 @@ fn add(
                     }
                 };
                 let compressor: Vec<String> = fitted.split('+').map(str::to_string).collect();
-                match w.write_compressed_data(&body, compressor, group.len()) {
+                // The chain that COMPRESSES is limited a second time, per block and
+                // after the dictionary was fitted -- and it is not the one stored.
+                let real: Vec<String> = darc_arc::memlimit::real_compressor(&fitted, climit)
+                    .split('+')
+                    .map(str::to_string)
+                    .collect();
+                match w.write_compressed_data(&body, compressor, real, group.len()) {
                     Ok(b) => b,
                     Err(e) => {
                         eprintln!("ERROR: {e}");
@@ -2174,7 +2159,19 @@ fn add(
             _ if darc_arc::method::is_fake_compressor(methods) => Vec::new(),
             _ => {
                 let first = methods.first().map(String::as_str).unwrap_or("");
-                let parsed = darc_arc::method::Method::parse(first);
+                // `-lc` reaches the GROUPING, not just the chain. The criteria
+                // come from `compressor` in `ArhiveFileList.hs`, and that has
+                // already been through `limitCompressionMem climit`
+                // (`Cmdline.hs`) -- so a limit that shrinks a block method's
+                // block size moves where solid blocks END. Measured:
+                // `-mgrzip -lc2m` writes TWO data blocks where `-lc4m` writes
+                // one, and the port wrote one either way until this.
+                let parsed = darc_arc::method::Method::parse(first).map(|m| {
+                    let mut one = [m];
+                    darc_arc::memlimit::limit_compression_mem(&mut one, climit);
+                    let [m] = one;
+                    m
+                });
                 let size = parsed.as_ref().map_or(0, darc_arc::method::block_size);
                 // A DICT chain is capped at its block size wherever dict sits
                 // first; any OTHER block algorithm only when it is alone.
@@ -2225,7 +2222,13 @@ fn add(
                 }
             };
             let compressor: Vec<String> = fitted.split('+').map(str::to_string).collect();
-            match w.write_compressed_data(&body, compressor, len) {
+            // The chain that COMPRESSES is limited a second time, per block and
+            // after the dictionary was fitted -- and it is not the one stored.
+            let real: Vec<String> = darc_arc::memlimit::real_compressor(&fitted, climit)
+                .split('+')
+                .map(str::to_string)
+                .collect();
+            match w.write_compressed_data(&body, compressor, real, len) {
                 Ok(b) => data_blocks.push(b),
                 Err(e) => {
                     eprintln!("ERROR: {e}");

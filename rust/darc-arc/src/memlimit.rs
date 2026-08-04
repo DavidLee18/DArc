@@ -679,6 +679,13 @@ pub fn parse_mem_with_percents(memory: u64, s: &str) -> Option<u64> {
 /// it as "do not touch", which is exactly what the port did before `-lc`
 /// existed and so cannot change an archive that used to be written.
 pub fn get_compression_mem(m: &Method) -> Option<u64> {
+    get_compression_mem_with(m, MEMORY_FORMULA_THREADS)
+}
+
+/// `GetCompressionMem` with the thread count supplied, because the archiver
+/// asks this same question at two moments and is entitled to two different
+/// answers. See [`MEMORY_FORMULA_THREADS`] and [`real_compressor`].
+pub fn get_compression_mem_with(m: &Method, threads: u64) -> Option<u64> {
     match m {
         // No compression, no memory.
         Method::Storing | Method::Fake | Method::Crc => Some(0),
@@ -724,7 +731,7 @@ pub fn get_compression_mem(m: &Method) -> Option<u64> {
         // the thread count, which makes it machine-dependent -- true of the
         // reference too, and the reason `golden/manifest.txt` admits no grzip
         // case rather than a reason to refuse the formula.
-        Method::Grzip(p) => Some(u64::from(p.block_size) * 9 * MEMORY_FORMULA_THREADS),
+        Method::Grzip(p) => Some(u64::from(p.block_size) * 9 * threads),
         // `BlockSize*2 + sizeof(state)` (C_LZ4.cpp:104).
         Method::Lz4(p) => Some(u64::from(p.block_size) * 2 + lz4_state_size(p.compressor)),
         // The C asks the library through `darc_rs_zstd_sizeof_cctx`
@@ -745,7 +752,7 @@ pub fn get_compression_mem(m: &Method) -> Option<u64> {
         // `t * inner + (t+2) * 2 * bs` (C_4x4.cpp:590), the same shape as the
         // decompression half. An inner method with no figure has none itself.
         Method::FourX4(p) => {
-            get_compression_mem(&p.inner).map(|inner| fourx4_mem(p, inner))
+            get_compression_mem_with(&p.inner, threads).map(|inner| fourx4_mem(p, inner, threads))
         }
         // `LARGE_BUFFER_SIZE` (C_BCJ.h:24).
         Method::Exe => Some(LARGE_BUFFER_SIZE),
@@ -808,9 +815,9 @@ fn rep_compression_mem(p: &crate::method::RepParams) -> u64 {
 
 /// The 4x4 memory shape (`C_4x4.cpp:590`/`:598`), shared by both directions
 /// because the C's two functions differ only in which inner figure they take.
-fn fourx4_mem(p: &crate::fourx4::FourX4Params, inner: u64) -> u64 {
+fn fourx4_mem(p: &crate::fourx4::FourX4Params, inner: u64, threads: u64) -> u64 {
     let t = match p.num_threads {
-        0 => MEMORY_FORMULA_THREADS,
+        0 => threads,
         n => u64::from(n),
     };
     let d = get_dictionary(&p.inner);
@@ -838,6 +845,11 @@ fn lzma_mf_multiplier(mf: u32) -> u64 {
 /// `SetCompressionMem`. Returns false when the method has no implementation
 /// here, leaving it untouched.
 pub fn set_compression_mem(m: &mut Method, mem: u64) -> bool {
+    set_compression_mem_with(m, MEMORY_FORMULA_THREADS, mem)
+}
+
+/// `SetCompressionMem` with the thread count supplied, for the same reason.
+pub fn set_compression_mem_with(m: &mut Method, threads: u64, mem: u64) -> bool {
     match m {
         Method::Storing | Method::Fake | Method::Crc => true,
         Method::Lzma(p) => {
@@ -928,7 +940,7 @@ pub fn set_compression_mem(m: &mut Method, mem: u64) -> bool {
         // `SetBlockSize (mem/9/GetCompressionThreads())` (C_GRZip.h:60) -- the
         // decompression half divides by 5 instead.
         Method::Grzip(p) => {
-            let bs = (mem / 9 / MEMORY_FORMULA_THREADS).min(u64::from(u32::MAX)) as u32;
+            let bs = (mem / 9 / threads).min(u64::from(u32::MAX)) as u32;
             if bs > 0 {
                 p.block_size = bs.min(GRZ_MAX_BLOCK_SIZE);
                 p.hash_size_log = p.hash_size_log.min(1 + lb(p.block_size.saturating_sub(1)));
@@ -987,63 +999,58 @@ pub fn limit_compression_mem(chain: &mut [Method], mem: u64) {
     }
 }
 
+/// `limit_compressor` (`Options.hs:143`) — the chain a DATA_BLOCK is actually
+/// compressed with, which is **not** the chain stored in its header.
+///
+/// `ArcvProcessRead.hs:117-134` is explicit about this:
+///
+/// ```haskell
+///   compressor = orig_compressor .$ limitDictionary (roundMemUp (totalBytes + ...))
+///   real_compressor <- limit_compressor command compressor
+///   writeBlock pipe DATA_BLOCK compressor real_compressor copy_solid_block
+/// ```
+///
+/// `-lc` is therefore applied **twice**, and the two passes see different
+/// chains. The first runs when the command line is parsed and produces what is
+/// STORED. The second runs per block, *after* the dictionary has been fitted to
+/// the data, and produces what is USED. `Options.hs:140` says so in as many
+/// words: "the compressor actually used differs from the one recorded in the
+/// block header".
+///
+/// The second pass also sees a different thread count. `setup_command` has run
+/// by the time a block is compressed, so `GetCompressionThreads()` is the
+/// processor count here where it was 1 at parse time — which is why GRZip, and
+/// only GRZip, shrinks by a factor of the core count in this pass.
+///
+/// Control blocks do not get this: `writeControlBlock` passes the same chain
+/// twice (`ArcvProcessRead.hs:273`).
+pub fn real_compressor(chain: &str, climit: u64) -> String {
+    // `if memory_limit == aUNLIMITED_MEMORY then return compressor`.
+    if climit == u64::MAX {
+        return chain.to_string();
+    }
+    let names: Vec<String> = chain.split('+').map(str::to_string).collect();
+    let mut methods = match Method::parse_chain(&names) {
+        Some(ms) => ms,
+        // Unparsable here means unwritable downstream, which is where it is
+        // reported. Returning the chain unchanged keeps that the only error.
+        None => return chain.to_string(),
+    };
+    let threads = compression_threads();
+    for m in methods.iter_mut() {
+        match get_compression_mem_with(m, threads) {
+            Some(have) if have > climit => {
+                set_compression_mem_with(m, threads, climit);
+            }
+            _ => {}
+        }
+    }
+    methods.iter().map(crate::canonize::show).collect::<Vec<_>>().join("+")
+}
+
 /// Does every method in the chain have a compression-memory formula here?
 pub fn compression_mem_is_known(chain: &[Method]) -> bool {
     chain.iter().all(|m| get_compression_mem(m).is_some())
-}
-
-/// The methods for which an explicit `-lc` still writes different bytes from
-/// the reference, and so must be refused rather than served.
-///
-/// **The memory formulas are not the problem.** Measured against a reference
-/// built from `9a127e6`, this port and the reference now agree on the method
-/// string at every `-lc` level for both of these — `-mgrzip -lc4m` gives
-/// `grzip:466033b:m1:l32:h15` on both sides, `-mtor -lc4m` gives
-/// `tor:1181kb:h1mb` on both. The archives still differ, with the *same* string
-/// stored.
-///
-/// What differs is upstream of the method: `compressionLimitMemoryUsage`
-/// (`Compression.hs:217`) is `genericLimitMemoryUsage . map limitCompressionMem`,
-/// and that second pass splices a `"tempfile"` stage into the chain once the
-/// accumulated figure passes `limit * 1.05`. It changes how the data is fed to
-/// the codec, not what the codec is. LZMA is unaffected — `-mlzma -lc4m` is
-/// byte-identical — because it buffers the whole block either way; Tornado and
-/// GRZip parse what they are handed, so their output follows the chunking.
-///
-/// Only the TOP level is examined, and that is deliberate rather than lazy:
-/// `-m4x4:tor -lc16m` is byte-identical to the reference, so a Tornado reached
-/// through 4x4 does not trip this. `-m4` and `-m9` do trip it, because their
-/// per-filetype chains carry `tor` and `grzip` at the top level — and they were
-/// refused before this too, when the refusal was "no formula for tor".
-///
-/// Everything else that used to be refused for want of a formula — REP, LZP,
-/// LZ4, Zstd, 4x4, `exe`, encryption — is now served and gated on byte
-/// identity.
-pub fn lc_divergent(chain: &[Method]) -> Option<&'static str> {
-    chain.iter().find_map(|m| match *m {
-        Method::Tornado(_) => Some("tor"),
-        Method::Grzip(_) => Some("grzip"),
-        Method::Storing
-        | Method::Fake
-        | Method::Crc
-        | Method::Lzma(_)
-        | Method::Lzma2(_)
-        | Method::Ppmd(_)
-        | Method::Rep(_)
-        | Method::Exe
-        | Method::Dict(_)
-        | Method::Lzp(_)
-        | Method::Delta(_)
-        | Method::Dispack(_)
-        | Method::Tta(_)
-        | Method::Mm(_)
-        | Method::Zstd(_)
-        | Method::Lz4(_)
-        | Method::Bsc(_)
-        | Method::FourX4(_)
-        | Method::Encryption(_)
-        | Method::Unsupported(_) => None,
-    })
 }
 
 #[cfg(test)]
@@ -1116,6 +1123,26 @@ mod lzma2_and_lc_tests {
         assert_eq!(get_compression_mem(&m("grzip:1m")), Some(MB * 9));
     }
 
+    /// The stored chain and the compressing chain are NOT the same under `-lc`.
+    ///
+    /// This is the bug that hid behind agreeing method strings: the port stored
+    /// `grzip:1181kb` correctly and then compressed with it, where the
+    /// reference compresses with `grzip:233016b`. Reading the archive's method
+    /// string proved nothing, because that string is the STORED one.
+    #[test]
+    fn real_compressor_differs_from_the_stored_chain() {
+        set_compression_threads(8);
+        // 1209344 * 9 * 8 = 87 072 768, over a 16 MB limit, so it re-limits to
+        // 16777216/9/8.
+        assert_eq!(real_compressor("grzip:1181kb:m1:l32:h15", 16 * MB), "grzip:233016b:m1:l32:h15");
+        // Under a limit it already fits, the chain is returned untouched.
+        assert_eq!(real_compressor("grzip:1181kb:m1:l32:h15", 512 * MB), "grzip:1181kb:m1:l32:h15");
+        // `-lc-` is unlimited and must not even parse-and-reprint, or a method
+        // this port cannot canonicalise would be rewritten behind the user.
+        assert_eq!(real_compressor("anything:at:all", u64::MAX), "anything:at:all");
+        set_compression_threads(0);
+    }
+
     /// `1<<lb(mem/7*6)`, integer division first. `*6/7` would give 3 670 016
     /// here and round to the same power of two, so the test uses a value where
     /// the two orders differ in the exponent.
@@ -1126,19 +1153,5 @@ mod lzma2_and_lc_tests {
         assert_eq!(get_dictionary(&r), 8 * MB as u32);
     }
 
-    /// `-lc` is refused for exactly two methods, and only at the top level.
-    #[test]
-    fn lc_is_refused_for_tor_and_grzip_only() {
-        let chain = |s: &str| {
-            Method::parse_chain(&s.split('+').map(str::to_string).collect::<Vec<_>>()).unwrap()
-        };
-        assert_eq!(lc_divergent(&chain("tor")), Some("tor"));
-        assert_eq!(lc_divergent(&chain("rep+tor:16mb")), Some("tor"));
-        assert_eq!(lc_divergent(&chain("grzip")), Some("grzip"));
-        // Reached through 4x4, which IS byte-identical under -lc.
-        assert_eq!(lc_divergent(&chain("4x4:tor")), None);
-        assert_eq!(lc_divergent(&chain("lzma2")), None);
-        assert_eq!(lc_divergent(&chain("rep+exe+lzma:1m")), None);
-    }
 }
 
