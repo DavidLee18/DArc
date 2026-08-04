@@ -6,7 +6,7 @@
 //! assignment is **archive-byte-visible**: it decides block membership, and
 //! therefore each chain's fitted dictionary and every compressed byte.
 //!
-//! Types are decided by **content**, not by extension. `arc.groups` supplies
+//! Types are decided by **content**, not by extension. `darc.groups` supplies
 //! only a per-file *default*, and measurement showed the reference reaches the
 //! same split with the groups file present, absent, and disabled.
 //!
@@ -36,7 +36,7 @@ pub struct Candidate<'a> {
     pub size: u64,
     /// The file's bytes. Held rather than re-read: the writer has them already.
     pub data: &'a [u8],
-    /// `getDefaultType` — the type `arc.groups` assigns, with any
+    /// `getDefaultType` — the type `darc.groups` assigns, with any
     /// autodetectable type replaced by `$binary`.
     pub default_type: &'a str,
 }
@@ -93,7 +93,7 @@ fn round_half_even(x: f64) -> u64 {
 /// `detectMM` is not reached here, and that is a consequence rather than an
 /// omission: it runs only when the file's default type is `$wav` or `$bmp`
 /// (`isMMType`, `Compression.hs:541`), while `getDefaultType` maps every
-/// autodetectable type to `$binary`. Only an `arc.groups` entry can produce
+/// autodetectable type to `$binary`. Only an `darc.groups` entry can produce
 /// `$wav`, so with no groups file the branch is dead.
 fn classify(file: &Candidate<'_>, blocksize: u64, positions: &[u64]) -> Vec<String> {
     if is_mm_type(file.default_type) {

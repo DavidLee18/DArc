@@ -121,6 +121,42 @@ fn main() {
     // command line overriding all of them.
     let pre = options::parse(&argv[1..]).unwrap_or_default();
     let no_configs = pre.all("config").contains(&"-");
+    // `arc.ini` and `$FREEARC` are GONE, and a leftover one is reported rather
+    // than ignored. Ignoring it would change the archive the user gets with
+    // nothing to show for it -- the silent no-op this port refuses everywhere.
+    // `-cfg-` disables config handling entirely, so it silences this too.
+    if !no_configs {
+        match darc_arc::config::Config::find_legacy() {
+            Some(p) => {
+                eprintln!(
+                    "ERROR: {} is no longer read; it was replaced by {}.\n\
+                     Found: {}\n\
+                     Move its defaults into a [defaults] table and its method \
+                     table into [methods], or pass -cfg- to ignore both.",
+                    darc_arc::config::LEGACY_CONFIG_FILE,
+                    darc_arc::config::CONFIG_FILE,
+                    p.display()
+                );
+                std::process::exit(2);
+            }
+            None => {}
+        }
+        // Same rule for the variable: set and unread is set and ignored.
+        let legacy_var = darc_arc::config::LEGACY_CONFIG_ENV_VAR;
+        match (std::env::var(legacy_var), std::env::var(darc_arc::config::CONFIG_ENV_VAR)) {
+            (Ok(_), Err(_)) => {
+                eprintln!(
+                    "ERROR: ${legacy_var} is set but no longer read; it was replaced by ${}. \
+                     Rename it, or pass -env- to ignore it.",
+                    darc_arc::config::CONFIG_ENV_VAR
+                );
+                std::process::exit(2);
+            }
+            _ => {}
+        }
+    }
+    // Kept for [methods] and [external], which are applied further down.
+    let mut config: Option<darc_arc::config::Config> = None;
     let cfg_text = match no_configs {
         true => None,
         false => match pre.arg("config", "--") {
@@ -137,24 +173,56 @@ fn main() {
     let mut extra: Vec<String> = Vec::new();
     match &cfg_text {
         Some(text) => {
-            let cfg = darc_arc::config::Config::parse(text);
-            // Named rather than silently skipped: an EDITED [Compression
-            // methods] section changes what -m9 means in the reference and
-            // not here, and this port's table is built in.
-            let unapplied = cfg.has_unapplied_sections();
-            if !unapplied.is_empty() {
+            // Refused whole rather than salvaged: the options that DID parse
+            // still change the archive, so half a config is not a safer
+            // subset of one.
+            let cfg = match darc_arc::config::Config::parse(text) {
+                Ok(c) => c,
+                Err(e) => {
+                    eprintln!("ERROR: {}: {e}", darc_arc::config::CONFIG_FILE);
+                    std::process::exit(2);
+                }
+            };
+            // A value of the wrong type meant something to whoever wrote it.
+            let bad = cfg.bad_defaults();
+            if !bad.is_empty() {
                 eprintln!(
-                    "WARNING: {} in the config file {} not applied; this port's \
-                     compression-method table is built in",
-                    unapplied.join(", "),
-                    match unapplied.len() {
-                        1 => "is",
-                        _ => "are",
-                    }
+                    "ERROR: [defaults] {} must be a string or a list of strings",
+                    bad.join(", ")
                 );
+                std::process::exit(2);
             }
             extra.extend(cfg.global_options().split_whitespace().map(str::to_string));
             extra.extend(cfg.command_options(&command).split_whitespace().map(str::to_string));
+            // `[methods]` becomes part of the substitution table, so it must be
+            // installed BEFORE any command decodes a -m spec. A row that fails
+            // to render is an error, not a skip: a silently dropped row means
+            // -m9 quietly keeps meaning what it used to.
+            match cfg.method_rows() {
+                Ok(rows) => darc_arc::methodtable::set_user_rows(rows),
+                Err(e) => {
+                    eprintln!("ERROR: {}: {e}", darc_arc::config::CONFIG_FILE);
+                    std::process::exit(2);
+                }
+            }
+            // The external compressors, registered before anything decodes a
+            // method (`Cmdline.hs:223` does the same, twice: once for parsing
+            // and again before the command runs).
+            darc_arc::external::set_table(
+                cfg.external()
+                    .iter()
+                    .map(|(k, v)| {
+                        (
+                            k.clone(),
+                            darc_arc::external::External {
+                                packcmd: v.packcmd.clone(),
+                                unpackcmd: v.unpackcmd.clone(),
+                            },
+                        )
+                    })
+                    .collect(),
+            );
+            config = Some(cfg);
         }
         None => {}
     }
@@ -697,13 +765,19 @@ fn main() {
                 .map(|(n, _, _)| n.as_str())
                 .zip(bodies.iter())
                 .collect();
+            // `getDefaultType` from the groups file. This was a hardcoded
+            // "$binary", which made `$wav`/`$bmp` unreachable and left the
+            // multimedia branch in filetype::classify dead.
+            let types: Vec<String> =
+                entries.iter().map(|e| groups.default_type(&e.stored_name)).collect();
             let cands: Vec<darc_arc::filetype::Candidate<'_>> = entries
                 .iter()
-                .map(|e| darc_arc::filetype::Candidate {
+                .zip(types.iter())
+                .map(|(e, ty)| darc_arc::filetype::Candidate {
                     stored_name: &e.stored_name,
                     size: e.size,
                     data: by_name.get(e.stored_name.as_str()).map(|v| v.as_slice()).unwrap_or(&[]),
-                    default_type: "$binary",
+                    default_type: ty,
                 })
                 .collect();
             let names: Vec<String> =
@@ -978,20 +1052,8 @@ fn add(
     // on part of a -m spec and dropping the rest writes an archive that is not
     // what was asked for, which is the same rule the HONOURED list applies.
     let mut unimplemented: Vec<String> = Vec::new();
-    if mopts.multimedia != "--" {
-        unimplemented.push(format!("-mm{}", mopts.multimedia));
-    }
     if mopts.autodetect != "--" {
         unimplemented.push(format!("-ma{}", mopts.autodetect));
-    }
-    // A disable name that is EMPTY is a no-op and must be accepted: `-mc-`
-    // strips the fencing dashes and leaves "", and `method_change ""`
-    // (Cmdline.hs:318) then filters for methods named "", of which there are
-    // none. Rejecting it broke `mm-reorder-check.sh`, which passes `-mc-` to
-    // mean "change nothing". A NAMED one -- `-mcd-`, `-mc-rep`, `-ms-` -- does
-    // rewrite the chain, and that is not implemented.
-    for d in mopts.disabled.iter().filter(|d| !d.is_empty()) {
-        unimplemented.push(format!("-mc({d})"));
     }
     if !unimplemented.is_empty() {
         eprintln!(
@@ -1075,7 +1137,24 @@ fn add(
         },
     };
 
+    // `dataCompressor` (Cmdline.hs:329) applies these in this order, between
+    // decoding and the memory limits:
+    //
+    //     decode_compression_method .$ multimedia mm
+    //                              .$ applyAll (map method_change mc)
+    //                              .$ setDictionary .$ limitCompressionMem …
+    //
+    // They rewrite the decoded (type, chain) LIST, not the substitution table
+    // -- so they run here rather than inside decode_method. The directory
+    // compressor gets neither: `dirCompressor` is built separately and only
+    // ever sees the memory limit.
     let decoded = darc_arc::methodtable::decode_method(&method);
+    let decoded = darc_arc::methodtable::apply_multimedia(&mopts.multimedia, decoded);
+    let decoded = mopts
+        .disabled
+        .iter()
+        .filter(|d| !d.is_empty())
+        .fold(decoded, |acc, d| darc_arc::methodtable::apply_method_change(d, acc));
 
     // An EXPLICIT -lc over a chain this port cannot measure is refused.
     //
@@ -1154,7 +1233,7 @@ fn add(
         }
     };
     // NOT validated here. A level defines chains for types no file can be given
-    // -- $wav and $bmp need an arc.groups entry, and getDefaultType maps every
+    // -- $wav and $bmp need a darc.groups entry, and getDefaultType maps every
     // autodetectable type to $binary -- so refusing a level because its dead
     // $wav arm uses `tta` would reject -m1 and -m4 outright. The chains that
     // are actually reached are checked below, once the split is known.
@@ -1792,15 +1871,19 @@ fn add(
     // reached when the level defines more than one chain -- with a single chain
     // every file is type 0 anyway, and probing would be wasted work.
     let type_groups: Vec<(usize, Vec<usize>)> = if chains.len() > 1 {
+        // getDefaultType: an autodetectable type becomes $binary so the
+        // detector decides it, and darc.groups supplies everything else --
+        // which is what makes $wav and $bmp reachable at all.
+        let types: Vec<String> =
+            file_entries.iter().map(|e| groups.default_type(&e.stored_name)).collect();
         let cands: Vec<darc_arc::filetype::Candidate<'_>> = file_entries
             .iter()
-            .map(|e| darc_arc::filetype::Candidate {
+            .zip(types.iter())
+            .map(|(e, ty)| darc_arc::filetype::Candidate {
                 stored_name: &e.stored_name,
                 size: e.size,
                 data: contents.get(&e.stored_name).map(Vec::as_slice).unwrap_or(&[]),
-                // getDefaultType: every autodetectable type becomes $binary,
-                // and only arc.groups can produce anything else.
-                default_type: "$binary",
+                default_type: ty,
             })
             .collect();
         let split = darc_arc::filetype::split_file_types(&cands, &type_names);
@@ -1820,6 +1903,11 @@ fn add(
     for (ty, _) in &type_groups {
         for m in chains[*ty].split('+') {
             match darc_arc::method::Method::parse(m) {
+                // An external compressor is Unsupported to `Method::parse` --
+                // it is named in darc.toml, not built in -- and is writable
+                // all the same. This is what makes `-msrep` work.
+                Some(darc_arc::method::Method::Unsupported(name))
+                    if darc_arc::external::is_external(&name) => {}
                 Some(darc_arc::method::Method::Unsupported(name)) => {
                     eprintln!(
                         "ERROR: -m{method} needs {name} for {}, which this port cannot write yet",
@@ -2651,7 +2739,7 @@ fn add(
 /// The groups file, resolved the way `Cmdline.hs:382` resolves it.
 ///
 /// `--groups=FILE` names one, `--groups-` disables grouping, and the default is
-/// `arc.groups` beside the executable — `configFilePlaces` is
+/// `darc.groups` beside the executable — `configFilePlaces` is
 /// `takeDirectory(getExeName) </> filename` and nothing else (`Files.hs:208`).
 /// No groups file means `[reANY_FILE]`: one group holding everything.
 ///
@@ -2659,13 +2747,13 @@ fn add(
 ///
 /// Measured, and it changes what this port must do to match. `Tests/arc-ghc`
 /// produces the same file order with no option, with `--groups-`, and with
-/// `arc.groups` copied to sit beside the binary — while `--groups=<path>`
+/// `darc.groups` copied to sit beside the binary — while `--groups=<path>`
 /// produces a different one. So `getExeName` does not resolve here, the default
 /// lookup finds nothing, and the reference's default IS the one-group path.
 ///
 /// That is a pre-existing bug in the reference on this platform, not something
 /// this port should imitate: the lookup below is the faithful one. It simply
-/// finds nothing either, because `darc` does not live beside an arc.groups.
+/// finds nothing either, because `darc` does not live beside a darc.groups.
 fn load_groups(parsed: &options::Parsed) -> darc_arc::sort::Groups {
     match parsed.arg("groups", "--") {
         // `--groups-` -- the option's value is a bare "-".
@@ -2679,9 +2767,29 @@ fn load_groups(parsed: &options::Parsed) -> darc_arc::sort::Groups {
             }
         },
     }
+    // A leftover `arc.groups` is refused rather than ignored, on the same rule
+    // as `arc.ini`: the groups file decides the file ORDER inside a solid
+    // block, so one that is present and unread changes the archive with
+    // nothing to show for it.
+    let legacy = std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(|d| d.join("arc.groups")))
+        .filter(|p| p.is_file());
+    match legacy {
+        Some(p) => {
+            eprintln!(
+                "ERROR: arc.groups is no longer read; it was renamed to darc.groups.\n\
+                 Found: {}\n\
+                 Rename it, or pass --groups- to group nothing.",
+                p.display()
+            );
+            std::process::exit(2);
+        }
+        None => {}
+    }
     let beside_exe = std::env::current_exe()
         .ok()
-        .and_then(|exe| exe.parent().map(|d| d.join("arc.groups")));
+        .and_then(|exe| exe.parent().map(|d| d.join("darc.groups")));
     match beside_exe {
         Some(path) => match std::fs::read_to_string(&path) {
             Ok(text) => darc_arc::sort::Groups::parse(&text),

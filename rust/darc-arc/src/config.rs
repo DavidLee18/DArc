@@ -1,170 +1,282 @@
-//! `arc.ini` and `$FREEARC` — the default options every command starts with.
+//! `darc.toml` and `$DARC` — the defaults every command starts with, the
+//! compression method table, and the external compressors.
 //!
 //! This is not a convenience feature. `Cmdline.hs:49-102` reads the config file
 //! and the environment variable BEFORE parsing the command line and prepends
-//! what it finds, so a machine with `-mx` in its `arc.ini` gets a different
+//! what it finds, so a machine with `-mx` in its config gets a different
 //! archive from the same command line. A port that ignores them writes
-//! different bytes than the reference and says nothing about it.
+//! different bytes and says nothing about it.
 //!
-//! Order is `config_1st_line ++ [Default options] ++ $FREEARC ++ argv`
-//! (`Cmdline.hs:102`). The user's own arguments come LAST, so for every
-//! last-wins option they override the defaults.
+//! Order is `global ++ [defaults] ++ $DARC ++ argv` (`Cmdline.hs:102`). The
+//! user's own arguments come LAST, so for every last-wins option they override
+//! the defaults.
 //!
-//! # What is read, and what is not
+//! # Why document order matters
 //!
-//! Only the default-options parts. `arc.ini` also carries a
-//! `[Compression methods]` section that defines the method table itself, and
-//! `[External compressor:…]` sections; neither is applied here — the port's
-//! method table is built in, and it was derived from that very section. A
-//! config whose method table has been EDITED would therefore be ignored, which
-//! is why [`Config::has_unapplied_sections`] exists to warn rather than let it
-//! pass silently.
+//! Two `[defaults]` keys can name the same command — `"a create"` and
+//! `"a create t e x"` both contribute to `a`. They are prepended in the order
+//! the file lists them, and for a last-wins option that order decides the
+//! result. So the TOML is parsed with `preserve_order`: a hash-ordered table
+//! would make the same config produce different archives between runs, which is
+//! the worst kind of bug this project can have.
+//!
+//! # Replacing `arc.ini`
+//!
+//! The old INI is **not read**. A file that is present and ignored changes the
+//! archive you get with nothing to show for it, which is the silent no-op this
+//! project refuses everywhere else — so a leftover `arc.ini` is reported and
+//! the run stops, rather than quietly proceeding on built-in defaults. The same
+//! rule applies to `$FREEARC`.
 
-/// The file name searched for beside the executable (`Options.hs:407`).
-pub const CONFIG_FILE: &str = "arc.ini";
+use serde::Deserialize;
+use std::collections::BTreeMap;
+
+/// The file searched for beside the executable (`Options.hs:407`).
+pub const CONFIG_FILE: &str = "darc.toml";
 
 /// The environment variable holding default options (`Options.hs:410`).
-pub const CONFIG_ENV_VAR: &str = "FREEARC";
+pub const CONFIG_ENV_VAR: &str = "DARC";
 
-/// A parsed `arc.ini`.
+/// The names this replaced. Detected only so they can be reported.
+pub const LEGACY_CONFIG_FILE: &str = "arc.ini";
+pub const LEGACY_CONFIG_ENV_VAR: &str = "FREEARC";
+
+/// The `[defaults]` key that applies to every command.
+///
+/// It stands for the INI's bare first line. `all` is reserved: no DArc command
+/// is spelled that way, and a `[defaults]` key naming a command called `all`
+/// would be unreachable anyway.
+pub const ALL_COMMANDS: &str = "all";
+
+/// One `[external.NAME]` section — a compressor DArc shells out to.
+#[derive(Debug, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct External {
+    /// The command that compresses. `$in` and `$out` are substituted.
+    pub packcmd: String,
+    /// The command that decompresses.
+    pub unpackcmd: String,
+}
+
+/// A parsed `darc.toml`.
+#[derive(Debug, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
 pub struct Config {
-    /// Significant lines: trimmed, with blanks and `;` comments dropped.
-    lines: Vec<String>,
+    /// Command name (or a whitespace-separated list of them) to options.
+    /// A value may be one string or several, and several are joined in order.
+    #[serde(default)]
+    defaults: toml::Table,
+    /// The compression method table. Rows override the built-in ones by key.
+    #[serde(default)]
+    methods: BTreeMap<String, crate::toml_table::Row>,
+    /// External compressors, by name.
+    #[serde(default)]
+    external: BTreeMap<String, External>,
 }
 
 impl Config {
-    /// `parseFile1 'i' cfgfile >>== map trim >>== deleteIfs [null, match ";*"]`
-    /// (`Cmdline.hs:65`).
-    pub fn parse(text: &str) -> Config {
-        Config {
-            lines: text
-                .lines()
-                .map(|l| l.trim().to_string())
-                .filter(|l| !l.is_empty() && !l.starts_with(';'))
-                .collect(),
-        }
-    }
-
-    /// `configFilePlaces` (`Files.hs:224`) — beside the executable, and
-    /// nowhere else on this platform.
-    pub fn find() -> Option<std::path::PathBuf> {
-        let exe = std::env::current_exe().ok()?;
-        let path = exe.parent()?.join(CONFIG_FILE);
-        match path.is_file() {
-            true => Some(path),
-            false => None,
-        }
-    }
-
-    /// The options common to EVERY command: the first significant line, but
-    /// only when it is not a section heading (`Cmdline.hs:92-94`).
-    pub fn global_options(&self) -> &str {
-        match self.lines.first() {
-            Some(l) if !l.starts_with('[') => l,
-            _ => "",
-        }
-    }
-
-    /// The `[Default options]` entry for one command.
+    /// Parse, refusing anything malformed rather than salvaging part of it.
     ///
-    /// `sectionElement` (`Cmdline.hs:85`): a line is `NAMES = VALUE`, the left
-    /// side may list SEVERAL commands, and a command may appear on several
-    /// lines — in which case every value applies, joined. Both were easy to
-    /// miss and the shipped `arc.ini` documents them in its own comments.
+    /// A half-applied config is worse than none: the options that did survive
+    /// still change the archive.
+    pub fn parse(text: &str) -> Result<Config, String> {
+        toml::from_str(text).map_err(|e| e.to_string())
+    }
+
+    /// `configFilePlaces` (`Files.hs:224`) — beside the executable.
+    pub fn find() -> Option<std::path::PathBuf> {
+        beside_exe(CONFIG_FILE)
+    }
+
+    /// A leftover `arc.ini`, so the caller can refuse rather than ignore it.
+    pub fn find_legacy() -> Option<std::path::PathBuf> {
+        beside_exe(LEGACY_CONFIG_FILE)
+    }
+
+    /// The options common to EVERY command.
+    pub fn global_options(&self) -> String {
+        self.options_for(ALL_COMMANDS)
+    }
+
+    /// The `[defaults]` entries for one command.
+    ///
+    /// A key may name SEVERAL commands (`"a create t e x"`), and several keys
+    /// may name the same one; every match contributes, in document order. Both
+    /// were true of the INI and are easy to lose in translation.
     pub fn command_options(&self, command: &str) -> String {
-        let mut out: Vec<&str> = Vec::new();
-        let mut in_section = false;
-        for line in &self.lines {
-            if line.starts_with('[') {
-                in_section = section_name(line) == "default options";
+        match command {
+            // `all` is the global line, already prepended by the caller. A
+            // command cannot also be named `all`, so nothing is lost.
+            ALL_COMMANDS => String::new(),
+            c => self.options_for(c),
+        }
+    }
+
+    fn options_for(&self, command: &str) -> String {
+        let mut out: Vec<String> = Vec::new();
+        for (names, value) in &self.defaults {
+            if !names.split_whitespace().any(|n| n == command) {
                 continue;
             }
-            if !in_section {
-                continue;
-            }
-            match line.split_once('=') {
-                Some((names, value)) => {
-                    if names.split_whitespace().any(|n| n == command) {
-                        out.push(value.trim());
+            match value {
+                toml::Value::String(s) => out.push(s.clone()),
+                toml::Value::Array(a) => {
+                    for v in a {
+                        match v.as_str() {
+                            Some(s) => out.push(s.to_string()),
+                            None => {}
+                        }
                     }
                 }
-                None => {}
+                // Named rather than wildcarded: the crate denies
+                // `wildcard_enum_match_arm` so that a value shape added
+                // later shows up here as a compile error, not as a
+                // silently dropped default.
+                toml::Value::Integer(_)
+                | toml::Value::Float(_)
+                | toml::Value::Boolean(_)
+                | toml::Value::Datetime(_)
+                | toml::Value::Table(_) => {}
             }
         }
         out.join(" ")
     }
 
-    /// Sections this port reads the command line from but does NOT apply.
+    /// Any `[defaults]` value that is not a string or a list of strings.
     ///
-    /// Returns the section headings found, so the caller can say which. An
-    /// edited `[Compression methods]` would otherwise change what `-m9` means
-    /// in the reference and not here, with nothing to show for it.
-    pub fn has_unapplied_sections(&self) -> Vec<String> {
-        self.lines
+    /// Reported rather than skipped: `a = 5` is a typo whose author meant
+    /// something, and silently dropping it writes an archive they did not ask
+    /// for.
+    pub fn bad_defaults(&self) -> Vec<String> {
+        self.defaults
             .iter()
-            .filter(|l| l.starts_with('['))
-            .filter(|l| {
-                let n = section_name(l);
-                n == "compression methods" || n.starts_with("external compressor")
+            .filter(|(_, v)| match v {
+                toml::Value::String(_) => false,
+                toml::Value::Array(a) => !a.iter().all(toml::Value::is_str),
+                toml::Value::Integer(_)
+                | toml::Value::Float(_)
+                | toml::Value::Boolean(_)
+                | toml::Value::Datetime(_)
+                | toml::Value::Table(_) => true,
             })
-            .cloned()
+            .map(|(k, _)| k.clone())
             .collect()
+    }
+
+    /// The `[methods]` rows, rendered to the value strings
+    /// [`crate::methodtable`] substitutes.
+    pub fn method_rows(&self) -> Result<Vec<(String, String)>, String> {
+        self.methods
+            .iter()
+            .map(|(k, row)| row.render().map(|v| (k.clone(), v)).map_err(|e| format!("[methods.\"{k}\"]: {e}")))
+            .collect()
+    }
+
+    /// The `[external.NAME]` sections.
+    pub fn external(&self) -> &BTreeMap<String, External> {
+        &self.external
     }
 }
 
-/// `cleanupSectionName` — the heading without its brackets, lower-cased so
-/// comparisons do not depend on how the user capitalised it.
-fn section_name(heading: &str) -> String {
-    heading.trim_matches(['[', ']']).trim().to_ascii_lowercase()
+fn beside_exe(name: &str) -> Option<std::path::PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    let path = exe.parent()?.join(name);
+    match path.is_file() {
+        true => Some(path),
+        false => None,
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::Config;
 
-    const SAMPLE: &str = "\
-;a comment
--mx --display=hnwftsr
+    const SAMPLE: &str = r#"
+[defaults]
+all = "-mx --display=hnwftsr"
+"a create" = "-m5"
+"a create t e x" = "-di+$"
+x = "-o+"
 
-[Default options]
-;another comment
-a create = -m5
-a create t e x = -di+$
-x = -o+
-[Compression methods]
-9 = lzma:64m
-";
+[methods]
+"9" = { alias = "lzma:64m" }
 
-    /// The first significant line is global options only when it is not a
-    /// heading. Comments and blanks must not count as significant, or a file
-    /// that opens with a comment would take the comment as its options.
+[external.srep]
+packcmd = "srep -m3 $in $out"
+unpackcmd = "srep -d $in $out"
+"#;
+
     #[test]
-    fn the_first_significant_line_is_the_global_options() {
-        let c = Config::parse(SAMPLE);
+    fn global_options_come_from_the_all_key() {
+        let c = Config::parse(SAMPLE).expect("parses");
         assert_eq!(c.global_options(), "-mx --display=hnwftsr");
-        // A file that opens with a section heading has no global options.
-        let c2 = Config::parse("[Default options]\na = -m1\n");
-        assert_eq!(c2.global_options(), "");
+        // `all` is not itself a command, so asking for it as one yields
+        // nothing -- the caller prepends the global line separately and it must
+        // not be added twice.
+        assert_eq!(c.command_options("all"), "");
     }
 
-    /// A command may appear on several lines and beside other commands; every
-    /// matching line contributes.
+    /// A key may name several commands, and several keys may name the same
+    /// one. Both were true of `arc.ini` and both are load-bearing: dropping
+    /// either silently changes which defaults a command gets.
     #[test]
-    fn command_options_merge_across_lines_and_name_lists() {
-        let c = Config::parse(SAMPLE);
+    fn command_options_merge_across_keys_and_name_lists() {
+        let c = Config::parse(SAMPLE).expect("parses");
         assert_eq!(c.command_options("a"), "-m5 -di+$");
         assert_eq!(c.command_options("create"), "-m5 -di+$");
         assert_eq!(c.command_options("x"), "-di+$ -o+");
         assert_eq!(c.command_options("l"), "");
     }
 
-    /// Lines outside `[Default options]` must not leak in -- the
-    /// `[Compression methods]` entry `9 = lzma:64m` is not an option for
-    /// command `9`.
+    /// Document order decides the result for a last-wins option, so it must
+    /// survive parsing. With a hash-ordered table this assertion passes or
+    /// fails depending on the run.
     #[test]
-    fn other_sections_do_not_contribute_options() {
-        let c = Config::parse(SAMPLE);
-        assert_eq!(c.command_options("9"), "");
-        assert_eq!(c.has_unapplied_sections(), vec!["[Compression methods]".to_string()]);
+    fn defaults_keep_document_order() {
+        let c = Config::parse("[defaults]\nz = \"-m1\"\na = \"-m2\"\n\"a z\" = \"-m3\"\n")
+            .expect("parses");
+        assert_eq!(c.command_options("z"), "-m1 -m3");
+        assert_eq!(c.command_options("a"), "-m2 -m3");
+    }
+
+    /// A value may be a list, which is the TOML spelling of the INI's repeated
+    /// lines for one command.
+    #[test]
+    fn a_defaults_value_may_be_a_list() {
+        let c = Config::parse("[defaults]\na = [\"-m5\", \"-r\"]\n").expect("parses");
+        assert_eq!(c.command_options("a"), "-m5 -r");
+    }
+
+    /// A malformed file is refused whole. Half of a config is not a safer
+    /// subset of it -- the options that did apply still change the archive.
+    #[test]
+    fn a_malformed_file_is_refused_rather_than_salvaged() {
+        assert!(Config::parse("[defaults\na = \"-m5\"").is_err());
+        // An unknown top-level section is a typo, and a typo that parses is a
+        // config that silently does nothing.
+        assert!(Config::parse("[methodz]\n\"9\" = { alias = \"lzma\" }\n").is_err());
+        // A value of the wrong type is reported, not skipped.
+        let c = Config::parse("[defaults]\na = 5\nb = \"-r\"\n").expect("parses");
+        assert_eq!(c.bad_defaults(), vec!["a".to_string()]);
+    }
+
+    /// The sections that used to be parsed and then ignored now mean
+    /// something.
+    #[test]
+    fn methods_and_external_are_read() {
+        let c = Config::parse(SAMPLE).expect("parses");
+        assert_eq!(c.method_rows().expect("renders"), vec![("9".to_string(), "lzma:64m".to_string())]);
+        let ext = c.external();
+        assert_eq!(ext.len(), 1);
+        assert_eq!(ext["srep"].packcmd, "srep -m3 $in $out");
+    }
+
+    /// A method row that cannot be rendered names itself, because the message
+    /// is the only thing standing between the user and a silently ignored row.
+    #[test]
+    fn an_unrenderable_method_row_names_itself() {
+        let c = Config::parse("[methods]\n\"9\" = { }\n").expect("parses");
+        let err = c.method_rows().expect_err("must not render");
+        assert!(err.contains("[methods.\"9\"]"), "unhelpful: {err}");
     }
 }

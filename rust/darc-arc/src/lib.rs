@@ -60,6 +60,7 @@ pub mod extract;
 /// `-DFREEARC_NOURL` turns off the C's URL support.
 #[cfg(feature = "url")]
 pub mod fetch;
+pub mod external;
 pub mod filter;
 pub mod filetype;
 pub mod fourx4;
@@ -72,4 +73,5 @@ pub mod options;
 pub mod passwords;
 pub mod recovery;
 pub mod sort;
+pub mod toml_table;
 pub mod writer;

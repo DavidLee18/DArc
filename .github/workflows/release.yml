@@ -115,9 +115,9 @@ jobs:
         stage="darc-$ver-${{ matrix.label }}"
         mkdir -p "dist/$stage"
         cp rust/target/release/darc "dist/$stage/darc"
-        # arc.groups is the solid-ordering config the binary reads; shipping the
+        # darc.groups is the solid-ordering config the binary reads; shipping the
         # binary without it changes how archives are grouped.
-        cp Tests/arc.groups "dist/$stage/arc.groups"
+        cp Tests/darc.groups "dist/$stage/darc.groups"
         cp README.md LICENSE "dist/$stage/" 2>/dev/null || true
         tar -czf "dist/$stage.tar.gz" -C dist "$stage"
         rm -rf "dist/$stage"
@@ -240,7 +240,7 @@ jobs:
         stage="darc-$ver-${{ matrix.label }}"
         mkdir -p "dist/$stage"
         cp "Tests/${{ matrix.exe }}" "dist/$stage/darc.exe"
-        cp Tests/arc.groups "dist/$stage/arc.groups"
+        cp Tests/darc.groups "dist/$stage/darc.groups"
         cp README.md LICENSE "dist/$stage/" 2>/dev/null || true
         (cd dist && zip -r "$stage.zip" "$stage" >/dev/null)
         rm -rf "dist/$stage"

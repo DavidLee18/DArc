@@ -171,8 +171,88 @@ fn subst2(list: &[Subst], chain: &str) -> Vec<String> {
 /// chains **canonicalised**, which is what `decode_one_method` does at the end
 /// of `subst2`.
 pub fn decode_method(spec: &str) -> Vec<(String, Vec<String>)> {
-    let list = builtin_substs();
-    let expanded = subst(&list, spec);
+    decode_method_with(spec, &substs_with_user(user_rows()))
+}
+
+/// `darc.toml`'s `[methods]`, set once at startup.
+///
+/// A global for the same reason the C's table is one: `decode_method` is
+/// reached from inside `add`, several layers below where the config was read,
+/// and the reference's table is likewise a program-wide thing built before any
+/// command runs. Set exactly once, before any archive work begins.
+static USER_ROWS: std::sync::OnceLock<Vec<Subst>> = std::sync::OnceLock::new();
+
+/// Install the config's method rows. Later calls are ignored, so a second
+/// caller cannot change the table out from under a command in progress.
+pub fn set_user_rows(rows: Vec<(String, String)>) {
+    drop(USER_ROWS.set(rows));
+}
+
+fn user_rows() -> &'static [Subst] {
+    USER_ROWS.get().map_or(&[], Vec::as_slice)
+}
+
+/// Expand a `(key, value)` pair the way [`prepare`] expands a table line:
+/// squeeze whitespace, and turn one `#` row into nine.
+///
+/// `darc.toml`'s `[methods]` arrives already split into key and value, so it
+/// skips the `=`-splitting and comment-stripping half of `prepare` — but it
+/// must go through the same `#` expansion, or a user's `#$wav` row would be
+/// looked up under a literal `#` and never match.
+fn prepare_pairs(pairs: &[(String, String)]) -> Vec<Subst> {
+    let mut out = Vec::new();
+    for (k, v) in pairs {
+        let squeeze = |s: &str| -> String { s.chars().filter(|c| !c.is_whitespace()).collect() };
+        let (k, v) = (squeeze(k), squeeze(v));
+        match k.contains('#') || v.contains('#') {
+            true => {
+                for d in '1'..='9' {
+                    let d = d.to_string();
+                    out.push((k.replace('#', &d), v.replace('#', &d)));
+                }
+            }
+            false => out.push((k, v)),
+        }
+    }
+    out
+}
+
+/// The substitution list with `darc.toml`'s `[methods]` rows applied.
+///
+/// `reorder` (`Compression.hs:418`) puts rows WITHOUT `#` before rows with it,
+/// so a specific definition shadows a general one; `lookup` then takes the
+/// first match. Applying that to the combined list — user rows before built-in
+/// rows *within each half* — is what makes a user row win a tie without letting
+/// a general user row shadow a specific built-in one.
+///
+/// Getting the halves wrong is not a compile error and not a test failure on a
+/// config that overrides nothing; it silently changes which chain a preset
+/// expands to, and that chain is written into the archive.
+pub fn substs_with_user(user: &[(String, String)]) -> Vec<Subst> {
+    // Partition BEFORE expansion. `prepare` turns one `#` row into nine rows
+    // that contain no `#` at all, so a partition applied afterwards sees every
+    // row as specific and the ordering rule collapses -- every user row then
+    // shadows every built-in one, including the specific built-ins it must not
+    // touch. That was this function's first version, and the test below is
+    // what caught it.
+    let general = |k: &str, v: &str| k.contains('#') || v.contains('#');
+    let (u_plain, u_hash): (Vec<(String, String)>, Vec<(String, String)>) =
+        user.iter().cloned().partition(|(k, v)| !general(k, v));
+    let (b_plain, b_hash): (Vec<&&str>, Vec<&&str>) =
+        BUILTIN.iter().partition(|l| !l.contains('#'));
+    let b_plain: Vec<&str> = b_plain.into_iter().copied().collect();
+    let b_hash: Vec<&str> = b_hash.into_iter().copied().collect();
+
+    let mut out = prepare_pairs(&u_plain);
+    out.extend(prepare(&b_plain));
+    out.extend(prepare_pairs(&u_hash));
+    out.extend(prepare(&b_hash));
+    out
+}
+
+/// [`decode_method`] against a supplied substitution list.
+pub fn decode_method_with(spec: &str, list: &[Subst]) -> Vec<(String, Vec<String>)> {
+    let expanded = subst(list, spec);
     let pairs = split_to_methods(&expanded);
 
     // keepOnlyLastOn fst: a later definition of a type replaces an earlier one,
@@ -188,7 +268,7 @@ pub fn decode_method(spec: &str) -> Vec<(String, Vec<String>)> {
     kept.into_iter()
         .filter(|(_, v)| !v.is_empty())
         .map(|(k, v)| {
-            let chain: Vec<String> = subst2(&list, &v)
+            let chain: Vec<String> = subst2(list, &v)
                 .into_iter()
                 .map(|m| crate::canonize::canonize(&m).unwrap_or(m))
                 .collect();
@@ -633,4 +713,256 @@ mod tests {
             }
         }
     }
+}
+
+#[cfg(test)]
+mod table_pin {
+    //! A snapshot of what the built-in table means TODAY, taken before it is
+    //! rewritten from a `&[&str]` array into structured data.
+    //!
+    //! Steps 2 and 3 of the darc.toml work change how the table is stored and
+    //! must change nothing about what it decodes to. This is the gate that says
+    //! so: it renders every preset the table can express and compares against a
+    //! fixture recorded from the current implementation. It is deliberately
+    //! mechanical -- no cleverness, because its only job is to notice movement.
+    //!
+    //! If a row here changes, the refactor is wrong. Re-blessing the fixture to
+    //! make it pass would discard the only evidence that the rewrite preserved
+    //! meaning, exactly as re-recording golden/manifest.txt from the port would.
+    use super::decode_method;
+
+    /// Every spec the presets and their modifiers can name.
+    fn all_specs() -> Vec<String> {
+        let mut out = Vec::new();
+        for lvl in 0..=9 {
+            out.push(lvl.to_string());
+            for m in ["x", "p", "q", "b", "t", "xb", "xt", "pb", "pt", "qb", "qt"] {
+                out.push(format!("{lvl}{m}"));
+            }
+        }
+        // The named groups and synonyms, which no level reaches directly.
+        for n in [
+            "wav", "wavfast", "bmp", "bmpfast", "bmpfastest", "bcj", "exe", "lzma", "tor",
+            "$wav", "$bmp", "$obj", "$text", "$compressed", "$binary",
+        ] {
+            out.push(n.to_string());
+        }
+        out
+    }
+
+    /// One line per spec: `spec => type=chain|type=chain|...`.
+    fn render() -> String {
+        let mut s = String::new();
+        for spec in all_specs() {
+            let decoded = decode_method(&spec);
+            let body: Vec<String> = decoded
+                .iter()
+                .map(|(ty, chain)| format!("{ty}={}", chain.join("+")))
+                .collect();
+            s.push_str(&format!("{spec} => {}\n", body.join("|")));
+        }
+        s
+    }
+
+    #[test]
+    fn the_builtin_table_decodes_as_it_always_has() {
+        let fixture = include_str!("../tests/method-table.pin");
+        let now = render();
+        if now != fixture {
+            // Name the first differing line rather than dumping both files.
+            for (i, (a, b)) in now.lines().zip(fixture.lines()).enumerate() {
+                assert_eq!(a, b, "method table moved at line {}", i + 1);
+            }
+            assert_eq!(now.lines().count(), fixture.lines().count(), "row count moved");
+        }
+    }
+
+    /// Writes the fixture. Run with the env var set ONLY when the table is
+    /// deliberately being given new content -- never to silence a failure.
+    #[test]
+    fn bless() {
+        match std::env::var("DARC_BLESS_METHOD_TABLE") {
+            Ok(_) => std::fs::write(
+                concat!(env!("CARGO_MANIFEST_DIR"), "/tests/method-table.pin"),
+                render(),
+            )
+            .expect("write fixture"),
+            Err(_) => {}
+        }
+    }
+}
+
+#[cfg(test)]
+mod user_rows {
+    //! `darc.toml`'s `[methods]` applied over the built-in table.
+    use super::{decode_method, decode_method_with, substs_with_user};
+
+    fn row(k: &str, v: &str) -> (String, String) {
+        (k.to_string(), v.to_string())
+    }
+
+    fn chain(spec: &str, rows: &[(String, String)]) -> String {
+        let list = substs_with_user(rows);
+        decode_method_with(spec, &list)
+            .into_iter()
+            .find(|(ty, _)| ty.is_empty())
+            .map(|(_, c)| c.join("+"))
+            .unwrap_or_default()
+    }
+
+    /// No rows means the built-in table, unchanged. This is the property the
+    /// 93 golden hashes depend on.
+    #[test]
+    fn an_empty_config_changes_nothing() {
+        for spec in ["1", "4", "9", "5x", "9binary"] {
+            assert_eq!(
+                decode_method_with(spec, &substs_with_user(&[])),
+                decode_method(spec),
+                "-m{spec} moved with no user rows"
+            );
+        }
+    }
+
+    /// A user row shadows the built-in of the same key.
+    #[test]
+    fn a_user_row_wins_over_the_builtin() {
+        let before = chain("9", &[]);
+        let after = chain("9", &[row("9", "lzma:1m")]);
+        assert_ne!(before, after, "the override did nothing");
+        assert_eq!(after, "lzma:1mb");
+    }
+
+    /// The ordering rule: rows WITHOUT `#` beat rows with it, and that must
+    /// hold ACROSS the user/built-in boundary in both directions.
+    ///
+    /// A general user row must not shadow a specific built-in one, and a
+    /// specific user row must beat a general built-in one. Get the halves
+    /// wrong and nothing fails to compile — the wrong chain is simply written
+    /// into the archive.
+    #[test]
+    fn specific_beats_general_across_the_user_boundary() {
+        // `1x` exists as a plain built-in row. A general `#x` from the user
+        // must NOT displace it.
+        let plain_builtin = chain("1x", &[]);
+        assert_eq!(
+            chain("1x", &[row("#x", "lzma:1m")]),
+            plain_builtin,
+            "a general user row displaced a specific built-in one"
+        );
+        // The reverse: a specific user row beats a general built-in one.
+        // `2$wav` is only defined by the general `#$wav` row.
+        let with_specific = substs_with_user(&[row("2$wav", "tta:m9")]);
+        let got = decode_method_with("2", &with_specific);
+        let wav = got.iter().find(|(ty, _)| ty == "$wav").map(|(_, c)| c.join("+"));
+        assert_eq!(wav, Some("tta:m9".to_string()), "a specific user row lost to a general built-in");
+    }
+
+    /// A `#` row from the user expands into nine, exactly as a table line
+    /// does. Without that, `#$wav` would be filed under a literal `#`.
+    #[test]
+    fn a_user_hash_row_expands_into_nine() {
+        let rows = [row("#$wav", "tta:m1")];
+        for lvl in ["3", "7", "9"] {
+            let got = decode_method_with(lvl, &substs_with_user(&rows));
+            let wav = got.iter().find(|(ty, _)| ty == "$wav").map(|(_, c)| c.join("+"));
+            assert_eq!(wav, Some("tta:m1".to_string()), "-m{lvl} did not take the user's #$wav");
+        }
+    }
+}
+
+/// `method_name` (`Compression.hs:584`) — a link's name, without parameters.
+fn method_name(m: &str) -> &str {
+    m.split(':').next().unwrap_or(m)
+}
+
+/// `isFastDecMethod` (`Compression.hs:62`).
+///
+/// The PPM family and external compressors are the slow ones; everything else
+/// counts as fast to decompress.
+fn is_fast_dec_method(m: &str) -> bool {
+    let n = method_name(m);
+    !matches!(n, "ppmd" | "ppmm" | "pmm") && !crate::external::is_external(n)
+}
+
+/// `isFastDecompression` (`Compression.hs:123`) — every chain, every link.
+fn is_fast_decompression(decoded: &[(String, Vec<String>)]) -> bool {
+    decoded.iter().all(|(_, chain)| chain.iter().all(|m| is_fast_dec_method(m)))
+}
+
+/// The chain a name expands to, for building the `$wav`/`$bmp` entries.
+fn chain_for(name: &str) -> Vec<String> {
+    decode_method(name).into_iter().next().map_or_else(Vec::new, |(_, c)| c)
+}
+
+/// `multimedia` (`Cmdline.hs:307`) — the `-mm` transform.
+///
+/// It rewrites the decoded compressor LIST, not the substitution table: it
+/// drops the `$wav` and `$bmp` entries and, for `fast`/`max`, appends
+/// replacements. Removing before appending is what makes the new entry win,
+/// because `findCompressor` takes the first match for a type.
+///
+/// `"--"` is "not given" and is the identity, which is why an ordinary `-m9`
+/// keeps the multimedia handling the preset already chose. `-mm` is an
+/// override of that choice, not the switch that enables it.
+pub fn apply_multimedia(mode: &str, decoded: Vec<(String, Vec<String>)>) -> Vec<(String, Vec<String>)> {
+    let without = |d: Vec<(String, Vec<String>)>| -> Vec<(String, Vec<String>)> {
+        d.into_iter().filter(|(ty, _)| ty != "$wav" && ty != "$bmp").collect()
+    };
+    let with = |d: Vec<(String, Vec<String>)>, wav: &str, bmp: &str| {
+        let mut out = without(d);
+        out.push(("$wav".to_string(), chain_for(wav)));
+        out.push(("$bmp".to_string(), chain_for(bmp)));
+        out
+    };
+    match mode {
+        "--" => decoded,
+        "-" => without(decoded),
+        "fast" => with(decoded, "wavfast", "bmpfast"),
+        "max" => with(decoded, "wav", "bmp"),
+        // `+` and the empty value pick by how fast the chain decompresses.
+        "+" | "" => match is_fast_decompression(&decoded) {
+            true => with(decoded, "wavfast", "bmpfast"),
+            false => with(decoded, "wav", "bmp"),
+        },
+        // parse_m rejects anything else before this is reached.
+        _ => decoded,
+    }
+}
+
+/// `method_change` (`Cmdline.hs:317`) — one `-mc` value.
+///
+/// Two shapes, and they are not the same operation:
+///
+/// * `$group` drops that whole entry.
+/// * a method name drops, from every entry EXCEPT the first, any whose chain
+///   ENDS with that method — and then strips that method from every remaining
+///   chain, the first included.
+///
+/// The head entry surviving step one is deliberate in the reference
+/// (`\(x:xs) -> x : filter … xs`): it is the default compressor, and dropping
+/// it would leave a file type with nothing at all.
+pub fn apply_method_change(mc: &str, decoded: Vec<(String, Vec<String>)>) -> Vec<(String, Vec<String>)> {
+    if mc.starts_with('$') {
+        return decoded.into_iter().filter(|(ty, _)| ty != mc).collect();
+    }
+    let mut it = decoded.into_iter();
+    let head = it.next();
+    let mut kept: Vec<(String, Vec<String>)> = Vec::new();
+    match head {
+        Some(h) => kept.push(h),
+        None => return Vec::new(),
+    }
+    for (ty, chain) in it {
+        // `last1 [] = defaultValue` -- an empty chain has no last method, so it
+        // cannot match and is kept.
+        let ends_with_mc = chain.last().map_or(false, |m| method_name(m) == mc);
+        if !ends_with_mc {
+            kept.push((ty, chain));
+        }
+    }
+    kept.into_iter()
+        .map(|(ty, chain)| {
+            (ty, chain.into_iter().filter(|m| method_name(m) != mc).collect())
+        })
+        .collect()
 }

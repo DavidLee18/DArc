@@ -50,6 +50,15 @@ Attribution only; no source-provision or notice-propagation duty.
 | `zstd-safe` / `zstd-sys` | BSD-3-Clause (bundles Facebook's zstd) |
 | RustCrypto (`aes`, `sha2`, `hmac`, `pbkdf2`, `blowfish`, `serpent`, `twofish`, `cipher`) | MIT OR Apache-2.0 |
 | 7-Zip SDK derivation in `rust/darc-lzma` | BSD-3-Clause — see `rust/darc-lzma/PROVENANCE.md` |
+| `toml`, `toml_parser`, `toml_datetime`, `serde_spanned` | MIT OR Apache-2.0 |
+| `serde`, `serde_core`, `serde_derive`, `syn` | MIT OR Apache-2.0 |
+| `winnow` | MIT |
+
+`toml` and `serde` arrived with `darc.toml`, which replaced `arc.ini`. Nine
+crates are new — the four `toml`, the four `serde`, and `winnow`, the parser
+combinator `toml_parser` is built on. `proc-macro2`, `quote` and
+`unicode-ident` were already in the tree, so no new Unicode-3.0 obligation
+comes with them. All are permissive and one-way compatible with GPLv3.
 
 ## The HTTP client, for `--original`
 
