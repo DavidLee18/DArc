@@ -250,6 +250,45 @@ fn main() {
         let mut names: Vec<&str> = unimplemented;
         names.sort_unstable();
         names.dedup();
+        // Three of these are NOT awaiting implementation, and saying so would
+        // promise work that must never be done. `Options.hs:170-172` gives
+        // `-md`/`--dictionary`, `-ms`/`--StoreCompressed` and
+        // `-mm`/`--multimedia` a long spelling that nothing in the reference
+        // ever reads: the values are consumed inside the `-m` grammar, under
+        // the name `method`, because `method` wins the prefix tie.
+        //
+        // Measured on the reference: `-md1m` changes the archive and
+        // `--dictionary=1m` is byte-identical to giving nothing at all. It
+        // accepts the option, exits 0, and hands back an archive with the
+        // DEFAULT dictionary. Refusing surfaces that; matching it would be the
+        // silent no-op this list exists to prevent. Routing the long spelling
+        // into the grammar instead would be worse still -- it would write a
+        // different archive than the reference for the same command line.
+        //
+        // So the behaviour stays and only the message changes, to name the
+        // spelling that is actually read.
+        for (name, hint) in [
+            ("dictionary", Some("-md<N>")),
+            ("StoreCompressed", Some("-ms")),
+            // multimedia is the exception: -mm is not implemented EITHER, so
+            // there is no working spelling to point at.
+            ("multimedia", None),
+        ] {
+            if names.contains(&name) {
+                match hint {
+                    Some(spelling) => eprintln!(
+                        "ERROR: --{name} is not a separate option -- the reference \
+                         accepts it and then ignores it, writing the default. Use \
+                         {spelling}, which is where the value is actually read."
+                    ),
+                    None => eprintln!(
+                        "ERROR: --{name} is not implemented, and neither is its \
+                         -mm spelling: it changes the compression chain."
+                    ),
+                }
+                std::process::exit(2);
+            }
+        }
         eprintln!(
             "ERROR: this port does not implement {} yet, and ignoring it would \
              write an archive that is not what you asked for",
