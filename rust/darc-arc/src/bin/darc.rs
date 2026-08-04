@@ -2010,10 +2010,33 @@ fn add(
                 _ => None,
             })
             .collect();
+        // A block that carries encryption cannot be copied VERBATIM when the
+        // output is encrypted differently: its bytes are ciphertext under the
+        // old key, and copying them leaves the archive readable with the OLD
+        // password however the new one was spelled.
+        //
+        // The reference has this bug -- measured, `ch -opOLD -pNEW` exits 0
+        // there and the archive still opens with OLD -- and this port
+        // reproduced it faithfully. Fixed here deliberately, so the port
+        // writes DIFFERENT bytes than the reference for that one command line.
+        // The result is an ordinary archive any DArc can read; the
+        // reference's is one the user did not ask for.
+        let src_encrypted = src.compressor.iter().any(|m| darc_arc::block::is_encryption(m));
+        // `-p-` explicitly DROPS encryption, and is the same bug in the other
+        // direction: the reference exits 0 and leaves the archive encrypted.
+        // Read from the raw option because Passwords cannot tell "-p-" from
+        // "no -p at all" -- `dont_ask_passwords` is set by `-op-` as well.
+        //
+        // `ch -opOLD` with no -p is NOT this: keeping the encryption a plain
+        // copy already had is the right answer there.
+        let drop_encryption = parsed.all("password").contains(&"-");
+        let reencrypting = src_encrypted && (!pw.data.is_empty() || drop_encryption);
+
         let whole = positions.len() == group.len()
             && positions.first() == Some(&0)
             && src.files == Some(group.len())
-            && positions.windows(2).all(|w| w[0] <= w[1]);
+            && positions.windows(2).all(|w| w[0] <= w[1])
+            && !reencrypting;
 
         let block = match whole {
             true => {
@@ -2054,7 +2077,16 @@ fn add(
                     }
                     kept_entries.push(e);
                 }
-                let original = src.compressor.join("+");
+                // The stale encryption is STRIPPED: write_compressed_data
+                // appends the output's own, and leaving the old one here
+                // would encrypt the block twice.
+                let original = src
+                    .compressor
+                    .iter()
+                    .filter(|m| !darc_arc::block::is_encryption(m))
+                    .cloned()
+                    .collect::<Vec<String>>()
+                    .join("+");
                 let fitted = match darc_arc::memlimit::fit_for_add_limits(&original, body.len() as u64, climit, dlimit) {
                     Some(f) => f,
                     None => {
