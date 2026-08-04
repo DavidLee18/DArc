@@ -317,7 +317,7 @@ fn main() {
         "recovery", "volume", "sfx", "noarcext", "charset", "original", "overwrite",
         "keepbroken", "keeptime", "timetolast", "test", "autogenerate",
         "pause-before-exit", "queue", "pretest", "logfile", "proxy", "bypass",
-        "type", "dirmethod", "adddir", "nodata", "crconly", "LimitDecompMem", "nodir", "LimitCompMem", "sort", "config", "env",
+        "type", "dirmethod", "adddir", "nodata", "crconly", "LimitDecompMem", "nodir", "LimitCompMem", "sort", "config", "env", "workdir", "create-in-workdir",
         // Accepted and deliberately ignored: UI only.
         "yes", "indicator", "display",
         // Accepted and deliberately ignored: these change SPEED or a Windows
@@ -2311,11 +2311,72 @@ fn add(
         true => std::fs::metadata(archive_name).and_then(|m| m.modified()).ok(),
     };
 
-    match std::fs::write(archive_name, &bytes) {
+    // `tempfileWrapper` (ArcCreate.hs:185): the archive is written to
+    // `$$temparc$$<n>.tmp` and only then renamed into place. Not
+    // archive-visible -- the bytes are the same either way -- but an
+    // interrupted run now leaves the temporary file rather than a TRUNCATED
+    // archive under the real name, which is the actual point.
+    //
+    // The directory is `-w` if given, else the archive's own. `%VAR` reads an
+    // environment variable, and `--create-in-workdir` with no -w means
+    // $TMPDIR, then $TEMP, then /tmp (Cmdline.hs:623-628).
+    let workdir: String = match parsed.arg("workdir", "--") {
+        "--" => match parsed.flag("create-in-workdir") {
+            false => String::new(),
+            true => std::env::var("TMPDIR")
+                .or_else(|_| std::env::var("TEMP"))
+                .unwrap_or_else(|_| "/tmp".to_string()),
+        },
+        v => match v.strip_prefix('%') {
+            Some(var) => std::env::var(var).unwrap_or_default(),
+            None => v.to_string(),
+        },
+    };
+    let temp_dir = match workdir.is_empty() {
+        true => std::path::Path::new(archive_name)
+            .parent()
+            .map(std::path::Path::to_path_buf)
+            .unwrap_or_default(),
+        false => std::path::PathBuf::from(&workdir),
+    };
+    // `find 0`: the first free `$$temparc$$<n>.tmp`, giving up at 999 rather
+    // than looping.
+    let mut temp_path = None;
+    for n in 0..1000 {
+        let p = temp_dir.join(format!("$$temparc$${n}.tmp"));
+        if !p.exists() {
+            temp_path = Some(p);
+            break;
+        }
+    }
+    let temp_path = match temp_path {
+        Some(p) => p,
+        None => {
+            eprintln!("ERROR: can't create temporary file in {}", temp_dir.display());
+            return 2;
+        }
+    };
+    match std::fs::write(&temp_path, &bytes) {
         Ok(()) => {}
         Err(e) => {
-            eprintln!("ERROR: {archive_name}: {e}");
+            eprintln!("ERROR: {}: {e}", temp_path.display());
             return 2;
+        }
+    }
+    // `fileRename tempname filename`, falling back to a copy when the rename
+    // fails -- which is what happens when -w names a different filesystem.
+    match std::fs::rename(&temp_path, archive_name) {
+        Ok(()) => {}
+        Err(_) => {
+            println!("Copying temporary archive {} to {archive_name}", temp_path.display());
+            match std::fs::copy(&temp_path, archive_name) {
+                Ok(_) => drop(std::fs::remove_file(&temp_path)),
+                Err(e) => {
+                    eprintln!("ERROR: {archive_name}: {e}");
+                    drop(std::fs::remove_file(&temp_path));
+                    return 2;
+                }
+            }
         }
     }
 
