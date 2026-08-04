@@ -257,6 +257,19 @@ fn main() {
         },
     };
 
+    // Registered as early as the three values exist -- before the first check
+    // that can fail -- so every `bail` lands in the log. `--type=zip` was the
+    // one that proved it matters: its check sits above this point, and with
+    // the registration any lower it was the single unlogged failure of six.
+    drop(RUN_LOG.set((
+        parsed.arg("logfile", "").to_string(),
+        command.clone(),
+        match archive_name.is_empty() {
+            true => "-".to_string(),
+            false => archive_name.clone(),
+        },
+    )));
+
     // `--type` (Cmdline.hs:515): `arc` is the only archive format there is, and
     // anything else is refused. The message is the reference's own, verbatim,
     // because `-t` resolves HERE rather than to `--test` and a user who typed
@@ -264,7 +277,7 @@ fn main() {
     let archive_type = parsed.arg("type", "arc");
     if archive_type != "arc" {
         eprintln!("ERROR: --type={archive_type}: only arc format is supported");
-        std::process::exit(2);
+        bail(2);
     }
 
     // `--pretest` (Cmdline.hs:127): the value defaults to "1", and `-` `+` and
@@ -276,7 +289,7 @@ fn main() {
             Ok(n @ 0..=3) => n,
             _ => {
                 eprintln!("ERROR: --pretest{s}: expected one of 0, 1, 2, 3");
-                std::process::exit(2);
+                bail(2);
             }
         },
     };
@@ -379,7 +392,7 @@ fn main() {
                          -mm spelling: it changes the compression chain."
                     ),
                 }
-                std::process::exit(2);
+                bail(2);
             }
         }
         eprintln!(
@@ -387,7 +400,7 @@ fn main() {
              write an archive that is not what you asked for",
             names.join(", ")
         );
-        std::process::exit(2);
+        bail(2);
     }
 
     // `-sc`/`--charset`, folded left to right over every occurrence
@@ -399,7 +412,7 @@ fn main() {
             Ok(()) => {}
             Err(e) => {
                 eprintln!("ERROR: -sc{opt}: {e}");
-                std::process::exit(2);
+                bail(2);
             }
         }
     }
@@ -407,7 +420,7 @@ fn main() {
         Ok(()) => {}
         Err(e) => {
             eprintln!("ERROR: {e}");
-            std::process::exit(2);
+            bail(2);
         }
     }
 
@@ -422,7 +435,7 @@ fn main() {
             Ok(v) => v,
             Err(e) => {
                 eprintln!("ERROR: {what}: {e}");
-                std::process::exit(2);
+                bail(2);
             }
         }
     };
@@ -439,7 +452,7 @@ fn main() {
                 Some(n) => Some(n),
                 None => {
                     eprintln!("ERROR: -{flag}: {s:?} is not a size");
-                    std::process::exit(2);
+                    bail(2);
                 }
             },
         }
@@ -451,7 +464,7 @@ fn main() {
                 Some(t) => Some(t),
                 None => {
                     eprintln!("ERROR: -{flag}: {s:?} is not a YYYYMMDDHHMMSS time");
-                    std::process::exit(2);
+                    bail(2);
                 }
             },
         }
@@ -463,7 +476,7 @@ fn main() {
                 Some(secs) => Some(now_seconds() - secs),
                 None => {
                     eprintln!("ERROR: -{flag}: {s:?} is not a time period");
-                    std::process::exit(2);
+                    bail(2);
                 }
             },
         }
@@ -518,7 +531,7 @@ fn main() {
         )
         && !pretest_archive(pretest, std::path::Path::new(&archive_name), &pw)
     {
-        std::process::exit(2);
+        bail(2);
     }
 
     let path = std::path::Path::new(&archive_name);
@@ -538,7 +551,7 @@ fn main() {
     };
     if !matches!(broken, "-" | "0" | "1") {
         eprintln!("ERROR: -ba{broken}: expected one of -, 0, 1");
-        std::process::exit(2);
+        bail(2);
     }
     let open_existing = || match match broken {
         "-" => archive::read_info(path, &pw),
@@ -547,7 +560,7 @@ fn main() {
         Ok(i) => i,
         Err(e) => {
             eprintln!("ERROR: {e}");
-            std::process::exit(2);
+            bail(2);
         }
     };
 
@@ -593,7 +606,7 @@ fn main() {
                 Ok(d) => d,
                 Err(e) => {
                     eprintln!("ERROR: {e}");
-                    std::process::exit(2);
+                    bail(2);
                 }
             };
             let extracting = command != "t";
@@ -604,7 +617,7 @@ fn main() {
                         Ok(m) => m,
                         Err(e) => {
                             eprintln!("ERROR: {e}");
-                            std::process::exit(2);
+                            bail(2);
                         }
                     };
                     resolve_overwrites(&layout, &selected, mode, parsed.flag("yes"))
@@ -629,7 +642,7 @@ fn main() {
                 Some(n) => n,
                 None => {
                     eprintln!("usage: darc fit <total-bytes> <chain>...");
-                    std::process::exit(2);
+                    bail(2);
                 }
             };
             let mut bad = 0;
@@ -654,7 +667,7 @@ fn main() {
                 Ok(()) => {}
                 Err(e) => {
                     eprintln!("ERROR: {dir}: {e}");
-                    std::process::exit(2);
+                    bail(2);
                 }
             }
             let mut entries: Vec<Entry> = Vec::new();
@@ -726,7 +739,7 @@ fn main() {
                 "h0" => "",
                 other => {
                     eprintln!("usage: darc crypt-probe h0|h1 (got {other:?})");
-                    std::process::exit(2);
+                    bail(2);
                 }
             };
             let method = format!(
@@ -741,7 +754,7 @@ fn main() {
                 Some(e) => e,
                 None => {
                     eprintln!("ERROR: the probe's own method string does not parse");
-                    std::process::exit(2);
+                    bail(2);
                 }
             };
             let mut buf = vec![b'A'; 64];
@@ -749,7 +762,7 @@ fn main() {
                 Ok(()) => {}
                 Err(err) => {
                     eprintln!("ERROR: {err}");
-                    std::process::exit(2);
+                    bail(2);
                 }
             }
             println!("{}", darc_arc::encryption::encode16(&buf));
@@ -815,25 +828,7 @@ fn main() {
     // failed --pretest. Those are precondition errors, reported on stderr, and
     // covering them means routing every early exit through one place, which is
     // a refactor rather than an option.
-    let logfile = parsed.arg("logfile", "");
-    if !logfile.is_empty() {
-        let line = format!(
-            "{} {} {} rc={code}\n",
-            format_time(now_unix()),
-            command,
-            match archive_name.is_empty() {
-                true => "-",
-                false => &archive_name,
-            }
-        );
-        match std::fs::OpenOptions::new().create(true).append(true).open(logfile) {
-            Ok(mut f) => match std::io::Write::write_all(&mut f, line.as_bytes()) {
-                Ok(()) => {}
-                Err(e) => eprintln!("WARNING: --logfile {logfile}: {e}"),
-            },
-            Err(e) => eprintln!("WARNING: --logfile {logfile}: {e}"),
-        }
-    }
+    write_run_log(code);
 
     // Held until here, then released explicitly so the next queued process
     // starts as soon as this one is finished rather than mid-teardown.
@@ -1076,6 +1071,39 @@ fn add(
     };
 
     let decoded = darc_arc::methodtable::decode_method(&method);
+
+    // An EXPLICIT -lc over a chain this port cannot measure is refused.
+    //
+    // `get_compression_mem` returns None for Tornado, REP, LZP, GRZip, LZ4,
+    // Zstd and 4x4, and `limit_compression_mem` leaves those alone -- so
+    // `-mtor -lc8m` would exit 0 with Tornado UNLIMITED. The user asked for a
+    // memory cap and would not get one, which on a small machine is an OOM
+    // rather than a smaller chain. That is the silent no-op this port refuses
+    // everywhere else, and refusing it here too is the consistent answer.
+    //
+    // The DEFAULT limit deliberately does not refuse: it is 75% of RAM, it
+    // does not bind for the chains DArc ships, and refusing there would make
+    // every -mtor archive fail.
+    if parsed.arg("LimitCompMem", "--") != "--" {
+        for (ty, chain) in &decoded {
+            let parsed_chain = darc_arc::method::Method::parse_chain(chain);
+            let known = match &parsed_chain {
+                Some(ms) => darc_arc::memlimit::compression_mem_is_known(ms),
+                None => false,
+            };
+            if !known {
+                eprintln!(
+                    "ERROR: -lc cannot limit {} for file type {:?}: this port has no \
+                     compression-memory formula for it, and applying no limit \
+                     while you asked for one would be worse than saying so",
+                    chain.join("+"),
+                    ty
+                );
+                return 2;
+            }
+        }
+    }
+
     // Only `fake` zeroes the CRC; `crc` is the whole point of recording one.
     let zero_crc = decoded
         .iter()
@@ -1160,20 +1188,6 @@ fn add(
             false => "gerpn",
         },
         "-" => "",
-        // `'c':xs` is not a key character: it PARTITIONS the list at 128 kb,
-        // sorts the small half by the remaining order and the large half by
-        // "s", then concatenates (ArhiveFileList.hs:48). This port sorts by a
-        // flat key vector, which cannot express that -- measured, `-dscn`
-        // writes a different archive than the reference. Refused rather than
-        // written wrongly.
-        x if x.contains('c') => {
-            eprintln!(
-                "ERROR: -ds{x}: the 'c' order partitions the file list at 128 kb \
-                 and sorts each half differently, which this port does not \
-                 implement; every other order is supported"
-            );
-            return 2;
-        }
         x => x,
     };
     let recursive = parsed.flag("recursive");
@@ -2943,6 +2957,44 @@ fn queue_acquire() -> std::io::Result<std::fs::File> {
 fn queue_acquire() -> std::io::Result<std::fs::File> {
     let path = std::env::temp_dir().join("darc.queue.lock");
     std::fs::OpenOptions::new().create(true).write(true).truncate(false).open(&path)
+}
+
+/// What `--logfile` needs to record a run, once it is known.
+///
+/// A OnceLock rather than threading four values through twenty call sites:
+/// `main` leaves through `std::process::exit` in many places, and every one of
+/// them is a run the log should show. Set as soon as the options are parsed;
+/// anything that fails BEFORE that -- an unparseable option -- cannot be
+/// logged, because the log's own path has not been read yet.
+static RUN_LOG: std::sync::OnceLock<(String, String, String)> = std::sync::OnceLock::new();
+
+/// Append one line for this run, if `--logfile` was given.
+///
+/// APPENDED, so a series of scheduled backups leaves a history. A failure to
+/// write the log never changes the exit code: whatever the command did has
+/// already happened.
+fn write_run_log(code: i32) {
+    let (logfile, command, archive) = match RUN_LOG.get() {
+        Some(v) => v,
+        None => return,
+    };
+    if logfile.is_empty() {
+        return;
+    }
+    let line = format!("{} {command} {archive} rc={code}\n", format_time(now_unix()));
+    match std::fs::OpenOptions::new().create(true).append(true).open(logfile) {
+        Ok(mut f) => match std::io::Write::write_all(&mut f, line.as_bytes()) {
+            Ok(()) => {}
+            Err(e) => eprintln!("WARNING: --logfile {logfile}: {e}"),
+        },
+        Err(e) => eprintln!("WARNING: --logfile {logfile}: {e}"),
+    }
+}
+
+/// `std::process::exit`, with the run recorded first.
+fn bail(code: i32) -> ! {
+    write_run_log(code);
+    std::process::exit(code)
 }
 
 /// Seconds since the Unix epoch, or 0 if the clock is before it.

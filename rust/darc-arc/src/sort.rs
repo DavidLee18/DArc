@@ -209,6 +209,22 @@ fn sort_by(order: &str, groups: &Groups, files: Vec<Entry>) -> Vec<Entry> {
             }
             buckets.into_iter().flat_map(|b| sort_by(rest, groups, b)).collect()
         }
+        // `'c':xs -> (\(small,large) -> sortBy xs small ++ sortBy "s" large)
+        //   . partition (\fi -> fiSize fi < i (128*kb))`
+        // (ArhiveFileList.hs:48).
+        //
+        // NOT a sort key: it splits the list at 128 kb and sorts the halves by
+        // DIFFERENT orders -- the small one by whatever follows, the large one
+        // by size -- then concatenates. `partition` is stable, so each half
+        // keeps its incoming order before its own sort.
+        Some('c') => {
+            let rest = &order[1..];
+            let (small, large): (Vec<Entry>, Vec<Entry>) =
+                files.into_iter().partition(|e| e.size < 128 * 1024);
+            let mut out = sort_by(rest, groups, small);
+            out.extend(sort_by("s", groups, large));
+            out
+        }
         Some('e') => {
             let rest = &order[1..];
             // sort_and_groupOn' by extension, then sort each group by the rest.
