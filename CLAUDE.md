@@ -119,8 +119,9 @@ before adding or changing a corpus.
   `Compression/Tornado/Tornado.cpp` (`C_Tornado.cpp` `#include`s it).
 - **Link order matters to GNU ld and not to macOS ld**, so a broken link passes
   locally and fails every Linux and mingw job. See `docs/rust-workspace.md`.
-- **CI enforces lint gates no `cargo build` will show you**, including greps for
-  `if let` and `let _` anywhere under `rust/` — tests included. See
+- **CI enforces one lint gate no `cargo build` will show you**: every enum
+  `match` must name its arms (`wildcard_enum_match_arm`), workspace-wide,
+  tests included. `if let` and `let _` are allowed. See
   `docs/rust-workspace.md`.
 - **The C is no longer on the archiver's path at all.** It is reached only by
   `Unarc/`, the SFX modules and the difftest oracles, which is why the ASan job

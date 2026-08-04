@@ -30,19 +30,19 @@
 //! and denying them would mean touching byte-exact code for cosmetics.
 //! ## Why `single_match` is allowed
 //!
-//! This crate prefers an exhaustive `match` with every case named over `if let`,
-//! so that a branch carrying archive behaviour has to be written down and cannot
-//! be silently absent. `clippy::single_match` is warn-by-default (it is in
-//! `clippy::all`) and pushes the opposite way -- it asked, by name, for
-//! `grzip/block.rs`'s mode dispatch to become
-//! `if let Some(m) = RecMode::from_stream(..)`, which is exactly the form this
-//! crate is moving away from. So it is allowed on purpose, not by oversight.
+//! Totality here is `wildcard_enum_match_arm`: a `_ =>` over an enum silently
+//! absorbs variants added later, so every arm has to be named. That is the one
+//! style rule CI enforces, and it is about the ARMS of a match, not about
+//! choosing `match` over `if let`.
 //!
-//! Note there is no clippy lint that bans `if let`; the whole family of related
-//! lints (`single_match`, `single_match_else`, `manual_let_else`,
-//! `option_if_let_else`) points from `match` towards `if let`. Totality here is
-//! `wildcard_enum_match_arm` (which forbids `_ =>`, so every arm is named) plus
-//! the convention, not a lint.
+//! `if let` and `let _` were both banned once, by CI grep, on the wider theory
+//! that an exhaustive `match` says more than either. Those bans are gone. This
+//! crate is still written mostly in `match` form and there is no need to churn
+//! it, but neither spelling is a build failure now.
+//!
+//! `clippy::single_match` stays allowed all the same: it is warn-by-default and
+//! would fire on a large amount of existing code that reads perfectly well,
+//! which is noise rather than a finding.
 #![deny(clippy::wildcard_enum_match_arm)]
 #![deny(clippy::todo, clippy::unimplemented, clippy::mem_forget)]
 #![deny(unused_must_use)]
