@@ -228,7 +228,7 @@ fn main() {
         "recovery", "volume", "sfx", "noarcext", "charset", "original", "overwrite",
         "keepbroken", "keeptime", "timetolast", "test", "autogenerate",
         "pause-before-exit", "queue", "pretest", "logfile", "proxy", "bypass",
-        "type", "dirmethod", "adddir", "nodata", "crconly", "LimitDecompMem", "nodir", "LimitCompMem",
+        "type", "dirmethod", "adddir", "nodata", "crconly", "LimitDecompMem", "nodir", "LimitCompMem", "sort",
         // Accepted and deliberately ignored: UI only.
         "yes", "indicator", "display",
         // Accepted and deliberately ignored: these change SPEED or a Windows
@@ -986,7 +986,31 @@ fn add(
     // default type's chain, which is `decoded[0]`.
     let per_file = solid.data == vec![darc_arc::grouping::Grouping::None];
     let fast_main = darc_arc::method::disables_solid_sorting(&decoded[0].1);
-    let sort_order = if fast_main || per_file { "" } else { "gerpn" };
+    // `-ds`/`--sort` (Cmdline.hs:631-634) overrides both: an explicit order
+    // wins over the non-solid and fast-compressor cases, and `-ds-` disables
+    // sorting outright. Only when it is absent do the defaults apply.
+    let sort_order: &str = match parsed.arg("sort", "--") {
+        "--" => match fast_main || per_file {
+            true => "",
+            false => "gerpn",
+        },
+        "-" => "",
+        // `'c':xs` is not a key character: it PARTITIONS the list at 128 kb,
+        // sorts the small half by the remaining order and the large half by
+        // "s", then concatenates (ArhiveFileList.hs:48). This port sorts by a
+        // flat key vector, which cannot express that -- measured, `-dscn`
+        // writes a different archive than the reference. Refused rather than
+        // written wrongly.
+        x if x.contains('c') => {
+            eprintln!(
+                "ERROR: -ds{x}: the 'c' order partitions the file list at 128 kb \
+                 and sorts each half differently, which this port does not \
+                 implement; every other order is supported"
+            );
+            return 2;
+        }
+        x => x,
+    };
     let recursive = parsed.flag("recursive");
     let nodates = parsed.flag("nodates");
     // `runDelete = runArchiveAdd . setArcFilter ((not.) . fullFileFilter)`

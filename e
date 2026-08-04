@@ -1,1 +1,0 @@
-ERROR: -ld10%: percentage limits are not implemented -- this port's physical-memory figure does not yet match the reference's, and guessing it would write a different archive. Give an explicit size instead, e.g. -ld1gb.
