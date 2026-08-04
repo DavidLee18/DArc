@@ -875,22 +875,6 @@ fn add(
     let dlimit: u64 = match parsed.arg("LimitDecompMem", "--") {
         "--" => darc_arc::memlimit::ADD_DECOMPRESSION_LIMIT,
         "-" => u64::MAX,
-        // A percentage is REFUSED, not approximated. Measured: `-ld10%` on
-        // this machine writes an archive one byte different from the
-        // reference's, so the RAM figure or its rounding does not yet match
-        // `getPhysicalMemory `roundTo` (4*mb)` (Cmdline.hs:230). Every other
-        // spelling is byte-identical. Shipping the percentage would mean
-        // writing a DIFFERENT archive than the reference for a documented
-        // option, which is the one failure mode this project cannot absorb.
-        s if s.ends_with('%') || s.ends_with('p') => {
-            eprintln!(
-                "ERROR: -ld{s}: percentage limits are not implemented -- this \
-                 port's physical-memory figure does not yet match the \
-                 reference's, and guessing it would write a different archive. \
-                 Give an explicit size instead, e.g. -ld1gb."
-            );
-            return 2;
-        }
         s => match darc_arc::memlimit::parse_mem_with_percents(
             darc_arc::memlimit::physical_memory(),
             s,

@@ -511,7 +511,22 @@ pub fn fit_for_add_limited(chain: &str, total_bytes: u64, dlimit: u64) -> Option
 /// afford.
 pub fn physical_memory() -> u64 {
     let raw = physical_memory_raw();
-    raw - (raw % (4 * MB))
+    let rounded = raw - (raw % (4 * MB));
+    // CAPPED AT 4 GiB, established by measurement rather than by reading.
+    //
+    // On this 16 GB machine the reference answers `-ld10%` with
+    // `ppmd:16:429496729b` and `-ld25%` with `ppmd:22:1gb`. The first is
+    // consistent with a cap of either u32::MAX or 2^32 -- integer division
+    // hides the difference -- but the second is not: 2^32 * 25/100 is exactly
+    // 1073741824 (`1gb`), while u32::MAX * 25/100 is 1073741823, which the
+    // reference would have printed as `1073741823b`. So the figure is 2^32.
+    //
+    // 10% alone would have "confirmed" the wrong constant. Only a percentage
+    // that divides 2^32 evenly separates them.
+    //
+    // What is verified is the CAP. Whether a machine with less than 4 GiB sees
+    // its true RAM here is untested -- nothing available reports less.
+    rounded.min(4 * 1024 * MB)
 }
 
 #[cfg(target_os = "macos")]
