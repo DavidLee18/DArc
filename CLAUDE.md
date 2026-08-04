@@ -21,12 +21,27 @@ that reference actually wrote. **Read `docs/testing.md` before changing anything
 that touches archive bytes.**
 
 **Every method the reference can write, this can write** -- `Tests/run-tests.sh`
-scores 24/0/0, the same as the reference. `mm`, `tta`, `bsc`, `lz4` and `zstd`
-had no `Method` variant until recently, which made archives using them
+scores 24/0/0, the same as the reference. `mm`, `tta`, `bsc`, `lz4`, `zstd` and
+`lzma2` had no `Method` variant until recently, which made archives using them
 unreadable as well as unwritable; the `-m` VALUE grammar (`-mt`, `-ms`, `-md`,
 `-ma`, `-mc`, `-mm`) was read as method NAMES. Both are fixed and gated. What
 is still refused rather than implemented: `-mm`/`-ma`/`-mc` change the chain
 and are rejected outright, and `-lc-`/`-ld-` are not accepted at all.
+
+**`-mt` is archive-visible through LZMA2 and nothing else.** Above one block
+thread the encoder abandons the solid block and splits the input, so
+`-mlzma2:d64k -mt1` and `-mlzma2:d64k -mt8` write different archives -- in the
+reference too. Note that the *memory formulas* never see `-mt`: the C's
+`compression_threads` global starts at 1 and `SetCompressionThreads` is deferred
+to `setup_command`, which runs after every limit has been applied. Two different
+numbers, same C function.
+
+**`-lc` is served for every method except top-level `tor` and `grzip`**, which
+are refused. Their memory formulas are ported and produce exactly the
+reference's method strings; what still differs is `genericLimitMemoryUsage`
+splicing a `tempfile` stage into the chain, which changes how the data is fed to
+a chunk-sensitive codec. LZMA is unaffected. `-m4`/`-m9` carry `tor`/`grzip` at
+the top level and so are refused under `-lc` as well.
 
 ## Deeper references — load when the work calls for it
 

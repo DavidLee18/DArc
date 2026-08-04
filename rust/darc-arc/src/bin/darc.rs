@@ -951,15 +951,20 @@ fn add(
     // `SetCompressionThreads (cthreads)` (Cmdline.hs:294) -- "before the command
     // starts, tell the compression library how many threads it should use".
     //
-    // Here that is rayon's global pool, which is what parallelises 4x4's chunks
-    // and the block decoder. Zero means "as many as the machine has", which is
-    // already rayon's default, so only a positive value does anything.
+    // Two consumers. `memlimit::set_compression_threads` is the C's global,
+    // which GRZip's and 4x4's memory formulas divide by and which LZMA2 hands
+    // straight to its encoder -- there it decides whether the stream is one
+    // solid block or several, so it is archive-visible. The rayon pool below is
+    // this port's own parallelism, and is not.
     //
-    // This does NOT change any archive: measured, `-mgrzip`, `-m4x4:tor` and
-    // `-m9` are byte-identical to the reference under -mt1 and -mt8 alike. The
-    // thread count only reaches GRZip's and 4x4's MEMORY formulas, and those
-    // move the output only when a limit forces a refit. Without this the option
-    // parsed correctly and then controlled nothing at all.
+    // Measured before LZMA2 existed here: `-mgrzip`, `-m4x4:tor` and `-m9` are
+    // byte-identical to the reference under -mt1 and -mt8 alike, because the
+    // thread count reaches only those memory formulas and they move the output
+    // only when a limit forces a refit. `-mlzma2` is the method that breaks
+    // that pattern.
+    darc_arc::memlimit::set_compression_threads(mopts.threads);
+    // Zero means "as many as the machine has", which is already rayon's
+    // default, so only a positive value does anything to the pool.
     if mopts.threads > 0 {
         // Errors only if a pool already exists, which cannot happen this early;
         // either way a failure here just leaves the default pool in place.
@@ -1074,16 +1079,15 @@ fn add(
 
     // An EXPLICIT -lc over a chain this port cannot measure is refused.
     //
-    // `get_compression_mem` returns None for Tornado, REP, LZP, GRZip, LZ4,
-    // Zstd and 4x4, and `limit_compression_mem` leaves those alone -- so
-    // `-mtor -lc8m` would exit 0 with Tornado UNLIMITED. The user asked for a
-    // memory cap and would not get one, which on a small machine is an OOM
-    // rather than a smaller chain. That is the silent no-op this port refuses
-    // everywhere else, and refusing it here too is the consistent answer.
+    // Every method DArc can parse now has a formula, so the only chain that
+    // reaches this is one containing a method with no `Method` variant at all --
+    // and that is refused at write time anyway. The check stays because the
+    // failure it guards against is silent: `limit_compression_mem` leaves a
+    // method with no formula ALONE, so `-lc8m` would exit 0 having capped
+    // nothing, which on a small machine is an OOM rather than a smaller chain.
     //
-    // The DEFAULT limit deliberately does not refuse: it is 75% of RAM, it
-    // does not bind for the chains DArc ships, and refusing there would make
-    // every -mtor archive fail.
+    // The DEFAULT limit deliberately does not refuse: it is 75% of RAM, and
+    // refusing there would make an archive fail for a limit nobody asked for.
     if parsed.arg("LimitCompMem", "--") != "--" {
         for (ty, chain) in &decoded {
             let parsed_chain = darc_arc::method::Method::parse_chain(chain);
@@ -1100,6 +1104,27 @@ fn add(
                     ty
                 );
                 return 2;
+            }
+            // The formulas agree; the chain SPLITTING around them does not.
+            let divergent = match &parsed_chain {
+                Some(ms) => darc_arc::memlimit::lc_divergent(ms),
+                None => None,
+            };
+            match divergent {
+                Some(name) => {
+                    eprintln!(
+                        "ERROR: -lc over {} (file type {:?}) is refused: the reference \
+                         reroutes {name} through a temp-file stage once the limit binds, \
+                         which changes the bytes it writes without changing the method \
+                         string. This port would write a valid archive that is not the \
+                         one the reference writes. Use -lc- , or reach {name} through \
+                         4x4 (-m4x4:{name}), which is byte-identical.",
+                        chain.join("+"),
+                        ty
+                    );
+                    return 2;
+                }
+                None => {}
             }
         }
     }

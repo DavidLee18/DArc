@@ -113,9 +113,17 @@ sort-order decision, and `addBlockSizeCrit` having been ported and never called.
 ### What the port cannot do
 
 `Tests/run-tests.sh` scores 24 passed / 0 failed / 0 skipped — the same as the
-reference. The five methods that had no `Method` variant (`mm`, `tta`, `bsc`,
-`lz4`, `zstd`) and the `-m` value grammar (`-mt`, `-ms`, `-md`) are implemented
-and gated by the golden corpus.
+reference. The six methods that had no `Method` variant (`mm`, `tta`, `bsc`,
+`lz4`, `zstd`, `lzma2`) and the `-m` value grammar (`-mt`, `-ms`, `-md`) are
+implemented and gated by the golden corpus.
+
+`lzma2` was the last of them, and it is the one to copy if another turns up. It
+was gated on 23 method strings byte-identical to the reference, on `-mt1` versus
+`-mt8` — which write *different* archives on both sides, so the pair proves the
+thread count is really plumbed rather than merely accepted — and on all four
+cross-extractions per case, since a missing variant makes an archive unreadable
+as well as unwritable. That last direction is the half a write-side matrix
+cannot see.
 
 The SKIP machinery in `run-tests.sh` and `sfx-roundtrip.sh` is kept even though
 nothing trips it now. It matches on the binary's own "cannot write yet" wording,
@@ -126,6 +134,17 @@ Still refused rather than implemented: `-mm` (multimedia mode), `-ma`
 (autodetect level) and `-mc` (disable an algorithm) each change the chain, so
 they are rejected outright rather than ignored, on the same rule the HONOURED
 option list follows. `-lc-`/`-ld-` are not accepted at all.
+
+`-lc` is the subtler one. Every method now has a `GetCompressionMem` /
+`SetCompressionMem`, and they were checked by reading the method string back out
+of the archive rather than by trusting the arithmetic — `-mgrzip -lc4m` writes
+`grzip:466033b` on both sides, and 466033 is 4194304/9 exactly. But `tor` and
+`grzip` at the top level are still refused, because agreeing on the method
+string turned out not to be enough: `compressionLimitMemoryUsage`
+(`Compression.hs:217`) also splices a `tempfile` stage into the chain, and the
+two codecs' output follows the chunking they are handed. **The archives differed
+while storing the identical method string**, which is worth remembering as a
+failure mode: a canonicalisation check would have called this green.
 
 ## End-to-end
 

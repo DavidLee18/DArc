@@ -61,6 +61,7 @@ pub fn get_dictionary(m: &Method) -> u32 {
         // No dictionary, and no memory: they compress nothing.
         Method::Fake | Method::Crc => 0,
         Method::Lzma(p) => p.dictionary_size,
+        Method::Lzma2(p) => p.dictionary_size,
         Method::Tornado(p) => p.buffer,
         Method::Rep(p) => p.block_size,
         Method::Dict(p) => p.block_size,
@@ -96,6 +97,8 @@ pub fn set_dictionary(m: &mut Method, dict: u32) {
         // Nothing to shrink.
         Method::Fake | Method::Crc => {}
         Method::Lzma(p) => p.dictionary_size = dict,
+        // `SetDictionary` is the same one-liner (C_LZMA2.cpp:100).
+        Method::Lzma2(p) => p.dictionary_size = dict,
         Method::Tornado(p) => set_tornado_dictionary(p, dict),
         Method::Rep(p) => p.block_size = dict,
         Method::Dict(p) => p.block_size = dict,
@@ -301,12 +304,52 @@ mod tests {
 /// pointers, so it follows the machine's width.
 const PTR_SIZE: u64 = 8;
 
-/// `GetCompressionThreads()` — the thread count GRZip's memory formula scales
-/// by. Set from the processor count by default; only GRZip's arithmetic reads
-/// it, and only to divide the limit it is given.
-fn compression_threads() -> u64 {
-    std::thread::available_parallelism().map(|n| n.get() as u64).unwrap_or(1)
+/// What `-mt` was set to, or `None` for "not given".
+///
+/// A global for the same reason the C's is one: `GetCompressionThreads()` is
+/// read from inside method objects that the option never reaches. `-mt` is
+/// scanned once at startup, before any chain is built.
+static COMPRESSION_THREADS: std::sync::atomic::AtomicU32 =
+    std::sync::atomic::AtomicU32::new(0);
+
+/// Record `-mtN`. Zero, which is what `-mt+` means, restores "ask the machine".
+pub fn set_compression_threads(n: u32) {
+    COMPRESSION_THREADS.store(n, std::sync::atomic::Ordering::Relaxed);
 }
+
+/// `GetCompressionThreads()` **as the compressor sees it** — `-mt` if it was
+/// given, else the processor count (`Cmdline.hs:295`).
+///
+/// LZMA2 passes this to its encoder, where it changes the stream outright:
+/// above one block thread `Lzma2EncProps_Normalize` abandons the solid block
+/// and splits the input, so `-mlzma2:d64k -mt1` and `-mlzma2:d64k -mt8` write
+/// different archives on purpose. Measured against the reference in both
+/// states, which is what proves this is plumbed at all.
+pub fn compression_threads() -> u64 {
+    match COMPRESSION_THREADS.load(std::sync::atomic::Ordering::Relaxed) {
+        0 => std::thread::available_parallelism().map(|n| n.get() as u64).unwrap_or(1),
+        n => u64::from(n),
+    }
+}
+
+/// `GetCompressionThreads()` **as the memory formulas see it**, which is always
+/// **one** — and this is not the same number as [`compression_threads`].
+///
+/// `static int compression_threads = 1` (`CompressionLibrary.cpp`), and
+/// `SetCompressionThreads` is deferred: `Cmdline.hs:295` puts it in
+/// `setup_command`, a list that does not run until the command starts. Every
+/// memory limit is applied before that, so GRZip's and 4x4's formulas divide by
+/// the *initial* value and never see `-mt` at all.
+///
+/// Measured, not inferred. `-mgrzip -lc4m` writes `grzip:466033b` in the
+/// reference, and 466033 is 4194304/9 exactly — a divisor of 9, not of 9×8 on
+/// this eight-core machine. `-mt1`, `-mt4` and `-mt8` all leave
+/// `-mgrzip -lc16m` untouched, which they could not if the option reached here.
+///
+/// Reading the processor count instead was a live bug: it made `-lc`/`-ld` on
+/// grzip and 4x4 shrink by a machine-dependent factor, so two hosts wrote
+/// different archives from the same command line.
+const MEMORY_FORMULA_THREADS: u64 = 1;
 
 /// `GetDecompressionMem` — what each method needs to UNPACK, from `C_*.h`.
 pub fn get_decompression_mem(m: &Method) -> u64 {
@@ -314,6 +357,7 @@ pub fn get_decompression_mem(m: &Method) -> u64 {
         // Nothing is stored, so nothing is needed to unpack it.
         Method::Fake | Method::Crc => 0,
         Method::Lzma(p) => u64::from(p.dictionary_size) + 2 * MB,
+        Method::Lzma2(p) => u64::from(p.dictionary_size) + 2 * MB,
         Method::Ppmd(p) => u64::from(p.mem),
         Method::Tornado(p) => u64::from(p.buffer),
         Method::Rep(p) => u64::from(p.block_size),
@@ -337,7 +381,7 @@ pub fn get_decompression_mem(m: &Method) -> u64 {
         Method::Lzp(p) => {
             u64::from(p.block_size) * 2 + (1u64 << p.hash_size_log.clamp(0, 40)) * PTR_SIZE
         }
-        Method::Grzip(p) => u64::from(p.block_size) * 5 * compression_threads(),
+        Method::Grzip(p) => u64::from(p.block_size) * 5 * MEMORY_FORMULA_THREADS,
         Method::Delta(p) => u64::from(p.block_size),
         Method::Dispack(p) => {
             2 * u64::from(p.block_size) + u64::from(p.block_size) / 4 + 1024
@@ -345,7 +389,7 @@ pub fn get_decompression_mem(m: &Method) -> u64 {
         // LARGE_BUFFER_SIZE in C_BCJ.h.
         Method::Exe => 8 * MB,
         Method::FourX4(p) => {
-            let t = if p.num_threads == 0 { compression_threads() } else { u64::from(p.num_threads) };
+            let t = if p.num_threads == 0 { MEMORY_FORMULA_THREADS } else { u64::from(p.num_threads) };
             let d = get_dictionary(&p.inner);
             let bs = if p.block_size != 0 {
                 u64::from(p.block_size)
@@ -375,6 +419,12 @@ pub fn set_decompression_mem(m: &mut Method, mem: u64) {
                 p.dictionary_size = (mem - 2 * MB).min(u64::from(u32::MAX)) as u32;
             }
         }
+        // Identical (C_LZMA2.cpp:95).
+        Method::Lzma2(p) => {
+            if mem > 2 * MB {
+                p.dictionary_size = (mem - 2 * MB).min(u64::from(u32::MAX)) as u32;
+            }
+        }
         // PPMd adjusts its ORDER with its memory, which is why reducing memory
         // changes the method string in two places at once.
         Method::Ppmd(p) => set_ppmd_mem(p, mem),
@@ -392,7 +442,7 @@ pub fn set_decompression_mem(m: &mut Method, mem: u64) {
         Method::Lzp(p) => set_lzp_mem(p, mem),
         // `SetBlockSize (mem/5/threads)`, which also caps the hash.
         Method::Grzip(p) => {
-            let bs = (mem / 5 / compression_threads()).min(u64::from(u32::MAX)) as u32;
+            let bs = (mem / 5 / MEMORY_FORMULA_THREADS).min(u64::from(u32::MAX)) as u32;
             if bs > 0 {
                 p.block_size = bs.min(GRZ_MAX_BLOCK_SIZE);
                 p.hash_size_log =
@@ -647,22 +697,129 @@ pub fn get_compression_mem(m: &Method) -> Option<u64> {
             let bs = u64::from(p.block_size);
             Some(3 * bs + bs / 4 + 1024)
         }
-        // Not reproduced yet. Tornado needs `tornado_compressor_outbuf_size`,
-        // which branches on a global; REP needs `CalcHashSize`; LZP's setter
-        // shrinks the hash before the block; GRZip's figure scales with the
-        // THREAD count, so it is not a property of the method alone; LZ4 and
-        // Zstd ask their libraries; 4x4 recurses into its inner method.
-        Method::Tornado(_)
-        | Method::Rep(_)
-        | Method::Lzp(_)
-        | Method::Grzip(_)
-        | Method::Lz4(_)
-        | Method::Zstd(_)
-        | Method::FourX4(_)
-        | Method::Encryption(_)
-        | Method::Exe
-        | Method::Unsupported(_) => None,
+        // `dict * divisor + 8mb` (C_LZMA2.cpp:76). The divisors are LZMA's
+        // except at BT2, where LZMA2 charges 11 and LZMA charges 10, and the
+        // constant is 8 MB rather than 6 -- so this cannot share
+        // `lzma_mf_multiplier`, however alike the two lines look.
+        Method::Lzma2(p) => {
+            Some(u64::from(p.dictionary_size) * lzma2_mf_multiplier(p.match_finder) + 8 * MB)
+        }
+        // `hashsize + buffer + tornado_compressor_outbuf_size(buffer)`
+        // (C_Tornado.h:33). That last term reads the global
+        // `compress_all_at_once`, which is why this was left unported -- but the
+        // global is 0 everywhere the archiver asks about memory: only
+        // `C_4x4.cpp:571` sets it, and only for the duration of a compress call.
+        // At limit time it is therefore always the `HUGE_BUFFER_SIZE` arm.
+        Method::Tornado(p) => {
+            Some(u64::from(p.hashsize) + u64::from(p.buffer) + HUGE_BUFFER_SIZE)
+        }
+        Method::Rep(p) => Some(rep_compression_mem(p)),
+        // `BlockSize*2 + (1<<HashSizeLog)*sizeof(BYTE*)` (C_LZP.h:39) -- the
+        // same figure as the decompression side, which already carries it.
+        Method::Lzp(p) => Some(
+            u64::from(p.block_size) * 2
+                + (1u64 << p.hash_size_log.clamp(0, 40)) * PTR_SIZE,
+        ),
+        // `BlockSize*9*GetCompressionThreads()` (C_GRZip.h:56). It scales with
+        // the thread count, which makes it machine-dependent -- true of the
+        // reference too, and the reason `golden/manifest.txt` admits no grzip
+        // case rather than a reason to refuse the formula.
+        Method::Grzip(p) => Some(u64::from(p.block_size) * 9 * MEMORY_FORMULA_THREADS),
+        // `BlockSize*2 + sizeof(state)` (C_LZ4.cpp:104).
+        Method::Lz4(p) => Some(u64::from(p.block_size) * 2 + lz4_state_size(p.compressor)),
+        // The C asks the library through `darc_rs_zstd_sizeof_cctx`
+        // (C_Zstd.cpp:61), which is this very function on the other side of the
+        // FFI -- so calling it directly is the same answer, not an estimate of
+        // it.
+        Method::Zstd(p) => {
+            let est = darc_codecs::zstd::sizeof_cctx(p.level, p.window_log) as u64;
+            let est = match p.workers {
+                0 => est,
+                w => est.saturating_mul(u64::from(w) + 1),
+            };
+            Some(match est {
+                0 => 64 * MB,
+                e => e,
+            })
+        }
+        // `t * inner + (t+2) * 2 * bs` (C_4x4.cpp:590), the same shape as the
+        // decompression half. An inner method with no figure has none itself.
+        Method::FourX4(p) => {
+            get_compression_mem(&p.inner).map(|inner| fourx4_mem(p, inner))
+        }
+        // `LARGE_BUFFER_SIZE` (C_BCJ.h:24).
+        Method::Exe => Some(LARGE_BUFFER_SIZE),
+        // `{return 0;}` (C_Encryption.h:44).
+        Method::Encryption(_) => Some(0),
+        // Still the one real gap, and it always will be: a method this port
+        // cannot parse has no parameters to compute a figure from.
+        Method::Unsupported(_) => None,
     }
+}
+
+/// `HUGE_BUFFER_SIZE` and `LARGE_BUFFER_SIZE` (`Compression.h:41,45`).
+const HUGE_BUFFER_SIZE: u64 = 8 * MB;
+const LARGE_BUFFER_SIZE: u64 = 256 * KB;
+
+/// `LZ4_SIZEOF_STATE` / `_HC` (`C_LZ4.cpp:41`) — literal constants there, not
+/// `sizeof` expressions, so they do not follow the machine.
+fn lz4_state_size(compressor: i32) -> u64 {
+    match compressor {
+        0 => 16416,
+        _ => 262200,
+    }
+}
+
+/// LZMA2's match-finder multiplier (`C_LZMA2.cpp:79`).
+fn lzma2_mf_multiplier(mf: u32) -> u64 {
+    match mf {
+        0 | 1 | 2 => 11,
+        3 => 7,
+        _ => 6,
+    }
+}
+
+/// `REP_METHOD::GetCompressionMem` (`C_REP.cpp:84`), which reproduces the
+/// encoder's own hash sizing rather than reading a field.
+fn rep_compression_mem(p: &crate::method::RepParams) -> u64 {
+    // `roundup_to_power_of (mymin(SmallestLen,MinMatchLen)/2, 2)`.
+    let l = roundup_pow2(p.smallest_len.min(p.min_match_len) / 2);
+    // `sqrtb(n, 2)`: `for (result=1; (n /= 4) != 0; result *= 2)`. Not a square
+    // root -- it is 2^floor(log4(n)), and it is 1 for n < 4 rather than 0.
+    let k = {
+        let mut n = l.saturating_mul(2);
+        let mut result = 1u64;
+        loop {
+            n /= 4;
+            if n == 0 {
+                break;
+            }
+            result *= 2;
+        }
+        result
+    };
+    // `CalcHashSize` (C_REP.cpp:78).
+    let hash_size = match p.hash_size_log {
+        0 => u64::from(roundup_pow2(p.block_size / 3 * 2)) / k.max(16),
+        bits => 1u64 << bits.min(63),
+    };
+    u64::from(p.block_size) + hash_size * 4
+}
+
+/// The 4x4 memory shape (`C_4x4.cpp:590`/`:598`), shared by both directions
+/// because the C's two functions differ only in which inner figure they take.
+fn fourx4_mem(p: &crate::fourx4::FourX4Params, inner: u64) -> u64 {
+    let t = match p.num_threads {
+        0 => MEMORY_FORMULA_THREADS,
+        n => u64::from(n),
+    };
+    let d = get_dictionary(&p.inner);
+    let bs = match (p.block_size, d) {
+        (0, 0) => 8 * MB,
+        (0, d) => u64::from(d),
+        (bs, _) => u64::from(bs),
+    };
+    t * inner + (t + 2) * 2 * bs
 }
 
 /// The match finder's memory multiplier (`C_LZMA.cpp`), shared by the getter
@@ -727,16 +884,91 @@ pub fn set_compression_mem(m: &mut Method, mem: u64) -> bool {
             }
             true
         }
-        Method::Tornado(_)
-        | Method::Rep(_)
-        | Method::Lzp(_)
-        | Method::Grzip(_)
-        | Method::Lz4(_)
-        | Method::Zstd(_)
-        | Method::FourX4(_)
-        | Method::Encryption(_)
-        | Method::Exe
-        | Method::Unsupported(_) => false,
+        // `mem = max(mem, 2mb)`, then `avail = mem > 8mb ? mem-8mb : mem`
+        // divided by the multiplier, floored at 4 KB (C_LZMA2.cpp:85).
+        Method::Lzma2(p) => {
+            let mem = mem.max(2 * MB);
+            let base = 8 * MB;
+            let avail = match mem > base {
+                true => mem - base,
+                false => mem,
+            };
+            let d = avail / lzma2_mf_multiplier(p.match_finder);
+            p.dictionary_size = d.max(4 * 1024).min(u64::from(u32::MAX)) as u32;
+            true
+        }
+        // `if (mem>0) hashsize = 1<<lb(mem/3), buffer = mem-hashsize`
+        // (C_Tornado.h:37). The comma operator matters: the hash is computed
+        // first and the buffer gets what is left, so the two are never set from
+        // the same figure.
+        Method::Tornado(p) => {
+            if mem > 0 {
+                let mem = mem.min(u64::from(u32::MAX));
+                let hashsize = 1u64 << lb((mem / 3).min(u64::from(u32::MAX)) as u32);
+                p.hashsize = hashsize.min(u64::from(u32::MAX)) as u32;
+                p.buffer = mem.saturating_sub(hashsize) as u32;
+            }
+            true
+        }
+        // `if (mem>0) BlockSize = 1<<lb(mem/7*6)` (C_REP.h:38). Note `/7*6`,
+        // integer division first -- not `*6/7`.
+        Method::Rep(p) => {
+            if mem > 0 {
+                let target = (mem / 7 * 6).min(u64::from(u32::MAX)).max(1) as u32;
+                p.block_size = 1u32 << lb(target);
+            }
+            true
+        }
+        // `SetDecompressionMem` IS `SetCompressionMem` here (C_LZP.h:44), which
+        // is why the existing helper serves both.
+        Method::Lzp(p) => {
+            set_lzp_mem(p, mem);
+            true
+        }
+        // `SetBlockSize (mem/9/GetCompressionThreads())` (C_GRZip.h:60) -- the
+        // decompression half divides by 5 instead.
+        Method::Grzip(p) => {
+            let bs = (mem / 9 / MEMORY_FORMULA_THREADS).min(u64::from(u32::MAX)) as u32;
+            if bs > 0 {
+                p.block_size = bs.min(GRZ_MAX_BLOCK_SIZE);
+                p.hash_size_log = p.hash_size_log.min(1 + lb(p.block_size.saturating_sub(1)));
+            }
+            true
+        }
+        // `C_LZ4.cpp:109`: the state comes off the top, the rest is split
+        // between the in and out buffers, and the result is clamped to
+        // 64 KB..256 MB. Below `state + 2kb` the split is skipped entirely and
+        // the floor is taken directly.
+        Method::Lz4(p) => {
+            let state = lz4_state_size(p.compressor);
+            let avail = match mem > state + 2 * KB {
+                true => (mem - state) / 2,
+                false => 64 * KB,
+            };
+            p.block_size = avail.clamp(64 * KB, 256 * MB) as u32;
+            true
+        }
+        // `C_Zstd.cpp:70` -- zstd has no dictionary knob, so the memory request
+        // is mapped onto the window log, and only when one was asked for.
+        Method::Zstd(p) => {
+            if mem > 0 {
+                let mut wl = 10u32;
+                while wl < 27 && (1u64 << wl) * 4 < mem {
+                    wl += 1;
+                }
+                p.window_log = wl;
+            }
+            true
+        }
+        // `(void)mem;` -- 4x4's setter is deliberately empty (C_4x4.cpp:607),
+        // so a 4x4 chain reports a figure and then declines to shrink. Left as
+        // the C leaves it: the alternative is to invent a policy the reference
+        // does not have, and `-lc` would then write different bytes.
+        Method::FourX4(_) => true,
+        // Both are empty bodies (C_BCJ.h:28, C_Encryption.h:48).
+        Method::Exe | Method::Encryption(_) => true,
+        // Unparsed, so unadjustable.
+        Method::Unsupported(_) => false,
     }
 }
 
@@ -759,3 +991,154 @@ pub fn limit_compression_mem(chain: &mut [Method], mem: u64) {
 pub fn compression_mem_is_known(chain: &[Method]) -> bool {
     chain.iter().all(|m| get_compression_mem(m).is_some())
 }
+
+/// The methods for which an explicit `-lc` still writes different bytes from
+/// the reference, and so must be refused rather than served.
+///
+/// **The memory formulas are not the problem.** Measured against a reference
+/// built from `9a127e6`, this port and the reference now agree on the method
+/// string at every `-lc` level for both of these — `-mgrzip -lc4m` gives
+/// `grzip:466033b:m1:l32:h15` on both sides, `-mtor -lc4m` gives
+/// `tor:1181kb:h1mb` on both. The archives still differ, with the *same* string
+/// stored.
+///
+/// What differs is upstream of the method: `compressionLimitMemoryUsage`
+/// (`Compression.hs:217`) is `genericLimitMemoryUsage . map limitCompressionMem`,
+/// and that second pass splices a `"tempfile"` stage into the chain once the
+/// accumulated figure passes `limit * 1.05`. It changes how the data is fed to
+/// the codec, not what the codec is. LZMA is unaffected — `-mlzma -lc4m` is
+/// byte-identical — because it buffers the whole block either way; Tornado and
+/// GRZip parse what they are handed, so their output follows the chunking.
+///
+/// Only the TOP level is examined, and that is deliberate rather than lazy:
+/// `-m4x4:tor -lc16m` is byte-identical to the reference, so a Tornado reached
+/// through 4x4 does not trip this. `-m4` and `-m9` do trip it, because their
+/// per-filetype chains carry `tor` and `grzip` at the top level — and they were
+/// refused before this too, when the refusal was "no formula for tor".
+///
+/// Everything else that used to be refused for want of a formula — REP, LZP,
+/// LZ4, Zstd, 4x4, `exe`, encryption — is now served and gated on byte
+/// identity.
+pub fn lc_divergent(chain: &[Method]) -> Option<&'static str> {
+    chain.iter().find_map(|m| match *m {
+        Method::Tornado(_) => Some("tor"),
+        Method::Grzip(_) => Some("grzip"),
+        Method::Storing
+        | Method::Fake
+        | Method::Crc
+        | Method::Lzma(_)
+        | Method::Lzma2(_)
+        | Method::Ppmd(_)
+        | Method::Rep(_)
+        | Method::Exe
+        | Method::Dict(_)
+        | Method::Lzp(_)
+        | Method::Delta(_)
+        | Method::Dispack(_)
+        | Method::Tta(_)
+        | Method::Mm(_)
+        | Method::Zstd(_)
+        | Method::Lz4(_)
+        | Method::Bsc(_)
+        | Method::FourX4(_)
+        | Method::Encryption(_)
+        | Method::Unsupported(_) => None,
+    })
+}
+
+#[cfg(test)]
+mod lzma2_and_lc_tests {
+    use super::*;
+    use crate::method::Method;
+
+    fn m(s: &str) -> Method {
+        Method::parse(s).expect("parses")
+    }
+
+    /// The two figures the C computes from `dictionarySize`, which decide what
+    /// `-lc`/`-ld` write into an archive.
+    #[test]
+    fn lzma2_memory_matches_the_c() {
+        // `dict * divisor + 8mb`, divisor 6 at the default HT4.
+        assert_eq!(get_compression_mem(&m("lzma2:1m")), Some(MB * 6 + 8 * MB));
+        // BT2 charges 11 here where LZMA charges 10 -- the one place the two
+        // multiplier tables differ.
+        assert_eq!(get_compression_mem(&m("lzma2:1m:BT2")), Some(MB * 11 + 8 * MB));
+        assert_eq!(get_compression_mem(&m("lzma:1m:BT2")), Some(MB * 10 + 6 * MB));
+        // `dictionarySize + 2mb`.
+        assert_eq!(get_decompression_mem(&m("lzma2:1m")), MB + 2 * MB);
+    }
+
+    /// `SetCompressionMem`: 8 MB comes off the top, the rest is divided by the
+    /// match finder's multiplier.
+    #[test]
+    fn lzma2_set_compression_mem_subtracts_the_base_first() {
+        let mut a = m("lzma2");
+        assert!(set_compression_mem(&mut a, 32 * MB));
+        assert_eq!(get_dictionary(&a), ((32 - 8) * MB / 6) as u32);
+        // Below the 8 MB base the subtraction is SKIPPED rather than clamped --
+        // `avail = mem > base ? mem-base : mem` -- and `mem` has already been
+        // raised to 2 MB. So the smallest dictionary this can produce is
+        // 2 MB / 6, and the C's 4 KB floor below it is unreachable from here.
+        // Asserting the floor instead would have been asserting dead code.
+        let mut b = m("lzma2");
+        assert!(set_compression_mem(&mut b, 1024));
+        assert_eq!(get_dictionary(&b), (2 * MB / 6) as u32);
+    }
+
+    /// Every method DArc can parse now answers `Some`. Before this, seven did
+    /// not, and an explicit `-lc` over any of them was refused outright.
+    #[test]
+    fn every_parsable_method_has_a_compression_formula() {
+        for s in [
+            "storing", "lzma", "lzma2", "ppmd", "tor", "rep", "grzip", "exe", "dict", "lzp",
+            "delta", "dispack", "tta", "mm", "zstd", "lz4", "bsc", "4x4:tor",
+        ] {
+            assert!(
+                get_compression_mem(&m(s)).is_some(),
+                "{s} has no compression-memory formula"
+            );
+        }
+        // The one that must stay None: nothing can be computed from a name this
+        // port cannot parse.
+        assert_eq!(get_compression_mem(&Method::Unsupported("nope".into())), None);
+    }
+
+    /// The figures the reference was measured to produce. `-mgrzip -lc4m`
+    /// writes `grzip:466033b`, and 466033 is 4194304/9 exactly -- a divisor of
+    /// 9, NOT of 9 times the processor count.
+    #[test]
+    fn grzip_memory_formula_does_not_read_the_processor_count() {
+        let mut g = m("grzip");
+        assert!(set_compression_mem(&mut g, 4 * MB));
+        assert_eq!(get_dictionary(&g), 4 * MB as u32 / 9);
+        // The getter is the same constant the other way round.
+        assert_eq!(get_compression_mem(&m("grzip:1m")), Some(MB * 9));
+    }
+
+    /// `1<<lb(mem/7*6)`, integer division first. `*6/7` would give 3 670 016
+    /// here and round to the same power of two, so the test uses a value where
+    /// the two orders differ in the exponent.
+    #[test]
+    fn rep_set_compression_mem_is_a_power_of_two() {
+        let mut r = m("rep");
+        assert!(set_compression_mem(&mut r, 10 * MB));
+        assert_eq!(get_dictionary(&r), 8 * MB as u32);
+    }
+
+    /// `-lc` is refused for exactly two methods, and only at the top level.
+    #[test]
+    fn lc_is_refused_for_tor_and_grzip_only() {
+        let chain = |s: &str| {
+            Method::parse_chain(&s.split('+').map(str::to_string).collect::<Vec<_>>()).unwrap()
+        };
+        assert_eq!(lc_divergent(&chain("tor")), Some("tor"));
+        assert_eq!(lc_divergent(&chain("rep+tor:16mb")), Some("tor"));
+        assert_eq!(lc_divergent(&chain("grzip")), Some("grzip"));
+        // Reached through 4x4, which IS byte-identical under -lc.
+        assert_eq!(lc_divergent(&chain("4x4:tor")), None);
+        assert_eq!(lc_divergent(&chain("lzma2")), None);
+        assert_eq!(lc_divergent(&chain("rep+exe+lzma:1m")), None);
+    }
+}
+

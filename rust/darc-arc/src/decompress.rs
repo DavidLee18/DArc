@@ -65,6 +65,10 @@ fn undo(method: &Method, src: &[u8], hint: usize) -> Result<Vec<u8>, Error> {
         // LZMA is the exception: DArc writes no header, so it needs the property
         // bytes rebuilt from the method string rather than a callback.
         Method::Lzma(params) => undo_lzma(*params, src, hint),
+        // LZMA2 carries its own property byte and its own end marker, so unlike
+        // LZMA nothing from the method string is needed to decode it -- the
+        // parameters are for printing the chain back, not for reading it.
+        Method::Lzma2(_) => undo_lzma2(src, hint),
         Method::Ppmd(p) => {
             drive("ppmd", src, hint, |io| {
                 darc_codecs::ppmd::decompress(io, p.order, p.mem, p.mr_method)
@@ -160,6 +164,16 @@ fn undo_lzma(params: LzmaParams, src: &[u8], hint: usize) -> Result<Vec<u8>, Err
     match darc_lzma::decode_stream::decode_stream(&mut source, &mut sink, &props) {
         Ok(_) => Ok(sink.data),
         Err(e) => Err(Error::Codec { method: "lzma".to_string(), detail: format!("{e:?}") }),
+    }
+}
+
+fn undo_lzma2(src: &[u8], hint: usize) -> Result<Vec<u8>, Error> {
+    use darc_lzma::{SliceIn, VecOut};
+    let mut source = SliceIn::new(src);
+    let mut sink = VecOut { data: Vec::with_capacity(hint) };
+    match darc_lzma::lzma2_dec::decode_lzma2_stream(&mut source, &mut sink) {
+        Ok(_) => Ok(sink.data),
+        Err(e) => Err(Error::Codec { method: "lzma2".to_string(), detail: format!("{e:?}") }),
     }
 }
 
@@ -318,6 +332,7 @@ pub fn compress_one_with(method: &Method, src: &[u8], all_at_once: bool) -> Resu
             darc_lzma::encode(src, &props)
                 .map_err(|e| Error::Codec { method: "lzma".to_string(), detail: format!("{e:?}") })
         }
+        Method::Lzma2(p) => do_lzma2(p, src),
         // Named rather than a wildcard, per the crate's exhaustiveness rule: a
         // method added later must show up as a compile error here, not be
         // silently reported as unsupported for writing.
@@ -447,6 +462,52 @@ pub fn compress_one_with(method: &Method, src: &[u8], all_at_once: bool) -> Resu
             }
         }
         other @ Method::Unsupported(_) => Err(Error::Unsupported(format!("{other:?}"))),
+    }
+}
+
+/// `LZMA2_METHOD::compress` (`C_LZMA2.cpp:66`), with `Lzma2EncProps` built the
+/// way `darc_lzma2_compress` builds it so the archiver and the FFI entry point
+/// cannot drift apart.
+///
+/// The `(bt_mode, num_hash_bytes)` pairs are `C_LZMA2.cpp:75-82`'s switch. The C
+/// has a silent `default:` picking BT4; an id outside 0..=4 is refused here
+/// instead, on the rule that two builds must not disagree about what a
+/// malformed method string means. `parse_lzma2` cannot produce one, so this is
+/// a guard, not a path.
+fn do_lzma2(p: &crate::method::Lzma2Params, src: &[u8]) -> Result<Vec<u8>, Error> {
+    use darc_lzma::{SliceIn, VecOut};
+    let fail = |detail: String| Error::Codec { method: "lzma2".to_string(), detail };
+    let mut props = darc_lzma::Lzma2EncProps::init();
+    props.lzma.dict_size = p.dictionary_size;
+    props.lzma.lc = p.lit_context_bits as i32;
+    props.lzma.lp = p.lit_pos_bits as i32;
+    props.lzma.pb = p.pos_state_bits as i32;
+    props.lzma.fb = p.num_fast_bytes as i32;
+    props.lzma.mc = p.match_finder_cycles;
+    props.lzma.algo = p.algorithm as i32;
+    let (bt_mode, num_hash_bytes) = match p.match_finder {
+        0 => (1, 2),
+        1 => (1, 3),
+        2 => (1, 4),
+        3 => (0, 4),
+        4 => (0, 5),
+        mf => return Err(fail(format!("match finder {mf} is not one of BT2..HT4"))),
+    };
+    props.lzma.bt_mode = bt_mode;
+    props.lzma.num_hash_bytes = num_hash_bytes;
+    // `GetCompressionThreads()` (`C_LZMA2.cpp:71-73`). NOT a tuning knob: above
+    // one block thread the encoder splits the input into blocks that each open
+    // with a dictionary reset, so this decides the bytes.
+    let threads = crate::memlimit::compression_threads().clamp(1, u64::from(u32::MAX)) as i32;
+    props.num_total_threads = threads;
+    props.num_block_threads_max = threads;
+    props.normalize();
+
+    let mut source = SliceIn::new(src);
+    let mut sink = VecOut { data: Vec::with_capacity(src.len()) };
+    match darc_lzma::lzma2_enc::compress_stream(&mut source, &mut sink, &props) {
+        Ok(()) => Ok(sink.data),
+        Err(e) => Err(fail(format!("{e:?}"))),
     }
 }
 
