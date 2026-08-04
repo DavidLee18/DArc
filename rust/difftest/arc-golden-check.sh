@@ -92,6 +92,14 @@ if [ "$record" = 0 ]; then
     echo "no manifest at $MANIFEST -- record one first" >&2; exit 2; }
 fi
 
+# The big tree's incompressible file comes from here. Built in BOTH modes --
+# recording needs it as much as checking does, and a missing one would produce
+# a tree that silently differs from the recorded one.
+( cd "$ROOT/rust" && cargo build --release -q -p darc-codecs --bin corpusgen ) || {
+  echo "cannot build corpusgen" >&2; exit 1; }
+CORPUSGEN="$ROOT/rust/target/release/corpusgen"
+[ -x "$CORPUSGEN" ] || { echo "no corpusgen at $CORPUSGEN" >&2; exit 1; }
+
 W="${TMPDIR:-/tmp}/arc-golden-check.$$"; mkdir -p "$W"
 trap 'rm -rf "$W"' EXIT
 
@@ -150,8 +158,19 @@ build_big_tree() {
   done
   # One file that does not compress, so a block-size cap has something
   # incompressible to split.
-  awk 'BEGIN{srand(7); for(j=0;j<40000;j++){s="";for(k=0;k<40;k++) s=s sprintf("%c",65+int(rand()*26)); print s}}' \
-    > "$d/big/noise.txt"
+  #
+  # From `corpusgen`, NOT from awk. This was
+  # `awk 'BEGIN{srand(7); ... rand() ...}'`, which is not portable -- BSD awk
+  # and gawk have different PRNGs, so the file, and every archive built over
+  # it, differed between macOS and Linux. All 20 big cases failed CI on both
+  # Linux runners while passing on macOS and Windows. `big-store` was among
+  # them, which is what identified it: `-m0` stores bytes verbatim, so that
+  # archive can only move if the INPUT moved.
+  #
+  # This is the reason CLAUDE.md says corpora come from `corpusgen`. The
+  # determinism screen that passed this file varied the thread count and never
+  # the platform, which is why it did not catch it either.
+  "$CORPUSGEN" prng 7 1600000 > "$d/big/noise.bin"
 }
 
 results="$W/results.txt"
@@ -335,7 +354,7 @@ run big-lzma2-ld8m       a --nodates -y -r -mlzma2 -ld8m -mt1 "$A" .
 run big-grzip-md20m      a --nodates -y -r -mgrzip -md20m -mt1 "$A" .
 run big-grzip-lc16m      a --nodates -y -r -mgrzip -lc16m -mt1 "$A" .
 run big-grzip-ld20m      a --nodates -y -r -mgrzip -ld20m -mt1 "$A" .
-run big-4x4-lc32m        a --nodates -y -r -m4x4:tor -lc32m -mt1 "$A" .
+run big-4x4-md1m         a --nodates -y -r -m4x4:tor -md1m -mt1 "$A" .
 
 sort -o "$results" "$results"
 
