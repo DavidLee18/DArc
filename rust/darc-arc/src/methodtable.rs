@@ -869,3 +869,100 @@ mod user_rows {
         }
     }
 }
+
+/// `method_name` (`Compression.hs:584`) — a link's name, without parameters.
+fn method_name(m: &str) -> &str {
+    m.split(':').next().unwrap_or(m)
+}
+
+/// `isFastDecMethod` (`Compression.hs:62`).
+///
+/// The PPM family and external compressors are the slow ones; everything else
+/// counts as fast to decompress.
+fn is_fast_dec_method(m: &str) -> bool {
+    let n = method_name(m);
+    !matches!(n, "ppmd" | "ppmm" | "pmm") && !crate::external::is_external(n)
+}
+
+/// `isFastDecompression` (`Compression.hs:123`) — every chain, every link.
+fn is_fast_decompression(decoded: &[(String, Vec<String>)]) -> bool {
+    decoded.iter().all(|(_, chain)| chain.iter().all(|m| is_fast_dec_method(m)))
+}
+
+/// The chain a name expands to, for building the `$wav`/`$bmp` entries.
+fn chain_for(name: &str) -> Vec<String> {
+    decode_method(name).into_iter().next().map_or_else(Vec::new, |(_, c)| c)
+}
+
+/// `multimedia` (`Cmdline.hs:307`) — the `-mm` transform.
+///
+/// It rewrites the decoded compressor LIST, not the substitution table: it
+/// drops the `$wav` and `$bmp` entries and, for `fast`/`max`, appends
+/// replacements. Removing before appending is what makes the new entry win,
+/// because `findCompressor` takes the first match for a type.
+///
+/// `"--"` is "not given" and is the identity, which is why an ordinary `-m9`
+/// keeps the multimedia handling the preset already chose. `-mm` is an
+/// override of that choice, not the switch that enables it.
+pub fn apply_multimedia(mode: &str, decoded: Vec<(String, Vec<String>)>) -> Vec<(String, Vec<String>)> {
+    let without = |d: Vec<(String, Vec<String>)>| -> Vec<(String, Vec<String>)> {
+        d.into_iter().filter(|(ty, _)| ty != "$wav" && ty != "$bmp").collect()
+    };
+    let with = |d: Vec<(String, Vec<String>)>, wav: &str, bmp: &str| {
+        let mut out = without(d);
+        out.push(("$wav".to_string(), chain_for(wav)));
+        out.push(("$bmp".to_string(), chain_for(bmp)));
+        out
+    };
+    match mode {
+        "--" => decoded,
+        "-" => without(decoded),
+        "fast" => with(decoded, "wavfast", "bmpfast"),
+        "max" => with(decoded, "wav", "bmp"),
+        // `+` and the empty value pick by how fast the chain decompresses.
+        "+" | "" => match is_fast_decompression(&decoded) {
+            true => with(decoded, "wavfast", "bmpfast"),
+            false => with(decoded, "wav", "bmp"),
+        },
+        // parse_m rejects anything else before this is reached.
+        _ => decoded,
+    }
+}
+
+/// `method_change` (`Cmdline.hs:317`) — one `-mc` value.
+///
+/// Two shapes, and they are not the same operation:
+///
+/// * `$group` drops that whole entry.
+/// * a method name drops, from every entry EXCEPT the first, any whose chain
+///   ENDS with that method — and then strips that method from every remaining
+///   chain, the first included.
+///
+/// The head entry surviving step one is deliberate in the reference
+/// (`\(x:xs) -> x : filter … xs`): it is the default compressor, and dropping
+/// it would leave a file type with nothing at all.
+pub fn apply_method_change(mc: &str, decoded: Vec<(String, Vec<String>)>) -> Vec<(String, Vec<String>)> {
+    if mc.starts_with('$') {
+        return decoded.into_iter().filter(|(ty, _)| ty != mc).collect();
+    }
+    let mut it = decoded.into_iter();
+    let head = it.next();
+    let mut kept: Vec<(String, Vec<String>)> = Vec::new();
+    match head {
+        Some(h) => kept.push(h),
+        None => return Vec::new(),
+    }
+    for (ty, chain) in it {
+        // `last1 [] = defaultValue` -- an empty chain has no last method, so it
+        // cannot match and is kept.
+        let ends_with_mc = chain.last().map_or(false, |m| method_name(m) == mc);
+        if !ends_with_mc {
+            kept.push((ty, chain));
+        }
+    }
+    kept.into_iter()
+        .map(|(ty, chain)| {
+            (ty, chain.into_iter().filter(|m| method_name(m) != mc).collect())
+        })
+        .collect()
+}

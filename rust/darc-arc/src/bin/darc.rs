@@ -765,13 +765,19 @@ fn main() {
                 .map(|(n, _, _)| n.as_str())
                 .zip(bodies.iter())
                 .collect();
+            // `getDefaultType` from the groups file. This was a hardcoded
+            // "$binary", which made `$wav`/`$bmp` unreachable and left the
+            // multimedia branch in filetype::classify dead.
+            let types: Vec<String> =
+                entries.iter().map(|e| groups.default_type(&e.stored_name)).collect();
             let cands: Vec<darc_arc::filetype::Candidate<'_>> = entries
                 .iter()
-                .map(|e| darc_arc::filetype::Candidate {
+                .zip(types.iter())
+                .map(|(e, ty)| darc_arc::filetype::Candidate {
                     stored_name: &e.stored_name,
                     size: e.size,
                     data: by_name.get(e.stored_name.as_str()).map(|v| v.as_slice()).unwrap_or(&[]),
-                    default_type: "$binary",
+                    default_type: ty,
                 })
                 .collect();
             let names: Vec<String> =
@@ -1046,20 +1052,8 @@ fn add(
     // on part of a -m spec and dropping the rest writes an archive that is not
     // what was asked for, which is the same rule the HONOURED list applies.
     let mut unimplemented: Vec<String> = Vec::new();
-    if mopts.multimedia != "--" {
-        unimplemented.push(format!("-mm{}", mopts.multimedia));
-    }
     if mopts.autodetect != "--" {
         unimplemented.push(format!("-ma{}", mopts.autodetect));
-    }
-    // A disable name that is EMPTY is a no-op and must be accepted: `-mc-`
-    // strips the fencing dashes and leaves "", and `method_change ""`
-    // (Cmdline.hs:318) then filters for methods named "", of which there are
-    // none. Rejecting it broke `mm-reorder-check.sh`, which passes `-mc-` to
-    // mean "change nothing". A NAMED one -- `-mcd-`, `-mc-rep`, `-ms-` -- does
-    // rewrite the chain, and that is not implemented.
-    for d in mopts.disabled.iter().filter(|d| !d.is_empty()) {
-        unimplemented.push(format!("-mc({d})"));
     }
     if !unimplemented.is_empty() {
         eprintln!(
@@ -1143,7 +1137,24 @@ fn add(
         },
     };
 
+    // `dataCompressor` (Cmdline.hs:329) applies these in this order, between
+    // decoding and the memory limits:
+    //
+    //     decode_compression_method .$ multimedia mm
+    //                              .$ applyAll (map method_change mc)
+    //                              .$ setDictionary .$ limitCompressionMem …
+    //
+    // They rewrite the decoded (type, chain) LIST, not the substitution table
+    // -- so they run here rather than inside decode_method. The directory
+    // compressor gets neither: `dirCompressor` is built separately and only
+    // ever sees the memory limit.
     let decoded = darc_arc::methodtable::decode_method(&method);
+    let decoded = darc_arc::methodtable::apply_multimedia(&mopts.multimedia, decoded);
+    let decoded = mopts
+        .disabled
+        .iter()
+        .filter(|d| !d.is_empty())
+        .fold(decoded, |acc, d| darc_arc::methodtable::apply_method_change(d, acc));
 
     // An EXPLICIT -lc over a chain this port cannot measure is refused.
     //
@@ -1860,15 +1871,19 @@ fn add(
     // reached when the level defines more than one chain -- with a single chain
     // every file is type 0 anyway, and probing would be wasted work.
     let type_groups: Vec<(usize, Vec<usize>)> = if chains.len() > 1 {
+        // getDefaultType: an autodetectable type becomes $binary so the
+        // detector decides it, and darc.groups supplies everything else --
+        // which is what makes $wav and $bmp reachable at all.
+        let types: Vec<String> =
+            file_entries.iter().map(|e| groups.default_type(&e.stored_name)).collect();
         let cands: Vec<darc_arc::filetype::Candidate<'_>> = file_entries
             .iter()
-            .map(|e| darc_arc::filetype::Candidate {
+            .zip(types.iter())
+            .map(|(e, ty)| darc_arc::filetype::Candidate {
                 stored_name: &e.stored_name,
                 size: e.size,
                 data: contents.get(&e.stored_name).map(Vec::as_slice).unwrap_or(&[]),
-                // getDefaultType: every autodetectable type becomes $binary,
-                // and only darc.groups can produce anything else.
-                default_type: "$binary",
+                default_type: ty,
             })
             .collect();
         let split = darc_arc::filetype::split_file_types(&cands, &type_names);

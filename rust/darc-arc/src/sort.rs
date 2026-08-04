@@ -541,3 +541,121 @@ mod tests {
         assert_eq!(j, i + 1, "{n:?}");
     }
 }
+
+impl Groups {
+    /// `group_type_names` (`Cmdline.hs:404`) — the file TYPE each group line
+    /// belongs to.
+    ///
+    /// ```text
+    ///   go t (x:xs) = case x of
+    ///     '$':_ | x /= "$default" -> x : go x xs   -- names itself AND becomes t
+    ///     _                       -> t : go t xs   -- a wildcard inherits t
+    /// ```
+    ///
+    /// So in `$wav` / `*.wav` / `*.wave` all three lines have type `$wav`: the
+    /// marker names the type and every wildcard under it inherits it, until
+    /// the next marker. The walk starts at `$binary`, so lines before any
+    /// marker are binary.
+    ///
+    /// `$default` is excluded because it marks a POSITION in the order, not a
+    /// type — treating it as one would give every unmatched file the type
+    /// `$default`, which no compressor list contains.
+    fn group_type_names(&self) -> Vec<String> {
+        let mut t = "$binary".to_string();
+        let mut out = Vec::with_capacity(self.patterns.len());
+        for p in &self.patterns {
+            let lower = p.to_lowercase();
+            match lower.starts_with('$') && lower != "$default" {
+                true => {
+                    t = lower.clone();
+                    out.push(lower);
+                }
+                false => out.push(t.clone()),
+            }
+        }
+        out
+    }
+
+    /// `getDefaultType` (`ArhiveFileList.hs:520`) — the type `darc.groups`
+    /// assigns to a file.
+    ///
+    /// A type the detector can work out for itself becomes `$binary`, so that
+    /// autodetection decides it rather than the file's name. `DETECTABLE_TYPES`
+    /// names exactly `$text` and `$compressed`.
+    ///
+    /// **This is what makes `$wav` and `$bmp` reachable.** Until it existed the
+    /// caller passed a hardcoded `$binary`, so the multimedia branch in
+    /// `filetype::classify` was dead and `-m9` compressed a WAV with the
+    /// general binary chain where the reference used `tta`.
+    pub fn default_type(&self, stored_name: &str) -> String {
+        let names = self.group_type_names();
+        let typ = names.get(self.group_of(stored_name)).cloned().unwrap_or_default();
+        match typ.is_empty()
+            || darc_codecs::mmdet::DETECTABLE_TYPES.split_whitespace().any(|d| d == typ)
+        {
+            true => "$binary".to_string(),
+            false => typ,
+        }
+    }
+}
+
+#[cfg(test)]
+mod default_type_tests {
+    use super::Groups;
+
+    const SAMPLE: &str = "\
+;a comment
+*.exe
+$wav
+*.wav
+*.wave
+$bmp
+*.bmp
+$default
+$text
+*.txt
+";
+
+    /// A marker names its own type and every wildcard under it inherits.
+    #[test]
+    fn a_marker_types_the_wildcards_that_follow_it() {
+        let g = Groups::parse(SAMPLE);
+        assert_eq!(g.default_type("a.wav"), "$wav");
+        assert_eq!(g.default_type("a.wave"), "$wav");
+        assert_eq!(g.default_type("a.bmp"), "$bmp");
+        // Before any marker the walk is still at its initial $binary.
+        assert_eq!(g.default_type("a.exe"), "$binary");
+    }
+
+    /// A type the detector can find itself is handed back as `$binary`, so
+    /// autodetection decides it instead of the name.
+    #[test]
+    fn detectable_types_become_binary() {
+        let g = Groups::parse(SAMPLE);
+        assert_eq!(g.default_type("a.txt"), "$binary");
+    }
+
+    /// `$default` is a POSITION, not a type -- and an unmatched file inherits
+    /// whatever marker was in force where `$default` sits.
+    ///
+    /// That is a quirk of the reference, not of this port: `go` has no case for
+    /// `$default`, so it falls through to `t : go t xs` and emits the CURRENT
+    /// type. In SAMPLE below `$default` follows `$bmp`, so unmatched files are
+    /// typed `$bmp` -- which looks wrong and is faithful.
+    ///
+    /// The shipped `darc.groups` puts `$default` immediately after `$binary`
+    /// (lines 162 and 164), so in practice unmatched files get `$binary` and
+    /// the quirk never shows. A test that only used the real file would not
+    /// have found this, and a "fix" would have been a divergence.
+    #[test]
+    fn an_unmatched_file_inherits_the_type_in_force_at_default() {
+        let g = Groups::parse(SAMPLE);
+        assert_eq!(g.default_type("a.unknown"), "$bmp");
+        // With `$default` after `$binary`, as the shipped file has it.
+        let real = Groups::parse("*.exe\n$binary\n*.bin\n$default\n$wav\n*.wav\n");
+        assert_eq!(real.default_type("a.unknown"), "$binary");
+        assert_eq!(real.default_type("a.wav"), "$wav");
+        // And with no groups file at all, which is `--groups-`.
+        assert_eq!(Groups::single().default_type("a.wav"), "$binary");
+    }
+}
