@@ -21,21 +21,40 @@
 #   * `-m0` or an EXPLICITLY parameterised chain -- never a preset. A preset is
 #     fitted before it is written, and a fitted chain is written into the
 #     archive, so anything the fitting reads becomes archive-visible.
-#   * NO `grzip` and NO `4x4`. They are the only two methods whose memory
-#     formulas read the processor count (`compression_threads`, memlimit.rs:288,
-#     which is GetCompressionThreads), so they are the only two that could make
-#     a recorded hash depend on the machine that recorded it.
+#   * `grzip`, `4x4` and `lzma2` ONLY with an explicit `-mtN`. Three things
+#     read the thread count and turn it into archive bytes: GRZip's and 4x4's
+#     memory formulas, and LZMA2's encoder, which above one block thread stops
+#     emitting one solid block and splits the input. Without `-mtN` all three
+#     bake the recording machine's core count into the hash.
 #   * `-rr` in absolute bytes, never a percentage. A percentage is taken of the
 #     archive size and then clamped -- in the C, at getPhysicalMemory/2.
 #
-# An earlier version of this list also claimed `-mt1` pinned the thread count.
-# It does not: `-mt1` is a -m VALUE naming a method modifier, not a thread
-# option, and a later `-m` simply replaces it. Dropping it changed no hash,
-# which is the proof it was doing nothing.
+# An earlier version of this list claimed `-mt1` did NOT pin the thread count,
+# on the evidence that adding it changed no hash. That evidence was worthless:
+# every case it was tried on used a method whose output does not depend on
+# threads, so of course nothing moved. It is now measured directly --
+# `-mgrzip -lc16m -mt1` and `-mt8` produce different archives, and the port
+# matches the reference in both -- which is what makes the three methods above
+# recordable at all.
 #
 # A case that violates one of those will record fine and fail on another
 # machine, which reads as a format regression and is not one. Add cases in that
 # style.
+#
+# ── A limit that never binds tests nothing ──────────────────────────────────
+#
+# Every case here used the small tree, which is under 200 KB. `limitDictionary`
+# shrinks the chain to the DATA size before anything else, so on a tree that
+# small no memory limit and no block-size cap is ever reached: the arithmetic
+# under test is never executed. Four format bugs lived behind that for the
+# whole life of this file -- GRZip's block cap being 1 GB instead of 8 MB-512,
+# BSC's decompression figure and setter, LZ4's setter, and `-lc`/`-ld` not
+# reaching the solid-block grouping.
+#
+# `build_big_tree` exists for exactly that: ~12 MB, so a limit put ABOVE the
+# codec's own constants and BELOW the data size actually binds. When adding a
+# case for a limit, check that the figure you pass changes the stored method
+# string -- if it does not, the case is decoration.
 #
 # Usage:
 #   arc-golden-check.sh                     check the port against the manifest
@@ -73,6 +92,14 @@ if [ "$record" = 0 ]; then
     echo "no manifest at $MANIFEST -- record one first" >&2; exit 2; }
 fi
 
+# The big tree's incompressible file comes from here. Built in BOTH modes --
+# recording needs it as much as checking does, and a missing one would produce
+# a tree that silently differs from the recorded one.
+( cd "$ROOT/rust" && cargo build --release -q -p darc-codecs --bin corpusgen ) || {
+  echo "cannot build corpusgen" >&2; exit 1; }
+CORPUSGEN="$ROOT/rust/target/release/corpusgen"
+[ -x "$CORPUSGEN" ] || { echo "no corpusgen at $CORPUSGEN" >&2; exit 1; }
+
 W="${TMPDIR:-/tmp}/arc-golden-check.$$"; mkdir -p "$W"
 trap 'rm -rf "$W"' EXIT
 
@@ -105,6 +132,47 @@ build_tree() {
   : > "$d/empty.bin"
 }
 
+# ~12 MB, deterministic, and larger than every block-size constant a method
+# carries -- GRZip's 8 MB-512 cap is the largest. Generated rather than random
+# so it is byte-identical on every machine, and compressible enough that the
+# codecs do real work.
+#
+# The size is the point. On the small tree the dictionary limit shrinks every
+# chain to ~180 KB before any -lc/-ld/-md is consulted, so those options reach
+# arithmetic that is never wrong because it is never run.
+build_big_tree() {
+  local d="$1"
+  rm -rf "$d"; mkdir -p "$d/big"
+  # THREE files, ~12 MB total. Not six: at 21 MB the reference itself HANGS on
+  # `-mlz4` -- deterministically, five trials for five hangs, with and without
+  # a limit, at 0.2% CPU for 39 minutes before it was killed. 19 MB is fine and
+  # 12 MB is fine, so it is that tree's size-and-shape, not lz4 as such. The
+  # port does not hang on any of them. A case the REFERENCE cannot produce
+  # cannot be recorded, so the tree stays on the side of the cliff that works.
+  local i
+  for i in 1 2 3; do
+    awk -v n="$i" 'BEGIN{
+      for (j = 0; j < 60000; j++)
+        printf "block %d line %d of repeating but not identical text\n", n, j % 1000
+    }' > "$d/big/f$i.txt"
+  done
+  # One file that does not compress, so a block-size cap has something
+  # incompressible to split.
+  #
+  # From `corpusgen`, NOT from awk. This was
+  # `awk 'BEGIN{srand(7); ... rand() ...}'`, which is not portable -- BSD awk
+  # and gawk have different PRNGs, so the file, and every archive built over
+  # it, differed between macOS and Linux. All 20 big cases failed CI on both
+  # Linux runners while passing on macOS and Windows. `big-store` was among
+  # them, which is what identified it: `-m0` stores bytes verbatim, so that
+  # archive can only move if the INPUT moved.
+  #
+  # This is the reason CLAUDE.md says corpora come from `corpusgen`. The
+  # determinism screen that passed this file varied the thread count and never
+  # the platform, which is why it did not catch it either.
+  "$CORPUSGEN" prng 7 1600000 > "$d/big/noise.bin"
+}
+
 results="$W/results.txt"
 : > "$results"
 
@@ -113,7 +181,10 @@ results="$W/results.txt"
 run() {
   local id="$1"; shift
   local tree="$W/t"
-  build_tree "$tree"
+  case "$id" in
+    big-*) build_big_tree "$tree" ;;
+    *)     build_tree "$tree" ;;
+  esac
   rm -f "$W/g.arc"
   local args=()
   for tok in "$@"; do
@@ -234,6 +305,56 @@ run mopt-dict-16m         a --nodates -y -r -m4 -md16m "$A" .
 run mopt-dict-letter      a --nodates -y -r -m4 -mda "$A" .
 run mopt-dict-explicit    a --nodates -y -r -mlzma:1m -md64m "$A" .
 run mopt-dict-chain       a --nodates -y -r -mrep:8m+lzma:1m -md1m "$A" .
+
+# ── lzma2, which had no `Method` variant either ─────────────────────────────
+#
+# Every one pins `-mt1`. LZMA2 is the one codec whose ENCODER reads the thread
+# count: above one block thread `Lzma2EncProps_Normalize` abandons the solid
+# block and splits the input into dictionary-reset blocks, so the stream itself
+# differs. Without `-mt1` these hashes would be the recording machine's core
+# count.
+run m-lzma2              a --nodates -y -r -mlzma2:1m -mt1 "$A" .
+run m-lzma2-dict         a --nodates -y -r -mlzma2:d64k -mt1 "$A" .
+run m-lzma2-fb           a --nodates -y -r -mlzma2:1m:fb64 -mt1 "$A" .
+run m-lzma2-mf           a --nodates -y -r -mlzma2:1m:mf=BT4 -mt1 "$A" .
+run m-lzma2-fast         a --nodates -y -r -mlzma2:1m:a0 -mt1 "$A" .
+run m-lzma2-bits         a --nodates -y -r -mlzma2:1m:pb1:lc1:lp1 -mt1 "$A" .
+run m-lzma2-chain        a --nodates -y -r -mrep:8m+lzma2:1m -mt1 "$A" .
+# The multi-block stream, pinned to a count that is not the machine's.
+run m-lzma2-mt2          a --nodates -y -r -mlzma2:d64k -mt2 "$A" .
+
+# ── limits that actually BIND, on a tree big enough to reach them ───────────
+#
+# These are the cases the small tree could not express. Each figure is chosen
+# to sit below the ~12 MB of data and above (or across) the codec's own
+# constant, so the limiting arithmetic runs. Four format bugs were found by
+# this section's first run; before it, `-lc`/`-ld`/`-md` were covered only by
+# cases where they could not possibly bind.
+#
+# `-md20m` on GRZip is the specific shape that found the block cap: it is over
+# the 8 MB-512 maximum, so it must clamp there rather than pass through.
+run big-store            a --nodates -y -r -m0 "$A" .
+run big-lzma-ld8m        a --nodates -y -r -mlzma:8m -ld8m "$A" .
+run big-lzma-lc16m       a --nodates -y -r -mlzma:8m -lc16m "$A" .
+run big-lzma-md4m        a --nodates -y -r -mlzma:8m -md4m "$A" .
+run big-bsc-ld8m         a --nodates -y -r -mbsc -ld8m "$A" .
+run big-bsc-ld32m        a --nodates -y -r -mbsc -ld32m "$A" .
+run big-bsc-md4m         a --nodates -y -r -mbsc -md4m "$A" .
+run big-lz4-ld1m         a --nodates -y -r -mlz4 -ld1m "$A" .
+run big-lz4-md20m        a --nodates -y -r -mlz4 -md20m "$A" .
+run big-tor-lc8m         a --nodates -y -r -mtor -lc8m "$A" .
+run big-tor-lc4m         a --nodates -y -r -mtor -lc4m "$A" .
+run big-rep-lc8m         a --nodates -y -r -mrep -lc8m "$A" .
+run big-lzp-ld8m         a --nodates -y -r -mlzp -ld8m "$A" .
+run big-dict-md256k      a --nodates -y -r -mdict -md256k "$A" .
+run big-lzma2-lc16m      a --nodates -y -r -mlzma2 -lc16m -mt1 "$A" .
+run big-lzma2-ld8m       a --nodates -y -r -mlzma2 -ld8m -mt1 "$A" .
+# GRZip and 4x4 are admissible with the count pinned, and this is where their
+# thread-scaled memory formulas are finally exercised.
+run big-grzip-md20m      a --nodates -y -r -mgrzip -md20m -mt1 "$A" .
+run big-grzip-lc16m      a --nodates -y -r -mgrzip -lc16m -mt1 "$A" .
+run big-grzip-ld20m      a --nodates -y -r -mgrzip -ld20m -mt1 "$A" .
+run big-4x4-md1m         a --nodates -y -r -m4x4:tor -md1m -mt1 "$A" .
 
 sort -o "$results" "$results"
 
