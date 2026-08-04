@@ -143,7 +143,14 @@ fn undo(method: &Method, src: &[u8], hint: usize) -> Result<Vec<u8>, Error> {
                 }),
             }
         }
-        Method::Unsupported(name) => Err(Error::Unsupported(name.clone())),
+        // An unparsed method may still be an external compressor: those are
+        // named in darc.toml, not built in, so `Method::parse` cannot know
+        // about them and correctly reports Unsupported.
+        Method::Unsupported(name) => match crate::external::is_external(name) {
+            true => crate::external::decompress(name, src)
+                .map_err(|detail| Error::Codec { method: name.clone(), detail }),
+            false => Err(Error::Unsupported(name.clone())),
+        },
     }
 }
 
@@ -461,7 +468,11 @@ pub fn compress_one_with(method: &Method, src: &[u8], all_at_once: bool) -> Resu
                 }),
             }
         }
-        other @ Method::Unsupported(_) => Err(Error::Unsupported(format!("{other:?}"))),
+        Method::Unsupported(name) => match crate::external::is_external(name) {
+            true => crate::external::compress(name, src)
+                .map_err(|detail| Error::Codec { method: name.clone(), detail }),
+            false => Err(Error::Unsupported(name.clone())),
+        },
     }
 }
 

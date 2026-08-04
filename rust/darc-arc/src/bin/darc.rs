@@ -205,6 +205,23 @@ fn main() {
                     std::process::exit(2);
                 }
             }
+            // The external compressors, registered before anything decodes a
+            // method (`Cmdline.hs:223` does the same, twice: once for parsing
+            // and again before the command runs).
+            darc_arc::external::set_table(
+                cfg.external()
+                    .iter()
+                    .map(|(k, v)| {
+                        (
+                            k.clone(),
+                            darc_arc::external::External {
+                                packcmd: v.packcmd.clone(),
+                                unpackcmd: v.unpackcmd.clone(),
+                            },
+                        )
+                    })
+                    .collect(),
+            );
             config = Some(cfg);
         }
         None => {}
@@ -1871,6 +1888,11 @@ fn add(
     for (ty, _) in &type_groups {
         for m in chains[*ty].split('+') {
             match darc_arc::method::Method::parse(m) {
+                // An external compressor is Unsupported to `Method::parse` --
+                // it is named in darc.toml, not built in -- and is writable
+                // all the same. This is what makes `-msrep` work.
+                Some(darc_arc::method::Method::Unsupported(name))
+                    if darc_arc::external::is_external(&name) => {}
                 Some(darc_arc::method::Method::Unsupported(name)) => {
                     eprintln!(
                         "ERROR: -m{method} needs {name} for {}, which this port cannot write yet",
