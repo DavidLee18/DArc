@@ -1050,6 +1050,23 @@ fn add(
     // subdirectory.
     let named_dir = |spec: &str| spec.ends_with('/') || std::path::Path::new(spec).is_dir();
 
+    // `-dp`/`--diskpath` (Cmdline.hs:683). Measured against the reference:
+    // `a -dpX … .` and `cd X && a … .` write byte-identical archives, so -dp
+    // relocates where files are READ and leaves stored names alone. It was
+    // being parsed into extract::Layout, which only the EXTRACT path consults,
+    // so on `a` it was accepted and silently did nothing at all.
+    let disk_base = parsed.arg("diskpath", "").trim_end_matches('/').to_string();
+    let under_base = |p: &str| -> std::path::PathBuf {
+        let rel = match p.is_empty() {
+            true => ".",
+            false => p,
+        };
+        match disk_base.is_empty() {
+            true => std::path::PathBuf::from(rel),
+            false => std::path::Path::new(&disk_base).join(rel),
+        }
+    };
+
     // Pass one: addDir, in the order the specs were given, because the
     // reference runs every filespec's addDir pass before any main walk.
     for spec in spec_list {
@@ -1059,7 +1076,7 @@ fn add(
         // when the filespec HAS a last component, so `.`, `..` and `/`
         // contribute nothing -- exactly what `file_name()` reports.
         if named_dir(spec) && std::path::Path::new(root).file_name().is_some() {
-            named_dirs.push((root.to_string(), std::path::PathBuf::from(root), true));
+            named_dirs.push((root.to_string(), under_base(root), true));
         }
     }
 
@@ -1103,10 +1120,8 @@ fn add(
     groups.sort_by_key(|g| g.0.to_lowercase());
 
     for (dir_part, masks, dir_slash) in groups {
-        let base = match dir_part.is_empty() {
-            true => std::path::Path::new("."),
-            false => std::path::Path::new(dir_part.as_str()),
-        };
+        let base_buf = under_base(dir_part.as_str());
+        let base: &std::path::Path = &base_buf;
         // `recursive = scan_subdirs || dir_slash` and `include_all = dir_slash
         // || masks `contains` reANY_FILE` (FileInfo.hs:456).
         let rec = recursive || dir_slash;
