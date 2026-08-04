@@ -57,7 +57,7 @@ pub const OPTIONS: &[OptionDef] = &[
     OptionDef { short: "m", long: "method", param: Some("METHOD") },
     OptionDef { short: "dm", long: "dirmethod", param: Some("METHOD") },
     OptionDef { short: "ma", long: "", param: Some("LEVEL") },
-    OptionDef { short: "md", long: "dictionary", param: None },
+    OptionDef { short: "md", long: "dictionary", param: Some("N") },
     OptionDef { short: "mm", long: "multimedia", param: Some("MODE") },
     OptionDef { short: "ms", long: "StoreCompressed", param: None },
     OptionDef { short: "mt", long: "MultiThreaded", param: Some("THREADS") },
@@ -114,9 +114,9 @@ pub const OPTIONS: &[OptionDef] = &[
     OptionDef { short: "v", long: "volume", param: Some("SIZE") },
     OptionDef { short: "", long: "queue", param: None },
     OptionDef { short: "", long: "arc-32bit-legacy", param: None },
-    OptionDef { short: "", long: "cache", param: None },
-    OptionDef { short: "lc", long: "LimitCompMem", param: None },
-    OptionDef { short: "ld", long: "LimitDecompMem", param: None },
+    OptionDef { short: "", long: "cache", param: Some("N") },
+    OptionDef { short: "lc", long: "LimitCompMem", param: Some("N") },
+    OptionDef { short: "ld", long: "LimitDecompMem", param: Some("N") },
     OptionDef { short: "", long: "nodir", param: None },
     OptionDef { short: "", long: "nodata", param: None },
     OptionDef { short: "", long: "crconly", param: None },
@@ -337,6 +337,25 @@ mod tests {
     #[test]
     fn the_parameter_flags_match_the_help_text() {
         let by_long = |l: &str| OPTIONS.iter().find(|o| o.long == l).copied();
+        // A SINGLE uppercase letter is a parameter name too: `paramName` is
+        // `filter (all isUpper) (words descr)`, and `all isUpper "N"` is true.
+        // The mechanical extraction that built this table wanted two or more,
+        // so every `N` row came out wrong -- `-lc64m` and `--dictionary=16m`
+        // were "unknown option" while the reference accepts both. The rows
+        // pinned below this comment are exactly the ones that were wrong, and
+        // they are all single-letter: a check that only pinned multi-letter
+        // names is what let the class through in the first place.
+        assert_eq!(by_long("dictionary").and_then(|o| o.param), Some("N"));
+        assert_eq!(by_long("cache").and_then(|o| o.param), Some("N"));
+        assert_eq!(by_long("LimitCompMem").and_then(|o| o.param), Some("N"));
+        assert_eq!(by_long("LimitDecompMem").and_then(|o| o.param), Some("N"));
+        // "save/check CRC, but don't store data" -- NO parameter, and the
+        // reason is the COMMA: the word is "CRC," and `all isUpper` is false
+        // for punctuation. Checked against the reference, which answers
+        // `--crconly=x` with "unknown option". A sweep that strips punctuation
+        // before testing gets this wrong, and mine did.
+        assert_eq!(by_long("crconly").and_then(|o| o.param), None);
+
         assert_eq!(by_long("recursive").and_then(|o| o.param), None);
         assert_eq!(by_long("arcpath").and_then(|o| o.param), Some("DIR"));
         assert_eq!(by_long("diskpath").and_then(|o| o.param), Some("DIR"));
