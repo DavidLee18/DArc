@@ -520,10 +520,17 @@ pub fn fit_for_add_limits(
 /// one would make `-ld75%` produce a slightly different compression chain — and
 /// so a different archive — on two machines with the same nominal RAM.
 ///
-/// Returns 0 when the figure cannot be had, which makes a percentage limit 0
-/// and therefore maximally restrictive. That is the safe direction: a limit
-/// that is too small produces a smaller chain, never one the reader cannot
-/// afford.
+/// Returns 0 when the figure cannot be had — on any platform that is neither
+/// macOS nor Linux, which today means the Windows cross-builds.
+///
+/// **0 means "unknown", and callers must treat it as NO LIMIT, not as a limit
+/// of zero.** An earlier version of this comment argued that zero was the safe
+/// direction because a smaller chain is one the reader can always afford. That
+/// is the wrong criterion. A limit of zero shrank every method, including the
+/// directory's `lzma:1mb`, so the Windows builds wrote different archives from
+/// the Linux one for EVERY method — `store` included, which is how the interop
+/// check caught it. Byte-identity is the property that matters here, not
+/// frugality.
 pub fn physical_memory() -> u64 {
     let raw = physical_memory_raw();
     let rounded = raw - (raw % (4 * MB));

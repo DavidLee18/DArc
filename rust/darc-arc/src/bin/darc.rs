@@ -1029,17 +1029,25 @@ fn add(
     // capped RAM figure, which on any machine with 4 GiB or more is 3 GiB --
     // large enough that it does not bind for the chains DArc ships, which is
     // why the port wrote byte-identical archives before this existed.
+    // physical_memory() is 0 when the figure is unavailable, which is every
+    // platform but macOS and Linux. Zero must mean NO LIMIT here: taken
+    // literally it shrank every chain, and the Windows builds then wrote
+    // different archives from the Linux one on all 14 interop methods.
+    let ram = darc_arc::memlimit::physical_memory();
     let climit: u64 = match parsed.arg("LimitCompMem", "--") {
-        "--" => darc_arc::memlimit::parse_mem_with_percents(
-            darc_arc::memlimit::physical_memory(),
-            "75%",
-        )
-        .unwrap_or(u64::MAX),
+        "--" | "-" if ram == 0 => u64::MAX,
+        "--" => darc_arc::memlimit::parse_mem_with_percents(ram, "75%").unwrap_or(u64::MAX),
         "-" => u64::MAX,
-        s => match darc_arc::memlimit::parse_mem_with_percents(
-            darc_arc::memlimit::physical_memory(),
-            s,
-        ) {
+        // An explicit percentage of an unknown quantity is refused rather than
+        // silently ignored -- the user asked for a limit and would not get one.
+        s if (s.ends_with('%') || s.ends_with('p')) && ram == 0 => {
+            eprintln!(
+                "ERROR: -lc{s}: this platform does not report physical memory, \
+                 so a percentage cannot be resolved. Give an explicit size."
+            );
+            return 2;
+        }
+        s => match darc_arc::memlimit::parse_mem_with_percents(ram, s) {
             Some(v) => v,
             None => {
                 eprintln!("ERROR: -lc{s}: not a memory size (N, Nb, Nk, Nm, Ng, N%)");
@@ -1051,10 +1059,14 @@ fn add(
     let dlimit: u64 = match parsed.arg("LimitDecompMem", "--") {
         "--" => darc_arc::memlimit::ADD_DECOMPRESSION_LIMIT,
         "-" => u64::MAX,
-        s => match darc_arc::memlimit::parse_mem_with_percents(
-            darc_arc::memlimit::physical_memory(),
-            s,
-        ) {
+        s if (s.ends_with('%') || s.ends_with('p')) && ram == 0 => {
+            eprintln!(
+                "ERROR: -ld{s}: this platform does not report physical memory, \
+                 so a percentage cannot be resolved. Give an explicit size."
+            );
+            return 2;
+        }
+        s => match darc_arc::memlimit::parse_mem_with_percents(ram, s) {
             Some(v) => v,
             None => {
                 eprintln!("ERROR: -ld{s}: not a memory size (N, Nb, Nk, Nm, Ng, N%)");
