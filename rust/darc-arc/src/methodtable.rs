@@ -634,3 +634,80 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+mod table_pin {
+    //! A snapshot of what the built-in table means TODAY, taken before it is
+    //! rewritten from a `&[&str]` array into structured data.
+    //!
+    //! Steps 2 and 3 of the darc.toml work change how the table is stored and
+    //! must change nothing about what it decodes to. This is the gate that says
+    //! so: it renders every preset the table can express and compares against a
+    //! fixture recorded from the current implementation. It is deliberately
+    //! mechanical -- no cleverness, because its only job is to notice movement.
+    //!
+    //! If a row here changes, the refactor is wrong. Re-blessing the fixture to
+    //! make it pass would discard the only evidence that the rewrite preserved
+    //! meaning, exactly as re-recording golden/manifest.txt from the port would.
+    use super::decode_method;
+
+    /// Every spec the presets and their modifiers can name.
+    fn all_specs() -> Vec<String> {
+        let mut out = Vec::new();
+        for lvl in 0..=9 {
+            out.push(lvl.to_string());
+            for m in ["x", "p", "q", "b", "t", "xb", "xt", "pb", "pt", "qb", "qt"] {
+                out.push(format!("{lvl}{m}"));
+            }
+        }
+        // The named groups and synonyms, which no level reaches directly.
+        for n in [
+            "wav", "wavfast", "bmp", "bmpfast", "bmpfastest", "bcj", "exe", "lzma", "tor",
+            "$wav", "$bmp", "$obj", "$text", "$compressed", "$binary",
+        ] {
+            out.push(n.to_string());
+        }
+        out
+    }
+
+    /// One line per spec: `spec => type=chain|type=chain|...`.
+    fn render() -> String {
+        let mut s = String::new();
+        for spec in all_specs() {
+            let decoded = decode_method(&spec);
+            let body: Vec<String> = decoded
+                .iter()
+                .map(|(ty, chain)| format!("{ty}={}", chain.join("+")))
+                .collect();
+            s.push_str(&format!("{spec} => {}\n", body.join("|")));
+        }
+        s
+    }
+
+    #[test]
+    fn the_builtin_table_decodes_as_it_always_has() {
+        let fixture = include_str!("../tests/method-table.pin");
+        let now = render();
+        if now != fixture {
+            // Name the first differing line rather than dumping both files.
+            for (i, (a, b)) in now.lines().zip(fixture.lines()).enumerate() {
+                assert_eq!(a, b, "method table moved at line {}", i + 1);
+            }
+            assert_eq!(now.lines().count(), fixture.lines().count(), "row count moved");
+        }
+    }
+
+    /// Writes the fixture. Run with the env var set ONLY when the table is
+    /// deliberately being given new content -- never to silence a failure.
+    #[test]
+    fn bless() {
+        match std::env::var("DARC_BLESS_METHOD_TABLE") {
+            Ok(_) => std::fs::write(
+                concat!(env!("CARGO_MANIFEST_DIR"), "/tests/method-table.pin"),
+                render(),
+            )
+            .expect("write fixture"),
+            Err(_) => {}
+        }
+    }
+}
