@@ -121,6 +121,42 @@ fn main() {
     // command line overriding all of them.
     let pre = options::parse(&argv[1..]).unwrap_or_default();
     let no_configs = pre.all("config").contains(&"-");
+    // `arc.ini` and `$FREEARC` are GONE, and a leftover one is reported rather
+    // than ignored. Ignoring it would change the archive the user gets with
+    // nothing to show for it -- the silent no-op this port refuses everywhere.
+    // `-cfg-` disables config handling entirely, so it silences this too.
+    if !no_configs {
+        match darc_arc::config::Config::find_legacy() {
+            Some(p) => {
+                eprintln!(
+                    "ERROR: {} is no longer read; it was replaced by {}.\n\
+                     Found: {}\n\
+                     Move its defaults into a [defaults] table and its method \
+                     table into [methods], or pass -cfg- to ignore both.",
+                    darc_arc::config::LEGACY_CONFIG_FILE,
+                    darc_arc::config::CONFIG_FILE,
+                    p.display()
+                );
+                std::process::exit(2);
+            }
+            None => {}
+        }
+        // Same rule for the variable: set and unread is set and ignored.
+        let legacy_var = darc_arc::config::LEGACY_CONFIG_ENV_VAR;
+        match (std::env::var(legacy_var), std::env::var(darc_arc::config::CONFIG_ENV_VAR)) {
+            (Ok(_), Err(_)) => {
+                eprintln!(
+                    "ERROR: ${legacy_var} is set but no longer read; it was replaced by ${}. \
+                     Rename it, or pass -env- to ignore it.",
+                    darc_arc::config::CONFIG_ENV_VAR
+                );
+                std::process::exit(2);
+            }
+            _ => {}
+        }
+    }
+    // Kept for [methods] and [external], which are applied further down.
+    let mut config: Option<darc_arc::config::Config> = None;
     let cfg_text = match no_configs {
         true => None,
         false => match pre.arg("config", "--") {
@@ -137,24 +173,28 @@ fn main() {
     let mut extra: Vec<String> = Vec::new();
     match &cfg_text {
         Some(text) => {
-            let cfg = darc_arc::config::Config::parse(text);
-            // Named rather than silently skipped: an EDITED [Compression
-            // methods] section changes what -m9 means in the reference and
-            // not here, and this port's table is built in.
-            let unapplied = cfg.has_unapplied_sections();
-            if !unapplied.is_empty() {
+            // Refused whole rather than salvaged: the options that DID parse
+            // still change the archive, so half a config is not a safer
+            // subset of one.
+            let cfg = match darc_arc::config::Config::parse(text) {
+                Ok(c) => c,
+                Err(e) => {
+                    eprintln!("ERROR: {}: {e}", darc_arc::config::CONFIG_FILE);
+                    std::process::exit(2);
+                }
+            };
+            // A value of the wrong type meant something to whoever wrote it.
+            let bad = cfg.bad_defaults();
+            if !bad.is_empty() {
                 eprintln!(
-                    "WARNING: {} in the config file {} not applied; this port's \
-                     compression-method table is built in",
-                    unapplied.join(", "),
-                    match unapplied.len() {
-                        1 => "is",
-                        _ => "are",
-                    }
+                    "ERROR: [defaults] {} must be a string or a list of strings",
+                    bad.join(", ")
                 );
+                std::process::exit(2);
             }
             extra.extend(cfg.global_options().split_whitespace().map(str::to_string));
             extra.extend(cfg.command_options(&command).split_whitespace().map(str::to_string));
+            config = Some(cfg);
         }
         None => {}
     }
