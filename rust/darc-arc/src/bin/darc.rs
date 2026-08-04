@@ -92,6 +92,95 @@ fn main() {
     // The command is the first argument and is NOT an option, matching
     // `parseCmdline`: options may appear anywhere after it.
     let command = argv[0].clone();
+
+    // `arc.ini` and `$FREEARC`, PREPENDED to the command line
+    // (Cmdline.hs:102). The user's own arguments stay last, so every
+    // last-wins option still overrides the defaults. Without this a machine
+    // with `-mx` in its arc.ini gets a different archive from the reference
+    // for the same command line, silently.
+    //
+    // `-cfg-` disables BOTH the file and the variable (Cmdline.hs:49); `-cfg
+    // <path>` names a different file; `-env <VAR>` names a different variable
+    // and `-env-` disables it. Those three are read from the RAW arguments,
+    // because they decide what the real parse will see.
+    //
+    // A DELIBERATE divergence, measured: the 9a127e6 reference built on macOS
+    // never finds arc.ini by itself. Not beside the executable, not in the
+    // working directory -- `getExeName` (Files.hs:227) is a Windows/Linux
+    // idiom and evidently fails here, so only an explicit `-cfg<path>` has any
+    // effect there. This port implements the search `Files.hs:224` describes,
+    // because that is the documented behaviour and what a user who drops an
+    // arc.ini beside the binary expects.
+    //
+    // The consequence is worth stating plainly: on macOS, with an arc.ini
+    // present, this port and that reference build write DIFFERENT archives.
+    // What is gated below is the part that can be gated -- the parsing and the
+    // injection order -- using `-cfg<path>`, which the reference does honour:
+    // 12 of 12 byte-identical across global lines, per-command sections,
+    // repeated and multi-name left-hand sides, comments, $FREEARC, and the
+    // command line overriding all of them.
+    let pre = options::parse(&argv[1..]).unwrap_or_default();
+    let no_configs = pre.all("config").contains(&"-");
+    let cfg_text = match no_configs {
+        true => None,
+        false => match pre.arg("config", "--") {
+            "--" => darc_arc::config::Config::find().and_then(|p| std::fs::read_to_string(p).ok()),
+            path => match std::fs::read_to_string(path) {
+                Ok(t) => Some(t),
+                Err(e) => {
+                    eprintln!("ERROR: -cfg{path}: {e}");
+                    std::process::exit(2);
+                }
+            },
+        },
+    };
+    let mut extra: Vec<String> = Vec::new();
+    match &cfg_text {
+        Some(text) => {
+            let cfg = darc_arc::config::Config::parse(text);
+            // Named rather than silently skipped: an EDITED [Compression
+            // methods] section changes what -m9 means in the reference and
+            // not here, and this port's table is built in.
+            let unapplied = cfg.has_unapplied_sections();
+            if !unapplied.is_empty() {
+                eprintln!(
+                    "WARNING: {} in the config file {} not applied; this port's \
+                     compression-method table is built in",
+                    unapplied.join(", "),
+                    match unapplied.len() {
+                        1 => "is",
+                        _ => "are",
+                    }
+                );
+            }
+            extra.extend(cfg.global_options().split_whitespace().map(str::to_string));
+            extra.extend(cfg.command_options(&command).split_whitespace().map(str::to_string));
+        }
+        None => {}
+    }
+    if !no_configs {
+        let var = match pre.arg("env", "--") {
+            "--" => darc_arc::config::CONFIG_ENV_VAR,
+            "-" => "",
+            v => v,
+        };
+        if !var.is_empty() {
+            match std::env::var(var) {
+                Ok(v) => extra.extend(v.split_whitespace().map(str::to_string)),
+                Err(_) => {}
+            }
+        }
+    }
+    let argv: Vec<String> = match extra.is_empty() {
+        true => argv,
+        false => {
+            let mut v = vec![argv[0].clone()];
+            v.extend(extra);
+            v.extend(argv[1..].iter().cloned());
+            v
+        }
+    };
+
     let parsed = match options::parse(&argv[1..]) {
         Ok(p) => p,
         Err(e) => {
@@ -228,7 +317,7 @@ fn main() {
         "recovery", "volume", "sfx", "noarcext", "charset", "original", "overwrite",
         "keepbroken", "keeptime", "timetolast", "test", "autogenerate",
         "pause-before-exit", "queue", "pretest", "logfile", "proxy", "bypass",
-        "type", "dirmethod", "adddir", "nodata", "crconly", "LimitDecompMem", "nodir", "LimitCompMem", "sort",
+        "type", "dirmethod", "adddir", "nodata", "crconly", "LimitDecompMem", "nodir", "LimitCompMem", "sort", "config", "env",
         // Accepted and deliberately ignored: UI only.
         "yes", "indicator", "display",
         // Accepted and deliberately ignored: these change SPEED or a Windows
@@ -273,6 +362,9 @@ fn main() {
             // multimedia is the exception: -mm is not implemented EITHER, so
             // there is no working spelling to point at.
             ("multimedia", None),
+            // Inert in the reference too: measured, `a --print-config` still
+            // creates the archive and prints no config at all.
+            ("print-config", None),
         ] {
             if names.contains(&name) {
                 match hint {
