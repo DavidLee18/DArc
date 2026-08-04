@@ -1222,7 +1222,7 @@ fn add(
         }
     };
     // NOT validated here. A level defines chains for types no file can be given
-    // -- $wav and $bmp need an arc.groups entry, and getDefaultType maps every
+    // -- $wav and $bmp need a darc.groups entry, and getDefaultType maps every
     // autodetectable type to $binary -- so refusing a level because its dead
     // $wav arm uses `tta` would reject -m1 and -m4 outright. The chains that
     // are actually reached are checked below, once the split is known.
@@ -1867,7 +1867,7 @@ fn add(
                 size: e.size,
                 data: contents.get(&e.stored_name).map(Vec::as_slice).unwrap_or(&[]),
                 // getDefaultType: every autodetectable type becomes $binary,
-                // and only arc.groups can produce anything else.
+                // and only darc.groups can produce anything else.
                 default_type: "$binary",
             })
             .collect();
@@ -2724,7 +2724,7 @@ fn add(
 /// The groups file, resolved the way `Cmdline.hs:382` resolves it.
 ///
 /// `--groups=FILE` names one, `--groups-` disables grouping, and the default is
-/// `arc.groups` beside the executable — `configFilePlaces` is
+/// `darc.groups` beside the executable — `configFilePlaces` is
 /// `takeDirectory(getExeName) </> filename` and nothing else (`Files.hs:208`).
 /// No groups file means `[reANY_FILE]`: one group holding everything.
 ///
@@ -2732,13 +2732,13 @@ fn add(
 ///
 /// Measured, and it changes what this port must do to match. `Tests/arc-ghc`
 /// produces the same file order with no option, with `--groups-`, and with
-/// `arc.groups` copied to sit beside the binary — while `--groups=<path>`
+/// `darc.groups` copied to sit beside the binary — while `--groups=<path>`
 /// produces a different one. So `getExeName` does not resolve here, the default
 /// lookup finds nothing, and the reference's default IS the one-group path.
 ///
 /// That is a pre-existing bug in the reference on this platform, not something
 /// this port should imitate: the lookup below is the faithful one. It simply
-/// finds nothing either, because `darc` does not live beside an arc.groups.
+/// finds nothing either, because `darc` does not live beside a darc.groups.
 fn load_groups(parsed: &options::Parsed) -> darc_arc::sort::Groups {
     match parsed.arg("groups", "--") {
         // `--groups-` -- the option's value is a bare "-".
@@ -2752,9 +2752,29 @@ fn load_groups(parsed: &options::Parsed) -> darc_arc::sort::Groups {
             }
         },
     }
+    // A leftover `arc.groups` is refused rather than ignored, on the same rule
+    // as `arc.ini`: the groups file decides the file ORDER inside a solid
+    // block, so one that is present and unread changes the archive with
+    // nothing to show for it.
+    let legacy = std::env::current_exe()
+        .ok()
+        .and_then(|exe| exe.parent().map(|d| d.join("arc.groups")))
+        .filter(|p| p.is_file());
+    match legacy {
+        Some(p) => {
+            eprintln!(
+                "ERROR: arc.groups is no longer read; it was renamed to darc.groups.\n\
+                 Found: {}\n\
+                 Rename it, or pass --groups- to group nothing.",
+                p.display()
+            );
+            std::process::exit(2);
+        }
+        None => {}
+    }
     let beside_exe = std::env::current_exe()
         .ok()
-        .and_then(|exe| exe.parent().map(|d| d.join("arc.groups")));
+        .and_then(|exe| exe.parent().map(|d| d.join("darc.groups")));
     match beside_exe {
         Some(path) => match std::fs::read_to_string(&path) {
             Ok(text) => darc_arc::sort::Groups::parse(&text),

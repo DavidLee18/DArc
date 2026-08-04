@@ -22,7 +22,7 @@ for f in "$ARC" "$UNARC" "$SFX"; do
   [ -f "$f" ] || { echo "missing: $f" >&2; exit 1; }
 done
 # Absolute, because everything below runs from inside the work directory: a
-# relative "Tests/arc" resolves to nothing there, and the failure reads as
+# relative "Tests/darc" resolves to nothing there, and the failure reads as
 # "the archiver could not create it" rather than "the path was wrong".
 abspath() { ( cd "$(dirname "$1")" && printf '%s/%s\n' "$(pwd)" "$(basename "$1")" ); }
 ARC=$(abspath "$ARC"); UNARC=$(abspath "$UNARC"); SFX=$(abspath "$SFX")

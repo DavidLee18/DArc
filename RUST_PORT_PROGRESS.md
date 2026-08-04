@@ -135,7 +135,7 @@ for a conclusion that is still correct; enumerate the header, then search.
 **And then prove the test can fail.** After `mm.cpp` went, `mmdet.cpp`'s include
 moved into `C_MM.cpp`, and the evidence that this was done right is that `-m4`,
 `-m5` and `-m9` archives stayed byte-identical -- which is only evidence if
-those bytes depend on the detector at all. They might not have: `arc.groups`
+those bytes depend on the detector at all. They might not have: `darc.groups`
 also groups by extension (`$wav` covers `*.wav`/`*.pcm`), so the grouping
 visible in a listing can be extension-driven. Forcing `detect_datatype` to
 always answer `"default"` for a non-NULL buffer moved the `-m9` archive by 1,422

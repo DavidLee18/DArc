@@ -9,7 +9,7 @@
 //! as a heuristic. A different order is a different archive.
 //!
 //! ```text
-//!   g   group by arc.groups         a 409-line list of wildcards, in order
+//!   g   group by darc.groups         a 409-line list of wildcards, in order
 //!   e   then by lowercase extension
 //!   r   then run `reorder`          the similarity pass, applied AFTER "pn"
 //!   p   then by directory
@@ -22,7 +22,7 @@
 use crate::directory::Entry;
 
 // ---------------------------------------------------------------------------
-// arc.groups
+// darc.groups
 // ---------------------------------------------------------------------------
 
 /// The parsed groups file: an ordered list of wildcards, plus where `$default`
@@ -34,7 +34,7 @@ pub struct Groups {
 }
 
 impl Groups {
-    /// Parse `arc.groups`.
+    /// Parse `darc.groups`.
     ///
     /// Comment lines (`;…`) and empty lines are dropped, and `'\'` becomes
     /// `'/'`. Type markers like `$text` stay in the list even though no file
@@ -469,7 +469,7 @@ mod tests {
     }
 
     /// The case that exposed the missing sort: a .bin among .txt files moves to
-    /// the front, because arc.groups puts them in different groups.
+    /// the front, because darc.groups puts them in different groups.
     #[test]
     fn a_different_group_moves_a_file_to_the_front() {
         let g = Groups::parse("*.bin\n*.txt\n");

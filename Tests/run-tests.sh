@@ -22,7 +22,7 @@
 set -u
 
 HERE="$(cd "$(dirname "$0")" && pwd)"
-ARC="${1:-$HERE/arc}"
+ARC="${1:-$HERE/darc}"
 BLESS="${2:-}"
 CORPUS="$HERE/corpus"
 # Archives are created from inside "$CORPUS" (see the create step), so a
