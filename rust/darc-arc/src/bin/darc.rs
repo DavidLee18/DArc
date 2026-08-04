@@ -194,6 +194,17 @@ fn main() {
             }
             extra.extend(cfg.global_options().split_whitespace().map(str::to_string));
             extra.extend(cfg.command_options(&command).split_whitespace().map(str::to_string));
+            // `[methods]` becomes part of the substitution table, so it must be
+            // installed BEFORE any command decodes a -m spec. A row that fails
+            // to render is an error, not a skip: a silently dropped row means
+            // -m9 quietly keeps meaning what it used to.
+            match cfg.method_rows() {
+                Ok(rows) => darc_arc::methodtable::set_user_rows(rows),
+                Err(e) => {
+                    eprintln!("ERROR: {}: {e}", darc_arc::config::CONFIG_FILE);
+                    std::process::exit(2);
+                }
+            }
             config = Some(cfg);
         }
         None => {}
