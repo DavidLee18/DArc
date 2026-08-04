@@ -448,6 +448,18 @@ impl Writer {
     }
 
     /// The footer, and the finished archive.
+    /// `--nodir`: everything written so far and nothing more.
+    ///
+    /// `writeControlBlock` returns early under that option
+    /// (`ArcvProcessRead.hs:270`), so NO service block is written -- no header,
+    /// no directory, no footer. What is left is the data blocks' payloads
+    /// concatenated, which for `-m0` is literally the files' bytes. Such a
+    /// file is not an archive and nothing can list or extract it; that is what
+    /// the option asks for.
+    pub fn into_data_only(self) -> Vec<u8> {
+        self.out
+    }
+
     pub fn finish(mut self, comment: &str, recovery: &str, locked: bool) -> Vec<u8> {
         let blocks = self.service.clone();
         let body = footer_block(self.pos(), &blocks, locked, comment, recovery);

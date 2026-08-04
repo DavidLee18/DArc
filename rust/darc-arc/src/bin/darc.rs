@@ -228,7 +228,7 @@ fn main() {
         "recovery", "volume", "sfx", "noarcext", "charset", "original", "overwrite",
         "keepbroken", "keeptime", "timetolast", "test", "autogenerate",
         "pause-before-exit", "queue", "pretest", "logfile", "proxy", "bypass",
-        "type", "dirmethod", "adddir", "nodata", "crconly", "LimitDecompMem",
+        "type", "dirmethod", "adddir", "nodata", "crconly", "LimitDecompMem", "nodir",
         // Accepted and deliberately ignored: UI only.
         "yes", "indicator", "display",
         // Accepted and deliberately ignored: these change SPEED or a Windows
@@ -1731,7 +1731,12 @@ fn add(
             }
         },
     }
-    w.write_header();
+    // `--nodir` suppresses every service block, the archive header included:
+    // the reference's output carries no `ArC` signature at all.
+    let nodir = parsed.flag("nodir");
+    if !nodir {
+        w.write_header();
+    }
 
     // `dirs &&& [(aNO_COMPRESSION, dirs)]` (ArhiveFileList.hs:291): the
     // directories block exists only when there ARE directories. Writing an
@@ -1941,7 +1946,13 @@ fn add(
     let mut entries = dir_entries;
     entries.extend(kept_entries);
     entries.extend(file_entries);
-    w.write_directory(&data_blocks, &entries);
+    // Under `--nodir` the directory is a service block like any other, so it
+    // is not written either -- its PAYLOAD would otherwise still land in the
+    // output even with the header and footer suppressed, which is exactly what
+    // made the first attempt ~120 bytes too long.
+    if !nodir {
+        w.write_directory(&data_blocks, &entries);
+    }
 
     // `-tl`/`--timetolast` (ArcCreate.hs:170): stamp the finished archive with
     // the mtime of the newest file IN it, so the archive is never older than
@@ -2061,7 +2072,12 @@ fn add(
     }
     // The recommendation depends on the archive's size, which is not known
     // until the blocks are written; `finish` is where it lands.
-    let bytes = match darc_arc::recovery::resolve(rr_option, &old_recovery, 0).is_empty()
+    //
+    // `--nodir` stops short of all of it: no footer means no recovery record
+    // either, because a recovery block IS a service block.
+    let bytes = match nodir {
+        true => w.into_data_only(),
+        false => match darc_arc::recovery::resolve(rr_option, &old_recovery, 0).is_empty()
         && rr_option != ""
         && rr_option != "+"
     {
@@ -2093,7 +2109,7 @@ fn add(
                 }
             }
         }
-    };
+    }};
 
     // `-tk`/`--keeptime` (ArcCreate.hs:168) restores the archive's OWN mtime
     // after an update, so refreshing an archive does not make it look new.
