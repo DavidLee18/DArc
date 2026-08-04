@@ -60,6 +60,8 @@ fn match_finder_name(id: u32) -> &'static str {
 pub fn show(method: &Method) -> String {
     match method {
         Method::Storing => "storing".to_string(),
+        Method::Fake => "fake".to_string(),
+        Method::Crc => "crc".to_string(),
         Method::Lzma(p) => show_lzma(p),
         Method::Ppmd(p) => show_ppmd(p),
         Method::Delta(p) => show_delta("delta", p),

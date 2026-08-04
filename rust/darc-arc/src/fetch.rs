@@ -32,16 +32,39 @@ pub struct Url {
 
 impl Url {
     pub fn new(url: &str) -> Self {
-        Self {
-            url: url.to_string(),
-            // The reference sets a user agent (URL.cpp:295) and honours the
-            // proxy environment, which ureq does by default.
-            agent: ureq::Agent::config_builder()
-                .user_agent(concat!("DArc/", env!("CARGO_PKG_VERSION")))
-                .build()
-                .into(),
-            size: None,
-        }
+        Self::with_proxy(url, "--", "")
+    }
+
+    /// `--proxy` and `--bypass` (Cmdline.hs:133-134).
+    ///
+    /// `proxy` is `"--"` for "not given", in which case the environment is
+    /// honoured — which is ureq's default and the reference's behaviour too.
+    /// An explicit `-` disables proxying entirely, so a machine with
+    /// `http_proxy` set can still be told to go direct.
+    ///
+    /// `bypass` is the reference's no-proxy list. ureq takes that only from
+    /// `no_proxy`, so a list given on the command line is applied here by
+    /// matching the host ourselves and dropping the proxy for that request.
+    pub fn with_proxy(url: &str, proxy: &str, bypass: &str) -> Self {
+        let builder = ureq::Agent::config_builder()
+            // The reference sets a user agent (URL.cpp:295).
+            .user_agent(concat!("DArc/", env!("CARGO_PKG_VERSION")));
+        let builder = match (proxy, host_is_bypassed(url, bypass)) {
+            // Not given: leave ureq's environment handling alone.
+            ("--", false) => builder,
+            // Explicitly disabled, or this host is in the bypass list.
+            ("-", _) | (_, true) => builder.proxy(None),
+            (p, false) => match ureq::Proxy::new(p) {
+                Ok(px) => builder.proxy(Some(px)),
+                // A proxy that cannot be parsed is not a reason to silently go
+                // direct: say so, and let the request fail or not on its own.
+                Err(e) => {
+                    eprintln!("WARNING: --proxy={p}: {e}; ignoring it");
+                    builder
+                }
+            },
+        };
+        Self { url: url.to_string(), agent: builder.build().into(), size: None }
     }
 
     /// `url_size` — `HEAD`, for the same-size check.
@@ -54,6 +77,59 @@ impl Url {
             .trim()
             .parse()
             .ok()
+    }
+}
+
+/// Does `--bypass` cover this URL's host?
+///
+/// The list is comma or semicolon separated, and an entry matches the host
+/// exactly or as a domain suffix, so `example.com` covers `www.example.com`.
+/// A bare `*` bypasses everything. Matching is case-insensitive because host
+/// names are.
+fn host_is_bypassed(url: &str, bypass: &str) -> bool {
+    if bypass.is_empty() {
+        return false;
+    }
+    let host = url
+        .split_once("://")
+        .map_or(url, |(_, rest)| rest)
+        .split(['/', ':', '?', '#'])
+        .next()
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    if host.is_empty() {
+        return false;
+    }
+    bypass.split([',', ';']).map(str::trim).filter(|e| !e.is_empty()).any(|entry| {
+        let e = entry.to_ascii_lowercase();
+        if e == "*" {
+            return true;
+        }
+        // A leading dot is the conventional spelling of "and subdomains", and
+        // means the same as the bare name here.
+        let e = e.strip_prefix('.').unwrap_or(&e).to_string();
+        host == e || host.ends_with(&format!(".{e}"))
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::host_is_bypassed;
+
+    /// The list is what decides whether a proxy is used at all, so an entry
+    /// that fails to match sends the request somewhere the user said not to.
+    #[test]
+    fn bypass_matches_host_and_subdomains_only() {
+        assert!(host_is_bypassed("http://example.com/a.arc", "example.com"));
+        assert!(host_is_bypassed("https://www.example.com/a", "example.com"));
+        assert!(host_is_bypassed("http://EXAMPLE.COM:8080/a", "example.com"));
+        assert!(host_is_bypassed("http://a.b/x", "other, .b"));
+        assert!(host_is_bypassed("http://anything/x", "*"));
+        // A suffix that is not a domain boundary must NOT match: notexample.com
+        // is a different host from example.com.
+        assert!(!host_is_bypassed("http://notexample.com/a", "example.com"));
+        assert!(!host_is_bypassed("http://example.com/a", "other.com"));
+        assert!(!host_is_bypassed("http://example.com/a", ""));
     }
 }
 

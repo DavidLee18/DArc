@@ -58,6 +58,10 @@ fn undo(method: &Method, src: &[u8], hint: usize) -> Result<Vec<u8>, Error> {
     match method {
         // aNO_COMPRESSION: the bytes are already the data.
         Method::Storing => Ok(src.to_vec()),
+        // `--nodata` / `--crconly`: the data is deliberately not stored, so
+        // there is nothing to compress. The CRCs these record live in the
+        // DIRECTORY, not here.
+        Method::Fake | Method::Crc => Ok(Vec::new()),
         // LZMA is the exception: DArc writes no header, so it needs the property
         // bytes rebuilt from the method string rather than a callback.
         Method::Lzma(params) => undo_lzma(*params, src, hint),
@@ -254,6 +258,9 @@ pub fn compress_one(method: &Method, src: &[u8]) -> Result<Vec<u8>, Error> {
 pub fn compress_one_with(method: &Method, src: &[u8], all_at_once: bool) -> Result<Vec<u8>, Error> {
     match method {
         Method::Storing => Ok(src.to_vec()),
+        // Nothing was stored, so nothing comes back. An archive written with
+        // these cannot yield its files -- which is what the options ask for.
+        Method::Fake | Method::Crc => Ok(Vec::new()),
         Method::Tornado(p) => {
             // PackMethod crosses the C ABI by value, so every field must be
             // present -- including caching_finder/hash3/shift, which no method

@@ -158,7 +158,23 @@ fn read_service_block(data: &[u8], b: &ArchiveBlock, pw: &Passwords) -> Result<V
 pub fn read_info(path: &std::path::Path, pw: &Passwords) -> Result<ArchiveInfo, Error> {
     let data = read_all(path)?;
     let (_base, footer) = read_footer(&data, pw)?;
+    read_info_with(&data, footer, pw)
+}
 
+/// `read_info`, but with the block list recovered by scanning — `-ba`.
+pub fn read_info_broken(path: &std::path::Path, pw: &Passwords) -> Result<ArchiveInfo, Error> {
+    let data = read_all(path)?;
+    let footer = scan_broken(&data)?;
+    read_info_with(&data, footer, pw)
+}
+
+/// The half of `read_info` that follows a footer, however that footer was
+/// obtained.
+pub fn read_info_with(
+    data: &[u8],
+    footer: FooterBlock,
+    pw: &Passwords,
+) -> Result<ArchiveInfo, Error> {
     let dir_blocks: Vec<&ArchiveBlock> =
         footer.blocks.iter().filter(|b| b.block_type == BlockType::Dir).collect();
 
@@ -239,4 +255,58 @@ pub fn read_entry(
 /// without reading it twice.
 pub fn open(path: &std::path::Path) -> Result<Vec<u8>, Error> {
     read_all(path)
+}
+
+/// `findBlocksInBrokenArchive` (`ArhiveStructure.hs:96`) — recover the block
+/// list by SCANNING for descriptors instead of trusting the footer.
+///
+/// A DArc archive is normally read from its end: the last thing in the file is
+/// the FOOTER block, which lists every other block. Lose it — a truncated
+/// download, a bad sector — and nothing is readable even when every data block
+/// survives. `-ba` walks the file instead, collecting the descriptor each block
+/// carries, and fabricates a footer from what it finds.
+///
+/// Backwards in `HUGE_BUFFER_SIZE` windows, because `find_descriptor` searches
+/// DOWNWARD from the end of what it is handed, so each call returns the highest
+/// descriptor below the previous one.
+///
+/// The fabricated footer cannot know what only the real one recorded: no
+/// comment, no recovery info, not locked, and an SFX size taken from the
+/// earliest block (`:113`).
+pub fn scan_broken(data: &[u8]) -> Result<FooterBlock, Error> {
+    // Every offset carrying the descriptor signature, in file order. A
+    // signature can also occur by chance inside compressed data; the CRC below
+    // is what separates the two, exactly as it does for the footer.
+    let sig = block::SIGNATURE.to_le_bytes();
+    let candidates: Vec<usize> = (0..data.len().saturating_sub(4))
+        .filter(|i| data[*i..*i + 4] == sig)
+        .collect();
+
+    // `read_descriptor` takes the CRC from the LAST FOUR BYTES of the window it
+    // is handed, so the window has to end exactly where the descriptor ends.
+    // For the footer that is EOF, which is why the normal read can pass a
+    // window straight to it -- but nothing tells a scan where any other
+    // descriptor stops. So each candidate end is tried in turn and the CRC
+    // decides. `aSCAN_MAX` is the bound: a descriptor is certainly shorter
+    // (ArhiveStructure.hs:100 sizes its buffer on exactly that assumption).
+    let mut blocks: Vec<ArchiveBlock> = Vec::new();
+    for p in candidates {
+        let limit = (p + block::SCAN_MAX as usize).min(data.len());
+        for end in (p + 8)..=limit {
+            match block::read_descriptor(p as u64, &data[p..end]) {
+                Ok(b) => {
+                    blocks.push(b);
+                    break;
+                }
+                Err(_) => {}
+            }
+        }
+    }
+    if blocks.is_empty() {
+        // `"0356 archive directory not found"`.
+        return Err(Error::NoSignature);
+    }
+    blocks.reverse();
+    let sfx_size = blocks.iter().map(|b| b.pos).min().unwrap_or(0);
+    Ok(FooterBlock { blocks, locked: false, comment: String::new(), recovery: String::new(), sfx_size })
 }

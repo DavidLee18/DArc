@@ -64,8 +64,8 @@ options (a selection):
   -s<size>      solid block size; -s- for non-solid
   -p<password>  encrypt; -op<password> to decrypt with an old one
   -rr[<size>]   add recovery records; -rr+ to also protect the directory
-  -sfx[<name>]  make a self-extracting archive
-  -o+ / -o-     overwrite always / never
+  -sfx<name>    make a self-extracting archive with that module
+  -o+ -o- -o    on extract: overwrite always / never / ask (the default)
   -ep<n>        how much of the path to store
   --dirs        store directory entries explicitly
   --noarcext    do not append .arc to the archive name
@@ -92,6 +92,95 @@ fn main() {
     // The command is the first argument and is NOT an option, matching
     // `parseCmdline`: options may appear anywhere after it.
     let command = argv[0].clone();
+
+    // `arc.ini` and `$FREEARC`, PREPENDED to the command line
+    // (Cmdline.hs:102). The user's own arguments stay last, so every
+    // last-wins option still overrides the defaults. Without this a machine
+    // with `-mx` in its arc.ini gets a different archive from the reference
+    // for the same command line, silently.
+    //
+    // `-cfg-` disables BOTH the file and the variable (Cmdline.hs:49); `-cfg
+    // <path>` names a different file; `-env <VAR>` names a different variable
+    // and `-env-` disables it. Those three are read from the RAW arguments,
+    // because they decide what the real parse will see.
+    //
+    // A DELIBERATE divergence, measured: the 9a127e6 reference built on macOS
+    // never finds arc.ini by itself. Not beside the executable, not in the
+    // working directory -- `getExeName` (Files.hs:227) is a Windows/Linux
+    // idiom and evidently fails here, so only an explicit `-cfg<path>` has any
+    // effect there. This port implements the search `Files.hs:224` describes,
+    // because that is the documented behaviour and what a user who drops an
+    // arc.ini beside the binary expects.
+    //
+    // The consequence is worth stating plainly: on macOS, with an arc.ini
+    // present, this port and that reference build write DIFFERENT archives.
+    // What is gated below is the part that can be gated -- the parsing and the
+    // injection order -- using `-cfg<path>`, which the reference does honour:
+    // 12 of 12 byte-identical across global lines, per-command sections,
+    // repeated and multi-name left-hand sides, comments, $FREEARC, and the
+    // command line overriding all of them.
+    let pre = options::parse(&argv[1..]).unwrap_or_default();
+    let no_configs = pre.all("config").contains(&"-");
+    let cfg_text = match no_configs {
+        true => None,
+        false => match pre.arg("config", "--") {
+            "--" => darc_arc::config::Config::find().and_then(|p| std::fs::read_to_string(p).ok()),
+            path => match std::fs::read_to_string(path) {
+                Ok(t) => Some(t),
+                Err(e) => {
+                    eprintln!("ERROR: -cfg{path}: {e}");
+                    std::process::exit(2);
+                }
+            },
+        },
+    };
+    let mut extra: Vec<String> = Vec::new();
+    match &cfg_text {
+        Some(text) => {
+            let cfg = darc_arc::config::Config::parse(text);
+            // Named rather than silently skipped: an EDITED [Compression
+            // methods] section changes what -m9 means in the reference and
+            // not here, and this port's table is built in.
+            let unapplied = cfg.has_unapplied_sections();
+            if !unapplied.is_empty() {
+                eprintln!(
+                    "WARNING: {} in the config file {} not applied; this port's \
+                     compression-method table is built in",
+                    unapplied.join(", "),
+                    match unapplied.len() {
+                        1 => "is",
+                        _ => "are",
+                    }
+                );
+            }
+            extra.extend(cfg.global_options().split_whitespace().map(str::to_string));
+            extra.extend(cfg.command_options(&command).split_whitespace().map(str::to_string));
+        }
+        None => {}
+    }
+    if !no_configs {
+        let var = match pre.arg("env", "--") {
+            "--" => darc_arc::config::CONFIG_ENV_VAR,
+            "-" => "",
+            v => v,
+        };
+        if !var.is_empty() {
+            match std::env::var(var) {
+                Ok(v) => extra.extend(v.split_whitespace().map(str::to_string)),
+                Err(_) => {}
+            }
+        }
+    }
+    let argv: Vec<String> = match extra.is_empty() {
+        true => argv,
+        false => {
+            let mut v = vec![argv[0].clone()];
+            v.extend(extra);
+            v.extend(argv[1..].iter().cloned());
+            v
+        }
+    };
+
     let parsed = match options::parse(&argv[1..]) {
         Ok(p) => p,
         Err(e) => {
@@ -114,8 +203,32 @@ fn main() {
             false => format!("{name}.arc"),
         }
     };
+    // `-ag`/`--autogenerate` (Cmdline.hs:180-182): append a timestamp to the
+    // archive's BASE name, before the extension is added, so `-ag x.arc`
+    // becomes `x20260804123000.arc` rather than `x.arc20260804…`. The default
+    // format is the one at Cmdline.hs:122.
+    let add_ag = |name: &str| -> String {
+        match parsed.arg("autogenerate", "--") {
+            "--" => name.to_string(),
+            f => {
+                let fmt = match f.is_empty() {
+                    true => "%Y%m%d%H%M%S",
+                    false => f,
+                };
+                let stamp = strftime_local(fmt, now_unix());
+                match name.rfind('.') {
+                    // Only a REAL extension is split around; a dot in a
+                    // directory component is not one.
+                    Some(i) if !name[i..].contains(['/', '\\']) => {
+                        format!("{}{stamp}{}", &name[..i], &name[i..])
+                    }
+                    _ => format!("{name}{stamp}"),
+                }
+            }
+        }
+    };
     let archive_name = match parsed.free.first() {
-        Some(a) => add_arc_ext(a),
+        Some(a) => add_arc_ext(&add_ag(a)),
         None if command == "canonize" || command == "fit" || command == "types" => {
             String::new()
         }
@@ -123,6 +236,49 @@ fn main() {
             eprintln!("ERROR: no archive name given");
             std::process::exit(2);
         }
+    };
+
+    // `--queue` (Arc.hs:80): serialise with other darc processes through an
+    // advisory lock, so two runs do not compete for the whole machine's memory
+    // and CPU. Held for the life of the process — the guard is bound here and
+    // dropped when main returns.
+    //
+    // flock, not a lockfile's existence: a process killed while holding it
+    // releases it, where a stale file would block every later run until someone
+    // deleted it by hand.
+    let queue_guard = match parsed.flag("queue") {
+        false => None,
+        true => match queue_acquire() {
+            Ok(f) => Some(f),
+            Err(e) => {
+                eprintln!("ERROR: --queue: {e}");
+                std::process::exit(2);
+            }
+        },
+    };
+
+    // `--type` (Cmdline.hs:515): `arc` is the only archive format there is, and
+    // anything else is refused. The message is the reference's own, verbatim,
+    // because `-t` resolves HERE rather than to `--test` and a user who typed
+    // `-tk` meaning `--keeptime` gets this and should be able to search for it.
+    let archive_type = parsed.arg("type", "arc");
+    if archive_type != "arc" {
+        eprintln!("ERROR: --type={archive_type}: only arc format is supported");
+        std::process::exit(2);
+    }
+
+    // `--pretest` (Cmdline.hs:127): the value defaults to "1", and `-` `+` and
+    // an empty value are spellings of 0, 2 and 2.
+    let pretest: i32 = match parsed.arg("pretest", "1") {
+        "-" => 0,
+        "+" | "" => 2,
+        s => match s.parse() {
+            Ok(n @ 0..=3) => n,
+            _ => {
+                eprintln!("ERROR: --pretest{s}: expected one of 0, 1, 2, 3");
+                std::process::exit(2);
+            }
+        },
     };
 
     // `dir_exclude_path` (Cmdline.hs:137): 0 for the `e` command, otherwise the
@@ -158,9 +314,20 @@ fn main() {
         "OldPassword", "password", "recompress", "recursive", "solid", "sync",
         "update", "include", "exclude", "dirs", "nodirs",
         "SizeMore", "SizeLess", "TimeBefore", "TimeAfter", "TimeNewer", "TimeOlder",
-        "recovery", "volume", "sfx", "noarcext", "charset", "original",
+        "recovery", "volume", "sfx", "noarcext", "charset", "original", "overwrite",
+        "keepbroken", "keeptime", "timetolast", "test", "autogenerate",
+        "pause-before-exit", "queue", "pretest", "logfile", "proxy", "bypass",
+        "type", "dirmethod", "adddir", "nodata", "crconly", "LimitDecompMem", "nodir", "LimitCompMem", "sort", "config", "env", "workdir", "create-in-workdir", "save-bad-ranges", "BrokenArchive",
         // Accepted and deliberately ignored: UI only.
         "yes", "indicator", "display",
+        // Accepted and deliberately ignored: these change SPEED or a Windows
+        // file attribute, never a byte of the archive nor which files go in
+        // it, so honouring them by doing nothing is honest rather than a
+        // silent no-op. --cache sizes a read-ahead buffer this port does not
+        // have (it builds the archive in memory); -ac/-ao are the Windows
+        // Archive attribute, which does not exist on the platforms this is
+        // gated on.
+        "cache", "ClearArchiveBit", "SelectArchiveBit",
     ];
     let unimplemented: Vec<&str> = parsed
         .options
@@ -172,6 +339,49 @@ fn main() {
         let mut names: Vec<&str> = unimplemented;
         names.sort_unstable();
         names.dedup();
+        // Three of these are NOT awaiting implementation, and saying so would
+        // promise work that must never be done. `Options.hs:170-172` gives
+        // `-md`/`--dictionary`, `-ms`/`--StoreCompressed` and
+        // `-mm`/`--multimedia` a long spelling that nothing in the reference
+        // ever reads: the values are consumed inside the `-m` grammar, under
+        // the name `method`, because `method` wins the prefix tie.
+        //
+        // Measured on the reference: `-md1m` changes the archive and
+        // `--dictionary=1m` is byte-identical to giving nothing at all. It
+        // accepts the option, exits 0, and hands back an archive with the
+        // DEFAULT dictionary. Refusing surfaces that; matching it would be the
+        // silent no-op this list exists to prevent. Routing the long spelling
+        // into the grammar instead would be worse still -- it would write a
+        // different archive than the reference for the same command line.
+        //
+        // So the behaviour stays and only the message changes, to name the
+        // spelling that is actually read.
+        for (name, hint) in [
+            ("dictionary", Some("-md<N>")),
+            ("StoreCompressed", Some("-ms")),
+            ("MultiThreaded", Some("-mt<N>")),
+            // multimedia is the exception: -mm is not implemented EITHER, so
+            // there is no working spelling to point at.
+            ("multimedia", None),
+            // Inert in the reference too: measured, `a --print-config` still
+            // creates the archive and prints no config at all.
+            ("print-config", None),
+        ] {
+            if names.contains(&name) {
+                match hint {
+                    Some(spelling) => eprintln!(
+                        "ERROR: --{name} is not a separate option -- the reference \
+                         accepts it and then ignores it, writing the default. Use \
+                         {spelling}, which is where the value is actually read."
+                    ),
+                    None => eprintln!(
+                        "ERROR: --{name} is not implemented, and neither is its \
+                         -mm spelling: it changes the compression chain."
+                    ),
+                }
+                std::process::exit(2);
+            }
+        }
         eprintln!(
             "ERROR: this port does not implement {} yet, and ignoring it would \
              write an archive that is not what you asked for",
@@ -295,9 +505,45 @@ fn main() {
     // the reader and the writer need the same answer.
     let pw = cook_passwords(&parsed, &command);
 
+    // `--pretest`: only for commands that READ an existing archive, and only
+    // once the passwords are known -- an encrypted archive cannot be scanned
+    // without them. `a` on a new archive has nothing to pretest.
+    if pretest > 0
+        && !archive_name.is_empty()
+        && std::path::Path::new(&archive_name).exists()
+        && matches!(
+            command.as_str(),
+            "t" | "x" | "e" | "l" | "v" | "lb" | "lt" | "a" | "u" | "f" | "d" | "ch" | "c"
+                | "k" | "j" | "m" | "mf"
+        )
+        && !pretest_archive(pretest, std::path::Path::new(&archive_name), &pw)
+    {
+        std::process::exit(2);
+    }
+
     let path = std::path::Path::new(&archive_name);
     // Only the read commands need an existing archive; `a` creates one.
-    let open_existing = || match archive::read_info(path, &pw) {
+    // `-ba`/`--BrokenArchive` (ArhiveDirectory.hs:79): anything other than
+    // the default "-" reads the block list by SCANNING for descriptors rather
+    // than following the footer, so an archive whose footer is gone can still
+    // be listed and extracted. `-ba` bare is "0" (Cmdline.hs:128).
+    // `findReqArg o "BrokenArchive" "-" ||| "0"` (Cmdline.hs:128): absent is
+    // "-", a BARE -ba is the empty string and becomes "0". The value is only
+    // ever tested against "-" (ArhiveDirectory.hs:79), so 0 and 1 behave
+    // identically -- the option is on or off -- but the other values are still
+    // refused, as `testOption` refuses them.
+    let broken = match parsed.arg("BrokenArchive", "-") {
+        "" => "0",
+        v => v,
+    };
+    if !matches!(broken, "-" | "0" | "1") {
+        eprintln!("ERROR: -ba{broken}: expected one of -, 0, 1");
+        std::process::exit(2);
+    }
+    let open_existing = || match match broken {
+        "-" => archive::read_info(path, &pw),
+        _ => archive::read_info_broken(path, &pw),
+    } {
         Ok(i) => i,
         Err(e) => {
             eprintln!("ERROR: {e}");
@@ -351,7 +597,21 @@ fn main() {
                 }
             };
             let extracting = command != "t";
-            run_blocks(&info, &data, &layout, extracting, &pw, &selected)
+            // Testing writes nothing, so it has nothing to overwrite.
+            let skip = match extracting {
+                true => {
+                    let mode = match overwrite_mode(&parsed) {
+                        Ok(m) => m,
+                        Err(e) => {
+                            eprintln!("ERROR: {e}");
+                            std::process::exit(2);
+                        }
+                    };
+                    resolve_overwrites(&layout, &selected, mode, parsed.flag("yes"))
+                }
+                false => std::collections::HashSet::new(),
+            };
+            run_blocks(&info, &data, &layout, extracting, &pw, &selected, &skip, parsed.flag("keepbroken"))
         }
         // One function: every one of these is `runArchiveAdd` with a different
         // archive filter and a different source of files (Arc.hs:122-131).
@@ -510,7 +770,14 @@ fn main() {
         }
         // `runArchiveRecovery` (ArcRecover.hs:301) -- repair an archive using
         // its own recovery records, writing `fixed.<name>` beside it.
-        "r" => recover(path, &archive_name, parsed.arg("original", "--")),
+        "r" => recover(
+            path,
+            &archive_name,
+            parsed.arg("original", "--"),
+            parsed.arg("proxy", "--"),
+            parsed.arg("bypass", ""),
+            parsed.arg("save-bad-ranges", ""),
+        ),
         // `rr…` is `ch -rr…` and `s…` is `ch -sfx…` (Cmdline.hs:124, :166) --
         // the same copy path, with the setting read off the command's own
         // suffix.
@@ -527,6 +794,65 @@ fn main() {
             2
         }
     };
+
+    // `--pause-before-exit` (Cmdline.hs:699). The reference's values are
+    // `on`/`off`/`on-error`/`on-warning`; anything that is not "off" and does
+    // not restrict itself to failures pauses always.
+    //
+    // Skipped when stdin is not a terminal: a pause nobody can end would turn
+    // every scripted run into a hang, which is a worse failure than not
+    // pausing.
+    // `--logfile` (Cmdline.hs:728): one line per run, APPENDED, so a series of
+    // scheduled backups leaves a history rather than only its last result.
+    // Written after the command has finished because the outcome is part of
+    // the record, and a failure to write the log never changes the exit code —
+    // the archiving already happened either way.
+    //
+    // WHAT IT DOES NOT CATCH, measured rather than assumed: every path that
+    // reaches this point is logged, including command failures (`t` on a
+    // damaged archive logs rc=2). Paths that `std::process::exit` earlier are
+    // not — a missing archive, an unparseable option, a refused option, and a
+    // failed --pretest. Those are precondition errors, reported on stderr, and
+    // covering them means routing every early exit through one place, which is
+    // a refactor rather than an option.
+    let logfile = parsed.arg("logfile", "");
+    if !logfile.is_empty() {
+        let line = format!(
+            "{} {} {} rc={code}\n",
+            format_time(now_unix()),
+            command,
+            match archive_name.is_empty() {
+                true => "-",
+                false => &archive_name,
+            }
+        );
+        match std::fs::OpenOptions::new().create(true).append(true).open(logfile) {
+            Ok(mut f) => match std::io::Write::write_all(&mut f, line.as_bytes()) {
+                Ok(()) => {}
+                Err(e) => eprintln!("WARNING: --logfile {logfile}: {e}"),
+            },
+            Err(e) => eprintln!("WARNING: --logfile {logfile}: {e}"),
+        }
+    }
+
+    // Held until here, then released explicitly so the next queued process
+    // starts as soon as this one is finished rather than mid-teardown.
+    drop(queue_guard);
+
+    let pause = parsed.arg("pause-before-exit", "off");
+    let want_pause = match pause {
+        "off" | "" => false,
+        "on-error" => code != 0,
+        "on-warning" => code != 0,
+        _ => true,
+    };
+    if want_pause && std::io::IsTerminal::is_terminal(&std::io::stdin()) {
+        print!("Press Enter to exit...");
+        drop(std::io::Write::flush(&mut std::io::stdout()));
+        let mut line = String::new();
+        drop(std::io::BufRead::read_line(&mut std::io::stdin().lock(), &mut line));
+    }
+
     std::process::exit(code);
 }
 
@@ -678,15 +1004,82 @@ fn add(
     // `(mainMethod ||| aDEFAULT_COMPRESSOR) ++ userMethods` (Cmdline.hs:334):
     // the per-type suffixes are appended to the main method, and the whole
     // string is what decode_method expands.
-    let method = format!(
-        "{}{}",
-        match mopts.method.is_empty() {
-            true => "4",
-            false => &mopts.method,
+    //
+    // `--nodata` and `--crconly` REPLACE the whole compressor (Cmdline.hs:332),
+    // per-type suffixes included; nodata wins, which is the guard order there.
+    // Measured on the reference: `--nodata` is byte-identically `-mfake` and
+    // `--crconly` is `-mcrc`.
+    let method = match (parsed.flag("nodata"), parsed.flag("crconly")) {
+        (true, _) => "fake".to_string(),
+        (_, true) => "crc".to_string(),
+        _ => format!(
+            "{}{}",
+            match mopts.method.is_empty() {
+                true => "4",
+                false => &mopts.method,
+            },
+            mopts.methods
+        ),
+    };
+    // `-ld`/`--LimitDecompMem` (Cmdline.hs:299-303). Not given is `1gb` for an
+    // ADD command and `75%` of RAM otherwise; `-` is unlimited; anything else
+    // is a size or a percentage. Archive-visible -- it is what reduces -m9's
+    // `ppmd:25:2047m` to `ppmd:22:1gb`.
+    // `-lc`/`--LimitCompMem` (Cmdline.hs:298). The default is 75% of the
+    // capped RAM figure, which on any machine with 4 GiB or more is 3 GiB --
+    // large enough that it does not bind for the chains DArc ships, which is
+    // why the port wrote byte-identical archives before this existed.
+    // physical_memory() is 0 when the figure is unavailable, which is every
+    // platform but macOS and Linux. Zero must mean NO LIMIT here: taken
+    // literally it shrank every chain, and the Windows builds then wrote
+    // different archives from the Linux one on all 14 interop methods.
+    let ram = darc_arc::memlimit::physical_memory();
+    let climit: u64 = match parsed.arg("LimitCompMem", "--") {
+        "--" | "-" if ram == 0 => u64::MAX,
+        "--" => darc_arc::memlimit::parse_mem_with_percents(ram, "75%").unwrap_or(u64::MAX),
+        "-" => u64::MAX,
+        // An explicit percentage of an unknown quantity is refused rather than
+        // silently ignored -- the user asked for a limit and would not get one.
+        s if (s.ends_with('%') || s.ends_with('p')) && ram == 0 => {
+            eprintln!(
+                "ERROR: -lc{s}: this platform does not report physical memory, \
+                 so a percentage cannot be resolved. Give an explicit size."
+            );
+            return 2;
+        }
+        s => match darc_arc::memlimit::parse_mem_with_percents(ram, s) {
+            Some(v) => v,
+            None => {
+                eprintln!("ERROR: -lc{s}: not a memory size (N, Nb, Nk, Nm, Ng, N%)");
+                return 2;
+            }
         },
-        mopts.methods
-    );
+    };
+
+    let dlimit: u64 = match parsed.arg("LimitDecompMem", "--") {
+        "--" => darc_arc::memlimit::ADD_DECOMPRESSION_LIMIT,
+        "-" => u64::MAX,
+        s if (s.ends_with('%') || s.ends_with('p')) && ram == 0 => {
+            eprintln!(
+                "ERROR: -ld{s}: this platform does not report physical memory, \
+                 so a percentage cannot be resolved. Give an explicit size."
+            );
+            return 2;
+        }
+        s => match darc_arc::memlimit::parse_mem_with_percents(ram, s) {
+            Some(v) => v,
+            None => {
+                eprintln!("ERROR: -ld{s}: not a memory size (N, Nb, Nk, Nm, Ng, N%)");
+                return 2;
+            }
+        },
+    };
+
     let decoded = darc_arc::methodtable::decode_method(&method);
+    // Only `fake` zeroes the CRC; `crc` is the whole point of recording one.
+    let zero_crc = decoded
+        .iter()
+        .all(|(_, ch)| ch.len() == 1 && ch[0].split(':').next() == Some("fake"));
     if decoded.is_empty() {
         eprintln!("ERROR: -m{method} expanded to nothing");
         return 2;
@@ -758,7 +1151,31 @@ fn add(
     // default type's chain, which is `decoded[0]`.
     let per_file = solid.data == vec![darc_arc::grouping::Grouping::None];
     let fast_main = darc_arc::method::disables_solid_sorting(&decoded[0].1);
-    let sort_order = if fast_main || per_file { "" } else { "gerpn" };
+    // `-ds`/`--sort` (Cmdline.hs:631-634) overrides both: an explicit order
+    // wins over the non-solid and fast-compressor cases, and `-ds-` disables
+    // sorting outright. Only when it is absent do the defaults apply.
+    let sort_order: &str = match parsed.arg("sort", "--") {
+        "--" => match fast_main || per_file {
+            true => "",
+            false => "gerpn",
+        },
+        "-" => "",
+        // `'c':xs` is not a key character: it PARTITIONS the list at 128 kb,
+        // sorts the small half by the remaining order and the large half by
+        // "s", then concatenates (ArhiveFileList.hs:48). This port sorts by a
+        // flat key vector, which cannot express that -- measured, `-dscn`
+        // writes a different archive than the reference. Refused rather than
+        // written wrongly.
+        x if x.contains('c') => {
+            eprintln!(
+                "ERROR: -ds{x}: the 'c' order partitions the file list at 128 kb \
+                 and sorts each half differently, which this port does not \
+                 implement; every other order is supported"
+            );
+            return 2;
+        }
+        x => x,
+    };
     let recursive = parsed.flag("recursive");
     let nodates = parsed.flag("nodates");
     // `runDelete = runArchiveAdd . setArcFilter ((not.) . fullFileFilter)`
@@ -877,6 +1294,42 @@ fn add(
     // subdirectory.
     let named_dir = |spec: &str| spec.ends_with('/') || std::path::Path::new(spec).is_dir();
 
+    // `-dp`/`--diskpath` (Cmdline.hs:683). Measured against the reference:
+    // `a -dpX … .` and `cd X && a … .` write byte-identical archives, so -dp
+    // relocates where files are READ and leaves stored names alone. It was
+    // being parsed into extract::Layout, which only the EXTRACT path consults,
+    // so on `a` it was accepted and silently did nothing at all.
+    // `-ad`/`--adddir` (Arc.hs:144): `opt_disk_basedir </> takeBaseName
+    // arcname` -- the archive's own base name, without directory or extension,
+    // APPENDED to any -dp rather than replacing it. Measured on the reference:
+    // `a -ad backup.arc .` is byte-identically `a -dpbackup backup.arc .`.
+    let disk_base = {
+        let dp = parsed.arg("diskpath", "").trim_end_matches('/').to_string();
+        match parsed.flag("adddir") {
+            false => dp,
+            true => {
+                let stem = std::path::Path::new(archive_name)
+                    .file_stem()
+                    .map(|s| s.to_string_lossy().into_owned())
+                    .unwrap_or_default();
+                match dp.is_empty() {
+                    true => stem,
+                    false => format!("{dp}/{stem}"),
+                }
+            }
+        }
+    };
+    let under_base = |p: &str| -> std::path::PathBuf {
+        let rel = match p.is_empty() {
+            true => ".",
+            false => p,
+        };
+        match disk_base.is_empty() {
+            true => std::path::PathBuf::from(rel),
+            false => std::path::Path::new(&disk_base).join(rel),
+        }
+    };
+
     // Pass one: addDir, in the order the specs were given, because the
     // reference runs every filespec's addDir pass before any main walk.
     for spec in spec_list {
@@ -886,7 +1339,7 @@ fn add(
         // when the filespec HAS a last component, so `.`, `..` and `/`
         // contribute nothing -- exactly what `file_name()` reports.
         if named_dir(spec) && std::path::Path::new(root).file_name().is_some() {
-            named_dirs.push((root.to_string(), std::path::PathBuf::from(root), true));
+            named_dirs.push((root.to_string(), under_base(root), true));
         }
     }
 
@@ -930,10 +1383,8 @@ fn add(
     groups.sort_by_key(|g| g.0.to_lowercase());
 
     for (dir_part, masks, dir_slash) in groups {
-        let base = match dir_part.is_empty() {
-            true => std::path::Path::new("."),
-            false => std::path::Path::new(dir_part.as_str()),
-        };
+        let base_buf = under_base(dir_part.as_str());
+        let base: &std::path::Path = &base_buf;
         // `recursive = scan_subdirs || dir_slash` and `include_all = dir_slash
         // || masks `contains` reANY_FILE` (FileInfo.hs:456).
         let rec = recursive || dir_slash;
@@ -1042,7 +1493,14 @@ fn add(
             size: body.len() as u64,
             time,
             is_dir: false,
-            crc: crc::calc(&body),
+            // `fake` does not READ the files (ArcvProcessRead.hs:139), so its
+            // entries carry a zero CRC; `crc` reads them and records the real
+            // one. Both store no data. Verified against the reference: -mfake
+            // lists every file with 00000000, -mcrc with its true CRC32.
+            crc: match zero_crc {
+                true => 0,
+                false => crc::calc(&body),
+            },
             block: 0,
             pos_in_block: 0,
         });
@@ -1389,15 +1847,65 @@ fn add(
         pw.data.clone(),
         pw.headers.clone(),
     );
-    // `defaultDirCompressor = thd3 grouping ||| aDEFAULT_DIR_COMPRESSION`
-    // (Cmdline.hs:117): three of the -s presets force an UNCOMPRESSED
-    // directory, which is archive-visible.
-    if !solid.dir_method.is_empty() {
-        let decoded = darc_arc::methodtable::decode_method(&solid.dir_method);
+    // `orig_dir_compressor = findReqArg o "dirmethod" defaultDirCompressor`
+    // (Cmdline.hs:118), where `defaultDirCompressor = thd3 grouping |||
+    // aDEFAULT_DIR_COMPRESSION` (:117): three of the -s presets force an
+    // UNCOMPRESSED directory, and -dm REPLACES whatever the preset chose. All
+    // of this is archive-visible -- measured on the reference, `-dm0`,
+    // `-dmlzma` and `-dmtor` each produce a different archive.
+    let dir_method = match parsed.arg("dirmethod", "") {
+        "" => solid.dir_method.clone(),
+        m => m.to_string(),
+    };
+    // Even with no -dm and no preset, the writer's DEFAULT directory chain
+    // (`lzma:1mb:mf=BT4`) is subject to -lc -- so the limit has to be applied
+    // whether or not the user named a directory method. Skipping the empty
+    // case left the default unlimited and was why the first fix changed
+    // nothing.
+    let dir_method = match dir_method.is_empty() {
+        false => dir_method,
+        true => darc_arc::writer::Writer::dir_compressor().join("+"),
+    };
+    if !dir_method.is_empty() {
+        let decoded = darc_arc::methodtable::decode_method(&dir_method);
         match decoded.first() {
-            Some((_, chain)) => w.set_dir_compressor(chain.clone()),
+            // The LAST method of the chain, not the whole chain. Measured
+            // against the reference: `-dm4` decodes to
+            // `rep:96mb+exe+delta+4x4:b16mb:lzma:...` and the reference writes
+            // the directory with `4x4:b16mb:lzma:...` alone -- the
+            // preprocessing filters are dropped, which is sensible on a small
+            // structured block and is not something the chain itself says.
+            // Named methods were unaffected because their chains are one
+            // element long, which is exactly why this went unnoticed.
+            Some((_, chain)) => match chain.last() {
+                // The DIRECTORY compressor is subject to -lc as well.
+                // Measured: `-mlzma:64m -lc8m` writes the directory with
+                // `lzma:190650b`, which is (8mb - 6mb) / 11 -- the same
+                // formula the data chain gets -- where an unlimited port keeps
+                // `lzma:1mb`. Nothing in Cmdline.hs's dirCompressor pipeline
+                // says so; only the archives do.
+                Some(last) => {
+                    let limited = match darc_arc::method::Method::parse(last) {
+                        Some(mut m) => {
+                            match darc_arc::memlimit::get_compression_mem(&m) {
+                                Some(have) if have > climit => {
+                                    darc_arc::memlimit::set_compression_mem(&mut m, climit);
+                                }
+                                _ => {}
+                            }
+                            darc_arc::canonize::show(&m)
+                        }
+                        None => last.clone(),
+                    };
+                    w.set_dir_compressor(vec![limited]);
+                }
+                None => {
+                    eprintln!("ERROR: -dm{dir_method}: expanded to an empty chain");
+                    return 2;
+                }
+            },
             None => {
-                eprintln!("ERROR: -dm{}: expanded to nothing", solid.dir_method);
+                eprintln!("ERROR: -dm{dir_method}: expanded to nothing");
                 return 2;
             }
         }
@@ -1448,7 +1956,12 @@ fn add(
             }
         },
     }
-    w.write_header();
+    // `--nodir` suppresses every service block, the archive header included:
+    // the reference's output carries no `ArC` signature at all.
+    let nodir = parsed.flag("nodir");
+    if !nodir {
+        w.write_header();
+    }
 
     // `dirs &&& [(aNO_COMPRESSION, dirs)]` (ArhiveFileList.hs:291): the
     // directories block exists only when there ARE directories. Writing an
@@ -1502,10 +2015,33 @@ fn add(
                 _ => None,
             })
             .collect();
+        // A block that carries encryption cannot be copied VERBATIM when the
+        // output is encrypted differently: its bytes are ciphertext under the
+        // old key, and copying them leaves the archive readable with the OLD
+        // password however the new one was spelled.
+        //
+        // The reference has this bug -- measured, `ch -opOLD -pNEW` exits 0
+        // there and the archive still opens with OLD -- and this port
+        // reproduced it faithfully. Fixed here deliberately, so the port
+        // writes DIFFERENT bytes than the reference for that one command line.
+        // The result is an ordinary archive any DArc can read; the
+        // reference's is one the user did not ask for.
+        let src_encrypted = src.compressor.iter().any(|m| darc_arc::block::is_encryption(m));
+        // `-p-` explicitly DROPS encryption, and is the same bug in the other
+        // direction: the reference exits 0 and leaves the archive encrypted.
+        // Read from the raw option because Passwords cannot tell "-p-" from
+        // "no -p at all" -- `dont_ask_passwords` is set by `-op-` as well.
+        //
+        // `ch -opOLD` with no -p is NOT this: keeping the encryption a plain
+        // copy already had is the right answer there.
+        let drop_encryption = parsed.all("password").contains(&"-");
+        let reencrypting = src_encrypted && (!pw.data.is_empty() || drop_encryption);
+
         let whole = positions.len() == group.len()
             && positions.first() == Some(&0)
             && src.files == Some(group.len())
-            && positions.windows(2).all(|w| w[0] <= w[1]);
+            && positions.windows(2).all(|w| w[0] <= w[1])
+            && !reencrypting;
 
         let block = match whole {
             true => {
@@ -1546,8 +2082,17 @@ fn add(
                     }
                     kept_entries.push(e);
                 }
-                let original = src.compressor.join("+");
-                let fitted = match darc_arc::memlimit::fit_for_add(&original, body.len() as u64) {
+                // The stale encryption is STRIPPED: write_compressed_data
+                // appends the output's own, and leaving the old one here
+                // would encrypt the block twice.
+                let original = src
+                    .compressor
+                    .iter()
+                    .filter(|m| !darc_arc::block::is_encryption(m))
+                    .cloned()
+                    .collect::<Vec<String>>()
+                    .join("+");
+                let fitted = match darc_arc::memlimit::fit_for_add_limits(&original, body.len() as u64, climit, dlimit) {
                     Some(f) => f,
                     None => {
                         eprintln!("ERROR: cannot fit {original} to {} bytes", body.len());
@@ -1633,7 +2178,7 @@ fn add(
                 reordered.push(e);
             }
             at += len;
-            let fitted = match darc_arc::memlimit::fit_for_add(chain, body.len() as u64) {
+            let fitted = match darc_arc::memlimit::fit_for_add_limits(chain, body.len() as u64, climit, dlimit) {
                 Some(f) => f,
                 None => {
                     eprintln!("ERROR: cannot fit {chain} to {} bytes", body.len());
@@ -1658,7 +2203,25 @@ fn add(
     let mut entries = dir_entries;
     entries.extend(kept_entries);
     entries.extend(file_entries);
-    w.write_directory(&data_blocks, &entries);
+    // Under `--nodir` the directory is a service block like any other, so it
+    // is not written either -- its PAYLOAD would otherwise still land in the
+    // output even with the header and footer suppressed, which is exactly what
+    // made the first attempt ~120 bytes too long.
+    if !nodir {
+        w.write_directory(&data_blocks, &entries);
+    }
+
+    // `-tl`/`--timetolast` (ArcCreate.hs:170): stamp the finished archive with
+    // the mtime of the newest file IN it, so the archive is never older than
+    // its own contents. Directories are included -- `find_last_time` folds over
+    // the whole directory listing, not just the files.
+    //
+    // Captured here rather than after the write because `entries` is what was
+    // actually stored, which is not the same as what was on the command line.
+    let time_to_last: Option<i64> = match parsed.flag("timetolast") {
+        false => None,
+        true => entries.iter().map(|e| e.time).max(),
+    };
     // An archive with nothing left in it is REMOVED, not written empty.
     // Measured: `arc d a.arc "*"` leaves no file behind, because the basename
     // match takes the directories too. Writing a 161-byte archive of nothing
@@ -1766,7 +2329,12 @@ fn add(
     }
     // The recommendation depends on the archive's size, which is not known
     // until the blocks are written; `finish` is where it lands.
-    let bytes = match darc_arc::recovery::resolve(rr_option, &old_recovery, 0).is_empty()
+    //
+    // `--nodir` stops short of all of it: no footer means no recovery record
+    // either, because a recovery block IS a service block.
+    let bytes = match nodir {
+        true => w.into_data_only(),
+        false => match darc_arc::recovery::resolve(rr_option, &old_recovery, 0).is_empty()
         && rr_option != ""
         && rr_option != "+"
     {
@@ -1798,14 +2366,107 @@ fn add(
                 }
             }
         }
+    }};
+
+    // `-tk`/`--keeptime` (ArcCreate.hs:168) restores the archive's OWN mtime
+    // after an update, so refreshing an archive does not make it look new.
+    // Read before the write, because the write is what destroys it, and only
+    // when the archive already existed -- there is nothing to keep otherwise.
+    let kept_time: Option<std::time::SystemTime> = match parsed.flag("keeptime") {
+        false => None,
+        true => std::fs::metadata(archive_name).and_then(|m| m.modified()).ok(),
     };
 
-    match std::fs::write(archive_name, &bytes) {
-        Ok(()) => {}
-        Err(e) => {
-            eprintln!("ERROR: {archive_name}: {e}");
+    // `tempfileWrapper` (ArcCreate.hs:185): the archive is written to
+    // `$$temparc$$<n>.tmp` and only then renamed into place. Not
+    // archive-visible -- the bytes are the same either way -- but an
+    // interrupted run now leaves the temporary file rather than a TRUNCATED
+    // archive under the real name, which is the actual point.
+    //
+    // The directory is `-w` if given, else the archive's own. `%VAR` reads an
+    // environment variable, and `--create-in-workdir` with no -w means
+    // $TMPDIR, then $TEMP, then /tmp (Cmdline.hs:623-628).
+    let workdir: String = match parsed.arg("workdir", "--") {
+        "--" => match parsed.flag("create-in-workdir") {
+            false => String::new(),
+            true => std::env::var("TMPDIR")
+                .or_else(|_| std::env::var("TEMP"))
+                .unwrap_or_else(|_| "/tmp".to_string()),
+        },
+        v => match v.strip_prefix('%') {
+            Some(var) => std::env::var(var).unwrap_or_default(),
+            None => v.to_string(),
+        },
+    };
+    let temp_dir = match workdir.is_empty() {
+        true => std::path::Path::new(archive_name)
+            .parent()
+            .map(std::path::Path::to_path_buf)
+            .unwrap_or_default(),
+        false => std::path::PathBuf::from(&workdir),
+    };
+    // `find 0`: the first free `$$temparc$$<n>.tmp`, giving up at 999 rather
+    // than looping.
+    let mut temp_path = None;
+    for n in 0..1000 {
+        let p = temp_dir.join(format!("$$temparc$${n}.tmp"));
+        if !p.exists() {
+            temp_path = Some(p);
+            break;
+        }
+    }
+    let temp_path = match temp_path {
+        Some(p) => p,
+        None => {
+            eprintln!("ERROR: can't create temporary file in {}", temp_dir.display());
             return 2;
         }
+    };
+    match std::fs::write(&temp_path, &bytes) {
+        Ok(()) => {}
+        Err(e) => {
+            eprintln!("ERROR: {}: {e}", temp_path.display());
+            return 2;
+        }
+    }
+    // `fileRename tempname filename`, falling back to a copy when the rename
+    // fails -- which is what happens when -w names a different filesystem.
+    match std::fs::rename(&temp_path, archive_name) {
+        Ok(()) => {}
+        Err(_) => {
+            println!("Copying temporary archive {} to {archive_name}", temp_path.display());
+            match std::fs::copy(&temp_path, archive_name) {
+                Ok(_) => drop(std::fs::remove_file(&temp_path)),
+                Err(e) => {
+                    eprintln!("ERROR: {archive_name}: {e}");
+                    drop(std::fs::remove_file(&temp_path));
+                    return 2;
+                }
+            }
+        }
+    }
+
+    // The two mtime options, in the reference's order (ArcCreate.hs:168-171):
+    // -tk first, then -tl, so giving both leaves the newest-file time. Applied
+    // before the SFX rename, which carries the mtime with it.
+    match kept_time {
+        Some(t) => match set_mtime(archive_name, t) {
+            Ok(()) => {}
+            Err(e) => eprintln!("WARNING: -tk: cannot restore {archive_name}'s time: {e}"),
+        },
+        None => {}
+    }
+    match time_to_last {
+        // A negative or absurd stamp is the archive's problem, not ours;
+        // UNIX_EPOCH + a negative offset is simply refused by the conversion.
+        Some(t) if t >= 0 => {
+            let when = std::time::UNIX_EPOCH + std::time::Duration::from_secs(t as u64);
+            match set_mtime(archive_name, when) {
+                Ok(()) => {}
+                Err(e) => eprintln!("WARNING: -tl: cannot set {archive_name}'s time: {e}"),
+            }
+        }
+        _ => {}
     }
 
     // `renameArchiveAsSFX` (ArcCreate.hs:172) -- after writing, in every case,
@@ -1911,6 +2572,28 @@ fn add(
                     drop(std::fs::remove_dir(disk));
                 }
             }
+        }
+    }
+
+    // `-t`/`--test` (ArcCreate.hs:201): read the archive back and check every
+    // CRC before reporting success. Run last so it covers the finished
+    // artefact, including the SFX rename above.
+    if parsed.flag("test") {
+        println!("Testing {archive_name}");
+        let path = std::path::Path::new(archive_name);
+        let rc = match (archive::read_info(path, pw), archive::open(path)) {
+            (Ok(info), Ok(data)) => {
+                let all: Vec<Entry> = info.entries.clone();
+                let empty = std::collections::HashSet::new();
+                run_blocks(&info, &data, &Layout::default(), false, pw, &all, &empty, false)
+            }
+            (Err(e), _) | (_, Err(e)) => {
+                eprintln!("ERROR: {archive_name}: {e}");
+                2
+            }
+        };
+        if rc != 0 {
+            return rc;
         }
     }
 
@@ -2141,6 +2824,284 @@ fn list(command: &str, info: &archive::ArchiveInfo, entries: &[Entry]) -> i32 {
 ///
 /// Testing and extracting differ only in what happens after the CRC check, so
 /// they share the loop rather than duplicating the block handling.
+/// `--save-bad-ranges` — the damaged BYTE ranges, for a caller to act on.
+///
+/// `joinWith "," $ map byte_range bad_sectors` (ArcRecover.hs:337-342): each
+/// sector becomes `START-END` where START is `sector*sector_size + init_pos`
+/// and END is the last byte of that sector, inclusive. Comma separated, no
+/// trailing newline -- the file is meant to be read by another program, and a
+/// stray byte would be part of the last range.
+///
+/// Written only when the option was given; an empty path means "do not".
+fn save_bad_ranges(path: &str, sectors: &[u64], control: &darc_arc::recovery::Control) {
+    if path.is_empty() {
+        return;
+    }
+    let text = sectors
+        .iter()
+        .map(|s| {
+            let start = s * control.sector_size + control.init_pos;
+            format!("{start}-{}", start + control.sector_size - 1)
+        })
+        .collect::<Vec<String>>()
+        .join(",");
+    match std::fs::write(path, text.as_bytes()) {
+        Ok(()) => {}
+        // The recovery itself has already happened or failed; losing the
+        // report does not change that, so it warns rather than returning.
+        Err(e) => eprintln!("WARNING: --save-bad-ranges {path}: {e}"),
+    }
+}
+
+/// `--pretest` — check an existing archive BEFORE operating on it.
+///
+/// The modes are `Options.hs:80`: 0 none, 1 recovery info only, 2 recovery or
+/// full, 3 full testing. `pretestArchive` (ArcRecover.hs:224) scans the
+/// recovery records first in every non-zero mode, and then runs a full test
+/// when the mode is 3, or when it is 2 and the archive carries no recovery
+/// information at all. An archive that fails either check stops the operation:
+/// the point is to refuse to build on damage, not to report it afterwards.
+///
+/// Returns false when the archive is damaged and the caller must stop.
+fn pretest_archive(mode: i32, path: &std::path::Path, pw: &darc_arc::passwords::Passwords) -> bool {
+    if mode <= 0 {
+        return true;
+    }
+    let data = match archive::open(path) {
+        Ok(d) => d,
+        // Unreadable is not the same as damaged, and the operation itself is
+        // about to fail on it with a better message.
+        Err(_) => return true,
+    };
+    let footer = match archive::read_footer(&data, pw) {
+        Ok((_, f)) => f,
+        Err(_) => return true,
+    };
+    // `isNothing result` is the "no recovery information" case, not an error.
+    let had_recovery = match darc_arc::recovery::scan(&footer.blocks, &data) {
+        Ok(scan) => {
+            if !scan.bad.is_empty() {
+                eprintln!(
+                    "ERROR: {}: found {} damaged sector(s); refusing to work on a broken archive",
+                    path.display(),
+                    scan.bad.len()
+                );
+                return false;
+            }
+            println!("Archive integrity OK");
+            true
+        }
+        Err(_) => false,
+    };
+    if mode != 3 && !(mode == 2 && !had_recovery) {
+        return true;
+    }
+    // The full test: every block, every CRC.
+    match (archive::read_info(path, pw), Ok::<&[u8], ()>(data.as_slice())) {
+        (Ok(info), Ok(bytes)) => {
+            let all: Vec<Entry> = info.entries.clone();
+            let empty = std::collections::HashSet::new();
+            let rc =
+                run_blocks(&info, bytes, &Layout::default(), false, pw, &all, &empty, false);
+            if rc != 0 {
+                eprintln!("ERROR: {}: failed its pretest", path.display());
+                return false;
+            }
+            true
+        }
+        _ => true,
+    }
+}
+
+/// Take the `--queue` advisory lock, blocking until it is ours.
+///
+/// The file lives next to the temp directory rather than in the archive's
+/// directory: the point is to serialise this MACHINE's darc processes, and two
+/// runs on different archives still compete for the same memory and cores.
+///
+/// The returned handle owns the lock; dropping it releases it. On a platform
+/// without `flock` this returns the open file and no lock, which serialises
+/// nothing but also blocks nothing — the option is a courtesy, not a
+/// correctness mechanism, and failing the whole run would be worse.
+#[cfg(unix)]
+fn queue_acquire() -> std::io::Result<std::fs::File> {
+    use std::os::unix::io::AsRawFd;
+    let path = std::env::temp_dir().join("darc.queue.lock");
+    let f = std::fs::OpenOptions::new().create(true).write(true).truncate(false).open(&path)?;
+    extern "C" {
+        fn flock(fd: i32, operation: i32) -> i32;
+    }
+    const LOCK_EX: i32 = 2;
+    // SAFETY: the fd is owned by `f` and outlives the call.
+    match unsafe { flock(f.as_raw_fd(), LOCK_EX) } {
+        0 => Ok(f),
+        _ => Err(std::io::Error::last_os_error()),
+    }
+}
+
+#[cfg(not(unix))]
+fn queue_acquire() -> std::io::Result<std::fs::File> {
+    let path = std::env::temp_dir().join("darc.queue.lock");
+    std::fs::OpenOptions::new().create(true).write(true).truncate(false).open(&path)
+}
+
+/// Seconds since the Unix epoch, or 0 if the clock is before it.
+fn now_unix() -> i64 {
+    match std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
+        Ok(d) => d.as_secs() as i64,
+        Err(_) => 0,
+    }
+}
+
+/// The `strftime` subset `-ag` needs, in LOCAL time.
+///
+/// Not a crate: `chrono` would be a new dependency for eight conversions, and
+/// a dependency here is a licence question. The specifiers are the ones a
+/// filename can actually use — anything that would introduce a `/` or a space
+/// is deliberately absent, because the result becomes part of a path.
+///
+/// An unknown specifier is left verbatim, `%` and all, rather than silently
+/// dropped: a name that quietly loses part of its stamp can collide with
+/// another run's.
+fn strftime_local(fmt: &str, unix: i64) -> String {
+    let local = unix + local_offset_seconds();
+    let days = local.div_euclid(86_400);
+    let tod = local.rem_euclid(86_400);
+    let (y, mo, d) = civil_from_days(days);
+    let (h, mi, s) = (tod / 3600, (tod % 3600) / 60, tod % 60);
+    let mut out = String::new();
+    let mut it = fmt.chars();
+    while let Some(c) = it.next() {
+        if c != '%' {
+            out.push(c);
+            continue;
+        }
+        match it.next() {
+            Some('Y') => out.push_str(&format!("{y:04}")),
+            Some('y') => out.push_str(&format!("{:02}", y.rem_euclid(100))),
+            Some('m') => out.push_str(&format!("{mo:02}")),
+            Some('d') => out.push_str(&format!("{d:02}")),
+            Some('H') => out.push_str(&format!("{h:02}")),
+            Some('M') => out.push_str(&format!("{mi:02}")),
+            Some('S') => out.push_str(&format!("{s:02}")),
+            Some('%') => out.push('%'),
+            Some(other) => {
+                out.push('%');
+                out.push(other);
+            }
+            None => out.push('%'),
+        }
+    }
+    out
+}
+
+/// Set a file's mtime, leaving its atime alone.
+///
+/// `std::fs::FileTimes` rather than a crate: this is the whole of what the
+/// `filetime` crate would be pulled in for, and a new dependency here is a
+/// licence question (see THIRD-PARTY.md). Opening for write is required on
+/// Windows, where the handle needs write access to accept a time change.
+fn set_mtime(path: &str, when: std::time::SystemTime) -> std::io::Result<()> {
+    let f = std::fs::File::options().write(true).open(path)?;
+    f.set_times(std::fs::FileTimes::new().set_modified(when))
+}
+
+/// What `-o` says to do when the file is already on disk.
+///
+/// `testOption "overwrite" "o" … (words "+ - p")` (`Cmdline.hs:160`): the three
+/// legal values, defaulting to `p`. `-op<something>` is NOT one of them — it is
+/// an old password, peeled off before this is read (`is_op_option`,
+/// `Cmdline.hs:156`), which is why `-o` values of length > 1 beginning with `p`
+/// never reach here.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Overwrite {
+    Always,
+    Never,
+    Ask,
+}
+
+/// `last ("p" : o_rest)` (`Cmdline.hs:157`) — the LAST `-o` wins, and the
+/// default is to ask.
+fn overwrite_mode(parsed: &options::Parsed) -> Result<Overwrite, String> {
+    let mut mode = Overwrite::Ask;
+    for v in parsed.all("overwrite") {
+        // The old-password spelling, already consumed by cook_passwords.
+        if v.len() > 1 && v.starts_with('p') {
+            continue;
+        }
+        mode = match v {
+            "+" => Overwrite::Always,
+            "-" => Overwrite::Never,
+            "p" | "" => Overwrite::Ask,
+            other => return Err(format!("-o{other}: expected one of +, -, p")),
+        };
+    }
+    Ok(mode)
+}
+
+/// Decide, for every file that already exists, whether it may be overwritten.
+///
+/// Serial and BEFORE the parallel loop on purpose: `Ask` reads from stdin, and
+/// prompting from inside `par_iter` would interleave questions from several
+/// threads and answer them against the wrong file.
+///
+/// Returns the set of stored names to skip.
+fn resolve_overwrites(
+    layout: &Layout,
+    entries: &[Entry],
+    mode: Overwrite,
+    assume_yes: bool,
+) -> std::collections::HashSet<String> {
+    use std::io::BufRead;
+    let mut skip = std::collections::HashSet::new();
+    if mode == Overwrite::Always || assume_yes {
+        return skip;
+    }
+    let mut all = false;
+    let mut none = false;
+    for e in entries.iter().filter(|e| !e.is_dir) {
+        if !std::path::Path::new(&layout.disk_name(e)).exists() {
+            continue;
+        }
+        let overwrite = match mode {
+            Overwrite::Always => true,
+            Overwrite::Never => false,
+            Overwrite::Ask => match (all, none) {
+                (true, _) => true,
+                (_, true) => false,
+                _ => {
+                    print!("{} already exists. Overwrite? [y]es/[n]o/[A]ll/[N]one: ", layout.disk_name(e));
+                    match std::io::Write::flush(&mut std::io::stdout()) {
+                        Ok(()) => {}
+                        Err(_) => {}
+                    }
+                    let mut line = String::new();
+                    // EOF (no terminal, or stdin closed) is NOT consent: an
+                    // unanswered question must not clobber the user's file.
+                    match std::io::stdin().lock().read_line(&mut line) {
+                        Ok(0) | Err(_) => false,
+                        Ok(_) => match line.trim() {
+                            "A" => {
+                                all = true;
+                                true
+                            }
+                            "N" => {
+                                none = true;
+                                false
+                            }
+                            a => a.eq_ignore_ascii_case("y"),
+                        },
+                    }
+                }
+            },
+        };
+        if !overwrite {
+            skip.insert(e.stored_name.clone());
+        }
+    }
+    skip
+}
+
 fn run_blocks(
     info: &archive::ArchiveInfo,
     data: &[u8],
@@ -2148,6 +3109,8 @@ fn run_blocks(
     extracting: bool,
     pw: &darc_arc::passwords::Passwords,
     entries: &[Entry],
+    skip: &std::collections::HashSet<String>,
+    keep_broken: bool,
 ) -> i32 {
     // The safety check runs on the archive's contribution alone: the
     // destination is the user's own and may be absolute.
@@ -2237,15 +3200,27 @@ fn run_blocks(
                         continue;
                     }
                 };
-                if crc::calc(bytes) != e.crc {
+                // `-kb`/`--keepbroken` (ArcExtract.hs:99): a file that failed
+                // its CRC is normally not left on disk. With -kb it is kept,
+                // and the failure is still reported -- keeping the bytes is not
+                // the same as calling them good.
+                let crc_ok = crc::calc(bytes) == e.crc;
+                if !crc_ok {
                     bad.push(format!("{}: CRC failed", e.stored_name));
-                    continue;
+                    if !keep_broken {
+                        continue;
+                    }
                 }
                 if !extracting {
                     continue;
                 }
                 if !darc_arc::extract::is_safe(&relative.disk_name(e)) {
                     bad.push(format!("refusing unsafe path {:?}", e.stored_name));
+                    continue;
+                }
+                // `-o-`, or an existing file the user declined to overwrite.
+                // Decided serially before this loop; see resolve_overwrites.
+                if skip.contains(&e.stored_name) {
                     continue;
                 }
                 let name = layout.disk_name(e);
@@ -2619,12 +3594,23 @@ fn now_seconds() -> i64 {
 /// the same warning any unreadable copy produces — the reference behaves
 /// identically when built `-DFREEARC_NOURL`.
 #[cfg(feature = "url")]
-fn remote_original(url: &str) -> Option<Box<dyn darc_arc::recovery::Original>> {
-    Some(Box::new(darc_arc::fetch::Url::new(url)))
+fn remote_original(
+    url: &str,
+    proxy: &str,
+    bypass: &str,
+) -> Option<Box<dyn darc_arc::recovery::Original>> {
+    Some(Box::new(darc_arc::fetch::Url::with_proxy(url, proxy, bypass)))
 }
 
 #[cfg(not(feature = "url"))]
-fn remote_original(url: &str) -> Option<Box<dyn darc_arc::recovery::Original>> {
+fn remote_original(
+    url: &str,
+    proxy: &str,
+    bypass: &str,
+) -> Option<Box<dyn darc_arc::recovery::Original>> {
+    // Named and dropped rather than underscore-bound: the CI gate bans
+    // `let _`, and this build genuinely has nowhere to send them.
+    drop((proxy, bypass));
     eprintln!("WARNING: can't open original at {url}: built without URL support");
     None
 }
@@ -2732,7 +3718,14 @@ fn find_url(s: &str) -> Option<String> {
     }
 }
 
-fn recover(path: &std::path::Path, archive_name: &str, original: &str) -> i32 {
+fn recover(
+    path: &std::path::Path,
+    archive_name: &str,
+    original: &str,
+    proxy: &str,
+    bypass: &str,
+    save_ranges: &str,
+) -> i32 {
     // `arcname `replaceBaseName` ("fixed."++takeBaseName arcname)` -- the
     // extension is kept and the base name prefixed, so `a.arc` becomes
     // `fixed.a.arc`.
@@ -2812,7 +3805,7 @@ fn recover(path: &std::path::Path, archive_name: &str, original: &str) -> i32 {
         match original_name.is_empty() {
             true => None,
             false => match original_name.contains("://") {
-                true => remote_original(&original_name),
+                true => remote_original(&original_name, proxy, bypass),
                 false => match std::fs::read(&original_name) {
                     Ok(b) => Some(Box::new(darc_arc::recovery::Bytes(b))),
                     Err(e) => {
@@ -2855,6 +3848,7 @@ fn recover(path: &std::path::Path, archive_name: &str, original: &str) -> i32 {
     // loaded bytes instead made the port refuse where the reference wrote a
     // file.
     if recoverable.is_empty() && original_name.is_empty() {
+        save_bad_ranges(save_ranges, &lost, &scan.control);
         eprintln!(
             "ERROR: {} unrecoverable errors ({}) found, can't restore anything!",
             show3(lost.len() as u64),
@@ -2898,6 +3892,11 @@ fn recover(path: &std::path::Path, archive_name: &str, original: &str) -> i32 {
         }
     }
     println!("Recovered archive saved to {}", fixed.display());
+    // `save_bad_ranges errors` (ArcRecover.hs:430), AFTER the archive is
+    // written -- these are the ranges that could not be repaired, not the
+    // ones that were damaged. Written even when the list is empty, which is
+    // how a caller tells "repaired everything" from "never ran".
+    save_bad_ranges(save_ranges, &still_bad, &scan.control);
     if !still_bad.is_empty() {
         eprintln!(
             "WARNING: {} errors ({}) remain unrecovered",
@@ -2938,4 +3937,62 @@ fn show_memory(bytes: u64) -> String {
         }
     }
     format!("{bytes} bytes")
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn mode_of(args: &[&str]) -> Result<Overwrite, String> {
+        let owned: Vec<String> = args.iter().map(|s| (*s).to_string()).collect();
+        overwrite_mode(&options::parse(&owned).expect("parses"))
+    }
+
+    /// `last ("p" : o_rest)` (`Cmdline.hs:157`). The default is to ask, and a
+    /// later `-o` overrides an earlier one rather than combining with it.
+    #[test]
+    fn the_last_overwrite_option_wins_and_the_default_is_ask() {
+        assert!(matches!(mode_of(&[]), Ok(Overwrite::Ask)));
+        assert!(matches!(mode_of(&["-o+"]), Ok(Overwrite::Always)));
+        assert!(matches!(mode_of(&["-o-"]), Ok(Overwrite::Never)));
+        assert!(matches!(mode_of(&["-o-", "-o+"]), Ok(Overwrite::Always)));
+        assert!(matches!(mode_of(&["-o+", "-o-"]), Ok(Overwrite::Never)));
+    }
+
+    /// `-op<something>` is an old PASSWORD, not an overwrite mode
+    /// (`is_op_option`, `Cmdline.hs:156`). It must not be read as one, and it
+    /// must not disturb a real `-o` given alongside it.
+    #[test]
+    fn op_is_a_password_and_not_an_overwrite_mode() {
+        assert!(matches!(mode_of(&["-opsecret"]), Ok(Overwrite::Ask)));
+        assert!(matches!(mode_of(&["-o+", "-opsecret"]), Ok(Overwrite::Always)));
+        assert!(matches!(mode_of(&["-opsecret", "-o-"]), Ok(Overwrite::Never)));
+        // A BARE -op is the mode `p`, not a password: is_op_option needs at
+        // least one character after the p.
+        assert!(matches!(mode_of(&["-op"]), Ok(Overwrite::Ask)));
+    }
+
+    /// The `-ag` stamp. Fixed instant, so the assertion is on the FORMAT and
+    /// not on the clock: 2026-08-04 06:57:44 UTC.
+    #[test]
+    fn strftime_covers_what_a_filename_can_use() {
+        // Compared against UTC by cancelling the local offset out, so the test
+        // does not depend on the machine the suite runs on.
+        let t = 1_785_826_664 - local_offset_seconds();
+        assert_eq!(strftime_local("%Y%m%d%H%M%S", t), "20260804065744");
+        assert_eq!(strftime_local("%Y-%m-%d", t), "2026-08-04");
+        assert_eq!(strftime_local("%y", t), "26");
+        // A literal percent, and an unknown specifier kept verbatim rather
+        // than dropped -- a name that loses part of its stamp can collide.
+        assert_eq!(strftime_local("%%%q", t), "%%q");
+        assert_eq!(strftime_local("plain", t), "plain");
+    }
+
+    /// Anything outside `+ - p` is refused rather than silently treated as the
+    /// default -- `testOption "overwrite" "o" … (words "+ - p")`.
+    #[test]
+    fn an_unknown_overwrite_value_is_refused() {
+        assert!(mode_of(&["-oz"]).is_err());
+        assert!(mode_of(&["-o1"]).is_err());
+    }
 }

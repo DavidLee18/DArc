@@ -304,6 +304,13 @@ impl Default for ZstdParams {
 pub enum Method {
     /// `aSTORING` — the block's bytes are its data.
     Storing,
+    /// `aFAKE_COMPRESSION` — `--nodata`. The files are not read at all
+    /// (`ArcvProcessRead.hs:139`): their sizes are recorded, their CRCs stay
+    /// zero, and no data block is written.
+    Fake,
+    /// `aCRC_ONLY_COMPRESSION` — `--crconly`. The files ARE read and their
+    /// CRC32s recorded, but the data is still not stored.
+    Crc,
     Lzma(LzmaParams),
     Ppmd(PpmdParams),
     /// Tornado. The decoder reads everything it needs from the stream header;
@@ -361,6 +368,8 @@ impl Method {
         let params: Vec<&str> = parts.collect();
         match name {
             "storing" => Some(Method::Storing),
+            "fake" => Some(Method::Fake),
+            "crc" => Some(Method::Crc),
             "lzma" => parse_lzma(params.into_iter()).map(Method::Lzma),
             "ppmd" => parse_ppmd(&params).map(Method::Ppmd),
             "tor" => parse_tornado(&params).map(Method::Tornado),
@@ -1241,6 +1250,8 @@ fn parse_lzma<'a, I: Iterator<Item = &'a str>>(params: I) -> Option<LzmaParams> 
 /// archive-visible.
 pub fn block_size(m: &Method) -> u64 {
     match m {
+        // No block-size constraint: these write no blocks at all.
+        Method::Fake | Method::Crc => 0,
         Method::Dict(p) => u64::from(p.block_size),
         Method::Lzp(p) => u64::from(p.block_size),
         Method::Grzip(p) => u64::from(p.block_size),
