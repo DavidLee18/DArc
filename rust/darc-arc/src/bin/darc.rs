@@ -168,6 +168,16 @@ fn main() {
         },
     };
 
+    // `--type` (Cmdline.hs:515): `arc` is the only archive format there is, and
+    // anything else is refused. The message is the reference's own, verbatim,
+    // because `-t` resolves HERE rather than to `--test` and a user who typed
+    // `-tk` meaning `--keeptime` gets this and should be able to search for it.
+    let archive_type = parsed.arg("type", "arc");
+    if archive_type != "arc" {
+        eprintln!("ERROR: --type={archive_type}: only arc format is supported");
+        std::process::exit(2);
+    }
+
     // `--pretest` (Cmdline.hs:127): the value defaults to "1", and `-` `+` and
     // an empty value are spellings of 0, 2 and 2.
     let pretest: i32 = match parsed.arg("pretest", "1") {
@@ -218,6 +228,7 @@ fn main() {
         "recovery", "volume", "sfx", "noarcext", "charset", "original", "overwrite",
         "keepbroken", "keeptime", "timetolast", "test", "autogenerate",
         "pause-before-exit", "queue", "pretest", "logfile", "proxy", "bypass",
+        "type", "dirmethod",
         // Accepted and deliberately ignored: UI only.
         "yes", "indicator", "display",
         // Accepted and deliberately ignored: these change SPEED or a Windows
@@ -1551,15 +1562,36 @@ fn add(
         pw.data.clone(),
         pw.headers.clone(),
     );
-    // `defaultDirCompressor = thd3 grouping ||| aDEFAULT_DIR_COMPRESSION`
-    // (Cmdline.hs:117): three of the -s presets force an UNCOMPRESSED
-    // directory, which is archive-visible.
-    if !solid.dir_method.is_empty() {
-        let decoded = darc_arc::methodtable::decode_method(&solid.dir_method);
+    // `orig_dir_compressor = findReqArg o "dirmethod" defaultDirCompressor`
+    // (Cmdline.hs:118), where `defaultDirCompressor = thd3 grouping |||
+    // aDEFAULT_DIR_COMPRESSION` (:117): three of the -s presets force an
+    // UNCOMPRESSED directory, and -dm REPLACES whatever the preset chose. All
+    // of this is archive-visible -- measured on the reference, `-dm0`,
+    // `-dmlzma` and `-dmtor` each produce a different archive.
+    let dir_method = match parsed.arg("dirmethod", "") {
+        "" => solid.dir_method.clone(),
+        m => m.to_string(),
+    };
+    if !dir_method.is_empty() {
+        let decoded = darc_arc::methodtable::decode_method(&dir_method);
         match decoded.first() {
-            Some((_, chain)) => w.set_dir_compressor(chain.clone()),
+            // The LAST method of the chain, not the whole chain. Measured
+            // against the reference: `-dm4` decodes to
+            // `rep:96mb+exe+delta+4x4:b16mb:lzma:...` and the reference writes
+            // the directory with `4x4:b16mb:lzma:...` alone -- the
+            // preprocessing filters are dropped, which is sensible on a small
+            // structured block and is not something the chain itself says.
+            // Named methods were unaffected because their chains are one
+            // element long, which is exactly why this went unnoticed.
+            Some((_, chain)) => match chain.last() {
+                Some(last) => w.set_dir_compressor(vec![last.clone()]),
+                None => {
+                    eprintln!("ERROR: -dm{dir_method}: expanded to an empty chain");
+                    return 2;
+                }
+            },
             None => {
-                eprintln!("ERROR: -dm{}: expanded to nothing", solid.dir_method);
+                eprintln!("ERROR: -dm{dir_method}: expanded to nothing");
                 return 2;
             }
         }
