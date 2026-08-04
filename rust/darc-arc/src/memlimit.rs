@@ -58,6 +58,8 @@ pub fn dictionary_limit(total_bytes: u64) -> u32 {
 /// not by the data.
 pub fn get_dictionary(m: &Method) -> u32 {
     match m {
+        // No dictionary, and no memory: they compress nothing.
+        Method::Fake | Method::Crc => 0,
         Method::Lzma(p) => p.dictionary_size,
         Method::Tornado(p) => p.buffer,
         Method::Rep(p) => p.block_size,
@@ -91,6 +93,8 @@ pub fn set_dictionary(m: &mut Method, dict: u32) {
         return;
     }
     match m {
+        // Nothing to shrink.
+        Method::Fake | Method::Crc => {}
         Method::Lzma(p) => p.dictionary_size = dict,
         Method::Tornado(p) => set_tornado_dictionary(p, dict),
         Method::Rep(p) => p.block_size = dict,
@@ -307,6 +311,8 @@ fn compression_threads() -> u64 {
 /// `GetDecompressionMem` — what each method needs to UNPACK, from `C_*.h`.
 pub fn get_decompression_mem(m: &Method) -> u64 {
     match m {
+        // Nothing is stored, so nothing is needed to unpack it.
+        Method::Fake | Method::Crc => 0,
         Method::Lzma(p) => u64::from(p.dictionary_size) + 2 * MB,
         Method::Ppmd(p) => u64::from(p.mem),
         Method::Tornado(p) => u64::from(p.buffer),
@@ -360,6 +366,8 @@ pub fn get_decompression_mem(m: &Method) -> u64 {
 /// of the getter.
 pub fn set_decompression_mem(m: &mut Method, mem: u64) {
     match m {
+        // No memory to limit.
+        Method::Fake | Method::Crc => {}
         // `if (mem > 2mb) dictionarySize = mem - 2mb` -- silently does nothing
         // below 2 MB rather than clamping.
         Method::Lzma(p) => {

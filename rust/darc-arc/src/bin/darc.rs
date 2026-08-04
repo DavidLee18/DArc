@@ -228,7 +228,7 @@ fn main() {
         "recovery", "volume", "sfx", "noarcext", "charset", "original", "overwrite",
         "keepbroken", "keeptime", "timetolast", "test", "autogenerate",
         "pause-before-exit", "queue", "pretest", "logfile", "proxy", "bypass",
-        "type", "dirmethod", "adddir",
+        "type", "dirmethod", "adddir", "nodata", "crconly",
         // Accepted and deliberately ignored: UI only.
         "yes", "indicator", "display",
         // Accepted and deliberately ignored: these change SPEED or a Windows
@@ -851,15 +851,28 @@ fn add(
     // `(mainMethod ||| aDEFAULT_COMPRESSOR) ++ userMethods` (Cmdline.hs:334):
     // the per-type suffixes are appended to the main method, and the whole
     // string is what decode_method expands.
-    let method = format!(
-        "{}{}",
-        match mopts.method.is_empty() {
-            true => "4",
-            false => &mopts.method,
-        },
-        mopts.methods
-    );
+    //
+    // `--nodata` and `--crconly` REPLACE the whole compressor (Cmdline.hs:332),
+    // per-type suffixes included; nodata wins, which is the guard order there.
+    // Measured on the reference: `--nodata` is byte-identically `-mfake` and
+    // `--crconly` is `-mcrc`.
+    let method = match (parsed.flag("nodata"), parsed.flag("crconly")) {
+        (true, _) => "fake".to_string(),
+        (_, true) => "crc".to_string(),
+        _ => format!(
+            "{}{}",
+            match mopts.method.is_empty() {
+                true => "4",
+                false => &mopts.method,
+            },
+            mopts.methods
+        ),
+    };
     let decoded = darc_arc::methodtable::decode_method(&method);
+    // Only `fake` zeroes the CRC; `crc` is the whole point of recording one.
+    let zero_crc = decoded
+        .iter()
+        .all(|(_, ch)| ch.len() == 1 && ch[0].split(':').next() == Some("fake"));
     if decoded.is_empty() {
         eprintln!("ERROR: -m{method} expanded to nothing");
         return 2;
@@ -1249,7 +1262,14 @@ fn add(
             size: body.len() as u64,
             time,
             is_dir: false,
-            crc: crc::calc(&body),
+            // `fake` does not READ the files (ArcvProcessRead.hs:139), so its
+            // entries carry a zero CRC; `crc` reads them and records the real
+            // one. Both store no data. Verified against the reference: -mfake
+            // lists every file with 00000000, -mcrc with its true CRC32.
+            crc: match zero_crc {
+                true => 0,
+                false => crc::calc(&body),
+            },
             block: 0,
             pos_in_block: 0,
         });
