@@ -359,6 +359,7 @@ fn main() {
         for (name, hint) in [
             ("dictionary", Some("-md<N>")),
             ("StoreCompressed", Some("-ms")),
+            ("MultiThreaded", Some("-mt<N>")),
             // multimedia is the exception: -mm is not implemented EITHER, so
             // there is no working spelling to point at.
             ("multimedia", None),
