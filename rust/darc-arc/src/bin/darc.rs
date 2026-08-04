@@ -317,7 +317,7 @@ fn main() {
         "recovery", "volume", "sfx", "noarcext", "charset", "original", "overwrite",
         "keepbroken", "keeptime", "timetolast", "test", "autogenerate",
         "pause-before-exit", "queue", "pretest", "logfile", "proxy", "bypass",
-        "type", "dirmethod", "adddir", "nodata", "crconly", "LimitDecompMem", "nodir", "LimitCompMem", "sort", "config", "env", "workdir", "create-in-workdir",
+        "type", "dirmethod", "adddir", "nodata", "crconly", "LimitDecompMem", "nodir", "LimitCompMem", "sort", "config", "env", "workdir", "create-in-workdir", "save-bad-ranges",
         // Accepted and deliberately ignored: UI only.
         "yes", "indicator", "display",
         // Accepted and deliberately ignored: these change SPEED or a Windows
@@ -755,6 +755,7 @@ fn main() {
             parsed.arg("original", "--"),
             parsed.arg("proxy", "--"),
             parsed.arg("bypass", ""),
+            parsed.arg("save-bad-ranges", ""),
         ),
         // `rr…` is `ch -rr…` and `s…` is `ch -sfx…` (Cmdline.hs:124, :166) --
         // the same copy path, with the setting read off the command's own
@@ -2758,6 +2759,35 @@ fn list(command: &str, info: &archive::ArchiveInfo, entries: &[Entry]) -> i32 {
 ///
 /// Testing and extracting differ only in what happens after the CRC check, so
 /// they share the loop rather than duplicating the block handling.
+/// `--save-bad-ranges` — the damaged BYTE ranges, for a caller to act on.
+///
+/// `joinWith "," $ map byte_range bad_sectors` (ArcRecover.hs:337-342): each
+/// sector becomes `START-END` where START is `sector*sector_size + init_pos`
+/// and END is the last byte of that sector, inclusive. Comma separated, no
+/// trailing newline -- the file is meant to be read by another program, and a
+/// stray byte would be part of the last range.
+///
+/// Written only when the option was given; an empty path means "do not".
+fn save_bad_ranges(path: &str, sectors: &[u64], control: &darc_arc::recovery::Control) {
+    if path.is_empty() {
+        return;
+    }
+    let text = sectors
+        .iter()
+        .map(|s| {
+            let start = s * control.sector_size + control.init_pos;
+            format!("{start}-{}", start + control.sector_size - 1)
+        })
+        .collect::<Vec<String>>()
+        .join(",");
+    match std::fs::write(path, text.as_bytes()) {
+        Ok(()) => {}
+        // The recovery itself has already happened or failed; losing the
+        // report does not change that, so it warns rather than returning.
+        Err(e) => eprintln!("WARNING: --save-bad-ranges {path}: {e}"),
+    }
+}
+
 /// `--pretest` — check an existing archive BEFORE operating on it.
 ///
 /// The modes are `Options.hs:80`: 0 none, 1 recovery info only, 2 recovery or
@@ -3629,6 +3659,7 @@ fn recover(
     original: &str,
     proxy: &str,
     bypass: &str,
+    save_ranges: &str,
 ) -> i32 {
     // `arcname `replaceBaseName` ("fixed."++takeBaseName arcname)` -- the
     // extension is kept and the base name prefixed, so `a.arc` becomes
@@ -3752,6 +3783,7 @@ fn recover(
     // loaded bytes instead made the port refuse where the reference wrote a
     // file.
     if recoverable.is_empty() && original_name.is_empty() {
+        save_bad_ranges(save_ranges, &lost, &scan.control);
         eprintln!(
             "ERROR: {} unrecoverable errors ({}) found, can't restore anything!",
             show3(lost.len() as u64),
@@ -3795,6 +3827,11 @@ fn recover(
         }
     }
     println!("Recovered archive saved to {}", fixed.display());
+    // `save_bad_ranges errors` (ArcRecover.hs:430), AFTER the archive is
+    // written -- these are the ranges that could not be repaired, not the
+    // ones that were damaged. Written even when the list is empty, which is
+    // how a caller tells "repaired everything" from "never ran".
+    save_bad_ranges(save_ranges, &still_bad, &scan.control);
     if !still_bad.is_empty() {
         eprintln!(
             "WARNING: {} errors ({}) remain unrecovered",
