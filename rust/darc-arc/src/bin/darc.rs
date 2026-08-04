@@ -228,7 +228,7 @@ fn main() {
         "recovery", "volume", "sfx", "noarcext", "charset", "original", "overwrite",
         "keepbroken", "keeptime", "timetolast", "test", "autogenerate",
         "pause-before-exit", "queue", "pretest", "logfile", "proxy", "bypass",
-        "type", "dirmethod",
+        "type", "dirmethod", "adddir",
         // Accepted and deliberately ignored: UI only.
         "yes", "indicator", "display",
         // Accepted and deliberately ignored: these change SPEED or a Windows
@@ -1055,7 +1055,26 @@ fn add(
     // relocates where files are READ and leaves stored names alone. It was
     // being parsed into extract::Layout, which only the EXTRACT path consults,
     // so on `a` it was accepted and silently did nothing at all.
-    let disk_base = parsed.arg("diskpath", "").trim_end_matches('/').to_string();
+    // `-ad`/`--adddir` (Arc.hs:144): `opt_disk_basedir </> takeBaseName
+    // arcname` -- the archive's own base name, without directory or extension,
+    // APPENDED to any -dp rather than replacing it. Measured on the reference:
+    // `a -ad backup.arc .` is byte-identically `a -dpbackup backup.arc .`.
+    let disk_base = {
+        let dp = parsed.arg("diskpath", "").trim_end_matches('/').to_string();
+        match parsed.flag("adddir") {
+            false => dp,
+            true => {
+                let stem = std::path::Path::new(archive_name)
+                    .file_stem()
+                    .map(|s| s.to_string_lossy().into_owned())
+                    .unwrap_or_default();
+                match dp.is_empty() {
+                    true => stem,
+                    false => format!("{dp}/{stem}"),
+                }
+            }
+        }
+    };
     let under_base = |p: &str| -> std::path::PathBuf {
         let rel = match p.is_empty() {
             true => ".",
