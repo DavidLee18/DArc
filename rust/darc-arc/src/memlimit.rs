@@ -491,8 +491,23 @@ pub fn fit_for_add(chain: &str, total_bytes: u64) -> Option<String> {
 
 /// `fit_for_add` with the `-ld` figure supplied rather than defaulted.
 pub fn fit_for_add_limited(chain: &str, total_bytes: u64, dlimit: u64) -> Option<String> {
+    fit_for_add_limits(chain, total_bytes, u64::MAX, dlimit)
+}
+
+/// `fit_for_add` with both memory limits supplied.
+///
+/// The order is the reference's: `limitCompressionMem` then
+/// `limitDecompressionMem` (Cmdline.hs:339-340), both before the dictionary is
+/// fitted to the data.
+pub fn fit_for_add_limits(
+    chain: &str,
+    total_bytes: u64,
+    climit: u64,
+    dlimit: u64,
+) -> Option<String> {
     let names: Vec<String> = chain.split('+').map(str::to_string).collect();
     let mut methods = Method::parse_chain(&names)?;
+    limit_compression_mem(&mut methods, climit);
     limit_decompression_mem(&mut methods, dlimit);
     limit_dictionary(&mut methods, dictionary_limit(total_bytes));
     Some(methods.iter().map(crate::canonize::show).collect::<Vec<_>>().join("+"))
@@ -598,4 +613,142 @@ pub fn parse_mem_with_percents(memory: u64, s: &str) -> Option<u64> {
         // so the two spellings cannot drift apart.
         _ => crate::method::parse_mem(s).map(u64::from),
     }
+}
+
+/// `GetCompressionMem` — what each method needs to PACK, from `C_*.h`.
+///
+/// Returns `None` for a method whose formula this port has not reproduced. The
+/// caller must decide what to do about that; [`limit_compression_mem`] treats
+/// it as "do not touch", which is exactly what the port did before `-lc`
+/// existed and so cannot change an archive that used to be written.
+pub fn get_compression_mem(m: &Method) -> Option<u64> {
+    match m {
+        // No compression, no memory.
+        Method::Storing | Method::Fake | Method::Crc => Some(0),
+        // `mfMem + 6mb`, where the multiplier is the match finder's
+        // (`C_LZMA.cpp`). kBT2=10, kBT3/kBT4=11, kHC4=7, kHT4=6.
+        Method::Lzma(p) => {
+            Some(u64::from(p.dictionary_size) * lzma_mf_multiplier(p.match_finder) + 6 * MB)
+        }
+        Method::Ppmd(p) => Some(u64::from(p.mem)),
+        Method::Dict(p) => Some(u64::from(p.block_size) * 2),
+        Method::Delta(p) => Some(u64::from(p.block_size)),
+        Method::Bsc(p) => Some(u64::from(p.block_size) * 5),
+        // `{return 2*mb;}` for both, and TTA's setter is `{}`.
+        Method::Mm(_) | Method::Tta(_) => Some(2 * MB),
+        Method::Dispack(p) => {
+            let bs = u64::from(p.block_size);
+            Some(3 * bs + bs / 4 + 1024)
+        }
+        // Not reproduced yet. Tornado needs `tornado_compressor_outbuf_size`,
+        // which branches on a global; REP needs `CalcHashSize`; LZP's setter
+        // shrinks the hash before the block; GRZip's figure scales with the
+        // THREAD count, so it is not a property of the method alone; LZ4 and
+        // Zstd ask their libraries; 4x4 recurses into its inner method.
+        Method::Tornado(_)
+        | Method::Rep(_)
+        | Method::Lzp(_)
+        | Method::Grzip(_)
+        | Method::Lz4(_)
+        | Method::Zstd(_)
+        | Method::FourX4(_)
+        | Method::Encryption(_)
+        | Method::Exe
+        | Method::Unsupported(_) => None,
+    }
+}
+
+/// The match finder's memory multiplier (`C_LZMA.cpp`), shared by the getter
+/// and the setter so the two cannot disagree.
+fn lzma_mf_multiplier(mf: u32) -> u64 {
+    match mf {
+        0 => 10, // kBT2
+        1 => 11, // kBT3
+        2 => 11, // kBT4
+        3 => 7,  // kHC4
+        4 => 6,  // kHT4
+        _ => 11,
+    }
+}
+
+/// `SetCompressionMem`. Returns false when the method has no implementation
+/// here, leaving it untouched.
+pub fn set_compression_mem(m: &mut Method, mem: u64) -> bool {
+    match m {
+        Method::Storing | Method::Fake | Method::Crc => true,
+        Method::Lzma(p) => {
+            // `if (mem < 2*mb) mem = 2*mb;` then `avail = mem > 6mb ? mem-6mb
+            // : mem`, divided by the match finder's multiplier and floored at
+            // 4 kb.
+            let mem = mem.max(2 * MB);
+            let base = 6 * MB;
+            let avail = match mem > base {
+                true => mem - base,
+                false => mem,
+            };
+            let d = avail / lzma_mf_multiplier(p.match_finder);
+            p.dictionary_size = d.max(4 * 1024).min(u64::from(u32::MAX)) as u32;
+            true
+        }
+        // Identical to the decompression setter -- `SetDecompressionMem` IS
+        // `SetCompressionMem` for PPMd (`C_PPMD.h`).
+        Method::Ppmd(p) => {
+            set_ppmd_mem(p, mem);
+            true
+        }
+        Method::Dict(p) => {
+            if mem > 0 {
+                p.block_size = (mem / 2).min(u64::from(u32::MAX)) as u32;
+            }
+            true
+        }
+        Method::Delta(p) => {
+            if mem > 0 {
+                p.block_size = mem.min(u64::from(u32::MAX)) as u32;
+            }
+            true
+        }
+        Method::Bsc(p) => {
+            p.block_size = (mem / 5).min(u64::from(u32::MAX)) as u32;
+            true
+        }
+        // `{}` -- MM and TTA ignore the request entirely.
+        Method::Mm(_) | Method::Tta(_) => true,
+        Method::Dispack(p) => {
+            if mem > 0 {
+                p.block_size = (mem / 13 * 4).max(64 * 1024).min(u64::from(u32::MAX)) as u32;
+            }
+            true
+        }
+        Method::Tornado(_)
+        | Method::Rep(_)
+        | Method::Lzp(_)
+        | Method::Grzip(_)
+        | Method::Lz4(_)
+        | Method::Zstd(_)
+        | Method::FourX4(_)
+        | Method::Encryption(_)
+        | Method::Exe
+        | Method::Unsupported(_) => false,
+    }
+}
+
+/// `LimitCompressionMem` over a chain — `if (Get() > mem) Set(mem)`, method by
+/// method (`Compression.h:285`), like the decompression half.
+///
+/// A method with no formula here is left alone rather than guessed at.
+pub fn limit_compression_mem(chain: &mut [Method], mem: u64) {
+    for m in chain.iter_mut() {
+        match get_compression_mem(m) {
+            Some(have) if have > mem => {
+                set_compression_mem(m, mem);
+            }
+            _ => {}
+        }
+    }
+}
+
+/// Does every method in the chain have a compression-memory formula here?
+pub fn compression_mem_is_known(chain: &[Method]) -> bool {
+    chain.iter().all(|m| get_compression_mem(m).is_some())
 }

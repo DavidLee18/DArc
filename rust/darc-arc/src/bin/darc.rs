@@ -228,7 +228,7 @@ fn main() {
         "recovery", "volume", "sfx", "noarcext", "charset", "original", "overwrite",
         "keepbroken", "keeptime", "timetolast", "test", "autogenerate",
         "pause-before-exit", "queue", "pretest", "logfile", "proxy", "bypass",
-        "type", "dirmethod", "adddir", "nodata", "crconly", "LimitDecompMem", "nodir",
+        "type", "dirmethod", "adddir", "nodata", "crconly", "LimitDecompMem", "nodir", "LimitCompMem",
         // Accepted and deliberately ignored: UI only.
         "yes", "indicator", "display",
         // Accepted and deliberately ignored: these change SPEED or a Windows
@@ -872,6 +872,29 @@ fn add(
     // ADD command and `75%` of RAM otherwise; `-` is unlimited; anything else
     // is a size or a percentage. Archive-visible -- it is what reduces -m9's
     // `ppmd:25:2047m` to `ppmd:22:1gb`.
+    // `-lc`/`--LimitCompMem` (Cmdline.hs:298). The default is 75% of the
+    // capped RAM figure, which on any machine with 4 GiB or more is 3 GiB --
+    // large enough that it does not bind for the chains DArc ships, which is
+    // why the port wrote byte-identical archives before this existed.
+    let climit: u64 = match parsed.arg("LimitCompMem", "--") {
+        "--" => darc_arc::memlimit::parse_mem_with_percents(
+            darc_arc::memlimit::physical_memory(),
+            "75%",
+        )
+        .unwrap_or(u64::MAX),
+        "-" => u64::MAX,
+        s => match darc_arc::memlimit::parse_mem_with_percents(
+            darc_arc::memlimit::physical_memory(),
+            s,
+        ) {
+            Some(v) => v,
+            None => {
+                eprintln!("ERROR: -lc{s}: not a memory size (N, Nb, Nk, Nm, Ng, N%)");
+                return 2;
+            }
+        },
+    };
+
     let dlimit: u64 = match parsed.arg("LimitDecompMem", "--") {
         "--" => darc_arc::memlimit::ADD_DECOMPRESSION_LIMIT,
         "-" => u64::MAX,
@@ -1645,6 +1668,15 @@ fn add(
         "" => solid.dir_method.clone(),
         m => m.to_string(),
     };
+    // Even with no -dm and no preset, the writer's DEFAULT directory chain
+    // (`lzma:1mb:mf=BT4`) is subject to -lc -- so the limit has to be applied
+    // whether or not the user named a directory method. Skipping the empty
+    // case left the default unlimited and was why the first fix changed
+    // nothing.
+    let dir_method = match dir_method.is_empty() {
+        false => dir_method,
+        true => darc_arc::writer::Writer::dir_compressor().join("+"),
+    };
     if !dir_method.is_empty() {
         let decoded = darc_arc::methodtable::decode_method(&dir_method);
         match decoded.first() {
@@ -1657,7 +1689,27 @@ fn add(
             // Named methods were unaffected because their chains are one
             // element long, which is exactly why this went unnoticed.
             Some((_, chain)) => match chain.last() {
-                Some(last) => w.set_dir_compressor(vec![last.clone()]),
+                // The DIRECTORY compressor is subject to -lc as well.
+                // Measured: `-mlzma:64m -lc8m` writes the directory with
+                // `lzma:190650b`, which is (8mb - 6mb) / 11 -- the same
+                // formula the data chain gets -- where an unlimited port keeps
+                // `lzma:1mb`. Nothing in Cmdline.hs's dirCompressor pipeline
+                // says so; only the archives do.
+                Some(last) => {
+                    let limited = match darc_arc::method::Method::parse(last) {
+                        Some(mut m) => {
+                            match darc_arc::memlimit::get_compression_mem(&m) {
+                                Some(have) if have > climit => {
+                                    darc_arc::memlimit::set_compression_mem(&mut m, climit);
+                                }
+                                _ => {}
+                            }
+                            darc_arc::canonize::show(&m)
+                        }
+                        None => last.clone(),
+                    };
+                    w.set_dir_compressor(vec![limited]);
+                }
                 None => {
                     eprintln!("ERROR: -dm{dir_method}: expanded to an empty chain");
                     return 2;
@@ -1819,7 +1871,7 @@ fn add(
                     kept_entries.push(e);
                 }
                 let original = src.compressor.join("+");
-                let fitted = match darc_arc::memlimit::fit_for_add_limited(&original, body.len() as u64, dlimit) {
+                let fitted = match darc_arc::memlimit::fit_for_add_limits(&original, body.len() as u64, climit, dlimit) {
                     Some(f) => f,
                     None => {
                         eprintln!("ERROR: cannot fit {original} to {} bytes", body.len());
@@ -1905,7 +1957,7 @@ fn add(
                 reordered.push(e);
             }
             at += len;
-            let fitted = match darc_arc::memlimit::fit_for_add_limited(chain, body.len() as u64, dlimit) {
+            let fitted = match darc_arc::memlimit::fit_for_add_limits(chain, body.len() as u64, climit, dlimit) {
                 Some(f) => f,
                 None => {
                     eprintln!("ERROR: cannot fit {chain} to {} bytes", body.len());
