@@ -228,7 +228,7 @@ fn main() {
         "recovery", "volume", "sfx", "noarcext", "charset", "original", "overwrite",
         "keepbroken", "keeptime", "timetolast", "test", "autogenerate",
         "pause-before-exit", "queue", "pretest", "logfile", "proxy", "bypass",
-        "type", "dirmethod", "adddir", "nodata", "crconly",
+        "type", "dirmethod", "adddir", "nodata", "crconly", "LimitDecompMem",
         // Accepted and deliberately ignored: UI only.
         "yes", "indicator", "display",
         // Accepted and deliberately ignored: these change SPEED or a Windows
@@ -868,6 +868,41 @@ fn add(
             mopts.methods
         ),
     };
+    // `-ld`/`--LimitDecompMem` (Cmdline.hs:299-303). Not given is `1gb` for an
+    // ADD command and `75%` of RAM otherwise; `-` is unlimited; anything else
+    // is a size or a percentage. Archive-visible -- it is what reduces -m9's
+    // `ppmd:25:2047m` to `ppmd:22:1gb`.
+    let dlimit: u64 = match parsed.arg("LimitDecompMem", "--") {
+        "--" => darc_arc::memlimit::ADD_DECOMPRESSION_LIMIT,
+        "-" => u64::MAX,
+        // A percentage is REFUSED, not approximated. Measured: `-ld10%` on
+        // this machine writes an archive one byte different from the
+        // reference's, so the RAM figure or its rounding does not yet match
+        // `getPhysicalMemory `roundTo` (4*mb)` (Cmdline.hs:230). Every other
+        // spelling is byte-identical. Shipping the percentage would mean
+        // writing a DIFFERENT archive than the reference for a documented
+        // option, which is the one failure mode this project cannot absorb.
+        s if s.ends_with('%') || s.ends_with('p') => {
+            eprintln!(
+                "ERROR: -ld{s}: percentage limits are not implemented -- this \
+                 port's physical-memory figure does not yet match the \
+                 reference's, and guessing it would write a different archive. \
+                 Give an explicit size instead, e.g. -ld1gb."
+            );
+            return 2;
+        }
+        s => match darc_arc::memlimit::parse_mem_with_percents(
+            darc_arc::memlimit::physical_memory(),
+            s,
+        ) {
+            Some(v) => v,
+            None => {
+                eprintln!("ERROR: -ld{s}: not a memory size (N, Nb, Nk, Nm, Ng, N%)");
+                return 2;
+            }
+        },
+    };
+
     let decoded = darc_arc::methodtable::decode_method(&method);
     // Only `fake` zeroes the CRC; `crc` is the whole point of recording one.
     let zero_crc = decoded
@@ -1795,7 +1830,7 @@ fn add(
                     kept_entries.push(e);
                 }
                 let original = src.compressor.join("+");
-                let fitted = match darc_arc::memlimit::fit_for_add(&original, body.len() as u64) {
+                let fitted = match darc_arc::memlimit::fit_for_add_limited(&original, body.len() as u64, dlimit) {
                     Some(f) => f,
                     None => {
                         eprintln!("ERROR: cannot fit {original} to {} bytes", body.len());
@@ -1881,7 +1916,7 @@ fn add(
                 reordered.push(e);
             }
             at += len;
-            let fitted = match darc_arc::memlimit::fit_for_add(chain, body.len() as u64) {
+            let fitted = match darc_arc::memlimit::fit_for_add_limited(chain, body.len() as u64, dlimit) {
                 Some(f) => f,
                 None => {
                     eprintln!("ERROR: cannot fit {chain} to {} bytes", body.len());

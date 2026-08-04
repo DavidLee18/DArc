@@ -486,9 +486,101 @@ pub const ADD_DECOMPRESSION_LIMIT: u64 = 1024 * MB;
 /// `Cmdline.hs` applies them: the memory limits run when the command line is
 /// parsed, the dictionary limit when the block's size is known.
 pub fn fit_for_add(chain: &str, total_bytes: u64) -> Option<String> {
+    fit_for_add_limited(chain, total_bytes, ADD_DECOMPRESSION_LIMIT)
+}
+
+/// `fit_for_add` with the `-ld` figure supplied rather than defaulted.
+pub fn fit_for_add_limited(chain: &str, total_bytes: u64, dlimit: u64) -> Option<String> {
     let names: Vec<String> = chain.split('+').map(str::to_string).collect();
     let mut methods = Method::parse_chain(&names)?;
-    limit_decompression_mem(&mut methods, ADD_DECOMPRESSION_LIMIT);
+    limit_decompression_mem(&mut methods, dlimit);
     limit_dictionary(&mut methods, dictionary_limit(total_bytes));
     Some(methods.iter().map(crate::canonize::show).collect::<Vec<_>>().join("+"))
+}
+
+/// Physical RAM in bytes, rounded down to a 4 MB boundary.
+///
+/// `getPhysicalMemory `roundTo` (4*mb)` (`Cmdline.hs:230`). The rounding is not
+/// cosmetic: a percentage limit is computed from this figure, and an unrounded
+/// one would make `-ld75%` produce a slightly different compression chain — and
+/// so a different archive — on two machines with the same nominal RAM.
+///
+/// Returns 0 when the figure cannot be had, which makes a percentage limit 0
+/// and therefore maximally restrictive. That is the safe direction: a limit
+/// that is too small produces a smaller chain, never one the reader cannot
+/// afford.
+pub fn physical_memory() -> u64 {
+    let raw = physical_memory_raw();
+    raw - (raw % (4 * MB))
+}
+
+#[cfg(target_os = "macos")]
+fn physical_memory_raw() -> u64 {
+    let mut out: u64 = 0;
+    let mut len: usize = std::mem::size_of::<u64>();
+    extern "C" {
+        fn sysctlbyname(
+            name: *const i8,
+            oldp: *mut core::ffi::c_void,
+            oldlenp: *mut usize,
+            newp: *mut core::ffi::c_void,
+            newlen: usize,
+        ) -> i32;
+    }
+    // SAFETY: the name is NUL-terminated, and the buffer and its length match.
+    let rc = unsafe {
+        sysctlbyname(
+            c"hw.memsize".as_ptr(),
+            (&raw mut out).cast(),
+            &raw mut len,
+            std::ptr::null_mut(),
+            0,
+        )
+    };
+    match rc {
+        0 => out,
+        _ => 0,
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn physical_memory_raw() -> u64 {
+    // MemTotal is in kB, and is the first line of /proc/meminfo.
+    let text = match std::fs::read_to_string("/proc/meminfo") {
+        Ok(t) => t,
+        Err(_) => return 0,
+    };
+    for line in text.lines() {
+        match line.strip_prefix("MemTotal:") {
+            Some(rest) => {
+                let kb: u64 = rest.trim().trim_end_matches("kB").trim().parse().unwrap_or(0);
+                return kb * 1024;
+            }
+            None => {}
+        }
+    }
+    0
+}
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+fn physical_memory_raw() -> u64 {
+    0
+}
+
+/// `parseMemWithPercents` (`Utils.hs:78`) — a size, or a percentage of RAM.
+///
+/// The default unit is megabytes, `b` means bytes, and `%` or `p` means a
+/// percentage of `memory`. Anything else is an error there, and `None` here.
+pub fn parse_mem_with_percents(memory: u64, s: &str) -> Option<u64> {
+    let digits: String = s.chars().take_while(char::is_ascii_digit).collect();
+    if digits.is_empty() {
+        return None;
+    }
+    let n: u64 = digits.parse().ok()?;
+    match s[digits.len()..].chars().next() {
+        Some('%') | Some('p') => Some(memory.saturating_mul(n) / 100),
+        // Everything else is a plain size, and parse_mem owns the unit table
+        // so the two spellings cannot drift apart.
+        _ => crate::method::parse_mem(s).map(u64::from),
+    }
 }
