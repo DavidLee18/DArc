@@ -62,7 +62,11 @@ const TAG_END: u64 = 0;
 /// Skipping this makes every path in every listing wrong by two characters.
 fn sanitise(path: &str) -> String {
     let mut out: Vec<&str> = Vec::new();
-    for part in path.split('/') {
+    // Both separators: on Windows `\` divides components, so splitting only on
+    // `/` left `..\..\x` as a single "component" that no `..` test could see.
+    // See `extract::SEPARATORS` for why this is unconditional rather than
+    // `cfg!(windows)`.
+    for part in path.split(['/', '\\']) {
         match part {
             "." | "" => continue,
             ".." => {

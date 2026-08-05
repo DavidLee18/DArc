@@ -1,11 +1,22 @@
 # CLAUDE.md
 
 DArc ("Distended Arc") is a fork of FreeArc 0.67 — a solid-compression archiver.
-Console binary `darc`. Archive format is
-wire-compatible with [DArc86](https://github.com/YadeWira/DArc86) **except for
-encrypted archives**: those now carry `:h1` in the encryption method, because
-the old key/IV hex decoding was broken and weakened the key. Archives written
-without it are still read. See `docs/architecture.md`.
+Console binary `darc`.
+
+**DArc is not a drop-in replacement, and compatibility is not a requirement.**
+It is largely wire-compatible with [DArc86](https://github.com/YadeWira/DArc86)
+and that is worth keeping when it is free — but where compatibility conflicts
+with being correct, coherent, efficient, or resilient against corruption, **take
+the better behaviour.** The owner's instruction, verbatim: *"If there's a better,
+more coherent, or more efficient/effective/correct/corruption-resilient, take
+it. I mean it."*
+
+Two divergences already exist and are the model for the rest: encrypted archives
+carry `:h1` in the encryption method because the old key/IV hex decoding was
+broken and weakened the key (archives written without it are still read); and
+`-mlzma:lc300` is refused rather than aborting the process the way the reference
+does. Both are *marked* — a deliberate break is documented at the site and in
+the commit, never made silently. See `docs/architecture.md`.
 
 **The port is finished: the archiver is Rust, end to end.** Rust ~68,000 lines
 (every codec, the crypto, the `.7z` reader, SREP, and the whole application
@@ -103,13 +114,19 @@ before adding or changing a corpus.
 
 ## What will bite you
 
-- **Format compatibility is the highest-risk failure mode.** A change that
-  compresses fine but writes archives older builds cannot read passes every
-  build check. `arc-golden-check.sh` is what stands between you and that; it is
-  also the only archive gate CI runs.
-- **Do not regenerate `golden/manifest.txt` from the port.** That replaces the
-  thing being checked with the thing doing the checking. Build a reference from
-  `9a127e6` and re-record from that.
+- **`arc-golden-check.sh` detects change; it does not forbid it.** A change that
+  compresses fine but writes different archive bytes passes every other build
+  check, so this is the only thing that will tell you the bytes moved. When they
+  move **unintentionally** that is a bug. When they move because you chose a
+  better behaviour, say so in the commit and re-record — the gate exists to make
+  the decision conscious, not to veto it.
+- **Do not regenerate `golden/manifest.txt` to make a red run go green.** That
+  replaces the thing being checked with the thing doing the checking, and it is
+  how an accident gets laundered into a baseline. Re-record only alongside a
+  commit that states which cases moved and why.
+- **A deliberate divergence must be marked.** At the site, in the commit, and in
+  `CLAUDE.md` if it is user-visible. Silent divergence is the failure mode now,
+  not divergence itself.
 - **A compression method is a `String` that gets parsed, not an ADT**, on both
   sides of the FFI. `darc-arc`'s `Method` enum is the Rust half; a method it has
   no variant for is `Unsupported` and refused at write time rather than silently

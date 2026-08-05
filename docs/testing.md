@@ -62,16 +62,30 @@ flags 77 possibly-truncating casts in `darc-arc`, and every one was checked.
   `if n > remaining as u64 { return Err(ImplausibleLength) }` proves `n` fits a
   `usize` before casting. `codec_io.rs` rejects `size < 0` on entry, so every
   later `as c_int` round-trips a value that arrived as one.
-* **A faithful transliteration whose truncation is visible in the reference
-  too**, documented at the site. Two of these look exactly like bugs, and
-  "fixing" either would break byte-identity — see `decompress.rs`'s thread clamp
-  (values above `i32::MAX` wrap negative, matching `9a127e6` at every value
-  tested) and its `lc`/`lp`/`pb` narrowing (`-mlzma:lc259` is byte-identical to
-  the reference; `-mlzma:lc300` aborts in *both* builds).
+* **A transliteration whose truncation is visible in the reference too.** Three
+  of these read as obvious defects, and the reference reproduces all three — so
+  the audit's first pass recorded them as conformant and left them.
 
-That last category is the reason this audit was worth doing and the reason a
-mass `try_into()` sweep would not have been: three sites that read as obvious
-defects are conformant, and only the reference could settle it.
+  **That was the wrong call, and they are now fixed.** DArc is not a drop-in
+  replacement (see `CLAUDE.md`): where conformance and correctness conflict, the
+  better behaviour wins. What the reference does is evidence about *why* the
+  code is shaped that way, not a reason to keep a defect.
+
+  - `decompress.rs`'s LZMA2 thread count clamped to `u32::MAX` and cast to
+    `i32`, so anything above `i32::MAX` wrapped negative and silently fell back
+    to one block thread. Now clamped to `i32::MAX`. A clamp whose bound does not
+    match the type it guards is not a clamp.
+  - `lc`/`lp`/`pb` were parsed as `u32` and narrowed to `u8` late, so
+    `-mlzma:lc300` became `lc44` and **aborted the process** on a
+    hundreds-of-terabytes probability allocation (rc=134, in both builds), and
+    `-mlzma:lc259` became `lc3` and wrote an archive whose header claimed
+    `lc259`. Now bounded at parse time by `parse_int_max`, so both are refused
+    cleanly and the narrowing downstream is lossless.
+
+The lasting lesson is not "the reference is always right" but the opposite: the
+reference settles *what the code does*, never *what it should do*. Measuring is
+still mandatory — three sites that looked obvious were not what I assumed — but
+the measurement is an input to the decision, not the decision.
 
 **Its failure signal is stderr, never the exit status**, and this is not a
 stylistic choice. Every codec entry point goes through `ffi::guard`, whose

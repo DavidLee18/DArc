@@ -22,11 +22,46 @@ pub fn parse_int(s: &str) -> Option<u32> {
     let mut n: u32 = 0;
     for c in s.chars() {
         match c.to_digit(10) {
-            Some(d) => n = n.wrapping_mul(10).wrapping_add(d),
+            // `checked_*`, where the C wraps. A method string is a header field
+            // that has to mean one thing: `d5000000000` wrapping to 705032704
+            // gives a dictionary the header does not describe, and nothing
+            // downstream can tell that apart from the user asking for 705032704.
+            // Refusing is the only answer that keeps the string honest.
+            Some(d) => n = n.checked_mul(10)?.checked_add(d)?,
             None => return None,
         }
     }
     Some(n)
+}
+
+/// The LZMA literal/position-bit maxima (`LzmaEnc.c:537`, and the same bounds
+/// the decoder enforces at `decode_stream.rs:367`).
+///
+/// These are the values the probability array is sized from: `0x300 << (lc+lp)`.
+/// A value past the maximum is not a slow encode, it is an allocation of
+/// hundreds of terabytes.
+pub const LZMA_LC_MAX: u32 = 8;
+pub const LZMA_LP_MAX: u32 = 4;
+pub const LZMA_PB_MAX: u32 = 4;
+
+/// [`parse_int`] that refuses anything above `max`.
+///
+/// Used for `lc`/`lp`/`pb`, which are parsed as `u32` and eventually reach the
+/// encoder as `u8`. Bounding them HERE is what makes that narrowing lossless,
+/// and it is the difference between three outcomes for `-mlzma:lc300`:
+///
+///   * unbounded and narrowed late — `300 as u8 == 44`, and the literal
+///     probability allocation aborts the process (measured: rc=134);
+///   * unbounded with a value that happens to wrap into range — `-mlzma:lc259`
+///     becomes `lc3`, encodes fine, and stores `"lc259"` in the block header,
+///     so the archive describes a chain that did not compress it;
+///   * bounded here — a clean refusal, and a method string that always means
+///     what it says.
+fn parse_int_max(s: &str, max: u32) -> Option<u32> {
+    match parse_int(s) {
+        Some(n) if n <= max => Some(n),
+        _ => None,
+    }
 }
 
 /// `parseMem` (`Common.cpp:204`).
@@ -1215,15 +1250,15 @@ fn parse_lzma<'a, I: Iterator<Item = &'a str>>(params: I) -> Option<LzmaParams> 
         let two = param.get(..2).unwrap_or("");
         let handled = match two {
             "pb" => {
-                p.pos_state_bits = parse_int(&param[2..])?;
+                p.pos_state_bits = parse_int_max(&param[2..], LZMA_PB_MAX)?;
                 true
             }
             "lc" => {
-                p.lit_context_bits = parse_int(&param[2..])?;
+                p.lit_context_bits = parse_int_max(&param[2..], LZMA_LC_MAX)?;
                 true
             }
             "lp" => {
-                p.lit_pos_bits = parse_int(&param[2..])?;
+                p.lit_pos_bits = parse_int_max(&param[2..], LZMA_LP_MAX)?;
                 true
             }
             "fb" => {
@@ -1328,15 +1363,15 @@ fn parse_lzma2(params: &[&str]) -> Option<Lzma2Params> {
         let two = param.get(..2).unwrap_or("");
         let handled = match two {
             "pb" => {
-                p.pos_state_bits = parse_int(&param[2..])?;
+                p.pos_state_bits = parse_int_max(&param[2..], LZMA_PB_MAX)?;
                 true
             }
             "lc" => {
-                p.lit_context_bits = parse_int(&param[2..])?;
+                p.lit_context_bits = parse_int_max(&param[2..], LZMA_LC_MAX)?;
                 true
             }
             "lp" => {
-                p.lit_pos_bits = parse_int(&param[2..])?;
+                p.lit_pos_bits = parse_int_max(&param[2..], LZMA_LP_MAX)?;
                 true
             }
             "fb" => {
@@ -1542,6 +1577,43 @@ mod tests {
         assert_eq!(parse_mem("22"), Some(4 * 1024 * 1024));
         assert_eq!(parse_mem("22^"), Some(4 * 1024 * 1024));
         assert_eq!(parse_mem("0"), Some(1));
+    }
+
+    /// The values that used to abort the process or, worse, encode as something
+    /// other than what the block header would claim.
+    ///
+    /// `lc259` is the dangerous one: `259 as u8 == 3`, so before the bound it
+    /// encoded as `lc3` while `canonize` stored `"lc259"` — an archive whose
+    /// header described a chain that did not compress it. `lc300 as u8 == 44`
+    /// sized the literal-probability array at `0x300 << 44` and aborted.
+    #[test]
+    fn lc_lp_pb_are_bounded_at_parse_time() {
+        for (name, max) in [("lc", LZMA_LC_MAX), ("lp", LZMA_LP_MAX), ("pb", LZMA_PB_MAX)] {
+            assert_eq!(parse_int_max("0", max), Some(0), "{name}0");
+            assert_eq!(parse_int_max(&max.to_string(), max), Some(max), "{name} at max");
+            assert_eq!(parse_int_max(&(max + 1).to_string(), max), None, "{name} past max");
+            // Values that wrap INTO range once narrowed to u8 must still be
+            // refused -- this is the case that produced a lying header.
+            assert_eq!(parse_int_max("259", max), None, "{name}259");
+            assert_eq!(parse_int_max("300", max), None, "{name}300");
+        }
+    }
+
+    #[test]
+    fn lzma_and_lzma2_both_refuse_out_of_range_bits() {
+        for chain in ["lzma:lc9", "lzma:lc259", "lzma:lc300", "lzma:lp5", "lzma:pb5",
+                      "lzma2:lc9", "lzma2:lc259", "lzma2:lp5", "lzma2:pb5"] {
+            assert!(
+                matches!(Method::parse(chain), Some(Method::Unsupported(_)) | None),
+                "{chain} must not parse into a usable method",
+            );
+        }
+        for chain in ["lzma:lc8", "lzma:lp4", "lzma:pb4", "lzma2:lc4"] {
+            assert!(
+                !matches!(Method::parse(chain), Some(Method::Unsupported(_)) | None),
+                "{chain} is in range and must still parse",
+            );
+        }
     }
 
     #[test]
