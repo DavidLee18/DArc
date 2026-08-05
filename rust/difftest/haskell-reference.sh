@@ -44,7 +44,7 @@ PINS="$ROOT/rust/difftest/golden/reference.sha256"
 # The commit the reference is built from. Same idea as `DARC_C_REF_SHA` in
 # c-reference.sh: the oracle is pinned to history so it cannot drift.
 DARC_HASKELL_REF_SHA="9a127e6"
-RELEASE_TAG="reference-$DARC_HASKELL_REF_SHA"
+RELEASE_TAG="oracle-$DARC_HASKELL_REF_SHA"
 
 sha() {
   if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | cut -d' ' -f1
@@ -110,11 +110,9 @@ echo "reference: fetching $url"
 if ! curl -fsSL --retry 3 --retry-delay 2 -o "$tmp" "$url"; then
   rm -f "$tmp"
   echo "could not fetch $url" >&2
-  # Falling through to a build rather than failing: the release may not exist
-  # yet. Creating its tag needs a ruleset exception on this repository --
-  # `git push origin reference-9a127e6` is rejected with "Cannot create ref due
-  # to creations being restricted", so the assets cannot be published without
-  # the owner relaxing that rule or making the tag themselves.
+  # Falling through to a build rather than failing: this platform may simply
+  # have no published asset yet. Only darwin-arm64 does; the Linux ones still
+  # need producing on a Linux host.
   exec "$(dirname "$0")/haskell-reference-build.sh"
 fi
 got="$(sha "$tmp")"
