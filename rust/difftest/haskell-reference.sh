@@ -44,7 +44,19 @@ PINS="$ROOT/rust/difftest/golden/reference.sha256"
 # The commit the reference is built from. Same idea as `DARC_C_REF_SHA` in
 # c-reference.sh: the oracle is pinned to history so it cannot drift.
 DARC_HASKELL_REF_SHA="9a127e6"
-RELEASE_TAG="oracle-$DARC_HASKELL_REF_SHA"
+
+# ONE RELEASE PER PLATFORM, which is not tidiness but a constraint.
+#
+# This repository has immutable releases: assets must be attached when the
+# release is created and cannot be added afterwards, so a workflow that builds
+# the Linux binaries later cannot upload them to a shared release. Deleting and
+# recreating is not a way out either -- deleting a published release BURNS its
+# tag name, and a later `refs/tags/<same name>` is refused with "Reference
+# update failed". That is what happened to `reference-9a127e6`, and the git
+# push's "Cannot create ref due to creations being restricted" made it look
+# like a repository rule. There is none: `gh api repos/.../rulesets` returns
+# `[]`, and the same commit under a fresh tag name is created instantly.
+release_tag() { printf 'oracle-%s-%s\n' "$DARC_HASKELL_REF_SHA" "$1"; }
 
 sha() {
   if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1" | cut -d' ' -f1
@@ -104,15 +116,15 @@ MSG
   exit 2
 fi
 
-url="https://github.com/DavidLee18/DArc/releases/download/$RELEASE_TAG/arc-ghc-$plat"
+url="https://github.com/DavidLee18/DArc/releases/download/$(release_tag "$plat")/arc-ghc-$plat"
 tmp="$(mktemp)"
 echo "reference: fetching $url"
 if ! curl -fsSL --retry 3 --retry-delay 2 -o "$tmp" "$url"; then
   rm -f "$tmp"
   echo "could not fetch $url" >&2
-  # Falling through to a build rather than failing: this platform may simply
-  # have no published asset yet. Only darwin-arm64 does; the Linux ones still
-  # need producing on a Linux host.
+  # Falling through to a build rather than failing: this platform may have no
+  # published asset yet. `.github/workflows/reference-oracle.yml` builds and
+  # publishes one on demand.
   exec "$(dirname "$0")/haskell-reference-build.sh"
 fi
 got="$(sha "$tmp")"
