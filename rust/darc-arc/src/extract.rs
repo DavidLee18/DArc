@@ -74,7 +74,10 @@ impl Layout {
         let name = match self.ep {
             // `const ""` — the parent directory becomes empty, so only the base
             // name survives.
-            0 => filtered.rsplit('/').next().unwrap_or(filtered).to_string(),
+            // Both separators, or `arc e` is only flat on Unix: a stored
+            // `sub\a.txt` would keep its `sub\` and create a directory on
+            // Windows, which is the one thing this layout exists to prevent.
+            0 => filtered.rsplit(SEPARATORS).next().unwrap_or(filtered).to_string(),
             3 => filtered.to_string(),
             // stripRoot = dropDrive. On a Unix path that is the leading '/'.
             _ => strip_root(filtered),
@@ -87,15 +90,33 @@ impl Layout {
     }
 }
 
+/// Both path separators, on every platform.
+///
+/// Windows is a first-class target here (`windows-cross`, `windows-arm64-test`
+/// and `interop-windows-amd64` all ship binaries), and on Windows `\` separates
+/// path components. Treating only `/` as a separator meant `..\..\evil` had no
+/// component equal to `..` and passed every check below.
+///
+/// Applied on ALL platforms rather than under `cfg!(windows)`, deliberately. A
+/// name is a property of the archive, not of the machine unpacking it: an
+/// archive that is safe to extract on Linux and dangerous on Windows is a worse
+/// object than one that means the same thing everywhere. The cost is refusing a
+/// Unix filename that genuinely contains a backslash, which is legal but
+/// pathological, and refusing it is the trade we want.
+const SEPARATORS: [char; 2] = ['/', '\\'];
+
 /// `stripRoot = dropDrive` — remove `d:\` or a leading separator, so an absolute
 /// path in the archive cannot become an absolute path on disk.
 fn strip_root(path: &str) -> String {
     let bytes = path.as_bytes();
-    // "d:/rest" or "d:rest"
+    // "d:/rest", "d:\rest" or "d:rest"
     if bytes.len() >= 2 && bytes[1] == b':' && bytes[0].is_ascii_alphabetic() {
-        return path[2..].trim_start_matches('/').to_string();
+        return path[2..].trim_start_matches(SEPARATORS).to_string();
     }
-    path.trim_start_matches('/').to_string()
+    // Also strips a UNC prefix's leading separators (`\\server\share`), which
+    // on Windows names a remote host rather than anything under the
+    // destination.
+    path.trim_start_matches(SEPARATORS).to_string()
 }
 
 /// Reject a name that would write outside the destination.
@@ -109,7 +130,9 @@ pub fn is_safe(name: &str) -> bool {
     if name.is_empty() {
         return false;
     }
-    if name.starts_with('/') {
+    // A leading separator of either kind is an absolute path, and two of them
+    // is a Windows UNC path naming another host.
+    if name.starts_with(SEPARATORS) {
         return false;
     }
     if name.as_bytes().len() >= 2
@@ -118,7 +141,7 @@ pub fn is_safe(name: &str) -> bool {
     {
         return false;
     }
-    !name.split('/').any(|c| c == "..")
+    !name.split(SEPARATORS).any(|c| c == "..")
 }
 
 #[cfg(test)]
@@ -168,6 +191,41 @@ mod tests {
         assert!(Layout::default().creates_directories());
         assert!(Layout { ep: 3, ..Default::default() }.creates_directories());
         assert!(!Layout::flat().creates_directories());
+    }
+
+    /// Windows separators. Before these, `is_safe` split only on `/`, so
+    /// `..\..\evil` had no component equal to `..`, returned true, and
+    /// `Path::join` on Windows -- a shipped target -- wrote it outside the
+    /// destination. Nothing about this is a conformance question; the reference
+    /// is equally wrong.
+    #[test]
+    fn a_backslash_cannot_escape_the_destination() {
+        for bad in [
+            r"..\..\evil",
+            r"sub\..\..\evil",
+            r"a/b\..\..\..\evil",
+            r"\evil",           // absolute from the drive root
+            r"\\server\share",  // UNC: another host entirely
+            r"..\\..\\evil",
+        ] {
+            assert!(!is_safe(bad), "{bad:?} must be refused");
+        }
+        // Still safe, and must stay accepted.
+        for ok in [r"sub\dir\a.txt", "sub/dir/a.txt", "a..b", "..a", "a.."] {
+            assert!(is_safe(ok), "{ok:?} must remain accepted");
+        }
+    }
+
+    /// `strip_root`'s doc always claimed it removed `d:\`; it trimmed only `/`,
+    /// so `d:\evil` became `\evil` -- an absolute path from the drive root.
+    #[test]
+    fn strip_root_removes_both_separators_and_a_drive() {
+        assert_eq!(strip_root(r"d:\evil"), "evil");
+        assert_eq!(strip_root("d:/evil"), "evil");
+        assert_eq!(strip_root(r"\evil"), "evil");
+        assert_eq!(strip_root("/evil"), "evil");
+        assert_eq!(strip_root(r"\\server\share"), r"server\share");
+        assert_eq!(strip_root("plain/x"), "plain/x");
     }
 
     #[test]

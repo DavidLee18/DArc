@@ -22,7 +22,12 @@ pub fn parse_int(s: &str) -> Option<u32> {
     let mut n: u32 = 0;
     for c in s.chars() {
         match c.to_digit(10) {
-            Some(d) => n = n.wrapping_mul(10).wrapping_add(d),
+            // `checked_*`, where the C wraps. A method string is a header field
+            // that has to mean one thing: `d5000000000` wrapping to 705032704
+            // gives a dictionary the header does not describe, and nothing
+            // downstream can tell that apart from the user asking for 705032704.
+            // Refusing is the only answer that keeps the string honest.
+            Some(d) => n = n.checked_mul(10)?.checked_add(d)?,
             None => return None,
         }
     }
