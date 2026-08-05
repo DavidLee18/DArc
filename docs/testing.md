@@ -156,15 +156,40 @@ Note that `compile-ghc-probe` writes objects into the shared `/tmp/out/`, so run
 
 ### What runs without a reference: `arc-golden-check.sh`
 
-93 cases, one SHA-256 each, recorded from `Tests/arc-ghc`. It is the only
-archive-format gate CI runs, and the only one that will still be meaningful in
-a year.
+113 cases. It is the only archive-format gate CI runs, and the only one that
+will still be meaningful in a year.
 
-Two rules:
+Since compatibility stopped being the bar (`CLAUDE.md`), it holds three kinds,
+tagged in column 3 of the manifest:
 
-- **Never re-record it from the port.** That swaps the thing being checked for
-  the thing doing the checking. Build a reference from `9a127e6` and record
-  from that; the manifest header says so too.
+| kind | count | what it asserts |
+|---|---|---|
+| `ref` (or absent) | 105 | byte-identical to `9a127e6`. A move is a regression. |
+| `port` | 1 | the port deliberately writes different bytes. Column 4 is what the *reference* writes. |
+| `refuse` | 7 | the input must be rejected: non-zero exit under 128, no archive. |
+
+Recording the reference's hash **beside** ours on a `port` line is what makes a
+silently reverted divergence detectable — otherwise the gate catches "it
+changed" but not "it changed back". `refuse` distinguishes `crashed` (died on a
+signal) from `refused`, because the reference *aborts* on `-mlzma:lc300` and
+collapsing those two would have passed on the crashing build.
+
+The self-test is running the whole thing against `Tests/arc-ghc`: it must fail,
+with RECONVERGED on the `port` case, ACCEPTED on `lc259` and the dictionary
+overflow, and CRASHED on `lc300`/`lp300` — while all 105 `ref` cases pass.
+
+Rules:
+
+- **Never re-record `ref` lines from the port.** That swaps the thing being
+  checked for the thing doing the checking. Build a reference from `9a127e6`
+  and record from that; the manifest header says so too. `--record` regenerates
+  only `ref` lines and carries `port`/`refuse` over verbatim, so one re-record
+  cannot quietly delete every divergence.
+- **`port` and `refuse` lines are written by hand**, with a reason, because only
+  a person can say why something diverges. The header pins `# ref-cases: N`, so
+  reclassifying a case shows up in the diff next to that reason. This is a
+  review aid, not enforcement — nothing can enforce it when the port is the only
+  thing that can produce the new bytes.
 - **New cases must be machine-independent**, which the differential harnesses
   never had to be — they ran two binaries on one host, so anything host-varying
   cancelled. That means `--nodates`, explicitly parameterised chains rather than

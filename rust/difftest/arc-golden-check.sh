@@ -11,6 +11,41 @@
 # `Tests/arc-ghc` while the two builds were still byte-identical -- 19 harnesses
 # green at d6ebeb6. From here the port is checked against those bytes forever.
 #
+# ── Three kinds of case, because compatibility is not the bar ───────────────
+#
+# CLAUDE.md no longer treats the reference as the specification: DArc is not a
+# drop-in replacement, and where conformance and correctness conflict the better
+# behaviour wins. That leaves this file with cases the reference cannot record,
+# so the manifest carries a `kind` in column 3. Two-column lines are `ref` and
+# every one of the original 105 is still written exactly that way.
+#
+#   ref     the reference's bytes. A move is a REGRESSION -- do not re-record
+#           from the port, which would replace the thing being checked with the
+#           thing doing the checking.
+#   port    the port deliberately writes different bytes. Column 4 is what the
+#           REFERENCE writes, which is what makes an accidental return to it
+#           detectable; column 5 on is why. Added by hand, never by --record,
+#           because only a person can state the reason.
+#   refuse  the input must be rejected: non-zero exit, under 128, no archive.
+#           A signal death is `crashed` and is NOT a pass -- the reference
+#           aborts on `-mlzma:lc300`, and that abort is the defect #136 fixed.
+#
+# `--record` regenerates ONLY the ref lines and carries port/refuse lines over
+# verbatim. Without that, one re-record would delete every divergence and the
+# deletion would look like routine maintenance.
+#
+# The header also pins `# ref-cases: N`. Reclassifying a reference case as a
+# deliberate divergence is sometimes right and is always a decision; making the
+# count move with it puts that decision in the diff, beside the reason. It does
+# not make laundering impossible -- nothing can, when the port is the only thing
+# that can produce the new bytes -- it makes it deliberate.
+#
+# Self-test: running this against `Tests/arc-ghc` must FAIL, and fail in the
+# specific ways the divergences describe -- RECONVERGED on the port case,
+# ACCEPTED on lc259 and the dictionary overflow, CRASHED on lc300 and lp300 --
+# while all 105 ref cases still pass. That single run exercises every new
+# failure path, which is why there is no separate sabotage script for it.
+#
 # ── What the cases may and may not do ───────────────────────────────────────
 #
 # A checked-in hash has to be MACHINE-INDEPENDENT, which the differential
@@ -249,6 +284,50 @@ run() {
   fi
 }
 
+# run_refuse <case-id> <command...> -- a case whose expected result is a REFUSAL,
+# not bytes.
+#
+# These exist because the port deliberately refuses inputs the reference accepts
+# or crashes on, so there is no reference hash to record and nothing else gates
+# them. `-mlzma:lc300` aborted the process here until #136 (300 narrowed to
+# lc44, sizing the literal-probability array at `0x300 << 44`); unit tests cover
+# the parser, but nothing covered the CLI, and the parser is not what the user
+# runs.
+#
+# FOUR outcomes, and the fourth is the whole reason this is not just "did it
+# write an archive":
+#
+#   accepted -- an archive exists, so the input was not refused
+#   silent   -- exited 0 and wrote nothing: neither a refusal nor a result, and
+#               usually a sign this script invoked the binary wrongly
+#   crashed  -- died on a signal (128+n; a Rust abort is 134)
+#   refused  -- exited non-zero, under 128, and wrote nothing
+#
+# `crashed` must NOT collapse into `refused`. The reference ABORTS on
+# `-mlzma:lc300` -- 300 narrows to lc44 and the literal-probability allocation
+# asks for 27 petabytes -- and that abort is precisely the defect #136 fixed. A
+# check that accepted any non-zero exit would have passed on the crashing build
+# and would pass again if the port ever regressed to it.
+run_refuse() {
+  local id="$1"; shift
+  local tree="$W/t"
+  build_tree "$tree"
+  rm -f "$W/g.arc"
+  local rc=0
+  ( cd "$tree" && "$BIN" "$@" ) >/dev/null 2>&1 || rc=$?
+  local outcome
+  if [ -f "$W/g.arc" ]; then
+    outcome=accepted
+  elif [ "$rc" = 0 ]; then
+    outcome=silent
+  elif [ "$rc" -ge 128 ]; then
+    outcome=crashed
+  else
+    outcome=refused
+  fi
+  printf '%s  %s\n' "$outcome" "$id" >> "$results"
+}
+
 A="$W/g.arc"
 
 # ── stored: the format itself, with no codec in the way ─────────────────────
@@ -445,6 +524,27 @@ run mm-mc-rep            a --nodates -y -r -mt1 --groups="$GROUPFILE" -m4 -mc-re
 run nodata               a --nodates -y -r --nodata -m0 "$A" .
 run crconly              a --nodates -y -r --crconly -m0 "$A" .
 
+# ── deliberate divergence: the port writes bytes the reference does not ─────
+#
+# `-ld` at or below LZMA's 2 MB overhead. The C's `if (mem > 2mb)` guard means a
+# small limit is silently dropped and the dictionary is left alone, so `-ld1m`
+# on `d64m` produced an archive needing 66 MB to open. The port floors the
+# dictionary at 4 KB instead (`memlimit.rs`). The big tree, because a limit that
+# never binds tests nothing -- see the note at the top of this file.
+run big-lzma-d64m-ld1m   a --nodates -y -r -mlzma:d64m -ld1m "$A" .
+
+# ── refusals: inputs that must be rejected, not accepted and not aborted ────
+#
+# Every one of these is a method string the reference either accepts (writing an
+# archive whose header disagrees with what compressed it) or crashes on.
+run_refuse lzma-lc9      a --nodates -y -mlzma:lc9 "$A" .
+run_refuse lzma-lc259    a --nodates -y -mlzma:lc259 "$A" .
+run_refuse lzma-lc300    a --nodates -y -mlzma:lc300 "$A" .
+run_refuse lzma-lp300    a --nodates -y -mlzma:lp300 "$A" .
+run_refuse lzma-pb5      a --nodates -y -mlzma:pb5 "$A" .
+run_refuse lzma2-lc9     a --nodates -y -mlzma2:lc9 "$A" .
+run_refuse lzma-dict-overflow a --nodates -y -mlzma:d5000000000 "$A" .
+
 sort -o "$results" "$results"
 
 if [ "$record" = 1 ]; then
@@ -457,47 +557,150 @@ if [ "$record" = 1 ]; then
     grep '^gone  ' "$results" | sed 's/^/  /' >&2
     exit 2
   fi
+  # `port` and `refuse` lines are carried over verbatim. The reference CANNOT
+  # produce them -- that is what makes them divergences -- so regenerating from
+  # it would delete every one of them and the deletion would look like a normal
+  # re-record. Their ids are also dropped from the freshly recorded set, since
+  # the reference's answer for those cases is precisely what we rejected.
+  carried=""
+  kept=0
+  if [ -s "$MANIFEST" ]; then
+    carried="$W/carried"
+    awk '$1 !~ /^#/ && ($3=="port" || $3=="refuse")' "$MANIFEST" > "$carried"
+    kept=$(grep -c . "$carried" 2>/dev/null || echo 0)
+    if [ "$kept" -gt 0 ]; then
+      # Drop the reference's version of anything we deliberately own.
+      awk 'NR==FNR {own[$2]=1; next} !($2 in own)' "$carried" "$results" > "$W/refonly"
+      mv "$W/refonly" "$results"
+    fi
+  fi
   mkdir -p "$(dirname "$MANIFEST")"
   {
     echo "# Generated by arc-golden-check.sh --record"
     echo "# Reference: $BIN"
     echo "#"
-    echo "# These are the Haskell reference's bytes, recorded before it was"
-    echo "# deleted. Do NOT regenerate them from the port: that would replace"
-    echo "# the thing being checked with the thing doing the checking. If a case"
-    echo "# legitimately changes, build the reference from a commit that still"
-    echo "# has the Haskell (d6ebeb6 or earlier) and re-record from THAT."
+    echo "# Columns:  <sha|outcome>  <case-id>  [kind]  [reference]  [reason...]"
+    echo "#"
+    echo "#   kind absent or 'ref' -- the Haskell reference's bytes, recorded"
+    echo "#     before it was deleted. Do NOT regenerate these from the port:"
+    echo "#     that replaces the thing being checked with the thing doing the"
+    echo "#     checking. Re-record from a build of d6ebeb6 or earlier instead."
+    echo "#   'port' -- the port deliberately writes DIFFERENT bytes. Column 4"
+    echo "#     is what the reference writes, so an accidental return to it is"
+    echo "#     detected too; column 5 on is why. Added by hand, never by"
+    echo "#     --record, because only a person can state the reason."
+    echo "#   'refuse' -- the input must be rejected: non-zero exit, no archive."
+    echo "#"
+    echo "# ref-cases: $(grep -cv '^#' "$results" 2>/dev/null || echo 0)"
     cat "$results"
+    [ "$kept" -gt 0 ] && cat "$carried"
   } > "$MANIFEST"
-  echo "recorded $(grep -c . "$results") cases to $MANIFEST"
+  echo "recorded $(grep -c . "$results") reference cases to $MANIFEST"
+  [ "$kept" -gt 0 ] && echo "carried over $kept port/refuse case(s) unchanged"
   exit 0
 fi
 
 fail=0
 checked=0
 missing=0
-while read -r want id; do
+n_ref=0
+n_port=0
+n_refuse=0
+while read -r want id kind refbytes why; do
   case "$want" in '#'*|'') continue ;; esac
+  # Two-column lines are the original format and mean `ref`. Every one of the
+  # reference-recorded cases is still written that way, untouched.
+  [ -n "$kind" ] || kind=ref
   checked=$((checked + 1))
   got="$(awk -v k="$id" '$2==k {print $1}' "$results")"
   if [ -z "$got" ]; then
     echo "  MISSING [$id]: the manifest has a case this script no longer runs"
     missing=$((missing + 1))
-  elif [ "$got" != "$want" ]; then
-    echo "  DIFF [$id]: expected $want, got $got"
-    fail=$((fail + 1))
+    continue
   fi
+  case "$kind" in
+    ref)
+      n_ref=$((n_ref + 1))
+      if [ "$got" != "$want" ]; then
+        echo "  DIFF [$id]: expected $want, got $got"
+        echo "      This is a REGRESSION against the Haskell reference. Do not"
+        echo "      re-record it from the port. If the change is deliberate, it"
+        echo "      becomes a 'port' line with a justification -- see the header."
+        fail=$((fail + 1))
+      fi
+      ;;
+    port)
+      n_port=$((n_port + 1))
+      if [ "$got" = "$refbytes" ]; then
+        # The case is back to writing what the reference writes, so whatever
+        # this line documents has been undone. Recording the reference's hash
+        # alongside ours is what makes this detectable at all.
+        echo "  RECONVERGED [$id]: now writes the REFERENCE's bytes ($refbytes)"
+        echo "      The deliberate divergence is gone: $why"
+        fail=$((fail + 1))
+      elif [ "$got" != "$want" ]; then
+        echo "  DIFF [$id]: expected $want, got $got"
+        echo "      A deliberately divergent case moved. Its recorded reason is:"
+        echo "        $why"
+        echo "      If this change is intended, update the hash AND the reason."
+        fail=$((fail + 1))
+      fi
+      ;;
+    refuse)
+      n_refuse=$((n_refuse + 1))
+      case "$got" in
+        refused) ;;
+        accepted)
+          echo "  ACCEPTED [$id]: an input that must be refused produced an archive"
+          echo "      $why"
+          fail=$((fail + 1)) ;;
+        crashed)
+          echo "  CRASHED [$id]: died on a signal instead of refusing cleanly"
+          echo "      This is the reference's behaviour, not an acceptable one:"
+          echo "      $why"
+          fail=$((fail + 1)) ;;
+        *)
+          # `silent` -- exited 0 and wrote nothing. Not a refusal, and not a
+          # result either; most likely this script invoked the binary wrongly.
+          echo "  NOT REFUSED [$id]: outcome was '$got', expected 'refused'"
+          echo "      $why"
+          fail=$((fail + 1)) ;;
+      esac
+      ;;
+    *)
+      echo "  BAD KIND [$id]: '$kind' is not one of ref/port/refuse"
+      fail=$((fail + 1)) ;;
+  esac
 done < "$MANIFEST"
 
 # ...and the other direction: a case added without recording it would otherwise
 # pass silently, having been compared against nothing.
-while read -r _got id; do
-  grep -q "  $id\$" "$MANIFEST" || {
-    echo "  UNRECORDED [$id]: this case is not in the manifest"
+#
+# Field-aware, not `grep "  $id\$"`: ids stopped being the last field on the
+# line when `port` and `refuse` gained a reason, and a trailing-anchor grep
+# would have reported every one of them as unrecorded.
+while read -r got id; do
+  awk -v k="$id" '$2==k {found=1} END {exit !found}' "$MANIFEST" || {
+    echo "  UNRECORDED [$id]: this case is not in the manifest (it produced $got)"
+    echo "      A 'ref' case is recorded with --record against the reference."
+    echo "      A 'port' or 'refuse' case is added BY HAND, with its reason --"
+    echo "      deliberately, because only a person can say why it diverges."
     fail=$((fail + 1))
   }
 done < "$results"
 
-echo "arc golden: $checked recorded cases, $fail differing, $missing missing"
+# The anti-laundering check. Reclassifying a reference-recorded case as a
+# deliberate divergence is sometimes right and is always a decision; requiring
+# the count to move with it puts that decision in the diff, next to the reason.
+# It does not make laundering impossible -- nothing can, when the port is the
+# only thing that can produce the new bytes -- it makes it deliberate.
+expect_ref="$(awk '/^# ref-cases:/ {print $3}' "$MANIFEST")"
+if [ -n "$expect_ref" ] && [ "$n_ref" != "$expect_ref" ]; then
+  echo "  REF COUNT [$n_ref, header says $expect_ref]: a case changed provenance."
+  echo "      If that is intended, update '# ref-cases:' in the manifest too."
+  fail=$((fail + 1))
+fi
+
+echo "arc golden: $checked cases ($n_ref reference, $n_port divergent, $n_refuse refusal), $fail failing, $missing missing"
 [ "$fail" = 0 ] && [ "$missing" = 0 ] || exit 1
-echo "the Rust arc still writes the bytes the Haskell reference wrote"
+echo "the Rust arc writes the reference's bytes where it should, its own where it must, and refuses what it must"
