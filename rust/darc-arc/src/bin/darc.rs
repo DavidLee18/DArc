@@ -1233,6 +1233,33 @@ fn add(
     // are actually reached are checked below, once the split is known.
     let type_names: Vec<String> = decoded.iter().map(|(t, _)| t.clone()).collect();
     let chains: Vec<String> = decoded.iter().map(|(_, c)| c.join("+")).collect();
+
+    // `-ld` is a promise about the archive, and some of it cannot be kept:
+    // LZMA needs its dictionary PLUS a fixed ~2 MB, so `-ld1m` is unreachable
+    // whatever the dictionary. Say so once, here, where the chains are known and
+    // the code runs a single time -- the per-block fitting below would repeat it
+    // for every block, and the limiter itself returns `()` and cannot speak.
+    //
+    // A warning, not an error: the archive is valid and is the closest thing to
+    // the request that exists. What was wrong was producing it silently.
+    if dlimit != u64::MAX {
+        let mut said: Vec<String> = Vec::new();
+        for chain in &chains {
+            for (m, needs) in darc_arc::memlimit::unmet_decompression_limit(chain, dlimit) {
+                let line = format!(
+                    "WARNING: -ld cannot be met by {m}: it needs {} to decompress, \
+                     against the {} asked for. Using the smallest this method allows.",
+                    darc_arc::canonize::show_mem(needs.min(u64::from(u32::MAX)) as u32),
+                    darc_arc::canonize::show_mem(dlimit.min(u64::from(u32::MAX)) as u32),
+                );
+                if !said.contains(&line) {
+                    eprintln!("{line}");
+                    said.push(line);
+                }
+            }
+        }
+    }
+
     // `parseSolidOption` (Cmdline.hs:757).
     //
     // `-s` has NO command form. The `s…` command is `ch -sfx…`, not `ch -s…`

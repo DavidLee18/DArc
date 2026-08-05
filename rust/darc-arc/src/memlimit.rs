@@ -236,6 +236,37 @@ pub fn fit_to_data(chain: &str, total_bytes: u64) -> Option<String> {
 mod tests {
     use super::*;
 
+    /// `-ld` below LZMA's fixed overhead is unsatisfiable at ANY dictionary
+    /// size, and used to be met with silence.
+    #[test]
+    fn an_unsatisfiable_decompression_limit_is_reported() {
+        // 2 MB of it is fixed decoder overhead, so even a 4 KB dictionary
+        // cannot get under 1 MB. Independent of the data size, which is why
+        // this is worth saying at chain-fitting time.
+        let unmet = unmet_decompression_limit("lzma:d64m", MB);
+        assert_eq!(unmet.len(), 1, "lzma cannot meet -ld1m: {unmet:?}");
+        assert!(unmet[0].0.starts_with("lzma"), "names the method: {:?}", unmet[0].0);
+        assert!(unmet[0].1 > MB, "and what it still needs: {}", unmet[0].1);
+
+        // Above the overhead it IS satisfiable, and must stay quiet.
+        assert!(unmet_decompression_limit("lzma:d64m", 3 * MB).is_empty());
+        assert!(unmet_decompression_limit("lzma:d64m", u64::MAX).is_empty());
+
+        // Methods that need nothing to unpack never complain.
+        assert!(unmet_decompression_limit("storing", 1).is_empty());
+
+        // Only the unsatisfiable LINK is named, not the whole chain.
+        let mixed = unmet_decompression_limit("rep+lzma:d64m", MB);
+        assert!(
+            mixed.iter().all(|(m, _)| m.starts_with("lzma")),
+            "rep can be shrunk to fit; only lzma cannot: {mixed:?}",
+        );
+
+        // A chain that does not parse has a real error coming from elsewhere;
+        // a second complaint here would be noise.
+        assert!(unmet_decompression_limit("nosuchmethod", MB).is_empty());
+    }
+
     /// A decompression limit at or below LZMA's 2 MB overhead used to be
     /// dropped on the floor — the C's `if (mem > 2mb)` skipped the assignment
     /// and left whatever dictionary was already there, so `-ld1m` on a 64 MB
@@ -609,6 +640,38 @@ pub fn limit_decompression_mem(chain: &mut [Method], mem: u64) {
             set_decompression_mem(m, mem);
         }
     }
+}
+
+/// Which links of `chain` STILL need more than `mem` once
+/// [`limit_decompression_mem`] has shrunk them as far as the method allows.
+///
+/// `-ld` is a promise about the archive: "this must open in `mem`". Some of it
+/// cannot be kept. LZMA needs its dictionary *plus a fixed ~2 MB*, so no
+/// dictionary at all satisfies `-ld1m` — the limiter floors the dictionary at
+/// 4 KB and the block still wants about 2 MB. Until this, that gap was silent:
+/// the user asked for 1 MB, got an archive needing 2, and was told nothing.
+///
+/// Reported rather than refused. The archive is valid and is the closest thing
+/// to the request that exists, so failing the run would help nobody; what was
+/// wrong was saying nothing. Returns `(rendered method, bytes it still needs)`
+/// per unsatisfiable link, empty when the limit is met — which is the common
+/// case, so callers pay a parse and nothing else.
+///
+/// An unparseable chain yields no complaints: it has a real error coming from
+/// whatever tries to use it, and a second diagnosis here would only be noise.
+#[must_use]
+pub fn unmet_decompression_limit(chain: &str, mem: u64) -> Vec<(String, u64)> {
+    let names: Vec<String> = chain.split('+').map(str::to_string).collect();
+    let mut methods = match Method::parse_chain(&names) {
+        Some(m) => m,
+        None => return Vec::new(),
+    };
+    limit_decompression_mem(&mut methods, mem);
+    methods
+        .iter()
+        .map(|m| (crate::canonize::show(m), get_decompression_mem(m)))
+        .filter(|(_, needs)| *needs > mem)
+        .collect()
 }
 
 /// The `-ld` default for the ADD command: a flat 1 GB (`Cmdline.hs:300`).
