@@ -34,9 +34,30 @@ runs_for() { # runs_for <sha> -- one "status conclusion name" per line
     --jq ".[]|select(.headSha==\"$1\")|\"\(.status) \(.conclusion // \"-\") \(.name)\""
 }
 
-HEAD="$(gh pr view "$PR" --json headRefOid --jq .headRefOid)"
-[ -n "$HEAD" ] || { echo "could not read PR $PR head sha"; exit 2; }
-echo "PR #$PR head = ${HEAD:0:7}"
+# The PR's head SHA, reconciled against what is actually on the branch.
+#
+# `gh pr view` is as stale as `gh pr checks` was: queried straight after a push
+# it can still report the PREVIOUS head. That happened on the first live use of
+# this script -- it pinned to the old commit, read that commit's failed run, and
+# refused for the wrong reason. Refusing was the right outcome by luck; pinning
+# to a commit that is no longer the head is not.
+#
+# So: if the local checkout is on this branch, its HEAD is the truth, and this
+# waits for GitHub to catch up rather than trusting the first answer.
+WANT=""
+if [ "$(git rev-parse --abbrev-ref HEAD 2>/dev/null)" = "$BR" ]; then
+  WANT="$(git rev-parse HEAD)"
+fi
+while :; do
+  HEAD="$(gh pr view "$PR" --json headRefOid --jq .headRefOid)"
+  [ -n "$HEAD" ] || { echo "could not read PR $PR head sha"; exit 2; }
+  [ -z "$WANT" ] && break
+  [ "$HEAD" = "$WANT" ] && break
+  echo "PR head is ${HEAD:0:7}, local is ${WANT:0:7} -- waiting for GitHub to catch up"
+  [ "$(date +%s)" -gt "$DEADLINE" ] && { echo "PR head never became ${WANT:0:7}"; exit 2; }
+  sleep 15
+done
+echo "PR #$PR head = ${HEAD:0:7}${WANT:+ (matches local)}"
 
 # 1. A run must EXIST for this commit. This is the check the old watcher had no
 #    equivalent of, and its absence is the whole bug.
