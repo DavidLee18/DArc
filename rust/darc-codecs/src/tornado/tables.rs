@@ -345,7 +345,7 @@ pub fn check_for_data_table(
     bufend: usize,
     last_checked: &mut LastChecked,
 ) -> Option<FoundTable> {
-    debug_assert!(n < MAX_TABLE_ROW);
+    assert!(n < MAX_TABLE_ROW);
     if p < 2 {
         return None;
     }

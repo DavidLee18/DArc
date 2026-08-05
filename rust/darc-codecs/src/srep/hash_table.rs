@@ -204,7 +204,7 @@ pub const DIGEST_LEN: usize = 20;
 /// bit. The C reaches this through `__builtin_clzll`; `n == 0` is undefined
 /// there and never occurs, since every caller has already forced `n >= 2`.
 pub fn lb(n: u64) -> u32 {
-    debug_assert!(n > 0, "lb(0) is undefined in the C too");
+    assert!(n > 0, "lb(0) is undefined in the C too");
     63 - n.leading_zeros()
 }
 

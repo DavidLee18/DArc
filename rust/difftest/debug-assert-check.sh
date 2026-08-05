@@ -1,13 +1,14 @@
 #!/usr/bin/env bash
-# Run the codecs with debug assertions ENABLED, which no other harness does.
+# Run the codecs with OVERFLOW CHECKS enabled, which no other harness does.
 #
 # ## Why this exists
 #
-# The crate carries 19 `debug_assert!`s. Every other harness builds
-# `--release`, where `debug_assert!` compiles to nothing -- so all 19 are dead
-# in the only configuration that is ever tested. That is not hypothetical: the
-# Tornado presets 7-11 divergence fixed alongside this file was precisely a
-# guard firing into the void. `MatchFinder`'s default `update_hash1` is
+# It was written for `debug_assert!`. The crate carried 19 of them, every other
+# harness builds `--release` where `debug_assert!` compiles to nothing, and so
+# all 19 were dead in the only configuration ever tested. That was not
+# hypothetical: the Tornado presets 7-11 divergence fixed alongside this file
+# was precisely a guard firing into the void. `MatchFinder`'s default
+# `update_hash1` was
 #
 #     fn update_hash1(&mut self, buf: &[u8], p: usize) {
 #         let _ = (buf, p);
@@ -17,21 +18,29 @@
 # `Hash3` defined `update_hash1` only inherently, so `CombineMF` -- which holds
 # its auxiliary finder as `Box<dyn MatchFinder>` -- reached that default. In
 # release it silently did nothing and the encoder diverged from the C thousands
-# of positions later. One debug run would have named the problem immediately.
+# of positions later.
+#
+# **There are no `debug_assert!`s left.** Every one became an `assert!`, so the
+# assertions now fire in the builds that ship and every other harness exercises
+# them. What is still debug-only, and still tested nowhere else, is `-C
+# overflow-checks`: an `as`-free arithmetic wrap that release computes silently
+# panics here. With ~2400 `as` casts in the crate that is a live class of bug,
+# so this file keeps its job with a narrower remit -- and the liveness probe
+# below had to change with it, since the assertion messages it used to look for
+# are in the release artifact too now.
 #
 # ## What this checks, and what it does NOT
 #
 # This is not a differential test. It does not compare against the C at all --
 # the other harnesses do that, and doing it here would only duplicate them more
-# slowly. What it does is drive the codec through a debug build and fail if any
-# assertion fires or the process dies. The signal is a panic, not a byte
-# mismatch.
+# slowly. What it does is drive the codec through a debug build and fail if an
+# assertion or an overflow check fires, or the process dies. The signal is a
+# panic, not a byte mismatch.
 #
-# Tornado is the whole scope today: 9 of the 19 assertions live under
-# `src/tornado/` (matchfinder 4, out_stream 2, lz77_enc 2, tables 1), and every
-# preset reaches a different match finder and entropy back-end. Extending to
-# another codec is mechanical -- add its `*_ref.cpp` pair to `CODECS` below with
-# the arguments its driver expects.
+# Tornado is the whole scope today: its four match finders and two entropy
+# back-ends are the densest arithmetic in the crate, and every preset reaches a
+# different combination. Extending to another codec is mechanical -- add its
+# `*_ref.cpp` pair to `CODECS` below with the arguments its driver expects.
 set -uo pipefail
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 . "$ROOT/rust/difftest/c-reference.sh"
@@ -40,7 +49,7 @@ CFLAGS_C="$(darc_codec_cflags Tornado)" || exit 1
 W="${TMPDIR:-/tmp}/debug-assert.$$"; mkdir -p "$W"
 trap 'rm -rf "$W"' EXIT
 
-# The point of the whole file: NO --release. Debug assertions on.
+# The point of the whole file: NO --release. Overflow checks on.
 #
 # Note this writes target/debug, a different directory from the release
 # staticlib every other harness uses, so running this cannot disturb them and
@@ -51,20 +60,23 @@ trap 'rm -rf "$W"' EXIT
 LIB="$ROOT/rust/target/debug/libdarc_codecs.a"
 [ -f "$LIB" ] || { echo "no debug staticlib at $LIB" >&2; exit 1; }
 
-# Prove the build really has assertions compiled in. Without this the harness
-# would pass vacuously on a release artifact, which is the exact failure mode it
-# exists to prevent.
+# Prove the build really has overflow checks compiled in. Without this the
+# harness would pass vacuously on a release artifact, which is the exact failure
+# mode it exists to prevent.
+#
 # grep -c, not grep -q: `set -o pipefail` is on and `grep -q` exits at the first
 # match, SIGPIPEing `strings` and failing the pipeline even on success. That bug
 # was fixed in 4x4-check.sh earlier the same day and then written again here.
 #
-# The message checked is from ffi.rs's clamp_len, not the update_hash1 default:
-# now that Hash3 overrides that method, nothing may reach the default body, and
-# a message the optimiser is free to drop is a poor liveness probe.
-asserts=$(strings -a "$LIB" 2>/dev/null | grep -c 'buffer longer than c_int can express')
-[ "${asserts:-0}" -ge 1 ] || {
-  echo "the debug staticlib does not contain the assertion messages -- assertions are" >&2
-  echo "compiled out, so this run would prove nothing." >&2
+# The probe is rustc's own overflow panic message, which exists ONLY when
+# `-C overflow-checks` is on. It deliberately is not an assertion message any
+# more: every assertion in this crate is now unconditional, so an assertion
+# string is present in a release artifact too and would prove nothing about the
+# profile this file needs.
+checks=$(strings -a "$LIB" 2>/dev/null | grep -c 'attempt to .* with overflow')
+[ "${checks:-0}" -ge 1 ] || {
+  echo "the debug staticlib carries no overflow-check panic messages -- overflow" >&2
+  echo "checks are compiled out, so this run would prove nothing." >&2
   exit 1; }
 
 cc() { local out="$1"; shift

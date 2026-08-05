@@ -289,7 +289,7 @@ impl HashChain {
 
         while match_index >= lowest_match_index && nb_attempts > 0 {
             nb_attempts -= 1;
-            debug_assert!(match_index < ip_index);
+            assert!(match_index < ip_index);
             let m = (match_index - BASE) as i32;
 
             // Speculative pre-filter (lz4hc.c:933): if the two bytes at the end
@@ -329,7 +329,7 @@ impl HashChain {
             // it finds a better jump, so a long match costs far fewer probes
             // than one step per byte. Only the optimal parser enables this.
             if chain_swap && match_length == longest {
-                debug_assert_eq!(look_back_length, 0); // search forward only
+                assert_eq!(look_back_length, 0); // search forward only
                 if match_index + longest as u32 <= ip_index {
                     const K_TRIGGER: i32 = 4;
                     let mut distance_to_next_match = 1u32;
@@ -471,8 +471,8 @@ fn encode_sequence(
     match_length: i32,
     offset: i32,
 ) -> bool {
-    debug_assert!(match_length >= MINMATCH);
-    debug_assert!(offset > 0 && offset as u32 <= DISTANCE_MAX);
+    assert!(match_length >= MINMATCH);
+    assert!(offset > 0 && offset as u32 <= DISTANCE_MAX);
 
     let lit_len = (*ip - *anchor) as usize;
 
@@ -580,7 +580,7 @@ fn literals_price(litlen: i32) -> i32 {
 /// offset, the literal run, and any extra match-length bytes.
 #[inline]
 fn sequence_price(litlen: i32, mlen: i32) -> i32 {
-    debug_assert!(mlen >= MINMATCH);
+    assert!(mlen >= MINMATCH);
     let mut price = 1 + 2; // token + 16-bit offset
     price += literals_price(litlen);
     if mlen >= ML_MASK + MINMATCH {

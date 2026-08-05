@@ -41,7 +41,7 @@ impl Io {
     }
 
     fn call(&self, what: &[u8], buf: *mut c_void, size: c_int) -> c_int {
-        debug_assert_eq!(what.last(), Some(&0), "`what` must be NUL-terminated");
+        assert_eq!(what.last(), Some(&0), "`what` must be NUL-terminated");
         unsafe { (self.callback)(what.as_ptr() as *const c_char, buf, size, self.auxdata) }
     }
 
@@ -63,6 +63,6 @@ impl Io {
 }
 
 fn clamp_len(n: usize) -> c_int {
-    debug_assert!(n <= c_int::MAX as usize, "buffer longer than c_int can express");
+    assert!(n <= c_int::MAX as usize, "buffer longer than c_int can express");
     n as c_int
 }

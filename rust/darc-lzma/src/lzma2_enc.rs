@@ -745,17 +745,16 @@ impl Lzma2Enc {
             };
             res?;
 
-            // Lzma2Enc.c:626-627. A debug assertion for the message, and the C's own
-            // runtime check so that release builds refuse rather than emit a stream
-            // whose chunk lengths do not add up to the input.
-            debug_assert_eq!(
+            // Lzma2Enc.c:626-627. Unconditional, not `debug_assert_eq!`: emitting a
+            // stream whose chunk lengths do not add up to the input is a corrupt
+            // archive, and it must not be possible to build a configuration that
+            // does it quietly. The C's runtime check that stood beside this is gone
+            // with the debug assertion -- there is only one behaviour now.
+            assert_eq!(
                 st.src_pos, limited.processed,
                 "block consumed {} bytes but the limited stream delivered {}",
                 st.src_pos, limited.processed
             );
-            if st.src_pos != limited.processed {
-                return Err(Lzma2Error::Fail);
-            }
 
             // Lzma2Enc.c:629. With SOLID this always holds -- the limit is the "no
             // limit" sentinel, so the only way the inner loop ended is end-of-input.
@@ -1137,7 +1136,7 @@ fn encode_subblock(
     // so an incompressible prefix followed by compressible data emits mode 2 for the
     // first LZMA chunk. `a_copy_chunk_before_the_first_lzma_chunk_produces_mode_two`
     // is that case, and the independent differential harness observes it too.
-    debug_assert_ne!(mode, 1, "mode 1 requires needInitState without needInitProp");
+    assert_ne!(mode, 1, "mode 1 requires needInitState without needInitProp");
 
     chunk.clear();
     chunk.push(CONTROL_LZMA | (mode << 5) | (((u >> 16) & 0x1F) as u8));
@@ -1148,7 +1147,7 @@ fn encode_subblock(
     if st.need_init_prop {
         chunk.push(st.props_byte);
     }
-    debug_assert_eq!(chunk.len(), lz_header_size);
+    assert_eq!(chunk.len(), lz_header_size);
 
     st.need_init_prop = false;
     st.need_init_state = false;

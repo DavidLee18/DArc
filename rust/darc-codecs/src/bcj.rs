@@ -108,7 +108,7 @@ fn test86_ms_byte(b: u8) -> bool {
 /// and a panic here, so the shift is done with `checked_shl` and asserted
 /// instead of trusting the reasoning.
 fn shift_mask(prev_mask: u32, prev_pos_t: usize) -> u32 {
-    debug_assert!((1..=3).contains(&prev_pos_t), "prevPosT out of range: {prev_pos_t}");
+    assert!((1..=3).contains(&prev_pos_t), "prevPosT out of range: {prev_pos_t}");
     let shift = prev_pos_t.wrapping_sub(1) as u32;
     prev_mask.checked_shl(shift).unwrap_or(0) & 0x7
 }

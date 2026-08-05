@@ -30,10 +30,10 @@ fn ror(x: u32, y: i32) -> u32 {
 /// `lzpC(p)` -- the 32-bit word ending at `at`, i.e. bytes [at-4, at).
 #[inline]
 fn lzp_c(b: &[u8], at: usize) -> u32 {
-    debug_assert!(at >= 4 && at <= b.len(), "lzpC out of range");
-    if at < 4 || at > b.len() {
-        return 0;
-    }
+    // `assert!`, not `debug_assert!`: the callers' bounds are the invariant, and a
+    // 0 returned for an out-of-range window would silently change the hash rather
+    // than name the broken caller.
+    assert!(at >= 4 && at <= b.len(), "lzpC out of range");
     u32::from_le_bytes([b[at - 4], b[at - 3], b[at - 2], b[at - 1]])
 }
 
