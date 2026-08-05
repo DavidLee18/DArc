@@ -11,32 +11,49 @@
 # Both arguments are required. There is deliberately no "compare a binary with
 # itself" default: that would pass unconditionally and read as coverage.
 #
-# ── The five observables ─────────────────────────────────────────────────────
+# ── This compares BEHAVIOUR, not wording ────────────────────────────────────
 #
-# An archiver's behaviour is not just the archive. All five of these are part of
-# the contract, and each fails for different reasons:
+# It used to compare stdout and stderr verbatim, and by 2026-08 it was failing
+# **18 of 18 cases** -- unnoticed, because CI ran no arc-*-check.sh but
+# arc-golden-check. Every one of those failures was wording or verbosity, not
+# behaviour. Measured on the same inputs:
 #
-#   1. archive bytes    format drift -- the highest-risk failure in this repo,
-#                       because everything still round-trips when it happens
-#   2. exit code        what scripts and the GUI branch on
-#   3. stdout           listings (`arc l`) are a documented interface
-#   4. stderr           diagnostics, and which errors are reported at all
-#   5. extracted tree   every path and every byte, plus files present in one
-#                       side only
+#   * the reference prints a version banner on every command; the port prints
+#     none
+#   * on create, the reference prints `Compressing 226 files...`, a progress
+#     redraw, `Compressed ... Ratio 100.0%` and a timing line; the port prints
+#     only `All OK` -- while writing a BYTE-IDENTICAL archive
+#   * on extract the port prints an `Extracted N files` summary the reference
+#     does not print at all
+#   * diagnostics go to stdout on the reference and to stderr on the port, and
+#     the sentences differ
 #
-# ── Why the output needs normalising, and what is NOT normalised ─────────────
+# `CLAUDE.md` settled which of those matter: DArc is not a drop-in replacement,
+# and message-identity is the lowest-priority property here. A harness that
+# fails on all of it reports nothing and gets ignored -- which is exactly what
+# happened.
 #
-# Measured on the current binary, two identical runs differ in exactly three
-# ways, none of them behavioural:
+# So the observables are now:
 #
-#   * `Compression time: cpu 0.11 secs, real 2.00 secs. Speed 219 kB/s` -- and
-#     the `Speed` clause is sometimes absent entirely
-#   * progress redraws, written with carriage returns and backspaces
-#   * the archive path, which contains a per-run sandbox directory
+#   1. archive bytes    identical. Format drift is still the highest-risk
+#                       failure here, and this is unchanged.
+#   2. extracted tree   identical -- every path and byte, plus files present on
+#                       one side only.
+#   3. exit code        identical. This is what scripts branch on, and the two
+#                       builds already agree on it everywhere, including the
+#                       error paths.
+#   4. LISTING DATA     identical. `arc l` is a documented interface, and its
+#                       rows and totals are its content. The table format
+#                       already matches; the banner does not, so the banner
+#                       goes and the rows stay.
+#   5. failure reporting  a non-zero exit must come with a diagnostic on ONE of
+#                       the two streams. Which stream, and in what words, is not
+#                       compared; staying silent about a failure is.
 #
-# Those three are pinned. Everything else -- the version banner, the file
-# counts, the ratio, the listing, every diagnostic -- is compared verbatim. A
-# port that gets the compression ratio or the file count wrong must fail.
+# What is deliberately NOT compared: the banner, progress redraws, timing, the
+# create/extract summary lines, and the wording of any diagnostic. A port that
+# lists the wrong files, writes different bytes, extracts a different tree, or
+# fails silently still fails.
 set -uo pipefail
 
 REF="${1:-}"
@@ -61,17 +78,45 @@ trap 'rm -rf "$W"' EXIT
 bash "$ROOT/Tests/make-corpus.sh" "$W/corpus" >/dev/null 2>&1 || {
   echo "make-corpus.sh failed" >&2; exit 1; }
 
-# Pin the three things that legitimately vary between two runs of the SAME
-# binary. Kept deliberately narrow: anything not listed here is a real
-# difference.
-normalise() { # normalise <file> <sandbox-dir>
-  tr '\r' '\n' < "$1" \
+# The data-bearing lines of a run, from BOTH streams together.
+#
+# Stream-agnostic on purpose: the reference puts diagnostics on stdout and the
+# port puts them on stderr, and neither is more correct.
+#
+# **A WHITELIST, not a blacklist, and that is the whole point.** The first
+# version of this listed the reporting lines to drop -- banner, progress,
+# timing, the create/extract summaries -- and it failed intermittently: one run
+# in four flagged a different case each time, and five isolated repeats of the
+# failing command never reproduced it. That is what a blacklist does. The
+# reference draws progress with carriage returns, so a flush can land mid-line
+# and produce a fragment that begins with none of the prefixes being filtered;
+# no list of things to drop is ever closed.
+#
+# A list of things to KEEP is closed. Three shapes carry data:
+#
+#   * a listing row, which begins with its ISO date
+#   * the totals line, `226 files, 438.744 bytes, 0 compressed`
+#   * the final status, `All OK`
+#
+# Anything else is reporting and is ignored. The substance -- archive bytes, the
+# extracted tree, the exit code -- is checked separately and verbatim, so this
+# only has to cover the listing interface.
+data_only() { # data_only <stdout> <stderr> <sandbox-dir>
+  cat "$1" "$2" \
+    | tr '\r' '\n' \
     | tr -d '\010' \
-    | sed -e 's/^\(.*\) time: .*/\1 time: PINNED/' \
-          -e "s#$2#SANDBOX#g" \
-          -e 's/[[:space:]]*$//' \
-    | grep -v '^[[:space:]]*$' \
-    | grep -v 'Processed'
+    | sed -e "s#$3#SANDBOX#g" -e 's/[[:space:]]*$//' \
+    | grep -E '^[0-9]{4}-[0-9]{2}-[0-9]{2} |^[0-9][0-9.,]* files, |^All OK$'
+}
+
+# Did this side say anything at all about a failure?
+#
+# The wording differs and the stream differs, so neither is compared -- but a
+# build that exits non-zero while printing nothing has told the user nothing,
+# and that IS behaviour. Anything beyond the banner counts.
+reported_something() { # reported_something <stdout> <stderr>
+  cat "$1" "$2" | tr '\r' '\n' | tr -d '\010' \
+    | grep -Ev '^DArc [0-9]' | grep -qE '[^[:space:]]'
 }
 
 fail=0 checked=0
@@ -92,16 +137,24 @@ compare() { # compare <label> <cwd-relative-to-sandbox> <args...>
     echo $? > "$dir/.rc"
   done
 
-  # 2. exit code
+  # 3. exit code
   if ! cmp -s "$W/ref/.rc" "$W/port/.rc"; then
     bad="$bad exit($(cat "$W/ref/.rc") vs $(cat "$W/port/.rc"))"
   fi
-  # 3/4. stdout and stderr, normalised
-  for s in out err; do
-    normalise "$W/ref/.$s"  "$W/ref"  > "$W/n.ref.$s"
-    normalise "$W/port/.$s" "$W/port" > "$W/n.port.$s"
-    cmp -s "$W/n.ref.$s" "$W/n.port.$s" || bad="$bad std$s"
-  done
+  # 4. the data-bearing output, both streams together
+  data_only "$W/ref/.out"  "$W/ref/.err"  "$W/ref"  >| "$W/n.ref"
+  data_only "$W/port/.out" "$W/port/.err" "$W/port" >| "$W/n.port"
+  if ! cmp -s "$W/n.ref" "$W/n.port"; then
+    bad="$bad data"
+    diff "$W/n.ref" "$W/n.port" >| "$W/data.diff" 2>&1
+  else
+    : >| "$W/data.diff"
+  fi
+  # 5. a failure must be reported, on either stream, in any words
+  if [ "$(cat "$W/ref/.rc")" != 0 ]; then
+    reported_something "$W/ref/.out"  "$W/ref/.err"  || bad="$bad ref-silent-failure"
+    reported_something "$W/port/.out" "$W/port/.err" || bad="$bad port-silent-failure"
+  fi
   # 1 + 5. everything the run left behind: archives AND extracted files.
   # diff -r reports both differing contents and paths present on one side only,
   # which are the two ways this can be wrong.
@@ -111,7 +164,8 @@ compare() { # compare <label> <cwd-relative-to-sandbox> <args...>
 
   if [ -n "$bad" ]; then
     echo "  DIFF [$label]:$bad"
-    head -4 "$W/tree.diff" 2>/dev/null | sed 's/^/      /'
+    head -6 "$W/data.diff" 2>/dev/null | sed "s|^|      data: |"
+    head -4 "$W/tree.diff" 2>/dev/null | sed "s|^|      |"
     fail=$((fail + 1))
   fi
 }
@@ -148,15 +202,25 @@ compare_with_arc() { # compare_with_arc <label> <args...>
     echo $? > "$dir/.rc"
   done
   cmp -s "$W/ref/.rc" "$W/port/.rc" || bad="$bad exit"
-  for s in out err; do
-    normalise "$W/ref/.$s"  "$W/ref"  > "$W/n.ref.$s"
-    normalise "$W/port/.$s" "$W/port" > "$W/n.port.$s"
-    cmp -s "$W/n.ref.$s" "$W/n.port.$s" || bad="$bad std$s"
-  done
+  data_only "$W/ref/.out"  "$W/ref/.err"  "$W/ref"  >| "$W/n.ref"
+  data_only "$W/port/.out" "$W/port/.err" "$W/port" >| "$W/n.port"
+  if ! cmp -s "$W/n.ref" "$W/n.port"; then
+    bad="$bad data"
+    diff "$W/n.ref" "$W/n.port" >| "$W/data.diff" 2>&1
+  else
+    : >| "$W/data.diff"
+  fi
+  if [ "$(cat "$W/ref/.rc")" != 0 ]; then
+    reported_something "$W/ref/.out"  "$W/ref/.err"  || bad="$bad ref-silent-failure"
+    reported_something "$W/port/.out" "$W/port/.err" || bad="$bad port-silent-failure"
+  fi
   rm -f "$W"/ref/.out "$W"/ref/.err "$W"/ref/.rc "$W"/port/.out "$W"/port/.err "$W"/port/.rc
   diff -r "$W/ref" "$W/port" >"$W/tree.diff" 2>&1 || bad="$bad tree"
   if [ -n "$bad" ]; then
-    echo "  DIFF [$label]:$bad"; head -4 "$W/tree.diff" | sed 's/^/      /'; fail=$((fail + 1))
+    echo "  DIFF [$label]:$bad"
+    head -6 "$W/data.diff" 2>/dev/null | sed "s|^|      data: |"
+    head -4 "$W/tree.diff" | sed "s|^|      |"
+    fail=$((fail + 1))
   fi
 }
 
@@ -191,6 +255,35 @@ probe() {
 if probe; then
   echo "SELF-TEST FAILED: -m1 and -m4 produced identical archives, so the" >&2
   echo "comparison cannot be distinguishing anything" >&2
+  exit 1
+fi
+
+# ── and the DATA comparison specifically must have teeth ────────────────────
+#
+# The check above proves the tree comparison works. It says nothing about
+# `data_only`, which is the part that was just loosened -- and a filter one line
+# too greedy would silently reduce it to comparing "All OK" with "All OK".
+#
+# So: list two archives that genuinely hold different files, and require the
+# reduced output to differ. If this passes, the listing rows are still being
+# compared; if it does not, the filters have eaten the content.
+rm -rf "$W/probe"; mkdir -p "$W/probe/a" "$W/probe/b"
+printf 'one\n' > "$W/probe/a/only-in-a.txt"
+printf 'two\n' > "$W/probe/b/only-in-b.txt"
+( cd "$W/probe/a" && "$PORT" a --nodates -y -m0 "$W/probe/a.arc" . ) >/dev/null 2>&1
+( cd "$W/probe/b" && "$PORT" a --nodates -y -m0 "$W/probe/b.arc" . ) >/dev/null 2>&1
+"$PORT" l "$W/probe/a.arc" >| "$W/probe/a.out" 2>| "$W/probe/a.err"
+"$PORT" l "$W/probe/b.arc" >| "$W/probe/b.out" 2>| "$W/probe/b.err"
+data_only "$W/probe/a.out" "$W/probe/a.err" "$W/probe" >| "$W/probe/a.data"
+data_only "$W/probe/b.out" "$W/probe/b.err" "$W/probe" >| "$W/probe/b.data"
+if [ ! -s "$W/probe/a.data" ]; then
+  echo "SELF-TEST FAILED: data_only reduced a listing to nothing, so the" >&2
+  echo "comparison would pass on any two archives" >&2
+  exit 1
+fi
+if cmp -s "$W/probe/a.data" "$W/probe/b.data"; then
+  echo "SELF-TEST FAILED: two archives with different contents reduced to the" >&2
+  echo "same data, so the listing rows are no longer being compared" >&2
   exit 1
 fi
 
