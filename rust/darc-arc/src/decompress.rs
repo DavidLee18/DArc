@@ -309,6 +309,19 @@ pub fn compress_one_with(method: &Method, src: &[u8], all_at_once: bool) -> Resu
             })
         }
         Method::Lzma(p) => {
+            // `lc`/`lp`/`pb` are parsed as `u32` and narrowed here, so a method
+            // string may name a value the encoder never sees. Also conformant,
+            // also verified rather than assumed:
+            //
+            //     -mlzma:lc259  ->  259 as u8 == 3, archive stores "lc259",
+            //                       byte-identical to the reference (54497 B)
+            //     -mlzma:lc300  ->  300 as u8 == 44, and the literal-probability
+            //                       allocation aborts -- rc=134 in BOTH builds
+            //     -mlzma:lc9    ->  rejected by both
+            //
+            // The C narrows the same way through `atoi` into an `int`, so
+            // validating before the cast would reject archives the reference
+            // writes. The abort is the reference's behaviour too.
             let props = darc_lzma::LzmaProps {
                 lc: p.lit_context_bits as u8,
                 lp: p.lit_pos_bits as u8,
@@ -509,6 +522,21 @@ fn do_lzma2(p: &crate::method::Lzma2Params, src: &[u8]) -> Result<Vec<u8>, Error
     // `GetCompressionThreads()` (`C_LZMA2.cpp:71-73`). NOT a tuning knob: above
     // one block thread the encoder splits the input into blocks that each open
     // with a dictionary reset, so this decides the bytes.
+    //
+    // The clamp bound is `u32::MAX` and the cast is to `i32`, which means every
+    // value above `i32::MAX` WRAPS NEGATIVE and the encoder falls back to a
+    // single block thread. That reads like a bug -- the obvious "fix" is to
+    // clamp to `i32::MAX` -- and it is load-bearing. Measured against the
+    // reference on a 3.2 MB input with `-mlzma2:d64k`:
+    //
+    //     -mt2147483647  776354 bytes   (multi-block)
+    //     -mt2147483648  770873 bytes   (single block -- the sign flipped)
+    //     -mt4294967295  770873 bytes
+    //
+    // byte-identical to `9a127e6` at every one of those values. The C narrows
+    // to a signed int and flips in the same place, so clamping to `i32::MAX`
+    // here would make `-mt` above 2^31 write archives the reference does not.
+    // Leave it.
     let threads = crate::memlimit::compression_threads().clamp(1, u64::from(u32::MAX)) as i32;
     props.num_total_threads = threads;
     props.num_block_threads_max = threads;
