@@ -3,9 +3,9 @@
 #
 # ## Why this exists
 #
-# It was written for `debug_assert!`. The crate carried 19 of them, every other
-# harness builds `--release` where `debug_assert!` compiles to nothing, and so
-# all 19 were dead in the only configuration ever tested. That was not
+# It was written for `debug_assert!`. The workspace carried 22 of them, every
+# other harness builds `--release` where `debug_assert!` compiles to nothing, and
+# so all 22 were dead in the only configuration ever tested. That was not
 # hypothetical: the Tornado presets 7-11 divergence fixed alongside this file
 # was precisely a guard firing into the void. `MatchFinder`'s default
 # `update_hash1` was
