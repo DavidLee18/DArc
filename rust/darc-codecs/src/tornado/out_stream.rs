@@ -86,14 +86,18 @@ impl<'a> OutputByteStream<'a> {
 
     #[inline]
     fn room(&mut self, n: usize) -> bool {
-        if self.output + n > self.buf.len() {
-            // Unreachable with the C's sizing: at most `pad` bytes are written
-            // between flushes and the buffer holds chunk+pad+512+4096. Report it
-            // rather than panicking across the ABI if the arithmetic ever slips.
-            debug_assert!(false, "Tornado output buffer overflow");
-            self.err = Some(crate::ffi::FREEARC_ERRCODE_GENERAL);
-            return false;
-        }
+        // Unreachable with the C's sizing: at most `pad` bytes are written between
+        // flushes and the buffer holds chunk+pad+512+4096.
+        //
+        // `assert!`, not a `debug_assert!` beside an error return: the error return
+        // was the release behaviour and it silently truncated the stream where the
+        // debug build would have named the bug. Panicking is safe across the ABI --
+        // every entry point goes through `ffi::guard`, whose `catch_unwind` turns
+        // this back into FREEARC_ERRCODE_GENERAL for the C caller.
+        assert!(
+            self.output + n <= self.buf.len(),
+            "Tornado output buffer overflow"
+        );
         true
     }
 
@@ -211,7 +215,7 @@ impl<'a> OutputBitStream<'a> {
     /// the target's shift instruction happens to do.
     #[inline]
     pub fn putbits(&mut self, n: i32, x: u32) {
-        debug_assert!((0..=32).contains(&n), "putbits width {n} out of range");
+        assert!((0..=32).contains(&n), "putbits width {n} out of range");
         self.bitbuf |= (x as u64) << self.bitcount;
         self.bitcount += n;
         if self.bitcount >= 64 {

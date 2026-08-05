@@ -549,7 +549,7 @@ impl Writer {
         // block first to learn that position.
         let bodies = crate::recovery::build(&g, &protected, 0);
         let r0 = crate::recovery::block(rr_pos, &bodies.sectors);
-        debug_assert_eq!(bodies.sectors.len() as u64, sectors_len);
+        assert_eq!(bodies.sectors.len() as u64, sectors_len);
         self.out.extend_from_slice(&bodies.sectors);
         self.out.extend_from_slice(&descriptor(&r0));
 

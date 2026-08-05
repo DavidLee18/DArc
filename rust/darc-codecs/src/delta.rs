@@ -263,10 +263,12 @@ fn read_i16(buf: &[u8], at: isize) -> i16 {
     // the block by the loop guards; if one were not, the C original would be
     // reading uninitialised memory from its own BigAlloc block and would not be
     // reproducible either.
-    debug_assert!(at >= 0 && (at as usize) + 2 <= buf.len(), "i16 read outside the block");
-    if at < 0 || (at as usize) + 2 > buf.len() {
-        return 0;
-    }
+    //
+    // `assert!`, not `debug_assert!`: an out-of-range read here means the loop
+    // guards are wrong, and returning 0 for it would let a mis-transcribed guard
+    // produce a plausible-looking but different stream in exactly the build that
+    // ships. There is deliberately no fallback below.
+    assert!(at >= 0 && (at as usize) + 2 <= buf.len(), "i16 read outside the block");
     i16::from_le_bytes([buf[at as usize], buf[at as usize + 1]])
 }
 

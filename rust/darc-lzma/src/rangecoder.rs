@@ -281,7 +281,7 @@ impl<'a> RangeEncoder<'a> {
     /// `RangeEnc_EncodeDirectBits` (inlined at `LzmaEnc.c:2133`): encode the top
     /// `num_bits` of `value` with no probability model, MSB first.
     pub fn encode_direct_bits(&mut self, value: u32, num_bits: u32) {
-        debug_assert!(num_bits > 0);
+        assert!(num_bits > 0);
         let mut n = num_bits;
         loop {
             self.range >>= 1;

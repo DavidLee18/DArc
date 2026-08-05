@@ -42,7 +42,7 @@ const MB: usize = 1024 * 1024;
 /// `lb` (Common.h:507) -- floor of the binary logarithm. Undefined for 0 there;
 /// the callers all pass a positive size.
 fn lb(n: u32) -> u32 {
-    debug_assert!(n > 0, "lb(0) is undefined in the C too");
+    assert!(n > 0, "lb(0) is undefined in the C too");
     31 - n.leading_zeros()
 }
 

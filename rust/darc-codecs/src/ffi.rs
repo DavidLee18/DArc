@@ -53,7 +53,7 @@ impl Io {
     }
 
     fn call(&self, what: &[u8], buf: *mut c_void, size: c_int) -> c_int {
-        debug_assert_eq!(what.last(), Some(&0), "`what` must be NUL-terminated");
+        assert_eq!(what.last(), Some(&0), "`what` must be NUL-terminated");
         unsafe { (self.callback)(what.as_ptr() as *const c_char, buf, size, self.auxdata) }
     }
 
@@ -126,9 +126,11 @@ impl Io {
 /// The callback takes an `int` length; anything past `c_int::MAX` cannot be
 /// expressed. Rust's `as` truncates every bit as silently as C's implicit
 /// conversion -- that is how 16 GB became 0 in GetPhysicalMemory -- so the one
-/// place a length crosses into an `int` is explicit and asserts in debug.
+/// place a length crosses into an `int` is explicit and asserts unconditionally.
+/// The `min` below is therefore unreachable, and kept only so the cast is still
+/// provably lossless when read on its own.
 fn clamp_len(n: usize) -> c_int {
-    debug_assert!(n <= c_int::MAX as usize, "buffer longer than c_int can express");
+    assert!(n <= c_int::MAX as usize, "buffer longer than c_int can express");
     core::cmp::min(n, c_int::MAX as usize) as c_int
 }
 
