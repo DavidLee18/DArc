@@ -89,6 +89,15 @@ pub enum Error {
     /// Falling back to anything weaker would silently produce an archive whose
     /// key is guessable, so this is fatal rather than degraded.
     NoEntropy,
+    /// A hex field in the encryption method is not hexadecimal, or has an odd
+    /// number of digits.
+    ///
+    /// Named separately from [`Error::BadMethod`] because it is a different
+    /// diagnosis: the method parsed, and the field it carries is damaged. It
+    /// used to be no diagnosis at all — a short salt derives a different key,
+    /// so the run reported `BadPassword` and sent the user hunting for a
+    /// password that was never wrong.
+    BadHex { field: &'static str, value: String },
 }
 
 impl std::fmt::Display for Error {
@@ -98,6 +107,9 @@ impl std::fmt::Display for Error {
             Error::BadPassword => write!(f, "wrong password"),
             Error::Cipher(e) => write!(f, "{e}"),
             Error::NoEntropy => write!(f, "no secure random source available"),
+            Error::BadHex { field, value } => {
+                write!(f, "the {field} in the encryption method is not valid hex: {value:?}")
+            }
         }
     }
 }
@@ -114,23 +126,35 @@ pub fn encode16(bytes: &[u8]) -> String {
     s
 }
 
-/// `decode16` (`Utils.hs:582`) — pairs of digits, and a trailing odd character
-/// is dropped rather than being an error.
+/// `decode16` (`Utils.hs:582`) — pairs of hex digits, **strictly**.
 ///
-/// A non-hex digit is `digitToInt`'s business in Haskell (it would throw) and
-/// `char2int`'s in C (it produces nonsense quietly). Here it ends the decode,
-/// which keeps a malformed archive from producing a key that looks plausible.
-pub fn decode16(s: &str) -> Vec<u8> {
+/// `None` for a non-hex character or an odd number of digits, where the
+/// original languages each degraded instead: Haskell's `digitToInt` throws, the
+/// C's `char2int` produces nonsense quietly, and both drop a trailing odd
+/// character. This port used to end the decode at the first bad character and
+/// return what it had.
+///
+/// Returning a SHORT field is the worst of the three. A truncated salt derives a
+/// different key, the check code then fails, and the run reports "wrong
+/// password" — sending the user to hunt for a password that was never wrong,
+/// about a header that is actually damaged. `decode16("abc")` returning one byte
+/// is the same failure in miniature.
+///
+/// This is the strict decoder only. [`decode16_broken`] must keep every one of
+/// its bugs, because it is the only thing that can read an archive written
+/// before `:h1`.
+pub fn decode16(s: &str) -> Option<Vec<u8>> {
     let chars: Vec<char> = s.chars().collect();
+    if chars.len() % 2 != 0 {
+        return None;
+    }
     let mut out = Vec::with_capacity(chars.len() / 2);
     for pair in chars.chunks_exact(2) {
-        let (hi, lo) = match (pair[0].to_digit(16), pair[1].to_digit(16)) {
-            (Some(h), Some(l)) => (h, l),
-            _ => return out,
-        };
+        let (hi, lo) = (pair[0].to_digit(16)?, pair[1].to_digit(16)?);
+        // Both are nibbles, so this is bounded by 0xFF.
         out.push((hi * 16 + lo) as u8);
     }
-    out
+    Some(out)
 }
 
 /// The **broken** decoder every archive written before the `:h1` parameter
@@ -326,12 +350,19 @@ impl Encryption {
     /// the broken one and can only be read with the broken one. Read
     /// [`decode16_broken`] before touching this.
     pub fn apply(&self, data: &mut [u8], encrypting: bool) -> Result<(), Error> {
-        let decode = match self.hex_fix {
-            true => decode16,
-            false => decode16_broken,
+        // Not a shared function pointer any more: the two decoders no longer
+        // have the same signature, and that is the point. The `:h1` path is
+        // strict and reports damage; the pre-`:h1` path must keep every bug it
+        // has or the archives it exists for stop opening.
+        let (key, iv) = match self.hex_fix {
+            true => (
+                decode16(&self.key)
+                    .ok_or_else(|| Error::BadHex { field: "key", value: self.key.clone() })?,
+                decode16(&self.iv)
+                    .ok_or_else(|| Error::BadHex { field: "IV", value: self.iv.clone() })?,
+            ),
+            false => (decode16_broken(&self.key), decode16_broken(&self.iv)),
         };
-        let key = decode(&self.key);
-        let iv = decode(&self.iv);
         apply_in_place(self.cipher, self.mode, &key, &iv, encrypting, data).map_err(Error::Cipher)
     }
 
@@ -469,8 +500,13 @@ pub fn generate_decryption(
             Some(e) => e,
             None => return Err(Error::BadMethod(method.clone())),
         };
-        let salt = decode16(&e.salt);
-        let stored_code = decode16(&e.code);
+        // The salt and check code were always ordinary hex on both sides, even
+        // before `:h1` — see [`decode16_broken`]'s note on which fields went
+        // through the broken decoder. So both are strict regardless of hex_fix.
+        let salt = decode16(&e.salt)
+            .ok_or_else(|| Error::BadHex { field: "salt", value: e.salt.clone() })?;
+        let stored_code = decode16(&e.code)
+            .ok_or_else(|| Error::BadHex { field: "check code", value: e.code.clone() })?;
         let key = find_key(&e, &salt, &stored_code, passwords, keyfiles)?;
         // The Haskell appends ":k<key>" to the WHOLE stored string, so the
         // resulting method still carries the salt and check code. Nothing reads
@@ -589,9 +625,9 @@ mod tests {
         assert_eq!(e.key_size, 32);
         assert_eq!(e.iv_size, 16);
         assert_eq!(e.num_iterations, 1000);
-        assert_eq!(decode16(&e.salt).len(), 32, "the salt is keySize bytes");
-        assert_eq!(decode16(&e.code).len(), 2, "checkCodeSize is 2");
-        assert_eq!(decode16(&e.iv).len(), 16, "the IV is one block");
+        assert_eq!(decode16(&e.salt).expect("salt is hex").len(), 32, "the salt is keySize bytes");
+        assert_eq!(decode16(&e.code).expect("code is hex").len(), 2, "checkCodeSize is 2");
+        assert_eq!(decode16(&e.iv).expect("iv is hex").len(), 16, "the IV is one block");
         assert!(e.key.is_empty(), "an archive never stores the key");
         // And it prints back to exactly the same string, in the s/c/i order
         // generateEncryption appends them in.
@@ -723,7 +759,7 @@ mod tests {
         assert_eq!(decode16_broken("FF"), vec![0x55], "tolower first");
         // …and the correct decoder disagrees, so a test exercising one of them
         // cannot silently be exercising the other.
-        assert_eq!(decode16("ff"), vec![0xff]);
+        assert_eq!(decode16("ff"), Some(vec![0xff]));
 
         // No ":h1" -- an archive from before the parameter existed.
         let e = method_of(
@@ -762,8 +798,8 @@ mod tests {
     #[test]
     fn the_salt_was_always_ordinary_hex() {
         let salt_hex = "12c17eb14283b3d7b60d28c204b304cc79a06a290c36186d49aaf58f901f1c08";
-        assert_eq!(decode16(salt_hex)[0], 0x12);
-        assert_eq!(decode16(salt_hex)[1], 0xc1);
+        assert_eq!(decode16(salt_hex).expect("hex")[0], 0x12);
+        assert_eq!(decode16(salt_hex).expect("hex")[1], 0xc1);
         assert_ne!(decode16_broken(salt_hex)[1], 0xc1, "the two decoders must differ here");
     }
 
@@ -800,9 +836,9 @@ mod tests {
     #[test]
     fn hex_round_trips_and_a_trailing_odd_digit_is_dropped() {
         assert_eq!(encode16(&[0x00, 0x0f, 0xa5, 0xff]), "000fa5ff");
-        assert_eq!(decode16("000fa5ff"), vec![0x00, 0x0f, 0xa5, 0xff]);
-        assert_eq!(decode16("abc"), vec![0xab]);
-        assert_eq!(decode16("zz"), Vec::<u8>::new());
+        assert_eq!(decode16("000fa5ff"), Some(vec![0x00, 0x0f, 0xa5, 0xff]));
+        assert_eq!(decode16("abc"), None, "an odd digit count is damage, not a short field");
+        assert_eq!(decode16("zz"), None, "a non-hex digit is damage");
     }
 
     /// `strncopy` truncates at the field width instead of refusing, so a method

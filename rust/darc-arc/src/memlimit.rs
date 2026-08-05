@@ -236,6 +236,31 @@ pub fn fit_to_data(chain: &str, total_bytes: u64) -> Option<String> {
 mod tests {
     use super::*;
 
+    /// A decompression limit at or below LZMA's 2 MB overhead used to be
+    /// dropped on the floor — the C's `if (mem > 2mb)` skipped the assignment
+    /// and left whatever dictionary was already there, so `-ld1m` on a 64 MB
+    /// dictionary produced an archive needing 66 MB to open.
+    #[test]
+    fn a_decompression_limit_below_the_overhead_still_shrinks_the_dictionary() {
+        // Below and at the threshold: floored at the 4 KB minimum, not ignored.
+        assert_eq!(lzma_dict_for_decompression_mem(0), 4 * 1024);
+        assert_eq!(lzma_dict_for_decompression_mem(MB), 4 * 1024);
+        assert_eq!(lzma_dict_for_decompression_mem(2 * MB), 4 * 1024);
+        // Just above: the overhead comes off and the remainder is the dictionary.
+        assert_eq!(lzma_dict_for_decompression_mem(2 * MB + 8 * 1024), 8 * 1024);
+        assert_eq!(lzma_dict_for_decompression_mem(66 * MB), 64 * 1024 * 1024);
+        // And the whole point: a small limit must actually reach the method.
+        let mut m = Method::Lzma(crate::method::LzmaParams {
+            dictionary_size: 64 * 1024 * 1024,
+            ..Default::default()
+        });
+        set_decompression_mem(&mut m, MB);
+        // `if let`, not `match` with a wildcard: the crate denies
+        // `wildcard_enum_match_arm` workspace-wide, tests included.
+        let Method::Lzma(p) = &m else { panic!("expected Lzma, got {m:?}") };
+        assert_eq!(p.dictionary_size, 4 * 1024, "-ld1m must shrink it");
+    }
+
     /// The granularity change at 4096 KiB is the whole subtlety of roundMemUp.
     #[test]
     fn round_mem_up_switches_from_kilobytes_to_megabytes_at_4096kb() {
@@ -419,24 +444,60 @@ pub fn get_decompression_mem(m: &Method) -> u64 {
     }
 }
 
+/// The dictionary a decompression budget of `mem` allows, floored at the 4 KB
+/// LZMA minimum.
+///
+/// `saturating_sub`, so a budget below the 2 MB overhead yields 0 and the floor
+/// takes over, rather than the C's `if (mem > 2mb)` skipping the assignment and
+/// leaving whatever dictionary was there.
+fn lzma_dict_for_decompression_mem(mem: u64) -> u32 {
+    const LZMA_DICT_MIN: u64 = 4 * 1024;
+    mem.saturating_sub(2 * MB).max(LZMA_DICT_MIN).min(u64::from(u32::MAX)) as u32
+}
+
 /// `SetDecompressionMem` — each method's own, and several are NOT the inverse
 /// of the getter.
 pub fn set_decompression_mem(m: &mut Method, mem: u64) {
     match m {
         // No memory to limit.
         Method::Fake | Method::Crc => {}
-        // `if (mem > 2mb) dictionarySize = mem - 2mb` -- silently does nothing
-        // below 2 MB rather than clamping.
+        // `if (mem > 2mb) dictionarySize = mem - 2mb` (`C_LZMA.cpp`), and
+        // identically for LZMA2 (`C_LZMA2.cpp:95`).
+        //
+        // The C's guard exists so `mem - 2mb` cannot underflow, and its effect
+        // is that a limit AT OR BELOW 2 MB is silently ignored: the user asks
+        // for a 1 MB decompression budget and gets the 64 MB dictionary they
+        // started with, with no error and no warning. The archive then needs
+        // more memory to open than its own method string was limited to.
+        //
+        // Floored at 4 KB instead, which is what `set_compression_mem` has
+        // always done for the same method (`d.max(4 * 1024)`, :890). The two
+        // setters disagreeing was the real defect -- one honours a small limit
+        // and the other drops it.
+        //
+        // Archive-visible, deliberately. Measured on 200 KB with `-mlzma:d64m`:
+        //
+        //     -ld1m   port 55496 bytes, reference 54491   (differs)
+        //     -ld3m   port 54491 bytes, reference 54491   (identical)
+        //
+        // so the divergence is confined to exactly the range the C ignored. The
+        // 1.8% the small dictionary costs buys an archive that opens in about
+        // 2 MB instead of the 66 MB a kept 64 MB dictionary needed — which is
+        // the whole point of asking for `-ld1m`.
+        //
+        // What this still does NOT do is tell the user that 1 MB is
+        // unsatisfiable: LZMA's fixed ~2 MB overhead means no dictionary gets
+        // under it. Diagnosing that needs a channel this function does not have
+        // (it returns `()` where `set_compression_mem` returns `bool`), so it
+        // is left as a known gap rather than half-built.
+        //
+        // `arc-golden-check` does not cover this: its only `-ld1m` case is
+        // `big-lz4-ld1m`, and LZ4 takes a different arm.
         Method::Lzma(p) => {
-            if mem > 2 * MB {
-                p.dictionary_size = (mem - 2 * MB).min(u64::from(u32::MAX)) as u32;
-            }
+            p.dictionary_size = lzma_dict_for_decompression_mem(mem);
         }
-        // Identical (C_LZMA2.cpp:95).
         Method::Lzma2(p) => {
-            if mem > 2 * MB {
-                p.dictionary_size = (mem - 2 * MB).min(u64::from(u32::MAX)) as u32;
-            }
+            p.dictionary_size = lzma_dict_for_decompression_mem(mem);
         }
         // PPMd adjusts its ORDER with its memory, which is why reducing memory
         // changes the method string in two places at once.

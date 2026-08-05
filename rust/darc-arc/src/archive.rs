@@ -127,8 +127,12 @@ pub fn keyed(compressor: &[String], b: &ArchiveBlock, pw: &Passwords) -> Result<
             // the cipher refused what it named. Both are properties of the
             // archive, so they report as a bad block rather than sending the
             // user off to re-type a password that was never wrong.
+            // `BadHex` belongs here for exactly the reason above, and is the
+            // case that used to arrive as `BadPassword`: a damaged salt decoded
+            // short, derived a different key, and failed the check code.
             other @ (crate::encryption::Error::BadMethod(_)
             | crate::encryption::Error::Cipher(_)
+            | crate::encryption::Error::BadHex { .. }
             | crate::encryption::Error::NoEntropy) => Error::Block {
                 name: b.name(),
                 cause: decompress::Error::BadMethod(other.to_string()),
