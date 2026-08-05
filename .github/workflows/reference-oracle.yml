@@ -49,7 +49,11 @@ jobs:
         with:
           # The oracle is built from history, not from the current tree. That
           # is the whole point: it must not drift with the port it checks.
-          ref: 9a127e6
+          # The FULL sha: actions/checkout resolves `ref` as a branch or tag
+          # name first, and an abbreviated one matches neither -- it fails with
+          # "A branch or tag with the name '9a127e6' could not be found".
+          # Only a 40-character sha is treated as a commit.
+          ref: 9a127e6087fb46cab518bc827662d9b1596e8633
           fetch-depth: 0
 
       - name: Confirm the platform key matches this runner
