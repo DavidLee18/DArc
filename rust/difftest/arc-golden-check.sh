@@ -173,6 +173,30 @@ build_big_tree() {
   "$CORPUSGEN" prng 7 1600000 > "$d/big/noise.bin"
 }
 
+# A tree the multimedia path can actually act on: the groups file matches on
+# EXTENSION and the detector probes CONTENT, so both halves have to be real.
+# Separate from build_tree so that adding it does not move the 93 hashes that
+# were already recorded.
+build_mm_tree() {
+  local d="$1"
+  rm -rf "$d"; mkdir -p "$d"
+  awk 'BEGIN{for(i=0;i<3000;i++) printf "line %d of compressible prose\n", i%211}' > "$d/doc.txt"
+  awk 'BEGIN{for(i=0;i<2000;i++) printf "second file line %d\n", i%97}' > "$d/other.txt"
+  head -c 40000 /dev/zero | tr '\0' 'B' > "$d/plain.dat"
+  # A 16-bit stereo WAV: 44-byte header then PCM the mm detector recognises.
+  { printf 'RIFF'; printf '\x24\x40\x00\x00'; printf 'WAVEfmt '
+    printf '\x10\x00\x00\x00\x01\x00\x02\x00\x44\xac\x00\x00\x10\xb1\x02\x00\x04\x00\x10\x00'
+    printf 'data'; printf '\x00\x40\x00\x00'
+    awk 'BEGIN{for(i=0;i<4096;i++){v=int(9000*sin(i/17));printf "%c%c%c%c", v%256,int(v/256)%256,v%256,int(v/256)%256}}'
+  } > "$d/s.wav"
+  { printf 'BM'
+    printf '\x36\x0c\x00\x00\x00\x00\x00\x00\x36\x00\x00\x00\x28\x00\x00\x00\x40\x00\x00\x00'
+    printf '\x40\x00\x00\x00\x01\x00\x18\x00\x00\x00\x00\x00\x00\x0c\x00\x00\x13\x0b\x00\x00'
+    printf '\x13\x0b\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00'
+    awk 'BEGIN{for(i=0;i<4096;i++) printf "%c%c%c", i%256,(i*3)%256,(i*7)%256}'
+  } > "$d/s.bmp"
+}
+
 results="$W/results.txt"
 : > "$results"
 
@@ -183,6 +207,7 @@ run() {
   local tree="$W/t"
   case "$id" in
     big-*) build_big_tree "$tree" ;;
+    mm-*)  build_mm_tree "$tree" ;;
     *)     build_tree "$tree" ;;
   esac
   rm -f "$W/g.arc"
@@ -355,6 +380,52 @@ run big-grzip-md20m      a --nodates -y -r -mgrzip -md20m -mt1 "$A" .
 run big-grzip-lc16m      a --nodates -y -r -mgrzip -lc16m -mt1 "$A" .
 run big-grzip-ld20m      a --nodates -y -r -mgrzip -ld20m -mt1 "$A" .
 run big-4x4-md1m         a --nodates -y -r -m4x4:tor -md1m -mt1 "$A" .
+
+# ── multimedia, -ma and -mc: the options with no golden coverage at all ─────
+#
+# These need a GROUPS FILE. Without one every file is $binary, $wav and $bmp
+# are unreachable, and -mm/-ma become no-ops that record a hash proving
+# nothing -- which is exactly how a routing bug survived until #129. The path
+# is absolute and is not stored in the archive, so it cannot vary the hash.
+#
+# -mt1 on every one: -m4 reaches 4x4 and $bmp reaches grzip, and the rule at
+# the top of this file says those are recordable only with the count pinned.
+#
+# `mm-groups`, `mm-max` and `mm-ma2` deliberately record the SAME hash. -m4's
+# preset already selects max multimedia and its level is 4, so `-mmmax` and
+# `-ma2` are no-ops on it -- that equality is the property, and it is why -mm
+# is an override of a choice the preset already made rather than the switch
+# that turns multimedia on. Each still pins its own command line, so a change
+# that made either diverge would fail here.
+GROUPFILE="$ROOT/Tests/darc.groups"
+run mm-groups            a --nodates -y -r -mt1 --groups="$GROUPFILE" -m4 "$A" .
+run mm-off               a --nodates -y -r -mt1 --groups="$GROUPFILE" -m4 -mm- "$A" .
+run mm-fast              a --nodates -y -r -mt1 --groups="$GROUPFILE" -m4 -mmfast "$A" .
+run mm-max               a --nodates -y -r -mt1 --groups="$GROUPFILE" -m4 -mmmax "$A" .
+run mm-ma0               a --nodates -y -r -mt1 --groups="$GROUPFILE" -m4 -ma0 "$A" .
+run mm-ma2               a --nodates -y -r -mt1 --groups="$GROUPFILE" -m4 -ma2 "$A" .
+# -m2's level is 2, so -ma1 crosses the `detect_level <= 1` line where -ma2
+# does not. Without this the -ma cases here would all sit on one side of it.
+run mm-m2-ma1            a --nodates -y -r -mt1 --groups="$GROUPFILE" -m2 -ma1 "$A" .
+run mm-ma0-solid-off     a --nodates -y -r -mt1 --groups="$GROUPFILE" -m5 -ma1 -s- "$A" .
+run mm-mc-tta            a --nodates -y -r -mt1 --groups="$GROUPFILE" -m4 -mc-tta "$A" .
+run mm-mc-rep            a --nodates -y -r -mt1 --groups="$GROUPFILE" -m4 -mc-rep "$A" .
+
+# ── darc.toml cannot be golden-recorded, and that is structural ────────────
+#
+# Tried and removed. This file runs ONE command line through ONE binary, and
+# the reference cannot read a `darc.toml` -- so recording a `-cfg` case from it
+# feeds it a file it ignores. Both attempts recorded the same hash as a plain
+# `-m9`, which the port then failed by correctly applying the config.
+#
+# It is the same shape as encryption, which is ungoldenable because the salt is
+# random: a case whose two sides cannot be made to agree by construction does
+# not belong here. `arc-config-check.sh` covers it instead, and can, because it
+# is differential -- each binary gets the config syntax it understands.
+
+# ── two more whole-archive shapes ───────────────────────────────────────────
+run nodata               a --nodates -y -r --nodata -m0 "$A" .
+run crconly              a --nodates -y -r --crconly -m0 "$A" .
 
 sort -o "$results" "$results"
 
