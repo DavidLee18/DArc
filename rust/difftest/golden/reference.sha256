@@ -11,3 +11,5 @@
 #
 # platform         sha256
 darwin-arm64       ccf84e7e8a8b4561e0f37d7d9beb1fe2c6854b9d1acbbb3075c0624215af97a7
+linux-x86_64       ac4b1f4a95e89bef3c14a3fa2c6f319cb5413acde44ec01a8ee397535e2b6b78
+linux-aarch64      a35a8546225f068c0e8446a81e5b107d922ff1ff590289d4541ddec89513a445
