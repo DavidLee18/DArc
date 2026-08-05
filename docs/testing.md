@@ -28,6 +28,31 @@ Two properties every harness here is expected to have, learned the hard way:
 * **It must refuse to pass over an empty corpus.** A check that silently tests
   nothing reads as coverage.
 
+### The one harness that is not differential: `debug-assert-check.sh`
+
+It compares nothing. It builds the codecs **without `--release`** — the only
+place `-C overflow-checks` is on — and fails if a panic reaches stderr. Scope is
+Tornado, GRZip, BSC and lz4hc, the crate's densest arithmetic, at ~2850
+invocations in ~13 minutes.
+
+It exists because clippy can prove 2249 `as` casts in the workspace might
+truncate. Most are lossless by construction (`(u & 0xFF) as u8`) and clippy
+cannot carry the bound; a handful genuinely discard bits and are safe only
+because the decoder discards the same bits — `bsc/qlfc_enc.rs`'s `rank_history`
+feeds the probability model, not the payload, so a wrap costs ratio rather than
+correctness. That is a weaker guarantee than it sounds, and `qlfc_enc.rs:55`
+records the bug already paid for: `n_symbols` typed `u8` overflowed on a
+full-alphabet block. Testing the casts empirically is cheaper and safer than
+converting thousands of them.
+
+**Its failure signal is stderr, never the exit status**, and this is not a
+stylistic choice. Every codec entry point goes through `ffi::guard`, whose
+`catch_unwind` turns a panic into `FREEARC_ERRCODE_GENERAL` — indistinguishable
+from a codec declining an input. A deliberate `assert!(false)` in
+`bsc::qlfc_enc::transform` exits **0**. A harness written as `if ! cmd; then
+fail; fi` would report a clean sweep while every block panicked. With the stderr
+grep, that same sabotage produces 630 named panics and exit 1.
+
 ### Corpora and helpers are Rust; orchestration is shell
 
 No harness invokes `python3`. Every one used to, for corpus generation and in

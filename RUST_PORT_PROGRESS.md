@@ -651,12 +651,31 @@ builds `--release`, so the guard never ran.
 two more of the same shape -- `MatchFinderN` (inherent-only) and
 `CachingMatchFinder` (absent, though the C has one at `MatchFinder.cpp:462`).
 `debug-assert-check.sh` now runs the codecs in a debug profile, which nothing did
-before.
+before. Its remit since #133 is `-C overflow-checks` rather than assertions, and
+its scope is Tornado, GRZip, BSC and lz4hc -- the crate's densest arithmetic --
+at ~2850 Rust invocations in ~13 minutes.
 
-**1-3, #103/#104.** Crate-level lint gates added (`wildcard_enum_match_arm`,
-`todo`, `unimplemented`, `mem_forget`, `unused_must_use`); the eleven `_ => {}`
-arms resolved against the pinned C; the release-dead `debug_assert!(false, ...)`
-bodies promoted.
+**1-3, #103/#104/#133.** Crate-level lint gates added
+(`wildcard_enum_match_arm`, `todo`, `unimplemented`, `mem_forget`,
+`unused_must_use`); the eleven `_ => {}` arms resolved against the pinned C; and
+in #133 every remaining `debug_assert!` -- 22 of them -- became an unconditional
+`assert!`. **Zero remain.** Five stood beside a release fallback that existed
+only because the assertion was debug-only, and those were the real hazard:
+`delta::read_i16` and `lzp::lzp_c` returned 0 for an out-of-range read,
+`lzma2_enc` returned `Fail` for chunk lengths that did not add up, and
+`tornado::OutStream::room` set an error code and truncated the stream. Panicking
+is safe across the ABI because every codec entry point goes through
+`ffi::guard`'s `catch_unwind`.
+
+**4, the cast census.** The stated scope -- enum-model the mode bytes -- turned
+out to be already done: GRZip has `RecMode`, MM `WordBytes`, TTA `SampleBytes`,
+DisPack `Mode`, and Tornado's `encoding_method`/`caching_finder` must stay
+`c_int` because they are `#[repr(C)]` fields the C fills in by value. What is
+left is 2249 casts clippy can prove might truncate (plus 1462 sign-loss, 785
+wrap). Most are lossless by construction and clippy simply cannot carry the
+bound; a few genuinely discard bits and are safe only because the decoder
+discards the same bits. `debug-assert-check.sh` is the empirical answer to that
+class rather than a refactor -- see below.
 
 #104 is the one to read for method. The eleven arms did NOT split the way the
 plan assumed:
