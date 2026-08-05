@@ -940,6 +940,10 @@ jobs:
   # void. There are no `debug_assert!`s left -- all 22 became unconditional
   # `assert!`s -- so that half of the job's remit now belongs to every harness.
   # Overflow checks are what is still tested only here.
+  #
+  # Scope is Tornado, GRZip, BSC and lz4hc: the five densest arithmetic files in
+  # the crate are qlfc_enc (254 flagged casts), grzip/bwt (234), qlfc (218),
+  # tornado/matchfinder (201) and lz4hc (130). ~2850 Rust invocations, ~13 min.
   rust-codecs-debug-assert:
     runs-on: ubuntu-latest
     steps:
@@ -962,7 +966,7 @@ jobs:
       run: |
         sudo apt-get update
         sudo apt-get install -y libncurses-dev
-    - name: Codecs under debug assertions
+    - name: Codecs under overflow checks
       run: |
         chmod +x rust/difftest/*.sh
         rust/difftest/debug-assert-check.sh
