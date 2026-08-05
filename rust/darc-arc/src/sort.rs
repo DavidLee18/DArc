@@ -587,9 +587,21 @@ impl Groups {
     /// caller passed a hardcoded `$binary`, so the multimedia branch in
     /// `filetype::classify` was dead and `-m9` compressed a WAV with the
     /// general binary chain where the reference used `tta`.
+    /// The RAW type a file's group carries, without the `$binary`
+    /// substitution.
+    ///
+    /// `cfType` (`ArhiveDirectory.hs:408`) uses this one: it maps the group
+    /// straight to a compressor index through `opt_group2type`. Only
+    /// [`Self::default_type`] applies the substitution, and only because
+    /// `getDefaultType` feeds the DETECTOR, which must be free to disagree with
+    /// the filename. Using the substituted name for partitioning would send
+    /// every `$text` file to the binary chain.
+    pub fn group_type_name(&self, stored_name: &str) -> String {
+        self.group_type_names().get(self.group_of(stored_name)).cloned().unwrap_or_default()
+    }
+
     pub fn default_type(&self, stored_name: &str) -> String {
-        let names = self.group_type_names();
-        let typ = names.get(self.group_of(stored_name)).cloned().unwrap_or_default();
+        let typ = self.group_type_name(stored_name);
         match typ.is_empty()
             || darc_codecs::mmdet::DETECTABLE_TYPES.split_whitespace().any(|d| d == typ)
         {

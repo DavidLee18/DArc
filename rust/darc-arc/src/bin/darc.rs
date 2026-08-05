@@ -1048,21 +1048,9 @@ fn add(
                 .build_global(),
         );
     }
-    // The knobs this port does not implement are REFUSED, not ignored: acting
-    // on part of a -m spec and dropping the rest writes an archive that is not
-    // what was asked for, which is the same rule the HONOURED list applies.
-    let mut unimplemented: Vec<String> = Vec::new();
-    if mopts.autodetect != "--" {
-        unimplemented.push(format!("-ma{}", mopts.autodetect));
-    }
-    if !unimplemented.is_empty() {
-        eprintln!(
-            "ERROR: this port does not implement {} yet, and ignoring it would \
-             write an archive that is not what you asked for",
-            unimplemented.join(", ")
-        );
-        return 2;
-    }
+    // Every -m knob is implemented now: -mm, -mc, -md, -ms, -mt and -ma all
+    // do what the reference does. The refusal list that stood here is gone
+    // with the last of them.
     // `(mainMethod ||| aDEFAULT_COMPRESSOR) ++ userMethods` (Cmdline.hs:334):
     // the per-type suffixes are appended to the main method, and the whole
     // string is what decode_method expands.
@@ -1867,10 +1855,43 @@ fn add(
         }
     }
 
-    // splitFileTypes: which files share a block, decided by CONTENT. Only
-    // reached when the level defines more than one chain -- with a single chain
-    // every file is type 0 anyway, and probing would be wasted work.
-    let type_groups: Vec<(usize, Vec<usize>)> = if chains.len() > 1 {
+    // `splitFileTypes` (ArhiveFileList.hs:459) has TWO paths, and which one
+    // runs is `quick_and_dirty`:
+    //
+    //   quick_and_dirty -> partitionList by cfType, the type the groups file
+    //                      assigns. No probing.
+    //   otherwise       -> split by extension and 2 MB, then probe each group.
+    //
+    // This used to be `chains.len() > 1`, which is neither clause. It happened
+    // to agree because the cases where it differs need `-ma`, which was
+    // refused -- so the approximation was unreachable rather than right.
+    let detect = darc_arc::methodtable::detect_level(&mopts.autodetect, &method);
+    let quick = darc_arc::methodtable::quick_and_dirty(detect, &type_names);
+    let type_groups: Vec<(usize, Vec<usize>)> = if chains.len() > 1 && quick {
+        // `cfType` -- the RAW groups-file type mapped to its index in the
+        // compressor list, 0 when the list has no such entry. Not
+        // `default_type`: that substitutes $binary for the detector's benefit,
+        // and there is no detector on this path.
+        let split: Vec<(usize, Vec<usize>)> = file_entries
+            .iter()
+            .enumerate()
+            .map(|(i, e)| {
+                let raw = groups.group_type_name(&e.stored_name);
+                (type_names.iter().position(|t| *t == raw).unwrap_or(0), vec![i])
+            })
+            .collect();
+        // Through `merge_by_type`, the same as the detection path -- which
+        // orders the blocks by their CHAIN STRING, not by type index and not
+        // by first appearance. For -m5 that is dict… < rep… < tta, so the
+        // $text block precedes the default one even though $text is type 2.
+        //
+        // Two hand-rolled orderings were tried here first and both wrote a
+        // different archive: type-index order (which is what `zip [0..]`
+        // looks like it means) failed on the solid case, and first-appearance
+        // order failed on `-s-`, where the sorted list starts with a binary
+        // file. Reusing the function that was already gated is what fixed it.
+        darc_arc::filetype::merge_by_type(&split, |t| chains[t].clone())
+    } else if chains.len() > 1 {
         // getDefaultType: an autodetectable type becomes $binary so the
         // detector decides it, and darc.groups supplies everything else --
         // which is what makes $wav and $bmp reachable at all.

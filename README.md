@@ -323,7 +323,6 @@ Options that take a parameter use `-<opt><value>` or `--<option>=<value>`.
 |       | `--queue`         | Serialize operations across multiple concurrent DArc processes |
 | `-ioff` | `--shutdown`    | Shut the computer down when the operation completes |
 |       | `--pause-before-exit` | Pause just before closing the program window |
-|       | `--arc-32bit-legacy` | Read archives produced by 32-bit FreeArc/Arc.exe |
 |       | `--nodata`        | Don't store file data in the archive (directory only) |
 |       | `--crconly`       | Save and check CRCs, but don't store file data |
 

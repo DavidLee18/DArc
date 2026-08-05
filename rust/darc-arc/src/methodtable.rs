@@ -966,3 +966,103 @@ pub fn apply_method_change(mc: &str, decoded: Vec<(String, Vec<String>)>) -> Vec
         })
         .collect()
 }
+
+/// `clevel` (`Cmdline.hs:282`) — the compression LEVEL a `-m` value implies.
+///
+/// Only five shapes yield a digit; everything else is level 4, including a
+/// named method like `-mlzma`. `-mx`/`-max` are 9.
+pub fn compression_level(main_method: &str) -> u32 {
+    let d = |c: char| c.to_digit(10).unwrap_or(4);
+    let b: Vec<char> = main_method.chars().collect();
+    match b.as_slice() {
+        [c] if c.is_ascii_digit() => d(*c),
+        [c, 'p'] if c.is_ascii_digit() => d(*c),
+        [c, 'x'] if c.is_ascii_digit() => d(*c),
+        ['x', c] if c.is_ascii_digit() => d(*c),
+        _ => match main_method {
+            "mx" | "max" => 9,
+            // "default compression level"
+            _ => 4,
+        },
+    }
+}
+
+/// `detect_level` (`ArhiveFileList.hs:473`) — `-ma` if given, else the
+/// compression level.
+pub fn detect_level(autodetect: &str, main_method: &str) -> u32 {
+    match autodetect {
+        "--" => compression_level(main_method),
+        v => v.parse().unwrap_or_else(|_| compression_level(main_method)),
+    }
+}
+
+/// `quick_and_dirty` (`ArhiveFileList.hs:468`) — is content autodetection
+/// worth running at all?
+///
+/// ```haskell
+///   quick_and_dirty = detect_level <= 1
+///                     || not (types `contains_one_of` detectable_types)
+/// ```
+///
+/// Two independent reasons to skip it, and both matter. The first is `-ma`,
+/// which is the whole point of that option. The second is that probing is
+/// pointless when the compressor list has no entry the detector could pick:
+/// `detect_datatype` only ever answers `$text` or `$compressed`, so a list
+/// without either — `-m1`, whose types are `""`, `$exe`, `$wav`, `$bmp` — can
+/// gain nothing from being probed.
+///
+/// When it is true the reference does NOT put everything in one group: it
+/// partitions by `cfType`, the type the groups file assigns. That distinction
+/// is invisible with one type and archive-visible with several.
+pub fn quick_and_dirty(detect_level: u32, type_names: &[String]) -> bool {
+    detect_level <= 1
+        || !type_names.iter().any(|t| {
+            darc_codecs::mmdet::DETECTABLE_TYPES.split_whitespace().any(|d| d == t)
+        })
+}
+
+#[cfg(test)]
+mod autodetect {
+    use super::{compression_level, detect_level, quick_and_dirty};
+
+    /// `-m` values that carry a level, and the ones that do not.
+    #[test]
+    fn the_level_comes_from_the_m_value() {
+        assert_eq!(compression_level("5"), 5);
+        assert_eq!(compression_level("5p"), 5);
+        assert_eq!(compression_level("5x"), 5);
+        assert_eq!(compression_level("x5"), 5);
+        assert_eq!(compression_level("mx"), 9);
+        assert_eq!(compression_level("max"), 9);
+        // A named method has no level, and the reference's default is 4 --
+        // NOT 0, so `-mlzma` autodetects where `-m1` does not.
+        assert_eq!(compression_level("lzma:1m"), 4);
+        assert_eq!(compression_level(""), 4);
+    }
+
+    /// `-ma` overrides the level; absent, it tracks it.
+    #[test]
+    fn ma_overrides_the_level() {
+        assert_eq!(detect_level("--", "9"), 9);
+        assert_eq!(detect_level("--", "1"), 1);
+        assert_eq!(detect_level("0", "9"), 0);
+        assert_eq!(detect_level("2", "1"), 2);
+    }
+
+    /// Either clause alone is enough to skip probing.
+    #[test]
+    fn either_clause_skips_detection() {
+        let with = |v: &[&str]| -> Vec<String> { v.iter().map(|s| s.to_string()).collect() };
+        let detectable = with(&["", "$obj", "$text", "$compressed"]);
+        let not = with(&["", "$exe", "$wav", "$bmp"]);
+        // Level 2+ over a list containing $text: probe.
+        assert!(!quick_and_dirty(2, &detectable));
+        // Level 1 turns it off however rich the list is -- this is `-ma1`.
+        assert!(quick_and_dirty(1, &detectable));
+        assert!(quick_and_dirty(0, &detectable));
+        // A list with nothing detectable in it: probing can gain nothing, at
+        // any level. This is -m1, and it is why -m1 never probes.
+        assert!(quick_and_dirty(9, &not));
+        assert!(quick_and_dirty(4, &with(&[""])));
+    }
+}

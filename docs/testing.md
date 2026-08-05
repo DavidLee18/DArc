@@ -8,9 +8,9 @@ Load this before changing a codec or writing a harness. The short version: the R
 thorough one, and it is the gate.** Do not confuse the two — a change to
 `Arc*.hs` is covered by nothing but your own round-trip.
 
-## `rust/difftest` — 53 differential harnesses
+## `rust/difftest` — 55 differential harnesses
 
-35 are codec-level and 18 are the CLI-level `arc-*-check.sh` described further
+35 are codec-level and 20 are the CLI-level `arc-*-check.sh` described further
 down. Each `<codec>-check.sh` builds the C original **from a pinned revision**
 (`DARC_C_REF_SHA` in `c-reference.sh`, currently `5c2c6ce`) alongside the Rust port
 and requires identical bytes. The C is taken from git history rather than the
@@ -18,7 +18,7 @@ working tree so the oracle survives the C being deleted and cannot drift.
 
 ```bash
 rust/difftest/lzma-decode-check.sh     # exit 0 or the port diverged
-cd rust && cargo nextest run --profile ci   # 648 unit tests
+cd rust && cargo nextest run --profile ci   # 687 unit tests
 ```
 
 Two properties every harness here is expected to have, learned the hard way:
@@ -89,9 +89,9 @@ Note that `compile-ghc-probe` writes objects into the shared `/tmp/out/`, so run
 
 ### What runs without a reference: `arc-golden-check.sh`
 
-65 cases, one SHA-256 each, recorded from `Tests/arc-ghc` while all
-19 harnesses were green. It is the only archive-format gate CI runs, and the
-only one that will still be meaningful in a year.
+93 cases, one SHA-256 each, recorded from `Tests/arc-ghc`. It is the only
+archive-format gate CI runs, and the only one that will still be meaningful in
+a year.
 
 Two rules:
 
@@ -101,16 +101,19 @@ Two rules:
 - **New cases must be machine-independent**, which the differential harnesses
   never had to be — they ran two binaries on one host, so anything host-varying
   cancelled. That means `--nodates`, explicitly parameterised chains rather than
-  presets, `-rr` in absolute bytes, and **no `grzip` and no `4x4`**: those two
-  are the only methods whose memory formulas read the processor count
-  (`memlimit.rs:288`), so they are the only two that could bake the recording
-  machine into a hash.
+  presets, and `-rr` in absolute bytes. `grzip`, `4x4` and `lzma2` are allowed
+  only with an explicit `-mtN`: their output depends on the thread count, so
+  pinning it is what keeps the recording machine out of the hash.
+- **A limit that never binds tests nothing.** Half the cases now run on a ~12 MB
+  tree, because `limitDictionary` fits every chain to the DATA size first — on
+  the original 200 KB tree no `-lc`/`-ld`/`-md` figure was ever reached, and
+  four format bugs lived behind that.
 
 It earned its place on its first run by finding three divergences nothing else
 had: filespec group ordering, the missing `isVeryFastCompressor` clause in the
 sort-order decision, and `addBlockSizeCrit` having been ported and never called.
 
-### What the port cannot do
+### What the port can and cannot do
 
 `Tests/run-tests.sh` scores 24 passed / 0 failed / 0 skipped — the same as the
 reference. The six methods that had no `Method` variant (`mm`, `tta`, `bsc`,
@@ -130,10 +133,16 @@ nothing trips it now. It matches on the binary's own "cannot write yet" wording,
 so the next unimplemented method gets listed rather than silently failing — and
 a case that fails for any *other* reason is still a failure.
 
-Still refused rather than implemented: `-mm` (multimedia mode), `-ma`
-(autodetect level) and `-mc` (disable an algorithm) each change the chain, so
-they are rejected outright rather than ignored, on the same rule the HONOURED
-option list follows. `-lc-`/`-ld-` are not accepted at all.
+Every `-m` knob is implemented: `-mm`, `-mc`, `-md`, `-ms`, `-mt` and `-ma`.
+`-lc-`/`-ld-` are still not accepted at all.
+
+`-ma` is the one worth reading the harness for. It selects between the TWO
+paths of `splitFileTypes`, and the port had implemented neither clause of
+`quick_and_dirty` -- it used `chains.len() > 1`, which agreed everywhere
+reachable only because the cases that separate them need `-ma`, and `-ma` was
+refused. On the quick path the blocks are ordered by their CHAIN STRING
+(`merge_by_type`), not by type index and not by first appearance; both of those
+were tried and both wrote valid archives that were not the reference's.
 
 `-lc` is served for every method, and getting there is the cautionary tale in
 this file.

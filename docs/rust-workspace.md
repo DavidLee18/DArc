@@ -33,9 +33,12 @@ Both instances are worth recognising:
 
 **Lint gates CI enforces**, so match them or the build goes red:
 
-* **No `if let` anywhere under `rust/`** — a CI grep, because no clippy lint
-  expresses it (the whole related family pushes the other way). Totality is
-  `deny(clippy::wildcard_enum_match_arm)` plus that grep, so every arm is named.
+* **Every enum `match` names its arms** — `wildcard_enum_match_arm`, denied on
+  the clippy command line so it binds the whole workspace and not just the
+  crates carrying the attribute. This is the only style rule CI enforces.
+  `if let` and `let _` were also banned, by grep; both bans were dropped at the
+  owner's direction, because totality comes from forbidding `_ =>` and not from
+  the shape of a single-branch conditional.
 * `deny(clippy::unwrap_used, clippy::expect_used)` outside tests.
 * `overflow-checks = true` in the release profile, so unchecked arithmetic
   *traps* rather than wrapping.

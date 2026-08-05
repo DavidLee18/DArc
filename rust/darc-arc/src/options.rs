@@ -113,7 +113,6 @@ pub const OPTIONS: &[OptionDef] = &[
     OptionDef { short: "", long: "pause-before-exit", param: Some("PAUSE") },
     OptionDef { short: "v", long: "volume", param: Some("SIZE") },
     OptionDef { short: "", long: "queue", param: None },
-    OptionDef { short: "", long: "arc-32bit-legacy", param: None },
     OptionDef { short: "", long: "cache", param: Some("N") },
     OptionDef { short: "lc", long: "LimitCompMem", param: Some("N") },
     OptionDef { short: "ld", long: "LimitDecompMem", param: Some("N") },

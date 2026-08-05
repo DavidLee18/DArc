@@ -24,9 +24,9 @@ that touches archive bytes.**
 scores 24/0/0, the same as the reference. `mm`, `tta`, `bsc`, `lz4`, `zstd` and
 `lzma2` had no `Method` variant until recently, which made archives using them
 unreadable as well as unwritable; the `-m` VALUE grammar (`-mt`, `-ms`, `-md`,
-`-ma`, `-mc`, `-mm`) was read as method NAMES. Both are fixed and gated. What
-is still refused rather than implemented: `-mm`/`-ma`/`-mc` change the chain
-and are rejected outright, and `-lc-`/`-ld-` are not accepted at all.
+`-ma`, `-mc`, `-mm`) was read as method NAMES. Both are fixed and gated, and
+every `-m` knob now does what the reference does. `-lc-`/`-ld-` are still not
+accepted at all.
 
 **`-mt` is archive-visible through LZMA2 and nothing else.** Above one block
 thread the encoder abandons the solid block and splits the input, so
@@ -119,8 +119,9 @@ before adding or changing a corpus.
   `Compression/Tornado/Tornado.cpp` (`C_Tornado.cpp` `#include`s it).
 - **Link order matters to GNU ld and not to macOS ld**, so a broken link passes
   locally and fails every Linux and mingw job. See `docs/rust-workspace.md`.
-- **CI enforces lint gates no `cargo build` will show you**, including greps for
-  `if let` and `let _` anywhere under `rust/` — tests included. See
+- **CI enforces one lint gate no `cargo build` will show you**: every enum
+  `match` must name its arms (`wildcard_enum_match_arm`), workspace-wide,
+  tests included. `if let` and `let _` are allowed. See
   `docs/rust-workspace.md`.
 - **The C is no longer on the archiver's path at all.** It is reached only by
   `Unarc/`, the SFX modules and the difftest oracles, which is why the ASan job

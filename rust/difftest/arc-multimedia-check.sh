@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# `-mm`, `-mc`, and the file-type routing they operate on.
+# `-mm`, `-mc`, `-ma`, and the file-type routing all three operate on.
 #
-# These three are one subject. `-mm` adds or removes the `$wav`/`$bmp` entries
+# These are one subject. `-ma` decides whether file types are probed at all,
+# `-mm` adds or removes the `$wav`/`$bmp` entries
 # of the decoded compressor list, `-mc` removes entries and links from it, and
 # neither means anything unless files actually REACH those entries — which is
 # `getDefaultType`, from the groups file.
@@ -88,6 +89,24 @@ g mc-tta    -m9 -mc-tta
 g mc-rep    -m4 -mc-rep
 g mc-exe    -m4 -mc-exe
 g mc-two    -m4 -mc-rep -mc-exe
+
+# `-ma` -- the autodetection LEVEL. Two behaviours only, either side of
+# `detect_level <= 1`: at 0 or 1 the reference partitions by the type the
+# groups file assigns and probes nothing; at 2 and above it probes contents.
+# `-ma` unset tracks the compression level, so -m1 never probes and -m4 does.
+g ma-off      -m4 -ma-
+g ma-0        -m4 -ma0
+g ma-1        -m4 -ma1
+g ma-2        -m4 -ma2
+g ma-9        -m4 -ma9
+g ma-m2-1     -m2 -ma1
+g ma-m9-0     -m9 -ma0
+g ma-m9-2     -m9 -ma2
+# -s- is the case that caught the ordering: with solid off the sorted list
+# starts with a binary file, so a first-appearance bucket order writes the
+# blocks the wrong way round. merge_by_type sorts by the CHAIN STRING.
+g ma-solid-off -m5 -ma1 -s-
+g ma-s1k      -m4 -ma0 -s1k
 
 echo "arc multimedia: $((pass+fail)) cases, $fail differing"
 u=$(printf '%s\n' "${hashes[@]}" | cut -d' ' -f1 | sort -u | wc -l | tr -d ' ')
