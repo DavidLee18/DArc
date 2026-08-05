@@ -328,6 +328,79 @@ run_refuse() {
   printf '%s  %s\n' "$outcome" "$id" >> "$results"
 }
 
+# run_extract_refuse <case-id> <stored-name> -- a name that must not be written
+# on EXTRACTION.
+#
+# I claimed these were unbuildable from the CLI, on the reasoning that a
+# traversal name could not be created on disk. That was wrong: `\` is an
+# ordinary filename character on Unix, so `..\..\evil.txt` is a perfectly legal
+# file here, gets archived under that exact name, and becomes a path only when
+# the archive is opened on Windows. Which is the whole point -- the danger lives
+# in the archive, not in the machine that made it, and that is why
+# `extract::is_safe` refuses these on every platform rather than under
+# `cfg!(windows)`.
+#
+# `/` cannot appear in a Unix filename, so the classic `../evil` and absolute
+# `/etc/passwd` forms are NOT expressible this way. They stay unit-tested in
+# `extract.rs`; everything here is a backslash form.
+#
+# The assertion is NOT "was it refused". Refusing is only one of two acceptable
+# answers, and the port gives the other one for three of these five: `strip_root`
+# SANITISES a rooted name rather than rejecting it, so `\evil.txt` lands as
+# `evil.txt` and `d:\evil.txt` as `evil.txt`. That is correct and better than
+# refusing -- the data is preserved and it lands inside the destination -- and an
+# expectation of "refused" would have failed the port for doing the right thing.
+# It nearly did; the first draft of this recorded those three as a failure.
+#
+# What is checked instead is the property that actually matters: **everything
+# that lands, lands inside the destination, under a name that is not itself an
+# escape.** That is `is_safe` applied to the RESULT rather than to the input,
+# which is the thing a Windows box would act on.
+#
+# One honest limit: on Unix none of these names is a traversal at all, so this
+# cannot demonstrate the escape itself -- only that the dangerous name never
+# survives to disk. The escape is what `extract.rs`'s unit tests cover.
+run_extract_refuse() {
+  local id="$1" name="$2"
+  local tree="$W/xt"
+  rm -rf "$tree"; mkdir -p "$tree"
+  printf 'pwned\n' > "$tree/$name" 2>/dev/null || {
+    printf '%s  %s\n' "unbuildable" "$id" >> "$results"; return; }
+  rm -f "$W/g.arc"
+  ( cd "$tree" && "$BIN" a --nodates -y -m0 "$W/g.arc" . ) >/dev/null 2>&1
+  [ -f "$W/g.arc" ] || { printf '%s  %s\n' "no-archive" "$id" >> "$results"; return; }
+  # The destination sits inside a box, so anything written outside it is visible
+  # rather than scattered through $W.
+  local box="$W/xbox"; rm -rf "$box"; mkdir -p "$box/dest"
+  local rc=0
+  ( cd "$box/dest" && "$BIN" x -y "$W/g.arc" ) >/dev/null 2>&1 || rc=$?
+  local outcome=contained
+  if [ -n "$(find "$box" -mindepth 1 -maxdepth 1 ! -name dest 2>/dev/null)" ]; then
+    outcome=escaped
+  elif [ "$rc" -ge 128 ]; then
+    outcome=crashed
+  else
+    # Every landed path, judged by the same rules extract::is_safe applies.
+    local f rel
+    while IFS= read -r f; do
+      rel="${f#"$box/dest/"}"
+      case "$rel" in
+        /*|\\*) outcome=unsafe-name; break ;;
+        [A-Za-z]:*) outcome=unsafe-name; break ;;
+        *..*)
+          # Only a whole `..` COMPONENT is an escape; `a..b` is an ordinary name.
+          case "$(printf '%s' "$rel" | tr '\\' '/')" in
+            ../*|*/../*|*/..) outcome=unsafe-name; break ;;
+            ..) outcome=unsafe-name; break ;;
+            *) ;;
+          esac ;;
+        *) ;;
+      esac
+    done < <(find "$box/dest" -type f 2>/dev/null)
+  fi
+  printf '%s  %s\n' "$outcome" "$id" >> "$results"
+}
+
 A="$W/g.arc"
 
 # ── stored: the format itself, with no codec in the way ─────────────────────
@@ -545,6 +618,17 @@ run_refuse lzma-pb5      a --nodates -y -mlzma:pb5 "$A" .
 run_refuse lzma2-lc9     a --nodates -y -mlzma2:lc9 "$A" .
 run_refuse lzma-dict-overflow a --nodates -y -mlzma:d5000000000 "$A" .
 
+# ── extraction: a stored name that must never become a path ─────────────────
+#
+# Every one of these is a legal Unix filename and a path on Windows. Before
+# #136 `is_safe` split on '/' alone, so none of them had a component equal to
+# ".." and `Path::join` wrote them wherever they pointed.
+run_extract_refuse x-dotdot-backslash   '..\..\evil.txt'
+run_extract_refuse x-mixed-separators   'sub\..\..\evil.txt'
+run_extract_refuse x-leading-backslash  '\evil.txt'
+run_extract_refuse x-drive-letter       'd:\evil.txt'
+run_extract_refuse x-unc-path           '\\server\share'
+
 sort -o "$results" "$results"
 
 if [ "$record" = 1 ]; then
@@ -649,7 +733,15 @@ while read -r want id kind refbytes why; do
     refuse)
       n_refuse=$((n_refuse + 1))
       case "$got" in
-        refused) ;;
+        refused|contained) ;;
+        escaped)
+          echo "  ESCAPED [$id]: a file was written OUTSIDE the destination"
+          echo "      $why"
+          fail=$((fail + 1)) ;;
+        unsafe-name)
+          echo "  UNSAFE NAME [$id]: a name that is a path escape survived to disk"
+          echo "      $why"
+          fail=$((fail + 1)) ;;
         accepted)
           echo "  ACCEPTED [$id]: an input that must be refused produced an archive"
           echo "      $why"

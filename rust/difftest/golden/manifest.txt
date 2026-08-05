@@ -131,3 +131,8 @@ refused  lzma-lp300            refuse  crashed   As lzma-lc300, via lp (#136).
 refused  lzma-pb5              refuse  refused   pb above LZMA_PB_MAX. Both refuse.
 refused  lzma2-lc9             refuse  refused   The lzma2 parser must bound lc as the lzma one does; it did not until #136.
 refused  lzma-dict-overflow    refuse  accepted  d5000000000 overflows u32. parse_int wrapped it to 705032704 and the reference still does, giving a header that names a dictionary nobody asked for (#136).
+contained  x-dotdot-backslash   refuse  unsafe-name  ..\..\evil.txt is a legal Unix filename and a traversal on Windows. is_safe split on / alone before #136, so it had no ".." component and Path::join wrote it outside the destination.
+contained  x-mixed-separators   refuse  unsafe-name  sub\..\..\evil.txt -- the same escape reached through a name that also contains a legitimate component (#136).
+contained  x-leading-backslash  refuse  unsafe-name  \evil.txt is absolute from the drive root on Windows. The port sanitises it to evil.txt inside the destination; the reference writes it verbatim (#136).
+contained  x-drive-letter       refuse  unsafe-name  d:\evil.txt -- strip_root's doc always claimed it removed d:\ while the code trimmed only /, leaving \evil.txt (#136).
+contained  x-unc-path           refuse  unsafe-name  \\server\share names another host on Windows. Sanitised to server\share inside the destination (#136).
