@@ -3368,6 +3368,12 @@ fn run_blocks(
         }
     }
 
+    // Counted where the write happens, not from `entries`, and atomics rather
+    // than a per-block return so the early exits above stay as they are.
+    use std::sync::atomic;
+    let written_files = atomic::AtomicU64::new(0);
+    let written_bytes = atomic::AtomicU64::new(0);
+
     let results: Vec<Vec<String>> = per_block
         .par_iter()
         .enumerate()
@@ -3454,7 +3460,13 @@ fn run_blocks(
                     None => {}
                 }
                 match std::fs::File::create(&name).and_then(|mut f| f.write_all(bytes)) {
-                    Ok(()) => {}
+                    // Counted HERE, at the only place a file is actually
+                    // written, rather than from the selected-entry list. See
+                    // the summary below for why that distinction matters.
+                    Ok(()) => {
+                        written_files.fetch_add(1, atomic::Ordering::Relaxed);
+                        written_bytes.fetch_add(bytes.len() as u64, atomic::Ordering::Relaxed);
+                    }
                     Err(err) => bad.push(format!("{name}: {err}")),
                 }
             }
@@ -3483,10 +3495,17 @@ fn run_blocks(
             ratio3(packed, total_bytes)
         );
     } else {
+        // What was WRITTEN, not what was selected. `entries.len()` counted every
+        // entry the filters picked -- including directories, and including
+        // files that were then refused for an unsafe path, failed their CRC, or
+        // were skipped at an overwrite prompt. So a run that refused its only
+        // entry still printed "Extracted 1 files", directly under the ERROR
+        // saying it had not been. The reference prints no summary line here at
+        // all, so there is nothing to match and correctness is the only bar.
         println!(
             "Extracted {} files, {} bytes.",
-            show3(entries.len() as u64),
-            show3(total_bytes)
+            show3(written_files.load(atomic::Ordering::Relaxed)),
+            show3(written_bytes.load(atomic::Ordering::Relaxed))
         );
     }
     if failures == 0 {
