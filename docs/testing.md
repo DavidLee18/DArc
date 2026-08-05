@@ -45,6 +45,34 @@ records the bug already paid for: `n_symbols` typed `u8` overflowed on a
 full-alphabet block. Testing the casts empirically is cheaper and safer than
 converting thousands of them.
 
+### The boundary audit, and why it found nothing
+
+The other half of the cast problem is the casts the harness cannot reach by
+running code: those on the **data path**, where no encoder/decoder symmetry
+argument applies — archive-header fields, allocation sizes, FFI lengths. Clippy
+flags 77 possibly-truncating casts in `darc-arc`, and every one was checked.
+
+**No defects.** Each is one of:
+
+* **Lossless by construction.** `u64 as usize` on the only supported targets
+  (all 64-bit); `(hi * 16 + lo) as u8` where both are `to_digit(16)` nibbles;
+  `orig as u32` in `fourx4.rs`, bounded because the block size upstream is
+  already `u32`.
+* **Guarded before the narrowing.** `bytestream.rs:244` is the model:
+  `if n > remaining as u64 { return Err(ImplausibleLength) }` proves `n` fits a
+  `usize` before casting. `codec_io.rs` rejects `size < 0` on entry, so every
+  later `as c_int` round-trips a value that arrived as one.
+* **A faithful transliteration whose truncation is visible in the reference
+  too**, documented at the site. Two of these look exactly like bugs, and
+  "fixing" either would break byte-identity — see `decompress.rs`'s thread clamp
+  (values above `i32::MAX` wrap negative, matching `9a127e6` at every value
+  tested) and its `lc`/`lp`/`pb` narrowing (`-mlzma:lc259` is byte-identical to
+  the reference; `-mlzma:lc300` aborts in *both* builds).
+
+That last category is the reason this audit was worth doing and the reason a
+mass `try_into()` sweep would not have been: three sites that read as obvious
+defects are conformant, and only the reference could settle it.
+
 **Its failure signal is stderr, never the exit status**, and this is not a
 stylistic choice. Every codec entry point goes through `ffi::guard`, whose
 `catch_unwind` turns a panic into `FREEARC_ERRCODE_GENERAL` — indistinguishable
