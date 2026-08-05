@@ -600,8 +600,34 @@ impl Groups {
         self.group_type_names().get(self.group_of(stored_name)).cloned().unwrap_or_default()
     }
 
-    pub fn default_type(&self, stored_name: &str) -> String {
-        let typ = self.group_type_name(stored_name);
+    /// `cfType` (`ArhiveDirectory.hs:408`) — the file's index in the COMPRESSOR
+    /// LIST, via `opt_group2type`.
+    ///
+    /// `typeNum t = t elemIndex (map fst dataCompressor) defaultVal 0`: a group
+    /// type the list does not name falls to 0, the unnamed default entry.
+    pub fn cf_type(&self, stored_name: &str, type_names: &[String]) -> usize {
+        let raw = self.group_type_name(stored_name);
+        type_names.iter().position(|t| *t == raw).unwrap_or(0)
+    }
+
+    /// `getDefaultType` (`ArhiveFileList.hs:520`).
+    ///
+    /// ```haskell
+    ///   typ = fst (opt_data_compressor command !! cfType command file)
+    /// ```
+    ///
+    /// **It reads the COMPRESSOR LIST, not the groups file**, and that
+    /// indirection is load-bearing rather than incidental. `-mm-` removes the
+    /// `$wav`/`$bmp` entries, so a `.wav` then indexes to 0 — whose type is
+    /// `""` — and comes back `$binary`. The file stops being a multimedia type
+    /// at all, `detectMM` never runs, and it is probed like anything else.
+    ///
+    /// Reading the groups file directly instead kept answering `$wav` after
+    /// `-mm-` had removed that entry, so `-m4 -mm-` left a WAV in the default
+    /// chain where the reference put it in `$compressed`.
+    pub fn default_type(&self, stored_name: &str, type_names: &[String]) -> String {
+        let idx = self.cf_type(stored_name, type_names);
+        let typ = type_names.get(idx).cloned().unwrap_or_default();
         match typ.is_empty()
             || darc_codecs::mmdet::DETECTABLE_TYPES.split_whitespace().any(|d| d == typ)
         {
@@ -614,6 +640,18 @@ impl Groups {
 #[cfg(test)]
 mod default_type_tests {
     use super::Groups;
+
+    /// A compressor list that NAMES the multimedia types. getDefaultType reads
+    /// this list, not the groups file, so a list without $wav can never return
+    /// $wav however the groups file matches -- which is exactly what `-mm-`
+    /// exploits.
+    fn names() -> Vec<String> {
+        ["", "$obj", "$text", "$wav", "$bmp"].iter().map(|s| s.to_string()).collect()
+    }
+
+    fn without_mm() -> Vec<String> {
+        ["", "$obj", "$text"].iter().map(|s| s.to_string()).collect()
+    }
 
     const SAMPLE: &str = "\
 ;a comment
@@ -632,11 +670,11 @@ $text
     #[test]
     fn a_marker_types_the_wildcards_that_follow_it() {
         let g = Groups::parse(SAMPLE);
-        assert_eq!(g.default_type("a.wav"), "$wav");
-        assert_eq!(g.default_type("a.wave"), "$wav");
-        assert_eq!(g.default_type("a.bmp"), "$bmp");
+        assert_eq!(g.default_type("a.wav", &names()), "$wav");
+        assert_eq!(g.default_type("a.wave", &names()), "$wav");
+        assert_eq!(g.default_type("a.bmp", &names()), "$bmp");
         // Before any marker the walk is still at its initial $binary.
-        assert_eq!(g.default_type("a.exe"), "$binary");
+        assert_eq!(g.default_type("a.exe", &names()), "$binary");
     }
 
     /// A type the detector can find itself is handed back as `$binary`, so
@@ -644,7 +682,7 @@ $text
     #[test]
     fn detectable_types_become_binary() {
         let g = Groups::parse(SAMPLE);
-        assert_eq!(g.default_type("a.txt"), "$binary");
+        assert_eq!(g.default_type("a.txt", &names()), "$binary");
     }
 
     /// `$default` is a POSITION, not a type -- and an unmatched file inherits
@@ -662,12 +700,12 @@ $text
     #[test]
     fn an_unmatched_file_inherits_the_type_in_force_at_default() {
         let g = Groups::parse(SAMPLE);
-        assert_eq!(g.default_type("a.unknown"), "$bmp");
+        assert_eq!(g.default_type("a.unknown", &names()), "$bmp");
         // With `$default` after `$binary`, as the shipped file has it.
         let real = Groups::parse("*.exe\n$binary\n*.bin\n$default\n$wav\n*.wav\n");
-        assert_eq!(real.default_type("a.unknown"), "$binary");
-        assert_eq!(real.default_type("a.wav"), "$wav");
+        assert_eq!(real.default_type("a.unknown", &names()), "$binary");
+        assert_eq!(real.default_type("a.wav", &names()), "$wav");
         // And with no groups file at all, which is `--groups-`.
-        assert_eq!(Groups::single().default_type("a.wav"), "$binary");
+        assert_eq!(Groups::single().default_type("a.wav", &names()), "$binary");
     }
 }

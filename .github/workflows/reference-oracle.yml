@@ -1,0 +1,126 @@
+# Build the Haskell reference oracle for a platform and publish it.
+#
+# `9a127e6` is the last commit that can build the Haskell archiver, and twenty
+# of the twenty-one `arc-*-check.sh` harnesses need it. Without a published
+# binary each CI job would have to build one — GHC plus the C codecs plus the
+# Rust staticlibs, on every run — so this does it once per platform and
+# `rust/difftest/haskell-reference.sh` fetches the result.
+#
+# Manual only. It publishes to a release and creates a tag, which is not
+# something a push should ever do by accident.
+#
+# ── One release per platform, and why it cannot be otherwise ────────────────
+#
+# This repository has immutable releases: assets are attached at creation and
+# cannot be added later, so every platform needs its own release rather than
+# sharing one. Deleting to recreate is not a way out — deleting a published
+# release BURNS its tag name, and recreating that ref afterwards fails with
+# "Reference update failed".
+#
+# ── After a successful run ──────────────────────────────────────────────────
+#
+# The job prints the SHA-256. Put it in `rust/difftest/golden/reference.sha256`
+# against the platform key and commit that, or the resolver will refuse to use
+# the asset — an unpinned platform declines to download rather than trusting
+# whatever arrives.
+name: Reference oracle
+
+on:
+  workflow_dispatch:
+    inputs:
+      platform:
+        description: "Platform key (must match `uname -s`-`uname -m`, lower-cased OS)"
+        required: true
+        default: linux-x86_64
+        type: choice
+        options: [linux-x86_64, linux-aarch64]
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    # `linux-aarch64` needs the arm runner; `uname -m` there prints aarch64,
+    # which is the platform key the resolver computes.
+    runs-on: ${{ inputs.platform == 'linux-aarch64' && 'ubuntu-24.04-arm' || 'ubuntu-latest' }}
+    steps:
+      - name: Check out the reference commit
+        uses: actions/checkout@v4
+        with:
+          # The oracle is built from history, not from the current tree. That
+          # is the whole point: it must not drift with the port it checks.
+          ref: 9a127e6
+          fetch-depth: 0
+
+      - name: Confirm the platform key matches this runner
+        run: |
+          set -euo pipefail
+          got="$(uname -s | tr '[:upper:]' '[:lower:]')-$(uname -m)"
+          if [ "$got" != "${{ inputs.platform }}" ]; then
+            echo "::error::asked for ${{ inputs.platform }} but this runner is $got" >&2
+            echo "The asset name has to match what haskell-reference.sh computes." >&2
+            exit 1
+          fi
+          echo "platform: $got"
+
+      - name: System libraries
+        run: |
+          set -euo pipefail
+          sudo apt-get update -qq
+          # compile-ghc-probe links -lstdc++ -lncurses -lpthread -lgomp, and
+          # takes libcurl when pkg-config finds it (else -DFREEARC_NOURL).
+          sudo apt-get install -y -qq libncurses-dev libcurl4-openssl-dev pkg-config
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: GHC 9.10.3
+        uses: haskell-actions/setup@v2
+        with:
+          ghc-version: "9.10.3"
+          enable-stack: false
+
+      - name: Build the reference
+        run: |
+          set -euo pipefail
+          chmod +x ./compile-ghc-probe
+          ./compile-ghc-probe
+          test -x Tests/arc-ghc
+
+      - name: It has to actually archive something
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/probe && cd /tmp/probe
+          printf 'hello\n' > a.txt
+          "$GITHUB_WORKSPACE/Tests/arc-ghc" a --nodates -y t.arc a.txt
+          "$GITHUB_WORKSPACE/Tests/arc-ghc" t t.arc
+          echo "the binary runs and round-trips"
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          plat='${{ inputs.platform }}'
+          tag="oracle-9a127e6-$plat"
+          asset="arc-ghc-$plat"
+          cp Tests/arc-ghc "$asset"
+          sum="$(sha256sum "$asset" | cut -d' ' -f1)"
+
+          # Attached at creation: an immutable release takes no later uploads.
+          gh release create "$tag" \
+            --target "$(git rev-parse 9a127e6)" \
+            --title "Haskell reference oracle 9a127e6 ($plat)" \
+            --latest=false \
+            --notes "Prebuilt \`arc-ghc\` for \`$plat\`, built from \`9a127e6\` by the Reference oracle workflow. A test oracle, not a product build. GPLv3-or-later; the corresponding source is commit \`9a127e6\` of this repository. SHA-256 \`$sum\`." \
+            "$asset"
+
+          {
+            echo "### Reference oracle published"
+            echo
+            echo "Add this line to \`rust/difftest/golden/reference.sha256\`,"
+            echo "or the resolver will refuse to use the asset:"
+            echo
+            echo '```'
+            printf '%-18s %s\n' "$plat" "$sum"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"

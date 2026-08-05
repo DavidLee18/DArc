@@ -768,8 +768,10 @@ fn main() {
             // `getDefaultType` from the groups file. This was a hardcoded
             // "$binary", which made `$wav`/`$bmp` unreachable and left the
             // multimedia branch in filetype::classify dead.
+            let names: Vec<String> =
+                ["", "$obj", "$text"].iter().map(|s| s.to_string()).collect();
             let types: Vec<String> =
-                entries.iter().map(|e| groups.default_type(&e.stored_name)).collect();
+                entries.iter().map(|e| groups.default_type(&e.stored_name, &names)).collect();
             let cands: Vec<darc_arc::filetype::Candidate<'_>> = entries
                 .iter()
                 .zip(types.iter())
@@ -782,7 +784,11 @@ fn main() {
                 .collect();
             let names: Vec<String> =
                 ["", "$obj", "$text"].iter().map(|s| s.to_string()).collect();
-            let split = darc_arc::filetype::split_file_types(&cands, &names);
+            // Level 4: this path hardcodes -m4's type names and chains just
+            // below, so it is -m4's detect_level too. It feeds detectMM, and
+            // passing a constant 1 here was the bug that made a WAV read as
+            // multimedia when the reference said otherwise.
+            let split = darc_arc::filetype::split_file_types(&cands, &names, 4);
             // The -m4 chains, so the blocks come out in the order the reference
             // writes them (sorted by chain, not by type index).
             let chains = [
@@ -1896,7 +1902,7 @@ fn add(
         // detector decides it, and darc.groups supplies everything else --
         // which is what makes $wav and $bmp reachable at all.
         let types: Vec<String> =
-            file_entries.iter().map(|e| groups.default_type(&e.stored_name)).collect();
+            file_entries.iter().map(|e| groups.default_type(&e.stored_name, &type_names)).collect();
         let cands: Vec<darc_arc::filetype::Candidate<'_>> = file_entries
             .iter()
             .zip(types.iter())
@@ -1907,7 +1913,7 @@ fn add(
                 default_type: ty,
             })
             .collect();
-        let split = darc_arc::filetype::split_file_types(&cands, &type_names);
+        let split = darc_arc::filetype::split_file_types(&cands, &type_names, detect);
         darc_arc::filetype::merge_by_type(&split, |t| chains[t].clone())
     } else if file_entries.is_empty() {
         // No files means no data block. `concatMap splitOneType (splitByType …)`

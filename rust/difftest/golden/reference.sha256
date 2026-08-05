@@ -1,0 +1,13 @@
+# SHA-256 of each published `arc-ghc` reference binary, by platform.
+#
+# These pin the artifacts served from the `reference-9a127e6` release. They are
+# integrity pins for a DOWNLOAD, not a claim that the build is reproducible --
+# it is not. Two builds of 9a127e6 differ by SHA and produce identical
+# archives, so a locally built binary is equally valid and is NOT checked
+# against this file. See haskell-reference.sh.
+#
+# A platform with no line here refuses to download rather than accepting
+# whatever arrives.
+#
+# platform         sha256
+darwin-arm64       ccf84e7e8a8b4561e0f37d7d9beb1fe2c6854b9d1acbbb3075c0624215af97a7
