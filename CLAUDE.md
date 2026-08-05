@@ -24,9 +24,9 @@ that touches archive bytes.**
 scores 24/0/0, the same as the reference. `mm`, `tta`, `bsc`, `lz4`, `zstd` and
 `lzma2` had no `Method` variant until recently, which made archives using them
 unreadable as well as unwritable; the `-m` VALUE grammar (`-mt`, `-ms`, `-md`,
-`-ma`, `-mc`, `-mm`) was read as method NAMES. Both are fixed and gated. What
-is still refused rather than implemented: `-mm`/`-ma`/`-mc` change the chain
-and are rejected outright, and `-lc-`/`-ld-` are not accepted at all.
+`-ma`, `-mc`, `-mm`) was read as method NAMES. Both are fixed and gated, and
+every `-m` knob now does what the reference does. `-lc-`/`-ld-` are still not
+accepted at all.
 
 **`-mt` is archive-visible through LZMA2 and nothing else.** Above one block
 thread the encoder abandons the solid block and splits the input, so
