@@ -156,7 +156,7 @@ Note that `compile-ghc-probe` writes objects into the shared `/tmp/out/`, so run
 
 ### What runs without a reference: `arc-golden-check.sh`
 
-113 cases. It is the only archive-format gate CI runs, and the only one that
+118 cases. It is the only archive-format gate CI runs, and the only one that
 will still be meaningful in a year.
 
 Since compatibility stopped being the bar (`CLAUDE.md`), it holds three kinds,
@@ -166,7 +166,7 @@ tagged in column 3 of the manifest:
 |---|---|---|
 | `ref` (or absent) | 105 | byte-identical to `9a127e6`. A move is a regression. |
 | `port` | 1 | the port deliberately writes different bytes. Column 4 is what the *reference* writes. |
-| `refuse` | 7 | the input must be rejected: non-zero exit under 128, no archive. |
+| `refuse` | 12 | the input must be rejected, or an extraction name neutralised. |
 
 Recording the reference's hash **beside** ours on a `port` line is what makes a
 silently reverted divergence detectable — otherwise the gate catches "it
@@ -174,9 +174,24 @@ changed" but not "it changed back". `refuse` distinguishes `crashed` (died on a
 signal) from `refused`, because the reference *aborts* on `-mlzma:lc300` and
 collapsing those two would have passed on the crashing build.
 
+Five of the refusals are **extraction** cases, and they check the result rather
+than the verdict: everything that lands must land inside the destination, under
+a name that is not itself an escape. Refusing is only one acceptable answer —
+`strip_root` *sanitises* a rooted name instead, so `\evil.txt` becomes
+`evil.txt`, which is better than refusing because the data survives. An
+expectation of "refused" would have failed the port for doing the right thing.
+
+They are buildable end-to-end because `\` is an ordinary Unix filename
+character: `..\..\evil.txt` is a legal file here, is archived under that exact
+name, and becomes a path only when opened on Windows. On Unix that means the
+case cannot demonstrate the escape itself, only that the dangerous name never
+survives to disk — the escape is what `extract.rs`'s unit tests cover.
+
 The self-test is running the whole thing against `Tests/arc-ghc`: it must fail,
 with RECONVERGED on the `port` case, ACCEPTED on `lc259` and the dictionary
-overflow, and CRASHED on `lc300`/`lp300` — while all 105 `ref` cases pass.
+overflow, CRASHED on `lc300`/`lp300`, and UNSAFE NAME on all five extraction
+cases — while all 105 `ref` cases pass. Ten failures, and the reference earns
+every one of them.
 
 Rules:
 
