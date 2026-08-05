@@ -125,8 +125,18 @@ before adding or changing a corpus.
     on is why. **Added by hand, never by `--record`.**
   - **`refuse`** the input must be rejected — non-zero exit under 128, no
     archive. A signal death is `crashed`, and is not a pass.
+- **Merge with `.github/watch-merge.sh <pr> <branch>`, not by eyeballing
+  `gh pr checks`.** That command reports whatever check set exists *right now*,
+  so straight after a push it answers with the previous commit's checks — or
+  none. A poll loop that waits for "nothing pending" is satisfied before the new
+  run starts and reads a stale all-green answer. That is how **#140 was merged
+  with `arc-harnesses` failing on both of its commits**. The script pins on the
+  PR's head SHA, refuses to answer until a run exists *for that SHA*, and
+  refuses to merge a commit with no `Build CI` run at all.
 - **The CLI harnesses run in CI now**, in the `arc-harnesses` job: it fetches
   the published oracle and runs every reference-dependent `arc-*-check.sh`.
+  `arc-sfx-check` runs in `unarc-sfx` instead, because it needs the gitignored
+  SFX modules that job already builds.
   Before it, `arc-golden-check.sh` was the only one CI ran — and
   `arc-cli-check.sh` had been failing **18 of 18 cases**, unnoticed, for an
   unknown length of time.
