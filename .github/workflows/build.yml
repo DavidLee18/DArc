@@ -1012,10 +1012,10 @@ jobs:
           # golden needs no reference and runs in its own job. cli-check takes
           # TWO binaries, so it is invoked separately below.
           #
-          # arc-sfx-check needs the SFX modules, which are C artifacts built by
-          # `./compile-c` then `make -C Unarc linux` -- minutes of build this job
-          # does not do. Excluded on that prerequisite, not on its result; it
-          # passes locally where those artifacts exist.
+          # arc-sfx-check needs Unarc/arc-tiny.linux.sfx, which is gitignored
+          # (a build output) and takes `./compile-c` then `make -C Unarc linux`
+          # to produce. It runs in the `unarc-sfx` job instead, which already
+          # builds exactly those artifacts -- excluded HERE, gated THERE.
           case "$n" in arc-golden-check|arc-cli-check|arc-sfx-check) continue ;; esac
           echo "::group::$n"
           if bash "$h" "$R"; then pass=$((pass+1)); echo "PASS $n"
@@ -1427,6 +1427,18 @@ jobs:
 
     - name: Round-trip through unarc and a self-extracting archive
       run: Tests/sfx-roundtrip.sh rust/target/release/darc Unarc/unarc Unarc/arc.linux.sfx
+
+    # The 18th CLI harness, and the only one the `arc-harnesses` job cannot run:
+    # it needs Unarc/arc-tiny.linux.sfx, which is gitignored and built by the
+    # steps above. It lives here rather than there so that it is gated at all --
+    # it was the last arc-*-check.sh still running nowhere.
+    - name: Fetch the Haskell oracle
+      run: |
+        chmod +x rust/difftest/*.sh
+        rust/difftest/haskell-reference.sh
+        test -x Tests/arc-ghc
+    - name: arc-sfx-check against the reference
+      run: rust/difftest/arc-sfx-check.sh "$PWD/Tests/arc-ghc"
 
   # ── AddressSanitizer on x86-64 ──────────────────────────────────────────────
   # Added to diagnose a double free that only appeared on this runner. It found
