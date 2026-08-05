@@ -116,14 +116,23 @@ before adding or changing a corpus.
 
 - **`arc-golden-check.sh` detects change; it does not forbid it.** A change that
   compresses fine but writes different archive bytes passes every other build
-  check, so this is the only thing that will tell you the bytes moved. When they
-  move **unintentionally** that is a bug. When they move because you chose a
-  better behaviour, say so in the commit and re-record — the gate exists to make
-  the decision conscious, not to veto it.
+  check, so this is the only thing that will tell you the bytes moved. Its
+  manifest carries three kinds of case, in column 3:
+  - **`ref`** (or absent — all 105 original lines) the reference's bytes. A move
+    is a regression.
+  - **`port`** the port deliberately writes different bytes. Column 4 records
+    what the *reference* writes, so re-converging on it is caught too; column 5
+    on is why. **Added by hand, never by `--record`.**
+  - **`refuse`** the input must be rejected — non-zero exit under 128, no
+    archive. A signal death is `crashed`, and is not a pass.
 - **Do not regenerate `golden/manifest.txt` to make a red run go green.** That
   replaces the thing being checked with the thing doing the checking, and it is
-  how an accident gets laundered into a baseline. Re-record only alongside a
-  commit that states which cases moved and why.
+  how an accident gets laundered into a baseline. `--record` regenerates only
+  `ref` lines and carries the rest over verbatim; the header pins
+  `# ref-cases: N` so reclassifying a case shows up in the diff.
+- **The self-test is running it against `Tests/arc-ghc`**, which must FAIL —
+  RECONVERGED, ACCEPTED and CRASHED on the divergent and refusal cases, while
+  every `ref` case still passes.
 - **A deliberate divergence must be marked.** At the site, in the commit, and in
   `CLAUDE.md` if it is user-visible. Silent divergence is the failure mode now,
   not divergence itself.

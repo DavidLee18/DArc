@@ -6,6 +6,18 @@
 # the thing being checked with the thing doing the checking. If a case
 # legitimately changes, build the reference from a commit that still
 # has the Haskell (d6ebeb6 or earlier) and re-record from THAT.
+#
+# Columns:  <sha|outcome>  <case-id>  [kind]  [reference]  [reason...]
+#
+#   kind absent or `ref`  -- the reference's bytes, as above.
+#   `port`   -- the port deliberately writes DIFFERENT bytes. Column 4 is what
+#               the reference writes, so an accidental return to it is caught
+#               too. Added BY HAND, never by --record: only a person can state
+#               the reason, and stating it is the point.
+#   `refuse` -- the input must be rejected: non-zero exit, under 128, and no
+#               archive. A signal death is `crashed`, which is NOT a pass.
+#
+# ref-cases: 105
 00bba95d14b740ead1191947d72d7616f9e400f5f6af9c97ca81f7f385201cb6  mopt-dict-16m
 00bba95d14b740ead1191947d72d7616f9e400f5f6af9c97ca81f7f385201cb6  mopt-store-compressed
 00bba95d14b740ead1191947d72d7616f9e400f5f6af9c97ca81f7f385201cb6  mopt-threads
@@ -111,3 +123,11 @@ fba6b618e54a2a0dfefc6773800e93aa0e5c8b0e295c0acd6bbc942021faf553  store-named-di
 fba6b618e54a2a0dfefc6773800e93aa0e5c8b0e295c0acd6bbc942021faf553  store-named-dir-sl
 fbbaa7e8a5321ba6891ee1508431c035f90c3ccd4d2f6b97a35d51d1458fcac2  big-lzp-ld8m
 gone  filter-none-match
+e3ae5b2bb3e321efe58b96241244eacccfc6a9fb28a22a9f171e596553bf5132  big-lzma-d64m-ld1m  port  983d0e8e3f07403b330c6c19607e83dcae9ab203916c4efc9a3baebc8f5c6668  -ld at or below LZMA's 2MB overhead: the C's `if (mem > 2mb)` drops the limit and keeps the 64MB dictionary, so the archive needs 66MB to open. The port floors it at 4KB (memlimit.rs, #136). Costs 1.8%.
+refused  lzma-lc9              refuse  refused   lc above LZMA_LC_MAX. Both refuse; recorded so it stays that way.
+refused  lzma-lc259            refuse  accepted  259 narrows to lc3: the reference encodes with lc3 and stores "lc259", an archive whose header names a chain that did not compress it (#136).
+refused  lzma-lc300            refuse  crashed   300 narrows to lc44 and the literal-probability allocation asks for 27 petabytes; the reference ABORTS (rc=134). This case exists to keep that from coming back (#136).
+refused  lzma-lp300            refuse  crashed   As lzma-lc300, via lp (#136).
+refused  lzma-pb5              refuse  refused   pb above LZMA_PB_MAX. Both refuse.
+refused  lzma2-lc9             refuse  refused   The lzma2 parser must bound lc as the lzma one does; it did not until #136.
+refused  lzma-dict-overflow    refuse  accepted  d5000000000 overflows u32. parse_int wrapped it to 705032704 and the reference still does, giving a header that names a dictionary nobody asked for (#136).
