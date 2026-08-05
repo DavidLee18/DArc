@@ -95,21 +95,34 @@ fn round_half_even(x: f64) -> u64 {
 /// (`isMMType`, `Compression.hs:541`), while `getDefaultType` maps every
 /// autodetectable type to `$binary`. Only an `darc.groups` entry can produce
 /// `$wav`, so with no groups file the branch is dead.
-fn classify(file: &Candidate<'_>, blocksize: u64, positions: &[u64]) -> Vec<String> {
+fn classify(
+    file: &Candidate<'_>,
+    blocksize: u64,
+    positions: &[u64],
+    detect_level: u32,
+) -> Vec<String> {
     if is_mm_type(file.default_type) {
         // The MM path, kept for when a groups file does assign $wav/$bmp.
         let head = &file.data[..(1024).min(file.data.len())];
-        if mmdet::detect::is_mm_header(1, head) {
+        if mmdet::detect::is_mm_header(detect_level as i32, head) {
             return vec![file.default_type.to_string()];
         }
-        let bytes = mmdet::detect::mm_bytes(1, file.size as i64) as u64;
+        let bytes = mmdet::detect::mm_bytes(detect_level as i32, file.size as i64) as u64;
         let from = ((file.size.saturating_sub(bytes)) / 2) as usize;
         let to = (from + bytes as usize).min(file.data.len());
         let mid = file.data.get(from..to).unwrap_or(&[]);
-        if mmdet::detect::is_mm(1, mid) {
+        if mmdet::detect::is_mm(detect_level as i32, mid) {
             return vec![file.default_type.to_string()];
         }
-        return vec![file.default_type.to_string()];
+        // A FAILED mm detection falls THROUGH to the $text/$compressed probing
+        // below: `if mm then return [defaultType] else foreach positions …`.
+        //
+        // This used to `return default_type` here as well, which made the whole
+        // branch a no-op that answered `$wav` whatever the bytes said. It was
+        // dead code until #129 made file-type routing work, and the first case
+        // to reach it caught this -- `-m4 -mm-` over a WAV whose samples do not
+        // look like multimedia puts it in `$compressed` in the reference, and
+        // left it in the default chain here.
     }
     positions
         .iter()
@@ -167,11 +180,12 @@ pub fn choose_type(votes: &[String], default_type: &str, type_names: &[String]) 
 pub fn split_file_types<'a>(
     files: &[Candidate<'a>],
     type_names: &[String],
+    detect_level: u32,
 ) -> Vec<(usize, Vec<usize>)> {
     let indices: Vec<usize> = (0..files.len()).collect();
     let mut out = Vec::new();
     for group in pre_group(files, &indices) {
-        group_type(files, &group, type_names, &mut out);
+        group_type(files, &group, type_names, detect_level, &mut out);
     }
     out
 }
@@ -209,6 +223,7 @@ fn group_type(
     files: &[Candidate<'_>],
     group: &[usize],
     type_names: &[String],
+    detect_level: u32,
     out: &mut Vec<(usize, Vec<usize>)>,
 ) {
     if group.is_empty() {
@@ -217,7 +232,7 @@ fn group_type(
     if group.len() == 1 {
         let f = &files[group[0]];
         let (blocksize, positions) = probe_positions(f.size);
-        let votes = classify(f, blocksize, &positions);
+        let votes = classify(f, blocksize, &positions, detect_level);
         out.push((choose_type(&votes, f.default_type, type_names), group.to_vec()));
         return;
     }
@@ -230,7 +245,7 @@ fn group_type(
         .map(|&i| {
             let f = &files[i];
             // A whole 64 KB from offset 0, one probe per file.
-            let v = classify(f, CHUNK_SIZE, &[0]);
+            let v = classify(f, CHUNK_SIZE, &[0], detect_level);
             v.first().cloned().unwrap_or_else(|| "default".to_string())
         })
         .collect();
@@ -239,7 +254,7 @@ fn group_type(
     if !agreed {
         // "let every subgroup determine its own type".
         for sg in subgroups {
-            group_type(files, &sg, type_names, out);
+            group_type(files, &sg, type_names, detect_level, out);
         }
         return;
     }
@@ -430,7 +445,7 @@ mod tests {
         let noise: Vec<u8> = (0..200_000u32).map(|i| (i.wrapping_mul(2654435761) >> 24) as u8).collect();
         let files = vec![cand("a.dat", &text), cand("b.dat", &noise)];
         let names: Vec<String> = ["", "$text"].iter().map(|s| s.to_string()).collect();
-        let out = split_file_types(&files, &names);
+        let out = split_file_types(&files, &names, 4);
         // Either they were split into two groups, or they agreed -- but if they
         // agreed, it must not be because the classifier never ran.
         assert!(!out.is_empty());
@@ -438,3 +453,4 @@ mod tests {
         assert_eq!(covered, 2, "every file must land in exactly one group");
     }
 }
+

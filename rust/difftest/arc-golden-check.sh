@@ -177,23 +177,41 @@ build_big_tree() {
 # EXTENSION and the detector probes CONTENT, so both halves have to be real.
 # Separate from build_tree so that adding it does not move the 93 hashes that
 # were already recorded.
+#
+# The SAMPLE DATA COMES FROM corpusgen, and that is not a style choice. The
+# first version generated the PCM with
+#
+#     awk '{ v = int(9000*sin(i/17)); printf "%c%c%c%c", v%256, ... }'
+#
+# which is not portable twice over: `v` goes negative for half a sine wave, and
+# `printf "%c"` with a negative argument is implementation-defined. All ten
+# `mm-*` cases passed on macOS and failed on both Linux runners -- the other 95
+# were fine, which is what identified the TREE rather than the codecs.
+#
+# This is the same failure as the `srand()`/`rand()` corpus in #128, in a file
+# that already carries the rule. `corpusgen` exists precisely so that corpora
+# are bytes a typed program produced, not bytes an awk implementation happened
+# to choose.
 build_mm_tree() {
   local d="$1"
   rm -rf "$d"; mkdir -p "$d"
+  # Integer arithmetic and non-negative throughout, so these two are safe.
   awk 'BEGIN{for(i=0;i<3000;i++) printf "line %d of compressible prose\n", i%211}' > "$d/doc.txt"
   awk 'BEGIN{for(i=0;i<2000;i++) printf "second file line %d\n", i%97}' > "$d/other.txt"
   head -c 40000 /dev/zero | tr '\0' 'B' > "$d/plain.dat"
-  # A 16-bit stereo WAV: 44-byte header then PCM the mm detector recognises.
+  # A 16-bit stereo WAV: the 44-byte header, then real PCM from corpusgen.
   { printf 'RIFF'; printf '\x24\x40\x00\x00'; printf 'WAVEfmt '
     printf '\x10\x00\x00\x00\x01\x00\x02\x00\x44\xac\x00\x00\x10\xb1\x02\x00\x04\x00\x10\x00'
     printf 'data'; printf '\x00\x40\x00\x00'
-    awk 'BEGIN{for(i=0;i<4096;i++){v=int(9000*sin(i/17));printf "%c%c%c%c", v%256,int(v/256)%256,v%256,int(v/256)%256}}'
+    "$CORPUSGEN" sine 16384
   } > "$d/s.wav"
+  # A 24-bit BMP: header, then a gradient. `repeat` is deterministic and the
+  # bytes are a real image's worth of smoothly varying values.
   { printf 'BM'
     printf '\x36\x0c\x00\x00\x00\x00\x00\x00\x36\x00\x00\x00\x28\x00\x00\x00\x40\x00\x00\x00'
     printf '\x40\x00\x00\x00\x01\x00\x18\x00\x00\x00\x00\x00\x00\x0c\x00\x00\x13\x0b\x00\x00'
     printf '\x13\x0b\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00'
-    awk 'BEGIN{for(i=0;i<4096;i++) printf "%c%c%c", i%256,(i*3)%256,(i*7)%256}'
+    "$CORPUSGEN" sine 12288
   } > "$d/s.bmp"
 }
 
