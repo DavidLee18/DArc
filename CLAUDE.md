@@ -125,6 +125,19 @@ before adding or changing a corpus.
     on is why. **Added by hand, never by `--record`.**
   - **`refuse`** the input must be rejected — non-zero exit under 128, no
     archive. A signal death is `crashed`, and is not a pass.
+- **The CLI harnesses run in CI now**, in the `arc-harnesses` job: it fetches
+  the published oracle and runs every reference-dependent `arc-*-check.sh`.
+  Before it, `arc-golden-check.sh` was the only one CI ran — and
+  `arc-cli-check.sh` had been failing **18 of 18 cases**, unnoticed, for an
+  unknown length of time.
+- **`arc-cli-check.sh` compares behaviour, not wording.** Every one of those 18
+  failures was verbosity — banner, progress, timing, which stream a diagnostic
+  lands on — while the archives were byte-identical. It now compares archive
+  bytes, the extracted tree, the exit code, the listing *data*, and that a
+  failure is reported at all; it does not compare message text. Two self-tests
+  keep it honest: `-m1` vs `-m4` must produce different archives, and two
+  archives with different contents must reduce to different data — otherwise a
+  filter one line too greedy would leave it comparing `All OK` with `All OK`.
 - **Do not regenerate `golden/manifest.txt` to make a red run go green.** That
   replaces the thing being checked with the thing doing the checking, and it is
   how an accident gets laundered into a baseline. `--record` regenerates only

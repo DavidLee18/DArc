@@ -219,6 +219,38 @@ mod tests {
     use super::*;
     use crate::bytestream::OutStream;
 
+    /// `sanitise` had no direct test, and it is the one place a directory name
+    /// READ FROM AN ARCHIVE is normalised.
+    ///
+    /// This port's own writer cannot produce a dangerous name -- `arc a` stores
+    /// `../outside.txt` as `outside.txt` and an absolute path with its root
+    /// stripped -- and the directory block's CRC stops one being patched into
+    /// an existing archive. So the only way such a name arrives is from another
+    /// tool, which is exactly the case this function exists for and exactly the
+    /// case no end-to-end harness here can construct.
+    #[test]
+    fn sanitise_resolves_traversal_under_either_separator() {
+        // `..` is resolved, not merely detected.
+        assert_eq!(sanitise("../evil"), "evil");
+        assert_eq!(sanitise("a/../../evil"), "evil");
+        assert_eq!(sanitise("sub/../other"), "other");
+        // Backslash is a separator here too -- see extract::SEPARATORS.
+        assert_eq!(sanitise(r"..\..\evil"), "evil");
+        assert_eq!(sanitise(r"a\..\..\evil"), "evil");
+        // A leading root cannot survive: the empty first component is dropped.
+        assert_eq!(sanitise("/etc/passwd"), "etc/passwd");
+        assert_eq!(sanitise(r"\windows\system32"), "windows/system32");
+        // Popping past the start must not underflow, and must not escape.
+        assert_eq!(sanitise("../../.."), "");
+        assert_eq!(sanitise("../../../etc"), "etc");
+        // "." is dropped, which is also what keeps `arc a -r x.arc .` listings
+        // from showing "./sub".
+        assert_eq!(sanitise("./sub/./a"), "sub/a");
+        // ...and ordinary names with dots are untouched.
+        assert_eq!(sanitise("..hidden/a..b"), "..hidden/a..b");
+        assert_eq!(sanitise("sub/dir/a.txt"), "sub/dir/a.txt");
+    }
+
     /// Encode a directory the way archiveWriteDir does, column by column.
     struct Dir {
         blocks: Vec<(u64, &'static str, u64, u64)>, // (file count, compressor, offset, comp size)

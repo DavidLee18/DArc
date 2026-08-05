@@ -971,6 +971,63 @@ jobs:
         chmod +x rust/difftest/*.sh
         rust/difftest/debug-assert-check.sh
 
+  # The CLI-level harnesses, against the published Haskell oracle.
+  #
+  # These 18 existed and NOTHING RAN THEM. `arc-golden-check.sh` was the only
+  # arc-*-check.sh in CI, because the other 19 need a build of 9a127e6 and there
+  # was no way to get one on a runner. There is now: the oracle is published per
+  # platform and `haskell-reference.sh` fetches it against a pinned SHA-256.
+  #
+  # What that gap cost, concretely: `arc-cli-check.sh` had been failing 18 of 18
+  # cases for an unknown length of time and no one could have known. Every one
+  # of those failures was wording or verbosity -- banner, progress, timing,
+  # which stream a diagnostic lands on -- while the archives it produced were
+  # byte-identical. It has been rewritten around behaviour (archive bytes,
+  # extracted tree, exit code, listing DATA, and that a failure is reported at
+  # all) and now passes 18/18, so it runs here too. It takes TWO binaries, so it
+  # is invoked separately from the loop.
+  arc-harnesses:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      with:
+        lfs: false
+    - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+    - name: Install packages
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y libncurses-dev
+    - name: Fetch the Haskell oracle
+      run: |
+        chmod +x rust/difftest/*.sh
+        rust/difftest/haskell-reference.sh
+        test -x Tests/arc-ghc
+    - name: Every reference-dependent arc harness
+      run: |
+        set -uo pipefail
+        R="$PWD/Tests/arc-ghc"
+        pass=0; fail=0; failed=""
+        for h in rust/difftest/arc-*-check.sh; do
+          n=$(basename "$h" .sh)
+          # golden needs no reference and runs in its own job. cli-check takes
+          # TWO binaries, so it is invoked separately below.
+          case "$n" in arc-golden-check|arc-cli-check) continue ;; esac
+          echo "::group::$n"
+          if bash "$h" "$R"; then pass=$((pass+1)); echo "PASS $n"
+          else fail=$((fail+1)); failed="$failed $n"; echo "FAIL $n"; fi
+          echo "::endgroup::"
+        done
+        echo "arc harnesses: $pass passed, $fail failed"
+        [ "$fail" -eq 0 ] || { echo "::error::failing:$failed"; exit 1; }
+        # A harness list that silently shrank to nothing would otherwise read as
+        # a pass -- the same vacuous-green this repo keeps finding.
+        [ "$pass" -ge 18 ] || { echo "::error::only $pass harnesses ran, expected >= 18"; exit 1; }
+    - name: The CLI harness, which takes both binaries
+      run: |
+        set -uo pipefail
+        cargo build --release -q --manifest-path rust/Cargo.toml -p darc-arc --bin darc
+        rust/difftest/arc-cli-check.sh "$PWD/Tests/arc-ghc" "$PWD/rust/target/release/darc"
+
   rust-codecs-b:
     runs-on: ubuntu-latest
     steps:
