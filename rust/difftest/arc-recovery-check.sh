@@ -74,7 +74,11 @@ head -c 300000 /dev/urandom > "$W/src/big.bin"
 printf 'a small file\n' > "$W/src/a.txt"
 touch -t 202501010000 "$W/src/big.bin" "$W/src/a.txt"
 
-size() { stat -f '%z' "$1" 2>/dev/null || stat -c '%s' "$1" 2>/dev/null; }
+# `wc -c`, not `stat`: GNU `stat -f` means --file-system and SUCCEEDS, so the
+# usual `stat -f '%z' || stat -c '%s'` pair never reaches its fallback on Linux
+# and returns filesystem info instead of a size. See arc-sfx-check.sh, where
+# that produced `File: unbound variable` on the first CI run.
+size() { wc -c < "$1" | tr -d '[:space:]'; }
 
 # create <options...> -- both binaries create with -rr and compare bytes.
 create() {

@@ -67,7 +67,17 @@ W="${TMPDIR:-/tmp}/arc-sfx-check.$$"; mkdir -p "$W"
 trap 'rm -rf "$W"' EXIT
 
 fail=0 checked=0
-size() { stat -f '%z' "$1" 2>/dev/null || stat -c '%s' "$1" 2>/dev/null; }
+# Portable and unambiguous. This was
+#
+#     stat -f '%z' "$1" 2>/dev/null || stat -c '%s' "$1" 2>/dev/null
+#
+# which assumes `stat -f` FAILS wherever it is not BSD. On Linux GNU `stat -f`
+# means --file-system and SUCCEEDS, so the `||` never fires and `size` returns a
+# block of filesystem info beginning `File: "..."`. The caller then does
+# arithmetic on that and bash reports `File: unbound variable` -- which is
+# exactly what CI hit the first time this harness ever ran on Linux. `wc -c`
+# has no BSD/GNU split to get wrong.
+size() { wc -c < "$1" | tr -d '[:space:]'; }
 
 mkdir -p "$W/src"
 printf 'one file\n' > "$W/src/a.txt"

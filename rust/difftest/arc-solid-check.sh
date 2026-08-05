@@ -61,7 +61,11 @@ W="${TMPDIR:-/tmp}/arc-solid-check.$$"; mkdir -p "$W"
 trap 'rm -rf "$W"' EXIT
 
 fail=0 checked=0
-size() { stat -f '%z' "$1" 2>/dev/null || stat -c '%s' "$1" 2>/dev/null; }
+# `wc -c`, not `stat`: GNU `stat -f` means --file-system and SUCCEEDS, so the
+# usual `stat -f '%z' || stat -c '%s'` pair never reaches its fallback on Linux
+# and returns filesystem info instead of a size. See arc-sfx-check.sh, where
+# that produced `File: unbound variable` on the first CI run.
+size() { wc -c < "$1" | tr -d '[:space:]'; }
 # DATA blocks, which is what the grouping decides. NOT arcdump: that lists the
 # footer's block table, which holds only the SERVICE blocks (header, directory,
 # footer, recovery) and never the data ones -- so it reports the same three or
