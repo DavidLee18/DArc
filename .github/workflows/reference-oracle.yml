@@ -6,23 +6,25 @@
 # Rust staticlibs, on every run — so this does it once per platform and
 # `rust/difftest/haskell-reference.sh` fetches the result.
 #
-# Manual only. It publishes to a release and creates a tag, which is not
-# something a push should ever do by accident.
-#
-# ── One release per platform, and why it cannot be otherwise ────────────────
-#
-# This repository has immutable releases: assets are attached at creation and
-# cannot be added later, so every platform needs its own release rather than
-# sharing one. Deleting to recreate is not a way out — deleting a published
-# release BURNS its tag name, and recreating that ref afterwards fails with
-# "Reference update failed".
+# Manual only, and it does not publish: it builds and uploads an artifact.
+# Publishing is a separate step by someone holding a token that may write.
 #
 # ── After a successful run ──────────────────────────────────────────────────
 #
-# The job prints the SHA-256. Put it in `rust/difftest/golden/reference.sha256`
-# against the platform key and commit that, or the resolver will refuse to use
-# the asset — an unpinned platform declines to download rather than trusting
-# whatever arrives.
+#   gh run download <id> -n arc-ghc-<platform>
+#   gh api -X POST repos/OWNER/REPO/git/refs \
+#     -f ref=refs/tags/oracle-9a127e6-<platform> -f sha=<full sha>
+#   gh release create oracle-9a127e6-<platform> --verify-tag --latest=false \
+#     --title ... --notes ... arc-ghc-<platform>
+#
+# ONE RELEASE PER PLATFORM, because this repository has immutable releases:
+# assets are attached at creation and cannot be added later. Deleting to
+# recreate is not a way out either — deleting a published release BURNS its tag
+# name, and recreating that ref fails with "Reference update failed".
+#
+# Then put the printed SHA-256 in `rust/difftest/golden/reference.sha256`
+# against the platform key, or the resolver will refuse to use the asset: an
+# unpinned platform declines to download rather than trusting what arrives.
 name: Reference oracle
 
 on:
@@ -35,8 +37,13 @@ on:
         type: choice
         options: [linux-x86_64, linux-aarch64]
 
-permissions:
-  contents: write
+# No `permissions:` block. The repository sets
+# `default_workflow_permissions: read`, and a workflow cannot elevate above
+# the repository maximum -- a `contents: write` request here is silently
+# inert, and the release call fails with "403: Resource not accessible by
+# integration". So this job BUILDS and uploads an artifact, and publishing is
+# done separately by someone holding a token that may write. A build job that
+# cannot publish is also the more conservative arrangement.
 
 jobs:
   build:
@@ -99,32 +106,28 @@ jobs:
           "$GITHUB_WORKSPACE/Tests/arc-ghc" t t.arc
           echo "the binary runs and round-trips"
 
-      - name: Publish
-        env:
-          GH_TOKEN: ${{ github.token }}
+      - name: Package
+        id: pack
         run: |
           set -euo pipefail
           plat='${{ inputs.platform }}'
-          tag="oracle-9a127e6-$plat"
-          asset="arc-ghc-$plat"
-          cp Tests/arc-ghc "$asset"
-          sum="$(sha256sum "$asset" | cut -d' ' -f1)"
-
-          # Attached at creation: an immutable release takes no later uploads.
-          gh release create "$tag" \
-            --target "$(git rev-parse 9a127e6)" \
-            --title "Haskell reference oracle 9a127e6 ($plat)" \
-            --latest=false \
-            --notes "Prebuilt \`arc-ghc\` for \`$plat\`, built from \`9a127e6\` by the Reference oracle workflow. A test oracle, not a product build. GPLv3-or-later; the corresponding source is commit \`9a127e6\` of this repository. SHA-256 \`$sum\`." \
-            "$asset"
-
+          cp Tests/arc-ghc "arc-ghc-$plat"
+          sum="$(sha256sum "arc-ghc-$plat" | cut -d' ' -f1)"
+          echo "sum=$sum" >> "$GITHUB_OUTPUT"
           {
-            echo "### Reference oracle published"
+            echo "### Reference oracle built"
             echo
-            echo "Add this line to \`rust/difftest/golden/reference.sha256\`,"
-            echo "or the resolver will refuse to use the asset:"
+            echo "Download the artifact, publish it, and put this line in"
+            echo "\`rust/difftest/golden/reference.sha256\`:"
             echo
             echo '```'
             printf '%-18s %s\n' "$plat" "$sum"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: arc-ghc-${{ inputs.platform }}
+          path: arc-ghc-${{ inputs.platform }}
+          if-no-files-found: error
+          retention-days: 7
