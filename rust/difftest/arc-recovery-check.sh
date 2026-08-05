@@ -49,6 +49,12 @@ reference at all, use arc-golden-check.sh" >&2
 }
 ( cd "$ROOT/rust" && cargo build --release -q -p darc-arc --bin darc ) || {
   echo "cargo build failed" >&2; exit 1; }
+# `arcdump` is a SECOND binary, and the self-test at the end of this file is the
+# only thing that uses it. Nothing built it, so on any machine that had not
+# happened to build it by hand the self-test read an empty output and reported a
+# failure -- which is exactly what happened the first time CI ever ran this.
+( cd "$ROOT/rust" && cargo build --release -q -p darc-arc --bin arcdump ) || {
+  echo "cargo build of arcdump failed" >&2; exit 1; }
 
 W="${TMPDIR:-/tmp}/arc-recovery-check.$$"; mkdir -p "$W"
 trap 'rm -rf "$W"' EXIT
