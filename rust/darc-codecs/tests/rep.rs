@@ -25,7 +25,7 @@ unsafe extern "C" fn cb(what: *const c_char, buf: *mut c_void, size: c_int, aux:
 fn decompress(stream: &[u8]) -> c_int {
     let mut mem = Mem { input: stream.to_vec(), pos: 0, out: Vec::new() };
     let io = unsafe { Io::new(Some(cb), &mut mem as *mut Mem as *mut c_void) }.unwrap();
-    rep::decompress(&io)
+    rep::decompress(&io, 64 * 1024 * 1024)
 }
 fn le(v: u32) -> [u8; 4] { v.to_le_bytes() }
 
@@ -111,8 +111,44 @@ fn encode_decode_round_trips() {
         let packed = compress(input);
         let mut mem = Mem { input: packed, pos: 0, out: Vec::new() };
         let io = unsafe { Io::new(Some(cb), &mut mem as *mut Mem as *mut c_void) }.unwrap();
-        let rc = rep::decompress(&io);
+        let rc = rep::decompress(&io, 64 * 1024 * 1024);
         assert!(rc >= 0, "case {i}: decompress returned {rc}");
         assert_eq!(mem.out, *input, "case {i}: round-trip mismatch ({} bytes)", input.len());
     }
+}
+
+/// The dictionary size is the first word of the stream, so it is
+/// attacker-controlled, and `vec![0u8; n]` is infallible: a stream claiming a
+/// 4 GiB dictionary used to get one attempted. That is harmless where the OS
+/// hands back lazy zero pages -- measured at 1.85 MB max RSS on macOS, which is
+/// why it never showed up as a crash -- and an abort through
+/// `handle_alloc_error` under strict overcommit, a cgroup limit, or a 32-bit
+/// target.
+///
+/// `dict` and `lzp` were already bounded this way; rep was missed when
+/// `archive_sized_buffer` was introduced.
+#[test]
+fn an_absurd_dictionary_size_is_refused_rather_than_allocated() {
+    let eof = le(0);
+    for declared in [u32::MAX, 1 << 31, (64 * 1024 * 1024) + (1 << 20) + 2048] {
+        let mut s = le(declared).to_vec();
+        s.extend_from_slice(&eof);
+        assert!(
+            decompress(&s) < 0,
+            "a stream declaring a {declared}-byte dictionary must be refused",
+        );
+    }
+    // ...and the bound must not reject a legitimate one. 64 MiB is the method's
+    // own default and what the difftest driver passes.
+    let mut ok = le(64 * 1024 * 1024).to_vec();
+    ok.extend_from_slice(&eof);
+    assert_eq!(decompress(&ok), 0, "a 64 MiB dictionary is legitimate");
+}
+
+/// The per-block compressed size is bounded against the same figure.
+#[test]
+fn an_absurd_compressed_block_size_is_refused() {
+    let mut s = le(1 << 16).to_vec();   // a small, legitimate dictionary
+    s.extend_from_slice(&le(1 << 30));  // ...then a 1 GiB "compressed block"
+    assert!(decompress(&s) < 0, "a compressed block far past the dictionary must be refused");
 }

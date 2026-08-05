@@ -77,7 +77,9 @@ fn undo(method: &Method, src: &[u8], hint: usize) -> Result<Vec<u8>, Error> {
         Method::Tornado(_) => {
             drive("tor", src, hint, darc_codecs::tornado::decode::decompress)
         }
-        Method::Rep(_) => drive("rep", src, hint, darc_codecs::rep::decompress),
+        Method::Rep(p) => {
+            drive("rep", src, hint, |io| darc_codecs::rep::decompress(io, p.block_size))
+        }
         Method::Grzip(_) => drive("grzip", src, hint, darc_codecs::grzip::stream::decompress),
         // The BCJ filter runs in the decode direction here.
         Method::Exe => drive("exe", src, hint, |io| {

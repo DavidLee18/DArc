@@ -50,23 +50,36 @@ fn i32_at(buf: &[u8], off: usize) -> i32 {
     i32::from_le_bytes([buf[off], buf[off + 1], buf[off + 2], buf[off + 3]])
 }
 
-/// Decode a REP stream. Signature-compatible with `rep_decompress`; the tuning
-/// parameters are not needed on the decode side (the block size that matters is
-/// stored in the stream), so they are accepted and ignored, as the C does.
-pub fn decompress(io: &Io) -> c_int {
-    match run(io) {
+/// Decode a REP stream.
+///
+/// `declared_block_size` is the block size from the METHOD STRING, and it is
+/// the only trustworthy bound available here: everything else this function
+/// reads comes out of the stream. It used to be accepted and dropped on the
+/// floor, on the reasoning that "the block size that matters is stored in the
+/// stream" -- true for decoding, and exactly why the stored one cannot also be
+/// its own sanity check.
+///
+/// `dict` and `lzp` have always threaded theirs through for this reason; rep
+/// was simply missed when [`crate::ffi::archive_sized_buffer`] was introduced.
+pub fn decompress(io: &Io, declared_block_size: u32) -> c_int {
+    match run(io, declared_block_size) {
         Ok(()) => OK,
         Err(e) => e,
     }
 }
 
-fn run(io: &Io) -> Result<(), c_int> {
-    // The real dictionary size is the first word of the stream.
-    let block_size = read_u32(io)? as usize;
-    if block_size == 0 {
+fn run(io: &Io, declared_block_size: u32) -> Result<(), c_int> {
+    // The real dictionary size is the first word of the stream -- so it is
+    // attacker-controlled, and `vec![0u8; n]` is infallible. A stream claiming
+    // a 4 GiB dictionary used to get one attempted: harmless where the OS hands
+    // back lazy zero pages, an abort through `handle_alloc_error` under strict
+    // overcommit, a cgroup limit, or a 32-bit target.
+    let stream_block_size = read_u32(io)? as usize;
+    if stream_block_size == 0 {
         return Err(BAD);
     }
-    let mut data = vec![0u8; block_size];
+    let mut data = crate::ffi::archive_sized_buffer(stream_block_size, declared_block_size)?;
+    let block_size = data.len();
     let mut pos: usize = 0; // current write index into `data` (the circular buffer)
 
     loop {
@@ -80,7 +93,10 @@ fn run(io: &Io) -> Result<(), c_int> {
         }
         let compr_size = compr_size as usize;
 
-        let mut buf = vec![0u8; compr_size];
+        // Bounded for the same reason, against the same figure: the encoder
+        // compresses `block_size` bytes at a time, so a compressed block far
+        // past it is corrupt input rather than a big block.
+        let mut buf = crate::ffi::archive_sized_buffer(compr_size, declared_block_size)?;
         read_exact(io, &mut buf)?;
 
         // Header: num, then lens[num], offsets[num], datalens[num+1]. num sizes
@@ -163,7 +179,7 @@ fn run(io: &Io) -> Result<(), c_int> {
 #[allow(clippy::too_many_arguments)]
 pub fn decompress_full(
     io: &Io,
-    _block_size: u32,
+    block_size: u32,
     _min_compression: c_int,
     _min_match_len: c_int,
     _barrier: c_int,
@@ -172,7 +188,7 @@ pub fn decompress_full(
     _amplifier: c_int,
 ) -> c_int {
     drop(NOMEM); // allocation-failure code, kept for parity with the C
-    decompress(io)
+    decompress(io, block_size)
 }
 
 // ---------------------------------------------------------------------------
