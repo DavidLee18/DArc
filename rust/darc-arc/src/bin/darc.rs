@@ -3527,8 +3527,21 @@ fn run_blocks(
         // files that were then refused for an unsafe path, failed their CRC, or
         // were skipped at an overwrite prompt. So a run that refused its only
         // entry still printed "Extracted 1 files", directly under the ERROR
-        // saying it had not been. The reference prints no summary line here at
-        // all, so there is nothing to match and correctness is the only bar.
+        // saying it had not been.
+        //
+        // **A DELIBERATE DIVERGENCE, and #140 recorded the wrong reason for it.**
+        // That commit claimed the reference prints no summary here, so there was
+        // nothing to match; it does print one, and I had missed it by tailing
+        // output whose progress is drawn with carriage returns. It reads
+        //
+        //     Extracted 226 files, 33.111 => 438.744 bytes. Ratio 7.5%
+        //
+        // on a tree of 218 files and 8 directories -- the same entries-not-files
+        // count this used to have. So the port is right and the reference is
+        // wrong, which is the trade CLAUDE.md asks for, but it IS a divergence
+        // and is marked as one here rather than left looking like a free fix.
+        // `arc-cli-check.sh` holds both builds against the disk and reports the
+        // reference's miscount without failing on it.
         println!(
             "Extracted {} files, {} bytes.",
             show3(written_files.load(atomic::Ordering::Relaxed)),

@@ -148,6 +148,13 @@ before adding or changing a corpus.
   keep it honest: `-m1` vs `-m4` must produce different archives, and two
   archives with different contents must reduce to different data — otherwise a
   filter one line too greedy would leave it comparing `All OK` with `All OK`.
+- **It also checks that each build's own summaries are TRUE**, against the disk
+  and against its own listing — because not comparing them left exactly the hole
+  #140 fixed: `Extracted 1 files` printed under the ERROR saying it had refused.
+  This is per-binary, not differential. The **reference fails it**: it reports
+  entries rather than files written, so `Extracted 226` on a tree of 218 files
+  and 8 directories. That is printed as a NOTE and not gated — this harness
+  gates the port, and no change here can fix the reference.
 - **Do not regenerate `golden/manifest.txt` to make a red run go green.** That
   replaces the thing being checked with the thing doing the checking, and it is
   how an accident gets laundered into a baseline. `--record` regenerates only
