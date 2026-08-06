@@ -86,7 +86,18 @@ if [ -n "$bad" ]; then
   exit 1
 fi
 # A commit with no Build CI run at all is not green, it is untested.
-runs_for "$HEAD" | grep -q 'Build CI' || { echo "NOT MERGING -- no 'Build CI' run for ${HEAD:0:7}"; exit 1; }
+#
+# EXCEPT for a docs-only change: `build.yml` has a `paths-ignore` for `**.md`,
+# `docs/**` and `LICENSE`, so such a commit legitimately produces no run. That
+# is why this refuses rather than assuming — it cannot tell "skipped by
+# paths-ignore" from "never started" — and why the docs rule is to push those
+# straight to main instead of opening a PR. If you do PR one, merge it by hand
+# and say why.
+runs_for "$HEAD" | grep -q 'Build CI' || {
+  echo "NOT MERGING -- no 'Build CI' run for ${HEAD:0:7}."
+  echo "  If this PR is docs-only, build.yml's paths-ignore skipped it on purpose;"
+  echo "  merge by hand. Otherwise the run never started and the commit is untested."
+  exit 1; }
 
 gh pr merge "$PR" --squash --delete-branch >/dev/null 2>&1 || { echo "merge failed"; exit 1; }
 git checkout -q main && git pull -q --ff-only origin main

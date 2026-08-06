@@ -129,6 +129,14 @@ before adding or changing a corpus.
     on is why. **Added by hand, never by `--record`.**
   - **`refuse`** the input must be rejected — non-zero exit under 128, no
     archive. A signal death is `crashed`, and is not a pass.
+- **A docs-only change does not run CI.** `build.yml` has a `paths-ignore` for
+  `**.md`, `docs/**` and `LICENSE`; the full matrix is ~25 minutes and none of
+  those can change an archive byte. GitHub skips only when *every* changed path
+  matches, so prose mixed with code still builds. `.github/**` is deliberately
+  not in the list — a workflow edit is the thing that most needs proving.
+  Consequence: such a commit has **no `Build CI` run at all**, which
+  `watch-merge.sh` refuses to treat as green. Push docs straight to main rather
+  than opening a PR for them.
 - **Merge with `.github/watch-merge.sh <pr> <branch>`, not by eyeballing
   `gh pr checks`.** That command reports whatever check set exists *right now*,
   so straight after a push it answers with the previous commit's checks — or
