@@ -22,9 +22,3 @@ darc-arc = { path = "../darc-arc", default-features = false }
 [[bin]]
 name = "unarc"
 path = "src/main.rs"
-
-# The SFX module is the same binary with the archive appended, so it is built
-# from the same source under a feature rather than duplicated.
-[features]
-default = []
-sfx = []

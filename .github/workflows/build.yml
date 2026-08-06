@@ -1465,6 +1465,19 @@ jobs:
     - name: The Rust unarc against the C one it replaces
       run: rust/difftest/unarc-check.sh "$PWD/Unarc/unarc"
 
+    # The same round-trip the C stack runs above, with the Rust extractor AND
+    # the Rust binary used as the SFX module. That second role is the one to
+    # gate: `darc a -sfx<module>` prepends the module to the archive, so the
+    # module has to notice at runtime that it is now `[stub][archive]` and
+    # extract itself. Nothing else exercises that path.
+    - name: SFX round-trip on the Rust extractor and stub
+      run: |
+        cargo build --release -q --manifest-path rust/Cargo.toml -p darc-unarc
+        Tests/sfx-roundtrip.sh \
+          "$PWD/rust/target/release/darc" \
+          "$PWD/rust/target/release/unarc" \
+          "$PWD/rust/target/release/unarc"
+
   # ── AddressSanitizer on x86-64 ──────────────────────────────────────────────
   # Added to diagnose a double free that only appeared on this runner. It found
   # that one and an out-of-bounds read in Dict/phase1 on its first two runs, and
