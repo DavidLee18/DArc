@@ -5,9 +5,11 @@
 #
 # ## Scope: -m3f, because that is what DArc actually runs
 #
-# `Installer/bin/arc.ini:323` says `default = m3f` for
-# `[External compressor:srep]`, so method 3 + Future-LZ is the invocation every
-# `-m...srep` archive goes through. That is the milestone.
+# `default = m3f` for `[External compressor:srep]`, so method 3 + Future-LZ is
+# the invocation every `-m...srep` archive goes through. That is the milestone.
+# The source was `Installer/bin/arc.ini:323`; that FreeArc-era packaging tree
+# has been deleted, so read it at `c267621` if the provenance is ever in doubt.
+# DArc's own equivalent is `[external.srep]` in `darc.toml`.
 #
 # SREP's compressor is really five algorithms, not one:
 #

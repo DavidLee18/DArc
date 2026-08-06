@@ -208,7 +208,10 @@ mod tests {
 
     #[test]
     fn m3f_defaults_are_what_arc_ini_actually_runs() {
-        // `default = m3f` in Installer/bin/arc.ini:323, no other options.
+        // `default = m3f`, no other options. The source was
+        // `Installer/bin/arc.ini:323`; that FreeArc-era packaging tree has been
+        // deleted, so read it at `c267621` if the provenance is ever in doubt.
+        // DArc's own equivalent is `[external.srep]` in `darc.toml`.
         let d = derive(Method::Digests, Layout::FutureLz, Options::default());
         assert_eq!(d.l, 512, "chunk size");
         assert_eq!(d.min_match, 512);
