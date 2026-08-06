@@ -33,6 +33,10 @@ set -uo pipefail
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 . "$ROOT/rust/difftest/c-reference.sh"
 CREF="$(darc_c_reference "$ROOT")" || exit 1
+# The DARC_RUST side compiles the FORWARDING shim -- C_Encryption.cpp with its
+# LibTomCrypt body deleted -- which is no longer in the working tree. It has its
+# own pin, distinct from the reference's. See c-reference.sh.
+WREF="$(darc_wrapper_tree "$ROOT")" || exit 1
 # The reference is built the way DArc builds _Encryption: see darc_codec_cflags
 # in c-reference.sh for why the makefile's flags, not an -O level, are the
 # oracle.
@@ -83,10 +87,15 @@ build_c "$W/c32" "$CREF32" || { echo "building the 32-bit-ulong32 reference fail
 
 # The staticlib goes AFTER the sources that reference it: GNU ld resolves an
 # archive only against the undefined symbols it has already seen.
+#
+# Compiled out of $WREF, not $ROOT. crypto_ccodec.cpp reaches its subject by
+# `#include "../../Compression/_Encryption/C_Encryption.cpp"`, relative to the
+# shim's own location -- so the shim has to sit inside the tree whose C it is
+# meant to pick up. darc_wrapper_tree copies the live shims in for exactly this.
 clang++ -std=c++17 $CFLAGS_C -w $DEFS -DDARC_RUST \
-  -I"$ROOT" -I"$ROOT/Compression" \
-  "$ROOT/rust/difftest/crypto_ref.cpp" "$ROOT/rust/difftest/crypto_ccodec.cpp" \
-  "$ROOT/Compression/Common.cpp" "$LIB" -o "$W/rs" \
+  -I"$WREF" -I"$WREF/Compression" \
+  "$WREF/rust/difftest/crypto_ref.cpp" "$WREF/rust/difftest/crypto_ccodec.cpp" \
+  "$WREF/Compression/Common.cpp" "$LIB" -o "$W/rs" \
   || { echo "building the Rust-backed shim failed" >&2; exit 1; }
 
 fail=0

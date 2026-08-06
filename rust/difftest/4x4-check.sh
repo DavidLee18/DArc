@@ -67,6 +67,9 @@ set -uo pipefail
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 . "$ROOT/rust/difftest/c-reference.sh"
 CREF="$(darc_c_reference "$ROOT")" || exit 1
+# The substituted side compiles the FORWARDERS, which are no longer in the
+# working tree -- they come from their own pin. See c-reference.sh.
+WREF="$(darc_wrapper_tree "$ROOT")" || exit 1
 CFLAGS_C="$(darc_codec_cflags 4x4)" || exit 1
 W="${TMPDIR:-/tmp}/4x4-check.$$"; mkdir -p "$W"
 trap 'rm -rf "$W"' EXIT
@@ -105,14 +108,15 @@ build() { # build OUT TREE LIB [flags...]
   # shellcheck disable=SC2086  # flag and source lists are word lists on purpose
   clang++ -std=c++17 $CFLAGS_C -w -DFREEARC_UNIX -DFREEARC_INTEL_BYTE_ORDER -DFREEARC_64BIT \
     -I"$tree" -I"$tree/Compression" "$@" \
-    "$ROOT/rust/difftest/4x4_ref.cpp" $src \
+    "$tree/rust/difftest/4x4_ref.cpp" $src \
     ${lib:+"$lib"} -o "$out"; }
 
 # C side: the pinned tree, all C, no staticlib.
 build "$W/c"  "$CREF" ""                         || { echo "C reference build failed" >&2; exit 1; }
-# Rust side: the WORKING TREE's wrappers -- which are the thin forwarders the
-# port left behind -- over the Rust staticlib.
-build "$W/rs" "$ROOT" "$LIB" -DDARC_RUST         || { echo "Rust-substituted build failed" >&2; exit 1; }
+# Rust side: the FORWARDER wrappers -- what the port left behind once the C
+# engines were deleted -- over the Rust staticlib. From their own pin, because
+# Compression/ is not in the working tree any more.
+build "$W/rs" "$WREF" "$LIB" -DDARC_RUST         || { echo "Rust-substituted build failed" >&2; exit 1; }
 [ -x "$W/c" ] && [ -x "$W/rs" ] || { echo "a driver is missing after a clean build" >&2; exit 1; }
 
 # The assertion that keeps this honest. Rust embeds source paths for panic

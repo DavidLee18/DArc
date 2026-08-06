@@ -13,7 +13,13 @@ fn main() {
         .join("../..")
         .canonicalize()
         .expect("repo root");
-    let compression = root.join("Compression");
+    // The C ABI headers live with the Rust that consumes them. They used to be
+    // Compression/Compression.h and Common.h; Compression/ was deleted once the
+    // difftest harnesses started reading their C from a pin, and these two are
+    // the only part cargo needs at BUILD time -- a build script cannot git-archive
+    // without breaking offline and vendored builds. c-header-check.sh asserts they
+    // are byte-identical to the pinned copies, so the two cannot drift.
+    let compression = root.join("rust/include");
 
     println!("cargo:rerun-if-changed=wrapper.h");
     println!("cargo:rerun-if-changed={}", compression.join("Compression.h").display());

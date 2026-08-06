@@ -39,6 +39,17 @@
 # ambiguous as history does.
 DARC_C_REF_SHA="5c2c6ce1244db759a17aea61cb243f3ace41fe61"
 
+# The last commit that contained Compression/ in the working tree.
+#
+# This is NOT interchangeable with DARC_C_REF_SHA, and using one for the other
+# silently changes what is being tested. At 5c2c6ce the wrappers still had their
+# C engines: C_LZP.cpp was 257 lines longer, C_Encryption.cpp is 193 lines
+# different, C_Dict.cpp 73. Those are the ORIGINAL codecs, and they are the
+# oracle. The wrappers here are what is left after the engines were deleted --
+# thin forwarders into libdarc_codecs.a / libdarc_crypto.a -- and they are the
+# code under test. A harness compiles one of each and requires identical bytes.
+DARC_WRAPPER_REF_SHA="f0c859d428b97b50773d30fec90dc93ddb0452dd"
+
 # Fetch a pinned revision, retrying, and say what actually went wrong.
 #
 # Usage: darc_fetch_pinned <repo-root> <sha> <label>
@@ -84,11 +95,24 @@ darc_fetch_pinned() {
   return 1
 }
 
-# Usage: darc_c_reference <repo-root>   → echoes the reference tree's path
-darc_c_reference() {
-  local root="$1"
-  local sha="$DARC_C_REF_SHA"
-  local cref="${TMPDIR:-/tmp}/darc-c-ref-$sha"
+# Usage: darc_extract_compression <repo-root> <sha> <label>  → echoes tree path
+#
+# Extract Compression/ at a pinned commit and copy the CURRENT difftest shims in
+# beside it. Two callers, two different pins, one mechanism:
+#
+#   darc_c_reference   the ORIGINAL C, before the port replaced any engine.
+#   darc_wrapper_tree  the FORWARDERS -- the same wrappers with their engines
+#                      deleted and DARC_RUST branches in place, which is what
+#                      the substituted side of a harness compiles.
+#
+# The shims are copied in rather than compiled where they live because they
+# `#include "../../Compression/..."` by relative path: placing a shim inside an
+# extracted tree makes that include resolve to THAT tree's C, with no source
+# edits. It is the whole trick, and it is why the same crypto_ccodec.cpp can be
+# the C side and the Rust side of one comparison.
+darc_extract_compression() {
+  local root="$1" sha="$2" label="$3"
+  local cref="${TMPDIR:-/tmp}/darc-$label-$sha"
 
   # Rebuild the shim copy every time (cheap, and the shims are live source);
   # extract the pinned C only once.
@@ -106,19 +130,19 @@ darc_c_reference() {
     # CI checks out shallow (actions/checkout defaults to fetch-depth: 1), so
     # the pinned commit is usually absent. Fetch just that one commit rather
     # than making every job clone full history.
-    darc_fetch_pinned "$root" "$sha" "c-reference" || {
-      echo "c-reference: if this is CI and the fetch itself is fine, the checkout" >&2
+    darc_fetch_pinned "$root" "$sha" "$label" || {
+      echo "$label: if this is CI and the fetch itself is fine, the checkout" >&2
       echo "may need more history (fetch-depth: 0)." >&2
       return 1; }
     git -C "$root" archive "$sha" Compression | tar -x -C "$cref" || {
-      echo "c-reference: could not extract Compression/ at $sha" >&2
+      echo "$label: could not extract Compression/ at $sha" >&2
       rm -rf "$cref"
       return 1; }
-    # Cheap sanity check on the result before blessing it: one file that the
-    # pinned revision certainly has. Catches a truncated stream that tar still
-    # exited 0 on.
-    [ -f "$cref/Compression/LZMA/C_LZMA.cpp" ] || {
-      echo "c-reference: extraction at $sha looks incomplete" >&2
+    # Cheap sanity check on the result before blessing it: one file that both
+    # pinned revisions certainly have. Catches a truncated stream that tar
+    # still exited 0 on.
+    [ -f "$cref/Compression/Common.cpp" ] || {
+      echo "$label: extraction at $sha looks incomplete" >&2
       rm -rf "$cref"
       return 1; }
     : > "$cref/.extracted-ok"
@@ -128,6 +152,30 @@ darc_c_reference() {
   cp "$root"/rust/difftest/*.cpp "$cref/rust/difftest/" 2>/dev/null
 
   echo "$cref"
+}
+
+# Usage: darc_c_reference <repo-root>   → echoes the reference tree's path
+darc_c_reference() {
+  darc_extract_compression "$1" "$DARC_C_REF_SHA" "c-ref"
+}
+
+# Usage: darc_wrapper_tree <repo-root>  → echoes the forwarder tree's path
+#
+# The C wrappers are NOT in the working tree any more. They were deleted once
+# nothing linked them: the archiver and unarc are cargo binaries, Unarc/ is
+# gone, and the only thing that still compiled a `Compression/*.cpp` was this
+# harness suite. Keeping ~11,000 lines of C in the repo to serve a test is the
+# wrong trade when git already holds it -- and the reference side has been
+# fetched from history since it was written, so this is the same rule applied
+# to the other side rather than a new one.
+#
+# The pin is the LAST COMMIT THAT CONTAINED THEM. Bumping it is a deliberate
+# act: it changes what the substituted side compiles, so a wrapper "fix" cannot
+# arrive by accident. Note that libbsc has worked this way all along -- it has
+# not been in the tree for some time and every BSC harness reads it from
+# DARC_C_REF_SHA.
+darc_wrapper_tree() {
+  darc_extract_compression "$1" "$DARC_WRAPPER_REF_SHA" "wrappers"
 }
 
 # ── The oracle's optimisation flags ──────────────────────────────────────────

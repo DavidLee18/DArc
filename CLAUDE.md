@@ -26,19 +26,17 @@ FAR plugin, 8,008 lines — was deleted once `rust/darc-unarc` replaced it. The
 extractor and every SFX module are now one cargo binary, which decides at
 runtime whether an archive is appended to it.
 
-**`Compression/` is not dead code, and it is easy to conclude that it is.** No
-binary links it and there is no makefile left, so it looks orphaned. It is not:
-`rust/difftest`'s shims `#include` the working-tree sources **directly** — e.g.
-`crypto_ccodec.cpp` has `#include "../../Compression/_Encryption/C_Encryption.cpp"`
-— and `4x4-check.sh` compiles eight wrappers (`C_4x4`, `C_Tornado`, `C_REP`,
-`C_LZP`, `C_Dict`, `C_Delta`, `CompressionLibrary`, `Common`) from `$ROOT` as
-its **`DARC_RUST` side**, the thing under test. Those includes live inside
-`.cpp` files, so grepping the harness shell scripts finds only `Common.cpp` and
-badly understates it. Separately, the *reference* side of each harness comes
-from a pinned SHA in git history (`c-reference.sh`, `5c2c6ce`), and
-`Compression/BSC/libbsc/` is **gitignored vendored source**, not in the tree at
-all. `Compression.h` and `Common.h` are additionally read by
-`darc-codecs`/`darc-crypto` `build.rs` through bindgen. No Haskell remains.
+**There is no C or C++ source in the tree.** Four headers remain and all four
+live under `rust/`: `rust/include/{Compression,Common}.h`, the ABI contract
+`bindgen` reads, and the two `wrapper.h` translation units that pull them in.
+`Compression/` — the codec wrappers, the vendored engines, everything — is
+deleted; the difftest harnesses read it from **two pins in git history**
+(`DARC_C_REF_SHA` for the original C, `DARC_WRAPPER_REF_SHA` for the
+forwarders). No Haskell remains either.
+
+That is the rule the reference side always followed, now applied to both:
+**a test does not justify keeping source in the tree when git already holds
+it.** `libbsc` had worked this way for a long time already.
 
 **The reference the port was gated against is not in the tree.** Every
 `rust/difftest/arc-*-check.sh` compares two binaries and needs a Haskell build
@@ -116,8 +114,8 @@ cargo build --release --manifest-path rust/Cargo.toml -p darc-unarc
 
 That is the whole build — there is no second step and no `make`. `unarc` doubles
 as the SFX module: `darc a -sfx<path>` prepends it and it notices at runtime.
-The C under `Compression/` is compiled only by `rust/difftest`, with the
-harnesses' own flags.
+There is no C to build: `rust/difftest` fetches it from a pin when a harness
+runs.
 
 Windows is a target flag, not a script:
 `cargo build --release --target x86_64-pc-windows-gnu …`, or
@@ -146,9 +144,9 @@ before adding or changing a corpus.
   they produced once `Unarc/` went. The C that still matters is compiled by the
   difftest harnesses, with their own flags, from their own shims.
 - An OS define and a byte-order define are both mandatory in the C —
-  `Compression/Common.h` raises `#error` without them. The harnesses pass them;
-  an editor or clangd will show `"You must define OS!"` on any `Compression/`
-  file opened bare, and that is expected, not a break.
+  `rust/include/Common.h` raises `#error` without them. The harnesses and both
+  `build.rs` pass them; an editor or clangd opening that header bare will show
+  `"You must define OS!"`, which is expected, not a break.
 
 ## What will bite you
 
@@ -216,9 +214,11 @@ before adding or changing a corpus.
   sides of the FFI. `darc-arc`'s `Method` enum is the Rust half; a method it has
   no variant for is `Unsupported` and refused at write time rather than silently
   dropped.
-- **Two directories look dead and are not**: `Compression/LZMA/Common` +
+- **Two directories look dead and are not** — relevant when reading the *pinned*
+  tree, since neither is in the working one: `Compression/LZMA/Common` +
   `Windows` (included by `MultiThreading.h` and `CompressionLibrary.cpp`), and
-  `Compression/Tornado/Tornado.cpp` (`C_Tornado.cpp` `#include`s it).
+  `Compression/Tornado/Tornado.cpp` (`C_Tornado.cpp` `#include`s it). Both are
+  still compiled, out of `DARC_WRAPPER_REF_SHA`.
 - **Link order matters to GNU ld and not to macOS ld**, so a broken link passes
   locally and fails every Linux and mingw job. See `docs/rust-workspace.md`.
 - **CI enforces one lint gate no `cargo build` will show you**: every enum
@@ -254,9 +254,10 @@ before adding or changing a corpus.
 
 ## Conventions
 
-- Prefer adapting DArc's `Compression/C_*.cpp` wrapper over patching vendored
-  sources. What is still vendored (libbsc) is kept close to pristine so it
-  can be re-synced.
+- The C is frozen at two pins and nothing in the tree compiles it, so there is
+  no wrapper here to adapt any more. Changing what a harness compiles means
+  bumping `DARC_C_REF_SHA` or `DARC_WRAPPER_REF_SHA` — a deliberate act that
+  belongs in a commit saying why.
 - Commit messages are `Component: what changed`, with bodies that explain *why* —
   including what was measured and what was ruled out.
 - **The project is GPLv3-or-later**, so a new dependency carries a licence
