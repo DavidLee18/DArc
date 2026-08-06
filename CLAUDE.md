@@ -18,6 +18,27 @@ broken and weakened the key (archives written without it are still read); and
 does. Both are *marked* — a deliberate break is documented at the site and in
 the commit, never made silently. See `docs/architecture.md`.
 
+Three more were added with `--autorun` (#154), all in that spirit:
+
+* **`darc a -sfx<module>` chmods the result executable** on Unix. The reference
+  does not, and on Windows never had to; here it produced a file that was a
+  program in every respect but the bit the kernel checks. `chmod +x` semantics,
+  not a fixed 0755, so a restrictive umask survives.
+* **The autorun command lives in the ARCHIVE**, as a trailing footer field, not
+  in the stub. FreeArc hardcoded `setup.exe` into a `-DFREEARC_INSTALLER` build;
+  a second cargo output is what caused #149. The field is written **only when
+  non-empty**, so it moves no bytes in any archive that does not use it — which
+  is what keeps all 105 `ref` cases valid.
+* **It asks before running, and propagates the exit code.** The reference ran
+  the payload silently on the bare double-click and discarded the child's
+  status. `-y` says yes in advance; EOF on stdin means no.
+
+  "A DArc SFX never executes anything" *was* a documented property of this
+  project, which is why changing it is marked here and not only at the site. It
+  is now narrower rather than gone: **`darc l`, `darc t` and `darc x` are still
+  inert on an SFX file**, and so is `unarc` given any explicit command. Only the
+  stub, run as itself, with no command named, after a `y`, runs anything.
+
 **The port is finished: the archiver is Rust, end to end.** Rust ~78,000 lines
 (every codec, the crypto, the `.7z` reader, SREP, and the whole application
 layer). **No C++ is on any shipped path any more**, and none is compiled into

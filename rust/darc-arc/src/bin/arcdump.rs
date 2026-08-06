@@ -72,6 +72,7 @@ fn main() {
     match block::read_footer(footer_block_pos, &body, footer_descr) {
         Ok(footer) => {
             println!("locked {}  sfx {}  recovery {:?}", footer.locked, footer.sfx_size, footer.recovery);
+            println!("autorun {:?}", footer.autorun);
             println!("comment {:?}", footer.comment);
             println!("{} blocks:", footer.blocks.len());
             for b in &footer.blocks {

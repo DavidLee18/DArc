@@ -1455,6 +1455,14 @@ jobs:
     - name: unarc agrees with darc
       run: rust/difftest/unarc-check.sh
 
+    # The installer SFX. It belongs in this job for the same reason
+    # arc-sfx-check does -- it prepends rust/target/release/unarc, built above --
+    # and it is the only thing standing between `--autorun` and a change that
+    # makes every ordinary SFX archive execute something. Most of its checks are
+    # negative, so read its self-tests before trusting a green run.
+    - name: The installer SFX runs only when asked
+      run: rust/difftest/sfx-autorun-check.sh
+
     # The 18th CLI harness, and the only one the `arc-harnesses` job cannot run:
     # it prepends an SFX module, which is rust/target/release/unarc, built above.
     - name: Fetch the Haskell oracle

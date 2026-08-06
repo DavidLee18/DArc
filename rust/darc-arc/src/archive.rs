@@ -312,5 +312,15 @@ pub fn scan_broken(data: &[u8]) -> Result<FooterBlock, Error> {
     }
     blocks.reverse();
     let sfx_size = blocks.iter().map(|b| b.pos).min().unwrap_or(0);
-    Ok(FooterBlock { blocks, locked: false, comment: String::new(), recovery: String::new(), sfx_size })
+    // No autorun either, for the same reason there is no comment: only the real
+    // footer recorded it, and this one is fabricated. An SFX whose footer is
+    // gone therefore extracts and runs nothing, which is the safe direction.
+    Ok(FooterBlock {
+        blocks,
+        locked: false,
+        comment: String::new(),
+        recovery: String::new(),
+        sfx_size,
+        autorun: String::new(),
+    })
 }
