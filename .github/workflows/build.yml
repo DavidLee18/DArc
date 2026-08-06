@@ -1459,6 +1459,12 @@ jobs:
     - name: arc-sfx-check against the reference
       run: rust/difftest/arc-sfx-check.sh "$PWD/Tests/arc-ghc"
 
+    # The migration gate for replacing Unarc/'s C++ with the Rust `unarc`. It
+    # needs the C binary the steps above build, so it lives here for the same
+    # reason arc-sfx-check does.
+    - name: The Rust unarc against the C one it replaces
+      run: rust/difftest/unarc-check.sh "$PWD/Unarc/unarc"
+
   # ── AddressSanitizer on x86-64 ──────────────────────────────────────────────
   # Added to diagnose a double free that only appeared on this runner. It found
   # that one and an out-of-bounds read in Dict/phase1 on its first two runs, and
