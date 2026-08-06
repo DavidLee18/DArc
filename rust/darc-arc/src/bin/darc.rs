@@ -1652,9 +1652,25 @@ fn add(
     // (Arc.hs:200). The filespecs are archive names, not file patterns.
     let joining = command == "j";
 
-    if (archive_only || joining || update_type != darc_arc::joinlist::UpdateType::Add)
-        && std::path::Path::new(archive_name).exists()
-    {
+    // The input archive is read whenever there IS one. The condition used to
+    // exclude `UpdateType::Add`, and that was simply wrong: `arc a` on an
+    // existing archive ADDS to it. Excluding it meant the old archive was never
+    // read, so `main_list` was empty, and `joinlist::merge`'s "if one of the
+    // lists is empty, return the other" arm returned the disk list alone --
+    // `darc a x.arc b.txt` on an archive holding `a.txt` wrote an archive
+    // holding `b.txt`, silently destroying the rest of it along with the
+    // comment, the lock and any SFX stub.
+    //
+    // Measured against the oracle, same corpus: the reference's `a` onto an
+    // existing archive lists both files, the port's listed one. Nothing else
+    // was wrong -- `merge` already implements Add correctly, taking the disk
+    // file where the names collide and keeping the archive's where they do not.
+    // It was never reached.
+    //
+    // Why it survived: `arc-update-check.sh` exercises `u`, `f` and `--sync`
+    // against an existing archive, and plain `a` only ever against a fresh
+    // name. A case for it is added there.
+    if std::path::Path::new(archive_name).exists() {
         let info = match archive::read_info(std::path::Path::new(archive_name), pw) {
             Ok(i) => i,
             Err(e) => {
