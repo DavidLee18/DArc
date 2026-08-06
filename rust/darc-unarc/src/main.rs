@@ -33,6 +33,8 @@
 //! next `unarc l foo.arc` reported "signature not found" while naming the
 //! BINARY, because it was reading itself. One binary cannot have that bug.
 
+mod autorun;
+
 use darc_arc::{archive, directory::Entry, extract::Layout, passwords::Passwords};
 
 /// What the C's `COMMAND` struct carried, minus the Windows and GUI fields.
@@ -45,6 +47,11 @@ struct Command {
     /// `-s`/`-s0`/`-s1`/`-s2`. Only silence is honoured; the C's levels above
     /// 0 differ in how much progress they draw, and this draws none.
     silent: u8,
+    /// Whether a command was NAMED, as against defaulted to `x` by SFX mode.
+    /// Only the defaulted case can autorun — see [`autorun`].
+    explicit_cmd: bool,
+    /// `-y`: answer the autorun confirmation with yes.
+    assume_yes: bool,
 }
 
 fn usage(program: &str) -> ! {
@@ -61,6 +68,7 @@ fn usage(program: &str) -> ! {
          Options:\n\
          \x20 -d<path>  extract into <path>\n\
          \x20 -s[0-2]   quieter output\n\
+         \x20 -y        confirm running a self-extracting archive's command\n\
          \x20 --        stop parsing options\n\
          \n\
          Reads the same archives as `darc`, using the same reader.",
@@ -71,32 +79,41 @@ fn usage(program: &str) -> ! {
 /// The C's option loop (`unarc.cpp:117-137`), minus the Windows-only and
 /// installer-only flags.
 ///
-/// `-y`/`-n` are accepted and ignored rather than refused: this build never
-/// prompts, so both already describe what it does. Refusing them would break
-/// scripts that pass `-y` for the C's benefit.
+/// `-n` is accepted and ignored rather than refused: this build never prompts
+/// about overwriting, so it already describes what happens. Refusing it would
+/// break scripts that pass it for the C's benefit. `-y` used to be in the same
+/// position and no longer is — it now confirms an autorun.
 fn parse(args: &[String], program: &str, sfx: bool) -> Command {
     let mut cmd = if sfx { 'x' } else { '\0' };
     let mut archive = if sfx { program.to_string() } else { String::new() };
     let mut outpath = String::new();
     let mut silent = 0u8;
     let mut nooptions = false;
+    let mut explicit_cmd = false;
+    let mut assume_yes = false;
     let mut rest: Vec<&String> = Vec::new();
 
     for a in args {
         if !nooptions && a.starts_with('-') && a.len() > 1 {
             match a.as_str() {
-                "-l" => cmd = 'l',
-                "-v" => cmd = 'v',
-                "-e" => cmd = 'e',
-                "-x" => cmd = 'x',
-                "-t" => cmd = 't',
-                // Accepted and ignored. `-y`/`-n` answer a prompt this build
-                // never shows, and `-o+`/`-o-` choose an overwrite policy where
-                // this always overwrites. Refusing them would break callers
-                // that pass them for the C's benefit -- `Tests/sfx-roundtrip.sh`
-                // passes `-o+`, and rejecting it made every method in that
-                // harness report "unarc failed".
-                "-y" | "-n" => {}
+                "-l" => (cmd, explicit_cmd) = ('l', true),
+                "-v" => (cmd, explicit_cmd) = ('v', true),
+                "-e" => (cmd, explicit_cmd) = ('e', true),
+                "-x" => (cmd, explicit_cmd) = ('x', true),
+                "-t" => (cmd, explicit_cmd) = ('t', true),
+                // `-y` was accepted and ignored, and still is for EXTRACTION --
+                // this build never prompts about overwriting. It now also
+                // answers the one question this build does ask, the autorun
+                // confirmation, which is the nearest honest reading of it.
+                "-y" => assume_yes = true,
+                // Still accepted and ignored. `-n` declines a prompt that is
+                // not shown, which is what happens anyway, and `-o+`/`-o-`
+                // choose an overwrite policy where this always overwrites.
+                // Refusing them would break callers that pass them for the C's
+                // benefit -- `Tests/sfx-roundtrip.sh` passes `-o+`, and
+                // rejecting it made every method in that harness report
+                // "unarc failed".
+                "-n" => {}
                 s if s.starts_with("-o") => {}
                 "-s" | "-s1" => silent = 1,
                 "-s0" => silent = 0,
@@ -115,7 +132,7 @@ fn parse(args: &[String], program: &str, sfx: bool) -> Command {
     let mut it = rest.into_iter();
     if !sfx {
         match it.next() {
-            Some(c) if c.len() == 1 => cmd = c.chars().next().unwrap_or('\0'),
+            Some(c) if c.len() == 1 => (cmd, explicit_cmd) = (c.chars().next().unwrap_or('\0'), true),
             Some(_) | None => usage(program),
         }
         match it.next() {
@@ -126,7 +143,7 @@ fn parse(args: &[String], program: &str, sfx: bool) -> Command {
     if archive.is_empty() || !matches!(cmd, 'l' | 'v' | 't' | 'x' | 'e') {
         usage(program);
     }
-    Command { cmd, archive, outpath, silent }
+    Command { cmd, archive, outpath, silent, explicit_cmd, assume_yes }
 }
 
 /// Are we an SFX module — that is, does our own executable end in an archive?
@@ -169,6 +186,36 @@ fn main() {
             std::process::exit(2);
         }
     };
+
+    // The installer path. Three conditions, all required:
+    //
+    //   * we are our own SFX stub -- `unarc x installer.sfx` never autoruns,
+    //     only the stub run as itself does;
+    //   * the archive records a command;
+    //   * no command was NAMED. The C fired on `argv[1] == NULL`, the bare
+    //     double-click, and any argument at all disabled it. This asks the
+    //     narrower question so that `-y` and `-s` remain usable -- an
+    //     unattended install must not have to give up the flag that makes it
+    //     unattended -- while `x`, `e`, `l` and `t` still mean exactly what
+    //     they say and run nothing.
+    if sfx.is_some() && !info.footer.autorun.is_empty() && !c.explicit_cmd {
+        let data = match archive::open(path) {
+            Ok(d) => d,
+            Err(e) => {
+                eprintln!("ERROR: {}: {e}", c.archive);
+                std::process::exit(2);
+            }
+        };
+        let entries: Vec<Entry> = info.entries.clone();
+        std::process::exit(autorun::run(
+            &info.footer.autorun,
+            &info,
+            &data,
+            &pw,
+            &entries,
+            c.assume_yes,
+        ));
+    }
 
     let code = match c.cmd {
         // The same `list` the archiver runs, so the columns, the totals and the

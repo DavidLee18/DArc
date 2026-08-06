@@ -52,7 +52,21 @@ One binary does both jobs. Run as `unarc` it extracts an archive you name; used
 as an SFX module (`darc a -sfx<path-to-unarc> out.arc files…`) it is prepended
 to the archive, and on startup it asks whether an archive is appended to *its
 own executable* and extracts that instead. There is no separate stub and no
-compile-time SFX flag.
+compile-time SFX flag. The archive is made executable when it is written, so
+`./out` runs.
+
+Adding `--autorun'CMD'` makes it an **installer**: the stub extracts itself into
+a scratch directory, shows you `CMD`, and runs it there only if you answer `y`
+(or passed `-y`), then deletes the directory and exits with the command's own
+status. `CMD` must name a file the archive itself contains — a path leading out
+of the extracted tree is refused when the archive is written, and again before
+anything is run.
+
+Without `--autorun` an SFX archive executes nothing, and it never executes
+anything under `darc l`, `darc t` or `darc x`, nor when you give `unarc` an
+explicit command. Receiving an SFX file from someone else is still receiving an
+executable: the risk is the megabyte of program at the front, not the archive at
+the back, and `darc x` opens one without running any of it.
 
 `Unarc/` — the C++ extractor, the Windows GUI SFX, the installer stub and the
 FAR Manager plugin — was deleted once this replaced it. Its `ArcStructure.h` was
@@ -294,6 +308,7 @@ Options that take a parameter use `-<opt><value>` or `--<option>=<value>`.
 | `-k`  | `--lock`          | Lock archive to prevent modifications |
 | `-rr SIZE` | `--recovery=SIZE` | Add recovery information of SIZE to archive (`-rr`/`-rr+` reuse the archive's own setting, or a recommended amount if it had none) |
 | `-sfx MODULE` |            | Add SFX module (`freearc.sfx` by default) |
+| | `--autorun=CMD` | Have the SFX module offer to run CMD from the extracted files; `--autorun-` clears it |
 | `--noarcext` |              | Do not add the default `.arc` extension to archive name |
 | `-ag FMT` | `--autogenerate=FMT` | Autogenerate archive name using a time format string |
 | `--recompress` |            | Force recompression of all files |

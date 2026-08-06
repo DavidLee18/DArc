@@ -95,6 +95,9 @@ pub const OPTIONS: &[OptionDef] = &[
     OptionDef { short: "k", long: "lock", param: None },
     OptionDef { short: "rr", long: "recovery", param: Some("SIZE") },
     OptionDef { short: "sfx", long: "", param: Some("MODULE") },
+    // This port's own, with no reference spelling: the C's installer SFX had
+    // the command hardcoded to `setup.exe` and no way to say otherwise.
+    OptionDef { short: "", long: "autorun", param: Some("COMMAND") },
     OptionDef { short: "z", long: "arccmt", param: Some("FILE") },
     OptionDef { short: "", long: "archive-comment", param: Some("COMMENT") },
     OptionDef { short: "i", long: "indicator", param: Some("TYPE") },

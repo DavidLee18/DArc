@@ -39,6 +39,7 @@ options (a selection):
   -p<password>  encrypt; -op<password> to decrypt with an old one
   -rr[<size>]   add recovery records; -rr+ to also protect the directory
   -sfx<name>    make a self-extracting archive with that module
+  --autorun<c>  and have it offer to run <c> from the extracted files
   -o+ -o- -o    on extract: overwrite always / never / ask (the default)
   -ep<n>        how much of the path to store
   --dirs        store directory entries explicitly
@@ -369,7 +370,7 @@ fn main() {
         "OldPassword", "password", "recompress", "recursive", "solid", "sync",
         "update", "include", "exclude", "dirs", "nodirs",
         "SizeMore", "SizeLess", "TimeBefore", "TimeAfter", "TimeNewer", "TimeOlder",
-        "recovery", "volume", "sfx", "noarcext", "charset", "original", "overwrite",
+        "recovery", "volume", "sfx", "autorun", "noarcext", "charset", "original", "overwrite",
         "keepbroken", "keeptime", "timetolast", "test", "autogenerate",
         "pause-before-exit", "queue", "pretest", "logfile", "proxy", "bypass",
         "type", "dirmethod", "adddir", "nodata", "crconly", "LimitDecompMem", "nodir", "LimitCompMem", "sort", "config", "env", "workdir", "create-in-workdir", "save-bad-ranges", "BrokenArchive",
@@ -1618,6 +1619,7 @@ fn add(
     let mut old_locked = false;
     let mut old_recovery = String::new();
     let mut old_sfx: Vec<u8> = Vec::new();
+    let mut old_autorun = String::new();
     // Where each archive-origin file came from: (which input archive, which of
     // its blocks, position within that block). Captured before `pos_in_block` is
     // overwritten for the OUTPUT archive, which is the only chance to know it.
@@ -1670,6 +1672,7 @@ fn add(
         old_comment = info.footer.comment.clone();
         old_locked = info.footer.locked;
         old_recovery = info.footer.recovery.clone();
+        old_autorun = info.footer.autorun.clone();
         let data = match archive::open(std::path::Path::new(archive_name)) {
             Ok(d) => d,
             Err(e) => {
@@ -2090,6 +2093,58 @@ fn add(
             }
         },
     }
+    // `--autorun'CMD'` — the command an SFX module runs after extracting itself.
+    // A DELIBERATE DIVERGENCE: the reference has no such option, and its
+    // installer SFX ran a hardcoded `setup.exe` with no way to name anything
+    // else. Recorded in the footer; see `block::FooterBlock::autorun`.
+    //
+    // Three refusals here rather than at run time, because a create-time error
+    // is one the person writing the archive can act on, and a run-time one is
+    // not: by then the archive is in someone else's hands.
+    // The grammar is `-sfx`'s, for the same reasons and so the two read alike:
+    //
+    //   --autorun'CMD'  run CMD
+    //   --autorun-      drop the command the input archive had
+    //   (absent)        keep it -- an update must not silently disarm an
+    //                   installer, exactly as it must not drop the comment
+    let autorun = match parsed.arg("autorun", "--") {
+        "--" => old_autorun.clone(),
+        "-" => String::new(),
+        s => s.to_string(),
+    };
+    let autorun: &str = &autorun;
+    if !autorun.is_empty() {
+        if !w.has_sfx() {
+            eprintln!(
+                "ERROR: --autorun needs an SFX module (-sfx<module>); without one \
+                 nothing would ever run the command"
+            );
+            return 2;
+        }
+        // The program has to name something the archive itself extracted. Without
+        // this, `--autorun'../../../bin/sh'` runs whatever is on the machine, from
+        // a file the archive never contained.
+        let program = autorun.split_ascii_whitespace().next().unwrap_or("");
+        if !darc_arc::extract::is_safe(program) {
+            eprintln!(
+                "ERROR: --autorun{autorun:?}: {program:?} must be a relative path \
+                 inside the archive -- no leading separator, no drive letter, no `..`"
+            );
+            return 2;
+        }
+        // A NUL would terminate the stored string early, so what a reader ran
+        // would not be what was asked for.
+        if autorun.contains('\0') {
+            eprintln!("ERROR: --autorun: the command may not contain a NUL byte");
+            return 2;
+        }
+        w.set_autorun(autorun);
+    }
+
+    // Captured here because `finish` consumes the writer, and the executable
+    // bit is set on the file long after that.
+    let made_sfx = w.has_sfx();
+
     // `--nodir` suppresses every service block, the archive header included:
     // the reference's output carries no `ArC` signature at all.
     let nodir = parsed.flag("nodir");
@@ -2646,6 +2701,37 @@ fn add(
             }
         }
     };
+
+    // A DELIBERATE DIVERGENCE: a self-extracting archive is made EXECUTABLE.
+    //
+    // The reference does not do this, and on Windows it does not have to -- a
+    // `.exe` runs from its extension. On Unix nothing grants the bit, so
+    // `-sfx` produced a file that was a program in every respect except the one
+    // the kernel checks: `./installer` answered "Permission denied", and the
+    // only way to use what had just been built was to chmod it by hand.
+    //
+    // Applied after the SFX rename, so it lands on the final name, and modelled
+    // on `chmod +x` rather than a fixed 0755: the execute bit is added wherever
+    // a read bit is already set, so an archive written under a restrictive
+    // umask does not become world-runnable by being self-extracting.
+    #[cfg(unix)]
+    if made_sfx {
+        use std::os::unix::fs::PermissionsExt;
+        match std::fs::metadata(archive_name) {
+            Ok(m) => {
+                let mode = m.permissions().mode();
+                let plus_x = mode | ((mode & 0o444) >> 2);
+                match std::fs::set_permissions(
+                    archive_name,
+                    std::fs::Permissions::from_mode(plus_x),
+                ) {
+                    Ok(()) => {}
+                    Err(e) => eprintln!("WARNING: can't make {archive_name} executable: {e}"),
+                }
+            }
+            Err(e) => eprintln!("WARNING: can't stat {archive_name}: {e}"),
+        }
+    }
 
     // `-v`/`--volume` (ArcCreate.hs:218) -- split the FINISHED archive into
     // `.001`, `.002`, … and remove the original.

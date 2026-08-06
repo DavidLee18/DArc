@@ -266,6 +266,30 @@ pub struct FooterBlock {
     /// Size of any SFX stub before the archive proper, computed as the position
     /// of the earliest block.
     pub sfx_size: u64,
+    /// **A DELIBERATE DIVERGENCE.** The command an SFX module runs after
+    /// extracting itself — `darc a -sfx<module> --autorun'setup.sh'`. Empty in
+    /// every archive the reference can write, and in every archive this writes
+    /// without the option, so it costs no bytes when unused.
+    ///
+    /// It lives in the FOOTER rather than in a control block of its own, which
+    /// is where the plan for this feature originally put it. The footer is
+    /// already where archive-wide settings live (the comment, the recovery
+    /// setting, the lock), it already has the format's own extension mechanism
+    /// — trailing fields that older readers stop before — and a new block type
+    /// would have to be listed in the footer anyway, moving every position in
+    /// the file. This moves nothing: an archive written without `--autorun` is
+    /// byte-identical to one written before the field existed.
+    ///
+    /// The reference cannot read it, and does not have to: it stops at the
+    /// comment, exactly as this reader stops before `recovery` on an archive
+    /// old enough to lack one.
+    ///
+    /// **Where it is honoured is deliberately narrow.** `darc` never runs it —
+    /// `l`, `t` and `x` are inert on an SFX archive, so opening one to see what
+    /// is inside never executes anything. Only `unarc`, running as its own SFX
+    /// stub, with no command named on the command line, and after a
+    /// confirmation, acts on it. See `rust/darc-unarc/src/main.rs`.
+    pub autorun: String,
 }
 
 /// `archiveReadFooterBlock` — decode the *already decompressed* footer body.
@@ -319,6 +343,10 @@ pub fn read_footer(
         let bytes = s.exactly(n, |s| s.u8())?;
         String::from_utf8_lossy(&bytes).into_owned()
     };
+    // The autorun command, by the same rule that admits `recovery` and the
+    // UTF-8 comment: absent means empty, never an error. Nothing the reference
+    // writes reaches this point with bytes left.
+    let autorun = if s.is_eof() { String::new() } else { s.string()? };
 
     let mut blocks: Vec<ArchiveBlock> = Vec::with_capacity(tuples.len() + 1);
     for (tag, compressor, offset, orig_size, comp_size, crc) in tuples {
@@ -352,6 +380,7 @@ pub fn read_footer(
         comment: if comment.is_empty() { old_comment } else { comment },
         recovery,
         sfx_size,
+        autorun,
     })
 }
 

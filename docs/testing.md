@@ -34,6 +34,20 @@ It now has:
   extractor with itself and reported `9 archives, 0 differing`.
 * `arc-cli-check.sh` — 24 cases comparing behaviour, plus per-binary checks that
   each build's own summaries are true.
+* `sfx-autorun-check.sh` — 19 checks on the installer SFX (`--autorun`). It has
+  **no reference**: FreeArc's installer hardcoded `setup.exe`, ran silently, was
+  Windows-only and discarded the exit code, so there is no case where both
+  behaviours are defined. It is a property harness, and the properties that
+  matter are the negative ones — 9 of the 19 pass when *nothing happened*.
+
+  That shape is the danger. A payload that fails to run leaves no sentinel, and
+  so does an SFX that never started; both read as "did not execute". So every
+  negative check also asserts that the command it ran **worked** (`-x` extracted,
+  `-l` listed, `-t` tested), and four self-tests at the end prove the sentinel
+  can appear at all, that the file under test really is `[unarc][archive]`, that
+  a well-formed `--autorun` is still accepted, and that the byte comparison can
+  tell two archives apart. Falsified by deleting the `!c.explicit_cmd` guard in
+  `darc-unarc`: 7 of 19 fail.
 
 Until 2026-08-05, CI ran **`arc-golden-check` alone**. The other 18 existed and
 nothing executed them, which is how `arc-cli-check` came to be failing 18 of 18

@@ -143,12 +143,17 @@ pub fn directory_block(arcpos: u64, blocks: &[ArchiveBlock], entries: &[Entry]) 
 /// `arcpos` is where the footer block starts; every listed block's position is
 /// stored relative to it. Reading it back with the DESCRIPTOR's position instead
 /// shifts every block in the archive by the footer's packed size, silently.
+/// `autorun` is this port's own trailing field (see `block::FooterBlock`). It is
+/// written **only when non-empty**, so an archive created without `--autorun`
+/// has a footer byte-identical to one from before the field existed — which is
+/// what keeps every recorded `ref` case in `arc-golden-check.sh` valid.
 pub fn footer_block(
     arcpos: u64,
     blocks: &[ArchiveBlock],
     locked: bool,
     comment: &str,
     recovery: &str,
+    autorun: &str,
 ) -> Vec<u8> {
     let mut o = OutStream::new();
     assert!(o.varint(blocks.len() as u64));
@@ -169,6 +174,9 @@ pub fn footer_block(
     for b in utf8 {
         o.u8(*b);
     }
+    if !autorun.is_empty() {
+        o.string(autorun);
+    }
     o.into_bytes()
 }
 
@@ -187,6 +195,11 @@ pub struct Writer {
     dir: Vec<String>,
     /// `opt_headers_password` — likewise for the directory and footer blocks.
     headers_password: Vec<u8>,
+    /// `--autorun` — this port's own footer field. Empty writes nothing at all.
+    autorun: String,
+    /// Whether an SFX module was prepended, so a caller can refuse an
+    /// `--autorun` that nothing would ever run.
+    has_sfx: bool,
 }
 
 impl Default for Writer {
@@ -204,7 +217,24 @@ impl Writer {
             data_password: Vec::new(),
             headers_password: Vec::new(),
             dir: Self::dir_compressor(),
+            autorun: String::new(),
+            has_sfx: false,
         }
+    }
+
+    /// Record the command an SFX module should run after extracting itself.
+    ///
+    /// Storing it is all this does. Nothing in `darc` ever executes it, and the
+    /// one program that does — `unarc`, acting as its own SFX stub — asks first.
+    pub fn set_autorun(&mut self, command: &str) {
+        self.autorun = command.to_string();
+    }
+
+    /// Was an SFX module prepended? An autorun command in an archive with no
+    /// stub is inert, and a silently inert option is what this project refuses
+    /// everywhere else.
+    pub fn has_sfx(&self) -> bool {
+        self.has_sfx
     }
 
     /// A writer that encrypts. `algorithm` is the canonical `-ae` chain, and
@@ -345,6 +375,9 @@ impl Writer {
     /// differs.
     pub fn write_sfx(&mut self, module: &[u8]) {
         assert!(self.out.is_empty(), "the SFX module must go before everything else");
+        // An empty module is `-sfx--` copying a stub the input archive did not
+        // have, which leaves a plain archive rather than an SFX one.
+        self.has_sfx = self.has_sfx || !module.is_empty();
         self.out.extend_from_slice(module);
     }
 
@@ -473,7 +506,7 @@ impl Writer {
 
     pub fn finish(mut self, comment: &str, recovery: &str, locked: bool) -> Vec<u8> {
         let blocks = self.service.clone();
-        let body = footer_block(self.pos(), &blocks, locked, comment, recovery);
+        let body = footer_block(self.pos(), &blocks, locked, comment, recovery, &self.autorun);
         self.service_block(BlockType::Footer, &body, self.dirc());
         self.out
     }
@@ -488,7 +521,7 @@ impl Writer {
     /// writer.
     pub fn projected_len(&self, comment: &str, locked: bool) -> u64 {
         let blocks = self.service.clone();
-        let body = footer_block(self.pos(), &blocks, locked, comment, "");
+        let body = footer_block(self.pos(), &blocks, locked, comment, "", &self.autorun);
         // The footer is compressed, so its length has to be produced, not
         // estimated. Cheap: it is a few hundred bytes.
         let packed = crate::decompress::compress_chain(&self.dirc(), &body)
@@ -533,7 +566,7 @@ impl Writer {
         // the real string here makes this footer longer and shifts every byte
         // after it.
         let blocks = self.service.clone();
-        let body = footer_block(self.pos(), &blocks, locked, comment, "");
+        let body = footer_block(self.pos(), &blocks, locked, comment, "", &self.autorun);
         self.service_block(BlockType::Footer, &body, self.dirc());
 
         // Everything written so far is what the recovery info protects.
@@ -569,7 +602,7 @@ impl Writer {
         let mut blocks = blocks;
         blocks.push(r0);
         blocks.push(r1);
-        let body = footer_block(self.pos(), &blocks, locked, comment, recovery);
+        let body = footer_block(self.pos(), &blocks, locked, comment, recovery, &self.autorun);
         self.service_block(BlockType::Footer, &body, self.dirc());
         Some(self.out)
     }
