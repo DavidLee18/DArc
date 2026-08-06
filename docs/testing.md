@@ -49,24 +49,51 @@ is the exception and is described below. Each `<codec>-check.sh` builds the C or
 and requires identical bytes. The C is taken from git history rather than the
 working tree so the oracle survives the C being deleted and cannot drift.
 
-**Only the REFERENCE side comes from the pin. The substituted side is compiled
-from the WORKING TREE**, and that is what keeps `Compression/` alive after every
-makefile in the repo was deleted. `4x4-check.sh` builds eight wrappers
-(`C_4x4`, `C_Tornado`, `C_REP`, `C_LZP`, `C_Dict`, `C_Delta`,
-`CompressionLibrary`, `Common`) from `$ROOT` with `-DDARC_RUST` over
-`libdarc_codecs.a`, and several shims reach into the tree by relative path —
-`crypto_ccodec.cpp` has `#include "../../Compression/_Encryption/C_Encryption.cpp"`,
-and the BSC, MM, LZ4, PPMD, DisPack, GRZip and LZMA shims do the same.
+**Both sides come from a pin, and they are DIFFERENT pins.** `Compression/` is
+not in the working tree at all.
 
-Two traps follow, and both have produced a wrong "this is dead code" conclusion:
+| constant | what it holds | role |
+|---|---|---|
+| `DARC_C_REF_SHA` (`5c2c6ce`) | the original C, engines intact | the oracle |
+| `DARC_WRAPPER_REF_SHA` (`f0c859d`) | the same wrappers with their engines deleted — thin forwarders into `libdarc_codecs.a` / `libdarc_crypto.a` | the code under test |
 
-* **Those includes are inside `.cpp` files, not the shell scripts.** Grepping
-  `rust/difftest/*.sh` for `$ROOT/Compression` finds `Common.cpp` and nothing
-  else, which understates the live set by an order of magnitude. Grep the
-  `.cpp` shims for `../../Compression/` too.
-* **`Compression/BSC/libbsc/` is gitignored vendored source** and is not in the
-  tree at all, so `clang -MM` over the BSC shims fails silently and their
-  dependencies never appear in a computed reachability set.
+They are not interchangeable, and swapping one for the other changes what is
+being tested without failing: at `5c2c6ce` `C_LZP.cpp` is 257 lines longer,
+`C_Encryption.cpp` 193 different, `C_Dict.cpp` 73. `darc_c_reference` and
+`darc_wrapper_tree` in `c-reference.sh` extract them; both copy the **live**
+shims in beside the extracted C, and that copy is the whole trick — a shim
+`#include`s `"../../Compression/…"` by relative path, so putting it inside a
+tree makes the include resolve to *that* tree. It is how one
+`crypto_ccodec.cpp` can be both sides of a comparison.
+
+**A shim with such an include must therefore be compiled from inside an
+extracted tree, never from `$ROOT`.** `4x4-check.sh` passed
+`$ROOT/rust/difftest/4x4_ref.cpp` and broke the moment `Compression/` left the
+tree; it now uses `$tree/rust/difftest/4x4_ref.cpp`, so the same line serves
+both sides. `mmdet_ref.cpp` is the variant to watch: it includes
+`"Compression/MM/mmdet.cpp"` with no `../../`, resolved by `-I"$CREF"`, so it is
+correct while that flag names a pinned tree and silently wrong if it ever names
+`$ROOT`.
+
+Two traps here have each produced a wrong "this is dead code" conclusion:
+
+* **Those includes live inside `.cpp` files, not the shell scripts.** Grepping
+  `rust/difftest/*.sh` finds `Common.cpp` and nothing else, understating the
+  live set by an order of magnitude. Grep the `.cpp` shims for
+  `../../Compression/` as well.
+* **`Compression/BSC/libbsc/` is not in `HEAD`** — 38 files that exist only at
+  `DARC_C_REF_SHA`. (It is not *gitignored*, as an earlier version of this file
+  claimed; `Compression/BSC/.gitignore` covers only `/build`.) So `clang -MM`
+  over the BSC shims fails silently against the working tree and their
+  dependencies never appear in a computed reachability set. BSC has worked from
+  the pin all along, which is the precedent the rest now follows.
+
+`c-header-check.sh` guards the one thing that could not be pinned: `bindgen`
+reads `rust/include/Compression.h` and `Common.h` at cargo-build time, and a
+build script cannot `git archive` without breaking offline and vendored builds.
+Those two must stay byte-identical to the pinned copies, or Rust and C disagree
+about `CALLBACK_FUNC`, `MemSize` and the `FREEARC_ERRCODE_*` values, and the
+symptom is a wrong number crossing the boundary rather than a compile error.
 
 ```bash
 rust/difftest/lzma-decode-check.sh     # exit 0 or the port diverged

@@ -15,8 +15,8 @@ Archives produced by DArc are largely format-compatible with [DArc86](https://gi
 > DArc is two Rust binaries built with `cargo`: the archiver `darc` and the
 > extractor `unarc`, which doubles as the SFX module. **Nothing else is
 > required** — no Haskell (`mhs`, `cpphs` and GHC are all unnecessary), and no
-> C++. Clang can still compile `Compression/` for the differential harnesses,
-> but no shipped binary links it.
+> C or C++ at all. There is no C source in the repository; the differential
+> harnesses fetch what they compile from pinned commits in git history.
 
 ### Every platform
 
@@ -62,19 +62,26 @@ have. There is also no longer a tiered `arc-mini` / `arc-tiny`: those linked
 progressively fewer C decoders, and one Rust binary carries every codec, so the
 tiers could only have been identical copies under three names.
 
-### The C under `Compression/`
+### Where the C went
 
-There is nothing to run. No binary links it and the makefiles are gone; it is
-compiled only by the differential harnesses under `rust/difftest`, each with
-its own flags. Those compile the *reference* side from a pinned commit in git
-history and the *substituted* side from this working tree, which is what makes
-them a test of the current C wrappers rather than of a snapshot.
+There is none in the repository. `Compression/` — the codec wrappers and the
+vendored engines — was deleted once nothing in the tree compiled it: the
+archiver and `unarc` are cargo binaries, and the only remaining consumer was the
+differential test suite, which now fetches what it compiles from **two pinned
+commits** in git history (`DARC_C_REF_SHA` for the original C, and
+`DARC_WRAPPER_REF_SHA` for the thin forwarders that replaced its engines). A
+test is not a reason to keep source in the tree when git already holds it.
+
+Four headers remain, all under `rust/`: `rust/include/{Compression,Common}.h`
+are the C ABI contract that `bindgen` reads at build time, with a
+`wrapper.h` per crate. `rust/difftest/c-header-check.sh` requires them to stay
+byte-identical to the pinned copies.
 
 ### Troubleshooting
 
-- **An editor reports `"You must define OS!"` in `Compression/`**: expected.
-  `Common.h` requires an OS and a byte-order define; the harnesses pass them,
-  a bare clangd invocation does not.
+- **An editor reports `"You must define OS!"` in `rust/include/Common.h`**:
+  expected. It requires an OS and a byte-order define; the build scripts and
+  harnesses pass them, a bare clangd invocation does not.
 - **`cargo` cannot reach crates.io**: the archiver has real dependencies now
   (rayon, and ureq/rustls for `--original`). `--no-default-features` drops the
   HTTP half but not the rest.

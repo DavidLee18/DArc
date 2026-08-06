@@ -886,6 +886,14 @@ jobs:
     - name: Per-codec differential tests (REP, TTA, MM, LZP, Dict, LZ4-HC)
       run: |
         chmod +x rust/difftest/*.sh
+        # First, because everything below is compiled against the pinned C and
+        # bindgen is not: rust/include/{Compression,Common}.h are the only part
+        # of the C that could not follow it into a pin, since a build script
+        # cannot git-archive without breaking offline builds. If they drift from
+        # the pinned copies, Rust and C disagree about CALLBACK_FUNC, MemSize
+        # and the FREEARC_ERRCODE_* values, and the symptom is a wrong number
+        # crossing the boundary rather than anything failing to compile.
+        rust/difftest/c-header-check.sh
         rust/difftest/rep-check.sh
         rust/difftest/tta-check.sh
         rust/difftest/mm-check.sh
