@@ -16,13 +16,22 @@
 //! decides which file to open, and calls `darc_arc`. When the format changes,
 //! this cannot fail to notice, because there is nothing here to update.
 //!
-//! # SFX
+//! # SFX is detected at RUNTIME, not compiled in
 //!
-//! Under `--features sfx` the binary is the *prefix* of an archive: the module
-//! is prepended to the archive bytes, so the file on disk is `[stub][archive]`
-//! and `argv[0]` names it. `darc_arc::archive` already handles that — the
-//! footer descriptor is found by scanning back from EOF, and the stub is
-//! whatever sits below the lowest block position. There is no offset to pass.
+//! An SFX module is the *prefix* of an archive: `darc a -sfx<module>` writes
+//! `[module][archive]` as one file, so `argv[0]` names something that is both a
+//! program and an archive. `darc_arc::archive` already copes — the footer
+//! descriptor is found by scanning back from EOF, and the stub is whatever sits
+//! below the lowest block position, so there is no offset to pass.
+//!
+//! The C did this with `-DFREEARC_SFX`, compiling a second binary. This asks
+//! the file instead: if our own executable ends in an archive, extract it;
+//! otherwise behave as `unarc`. That is not a stylistic preference — a compiled
+//! flag needs two build outputs, and with cargo both land on
+//! `target/release/unarc` and silently overwrite each other. That actually
+//! happened here: a `--features sfx` build clobbered the plain one, and the
+//! next `unarc l foo.arc` reported "signature not found" while naming the
+//! BINARY, because it was reading itself. One binary cannot have that bug.
 
 use darc_arc::{archive, directory::Entry, extract::Layout, passwords::Passwords};
 
@@ -65,8 +74,7 @@ fn usage(program: &str) -> ! {
 /// `-y`/`-n` are accepted and ignored rather than refused: this build never
 /// prompts, so both already describe what it does. Refusing them would break
 /// scripts that pass `-y` for the C's benefit.
-fn parse(args: &[String], program: &str) -> Command {
-    let sfx = cfg!(feature = "sfx");
+fn parse(args: &[String], program: &str, sfx: bool) -> Command {
     let mut cmd = if sfx { 'x' } else { '\0' };
     let mut archive = if sfx { program.to_string() } else { String::new() };
     let mut outpath = String::new();
@@ -82,7 +90,14 @@ fn parse(args: &[String], program: &str) -> Command {
                 "-e" => cmd = 'e',
                 "-x" => cmd = 'x',
                 "-t" => cmd = 't',
+                // Accepted and ignored. `-y`/`-n` answer a prompt this build
+                // never shows, and `-o+`/`-o-` choose an overwrite policy where
+                // this always overwrites. Refusing them would break callers
+                // that pass them for the C's benefit -- `Tests/sfx-roundtrip.sh`
+                // passes `-o+`, and rejecting it made every method in that
+                // harness report "unarc failed".
                 "-y" | "-n" => {}
+                s if s.starts_with("-o") => {}
                 "-s" | "-s1" => silent = 1,
                 "-s0" => silent = 0,
                 "-s2" => silent = 2,
@@ -114,10 +129,31 @@ fn parse(args: &[String], program: &str) -> Command {
     Command { cmd, archive, outpath, silent }
 }
 
+/// Are we an SFX module — that is, does our own executable end in an archive?
+///
+/// `current_exe` rather than `argv[0]`: `argv[0]` is whatever the caller chose
+/// to say, and a shell can set it to anything. What matters is the file the
+/// kernel actually loaded.
+///
+/// A plain `unarc` has no footer descriptor in its last bytes, so this is false
+/// and the CLI takes over. Deliberately quiet on every error — an unreadable
+/// `/proc/self/exe`, a stripped binary, a permission problem — because "this is
+/// not an SFX" is the right answer to all of them, and a diagnostic here would
+/// fire on every ordinary `unarc x foo.arc`.
+fn appended_archive() -> Option<String> {
+    let exe = std::env::current_exe().ok()?;
+    let pw = Passwords::default();
+    match archive::read_info(&exe, &pw) {
+        Ok(_) => Some(exe.to_string_lossy().into_owned()),
+        Err(_) => None,
+    }
+}
+
 fn main() {
     let argv: Vec<String> = std::env::args().collect();
     let program = argv.first().cloned().unwrap_or_else(|| "unarc".to_string());
-    let c = parse(&argv[1..], &program);
+    let sfx = appended_archive();
+    let c = parse(&argv[1..], sfx.as_deref().unwrap_or(&program), sfx.is_some());
 
     // No password support yet: the C's SFX modules prompt, and this build has
     // no console prompt. An encrypted archive therefore fails at the block that
