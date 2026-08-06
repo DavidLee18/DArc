@@ -1,0 +1,30 @@
+[package]
+name = "darc-unarc"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+publish.workspace = true
+# The standalone extractor, and the payload of every SFX module.
+#
+# It replaces `Unarc/unarc.cpp` + `ArcStructure.h` + `CUI.h` -- about 1,160
+# lines of C++ whose only job was to be a SECOND implementation of the archive
+# reader. That second implementation is why `ArcStructure.h` read the per-file
+# time field as 4 bytes while the writer wrote 8: directories extracted as
+# empty files and every CRC failed, while the listing looked perfect throughout.
+#
+# So this deliberately owns no format knowledge. It parses argv, decides which
+# archive to open, and calls `darc-arc`. Everything about the archive is the
+# same code the archiver uses and the same code the harnesses gate.
+
+[dependencies]
+darc-arc = { path = "../darc-arc", default-features = false }
+
+[[bin]]
+name = "unarc"
+path = "src/main.rs"
+
+# The SFX module is the same binary with the archive appended, so it is built
+# from the same source under a feature rather than duplicated.
+[features]
+default = []
+sfx = []
