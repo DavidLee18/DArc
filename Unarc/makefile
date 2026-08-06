@@ -2,6 +2,50 @@ include ../common.mak
 
 windows: unarc.exe arc.sfx freearc.sfx freearc-installer.sfx FreeArc.fmt
 linux: unarc arc.linux.sfx
+oracle: unarc-c arc-c.linux.sfx
+
+# `linux` no longer compiles a line of C++.
+#
+# unarc.cpp + ArcStructure.h + CUI.h were a SECOND implementation of the archive
+# reader, and that is not a stylistic complaint: ArcStructure.h read the
+# per-file time field as 4 bytes where ByteStream writes CTime as a fixed 64-bit
+# value, so the directory flags and the CRCs after it all came out of the wrong
+# offset. Directories were recreated as zero-byte FILES and every extracted file
+# failed its CRC -- while a listing looked perfect throughout, because sizes and
+# names are stored BEFORE the time field. rust/darc-unarc owns no format
+# knowledge at all; it calls darc-arc, the same reader the archiver uses.
+#
+# The C++ is not deleted. It is demoted to an oracle, the role Tests/arc-ghc
+# plays for the Haskell reference: `make oracle` still builds it, under names
+# that cannot be shipped by accident, so rust/difftest/unarc-check.sh keeps a
+# real second implementation to differ against and the ASan job keeps a C
+# binary worth sanitizing. `windows` is untouched -- the GUI SFX modules, the
+# installer stub and the FAR plugin still compile unarc.cpp and FarPlugin.cpp,
+# which is also why CUI.h and ArcStructure.h are still here.
+
+# DIVERGENCE: three Linux SFX size tiers become ONE.
+#
+# arc-mini and arc-tiny existed because each linked a different subset of the C
+# decoders -- LINKOBJ_TINY is a subset of LINKOBJ_MINI is a subset of LINKOBJ --
+# so a user who compressed with -m5x -mm- could ship a smaller stub. The Rust
+# extractor is a single binary containing every codec, so the three tiers could
+# only be byte-identical copies under three names, which would claim a size
+# saving that no longer exists. `make oracle` still builds the tiered C ones if
+# the comparison is ever wanted; the shipped Linux stub is arc.linux.sfx alone.
+RUST_UNARC = ../rust/target/release/unarc
+
+.PHONY: oracle rustunarc
+rustunarc:
+	cd ../rust && cargo build --release -p darc-unarc
+
+# Copied rather than symlinked: `darc a -sfx<module>` reads the module to
+# prepend it, and an SFX stub has to be a real file that can be chmod +x and
+# handed to another machine.
+unarc: rustunarc
+	cp -f $(RUST_UNARC) unarc
+
+arc.linux.sfx: rustunarc
+	cp -f $(RUST_UNARC) arc.linux.sfx
 
 # DARC_RUST is not optional here. Most of the codecs Unarc links have had their
 # C deleted -- C_Tornado.cpp, C_LZP.cpp, C_GRZip.cpp and the rest are now thin
@@ -121,13 +165,15 @@ FreeArc.fmt: $(OBJDIR)/FarPlugin.o FarPlugin.def $(LINKOBJ_FAR_PLUGIN) | rustlib
 	$(DLLWRAP) --driver-name g++ $< $(LINKOBJ_FAR_PLUGIN) $(RUSTLIB) -def FarPlugin.def -s -o FreeArc.fmt
 
 
-unarc: $(OBJDIR)/unarc.o $(LINKOBJ) | rustlib
-	$(GCC) $< $(LINKOBJ) $(RUSTLIB) $(UNIX_LINK_FLAGS) -o unarc
+# The oracle build. `-c` in the name so that no packaging step, and no harness
+# argument typed from memory, can pick the C one up believing it is the product.
+unarc-c: $(OBJDIR)/unarc.o $(LINKOBJ) | rustlib
+	$(GCC) $< $(LINKOBJ) $(RUSTLIB) $(UNIX_LINK_FLAGS) -o unarc-c
 
-arc.linux.sfx: $(OBJDIR)/ArcSFX.o $(LINKOBJ) | rustlib
-	$(GCC) $< $(LINKOBJ)      $(RUSTLIB) $(UNIX_LINK_FLAGS) -o arc.linux.sfx
-	$(GCC) $< $(LINKOBJ_MINI) $(RUSTLIB) $(UNIX_LINK_FLAGS) -o arc-mini.linux.sfx
-	$(GCC) $< $(LINKOBJ_TINY) $(RUSTLIB) $(UNIX_LINK_FLAGS) -o arc-tiny.linux.sfx
+arc-c.linux.sfx: $(OBJDIR)/ArcSFX.o $(LINKOBJ) | rustlib
+	$(GCC) $< $(LINKOBJ)      $(RUSTLIB) $(UNIX_LINK_FLAGS) -o arc-c.linux.sfx
+	$(GCC) $< $(LINKOBJ_MINI) $(RUSTLIB) $(UNIX_LINK_FLAGS) -o arc-mini-c.linux.sfx
+	$(GCC) $< $(LINKOBJ_TINY) $(RUSTLIB) $(UNIX_LINK_FLAGS) -o arc-tiny-c.linux.sfx
 #	upx -9 --lzma arc*.linux.sfx
 
 

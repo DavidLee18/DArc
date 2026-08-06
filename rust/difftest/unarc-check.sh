@@ -19,12 +19,16 @@
 set -uo pipefail
 
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
-CUNARC="${1:-$ROOT/Unarc/unarc}"
+CUNARC="${1:-$ROOT/Unarc/unarc-c}"
 RUNARC="${2:-$ROOT/rust/target/release/unarc}"
 
+# `make -C Unarc oracle`, not `linux`. The C++ extractor stopped being the
+# product: `linux` now installs the Rust binary as both `unarc` and
+# `arc.linux.sfx`, and the C one is built under `-c` names for this harness and
+# the ASan job -- the same way Tests/arc-ghc is kept as the Haskell oracle.
 [ -x "$CUNARC" ] || {
   echo "no C unarc at $CUNARC -- build it with:" >&2
-  echo "  ./compile-c && make -C Unarc linux" >&2
+  echo "  ./compile-c && make -C Unarc oracle" >&2
   exit 2; }
 ( cd "$ROOT/rust" && cargo build --release -q -p darc-unarc -p darc-arc ) || {
   echo "cargo build failed" >&2; exit 1; }
