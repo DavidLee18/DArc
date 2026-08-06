@@ -135,12 +135,11 @@ fn main() {
     };
 
     let code = match c.cmd {
-        // Listing still lives in the `darc` binary; lifting it needs the local
-        // time formatter, which is FFI and platform-split, so it is a separate
-        // step rather than a rider on this one.
+        // The same `list` the archiver runs, so the columns, the totals and the
+        // local-time rendering cannot drift from `darc l`.
         'l' | 'v' => {
-            eprintln!("ERROR: listing is not wired up yet; use `darc l`");
-            2
+            let all: Vec<Entry> = info.entries.clone();
+            darc_arc::extract::list(&c.cmd.to_string(), &info, &all)
         }
         cmd => {
             let data = match archive::open(path) {

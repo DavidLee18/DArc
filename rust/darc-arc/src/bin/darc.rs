@@ -638,7 +638,7 @@ fn main() {
             let info = open_existing();
             let selected: Vec<Entry> =
                 info.entries.iter().filter(|e| selects(e)).cloned().collect();
-            list(&command, &info, &selected)
+            darc_arc::extract::list(&command, &info, &selected)
         }
         "t" | "x" | "e" => {
             let info = open_existing();
@@ -2898,109 +2898,6 @@ fn scan(
 ///
 /// The four share one summary line and differ only in the body. `lb` prints
 /// bare names with `myPutStr` -- no trailing newline and no summary at all.
-fn list(command: &str, info: &archive::ArchiveInfo, entries: &[Entry]) -> i32 {
-    if command == "lb" {
-        // `myPutStr$ joinWith "\n"$ map filename directory` -- names, joined.
-        // Two things measured rather than read off: `lb` prints NO banner, the
-        // only listing command that does not, and the output DOES end with a
-        // newline even though myPutStr writes none.
-        let names: Vec<&str> =
-            entries.iter().map(|e| e.stored_name.as_str()).collect();
-        println!("{}", names.join("\n"));
-        return 0;
-    }
-    if command == "lt" {
-        println!("              Pos            Size      Compressed   Files Method");
-        println!(
-            "-----------------------------------------------------------------------------"
-        );
-        for b in &info.data_blocks {
-            // The leading column is the encryption marker.
-            println!(
-                "{} {:>15} {:>15} {:>15} {:>7} {}",
-                if b.is_encrypted() { "*" } else { " " },
-                darc_arc::extract::show3(b.pos),
-                darc_arc::extract::show3(b.orig_size),
-                darc_arc::extract::show3(b.comp_size),
-                darc_arc::extract::show3(b.files.unwrap_or(0) as u64),
-                b.compressor.join("+")
-            );
-        }
-        println!(
-            "-----------------------------------------------------------------------------"
-        );
-        let total: u64 = entries.iter().map(|e| e.size).sum();
-        // `lt` sums the block table directly, unlike `l` and `v`.
-        let packed: u64 = info.data_blocks.iter().map(|b| b.comp_size).sum();
-        println!(
-            "{} files, {} bytes, {} compressed",
-            darc_arc::extract::show3(entries.len() as u64),
-            darc_arc::extract::show3(total),
-            darc_arc::extract::show3(packed)
-        );
-        println!("All OK\n");
-        return 0;
-    }
-    let verbose = command == "v";
-    if verbose {
-        println!(
-            "Date/time              Attr            Size          Packed      CRC Filename"
-        );
-        println!(
-            "-----------------------------------------------------------------------------"
-        );
-    } else {
-        println!("Date/time                  Size Filename");
-        println!("----------------------------------------");
-    }
-    let mut total = 0u64;
-    // myMapM (ArcExtract.hs:231): a block's packed size is charged to the first
-    // file of each contiguous run sharing it.
-    let mut compressed = 0u64;
-    let mut prev: Option<u64> = None;
-    for e in entries {
-        let (pos, csize) = match info.data_blocks.get(e.block) {
-            Some(b) => (b.pos, b.comp_size),
-            None => (0, 0),
-        };
-        // myMapM charges the block to the FIRST file of each contiguous run,
-        // and `v` prints that per-file figure in its Packed column.
-        let charged = if prev != Some(pos) { csize } else { 0 };
-        compressed += charged;
-        prev = Some(pos);
-
-        if verbose {
-            println!(
-                "{} {} {:>15} {:>15} {:0>8x} {}",
-                format_time(e.time),
-                if e.is_dir { ".D....." } else { "......." },
-                e.size,
-                charged,
-                e.crc,
-                e.stored_name
-            );
-        } else {
-            let size = if e.is_dir { "-dir-".to_string() } else { darc_arc::extract::show3(e.size) };
-            println!("{} {:>11} {}", format_time(e.time), size, e.stored_name);
-        }
-        total += e.size;
-    }
-    if verbose {
-        println!(
-            "-----------------------------------------------------------------------------"
-        );
-    } else {
-        println!("----------------------------------------");
-    }
-    println!(
-        "{} files, {} bytes, {} compressed",
-        darc_arc::extract::show3(entries.len() as u64),
-        darc_arc::extract::show3(total),
-        darc_arc::extract::show3(compressed)
-    );
-    println!("All OK\n");
-    0
-}
 
 /// `arc t`, `arc x` and `arc e` — one pass over the solid blocks, in parallel.
 ///
@@ -3149,7 +3046,7 @@ fn write_run_log(code: i32) {
     if logfile.is_empty() {
         return;
     }
-    let line = format!("{} {command} {archive} rc={code}\n", format_time(now_unix()));
+    let line = format!("{} {command} {archive} rc={code}\n", darc_arc::timefmt::format_time(now_unix()));
     match std::fs::OpenOptions::new().create(true).append(true).open(logfile) {
         Ok(mut f) => match std::io::Write::write_all(&mut f, line.as_bytes()) {
             Ok(()) => {}
@@ -3184,10 +3081,10 @@ fn now_unix() -> i64 {
 /// dropped: a name that quietly loses part of its stamp can collide with
 /// another run's.
 fn strftime_local(fmt: &str, unix: i64) -> String {
-    let local = unix + local_offset_seconds();
+    let local = unix + darc_arc::timefmt::local_offset_seconds();
     let days = local.div_euclid(86_400);
     let tod = local.rem_euclid(86_400);
-    let (y, mo, d) = civil_from_days(days);
+    let (y, mo, d) = darc_arc::timefmt::civil_from_days(days);
     let (h, mi, s) = (tod / 3600, (tod % 3600) / 60, tod % 60);
     let mut out = String::new();
     let mut it = fmt.chars();
@@ -3322,104 +3219,6 @@ fn resolve_overwrites(
     skip
 }
 
-
-/// mtimes are formatted in LOCAL time, as `System.Time`'s `toCalendarTime`
-/// does. Reproduced rather than corrected: matching the reference is the bar.
-fn format_time(t: i64) -> String {
-    let secs = t + local_offset_seconds();
-    let days = secs.div_euclid(86_400);
-    let tod = secs.rem_euclid(86_400);
-    let (y, m, d) = civil_from_days(days);
-    format!("{y:04}-{m:02}-{d:02} {:02}:{:02}:{:02}", tod / 3600, (tod % 3600) / 60, tod % 60)
-}
-
-fn civil_from_days(z: i64) -> (i64, u32, u32) {
-    let z = z + 719_468;
-    let era = z.div_euclid(146_097);
-    let doe = z.rem_euclid(146_097);
-    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365;
-    let y = yoe + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let d = (doy - (153 * mp + 2) / 5 + 1) as u32;
-    let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
-    (if m <= 2 { y + 1 } else { y }, m, d)
-}
-
-#[cfg(not(windows))]
-fn local_offset_seconds() -> i64 {
-    // SAFETY: localtime_r writes into a tm we own; time 0 is always valid.
-    unsafe {
-        let t: i64 = 0;
-        let mut tm: Tm = std::mem::zeroed();
-        localtime_r(&t, &mut tm);
-        tm.tm_gmtoff
-    }
-}
-
-#[cfg(not(windows))]
-#[repr(C)]
-struct Tm {
-    tm_sec: i32,
-    tm_min: i32,
-    tm_hour: i32,
-    tm_mday: i32,
-    tm_mon: i32,
-    tm_year: i32,
-    tm_wday: i32,
-    tm_yday: i32,
-    tm_isdst: i32,
-    tm_gmtoff: i64,
-    tm_zone: *const i8,
-}
-
-#[cfg(not(windows))]
-extern "C" {
-    fn localtime_r(t: *const i64, tm: *mut Tm) -> *mut Tm;
-}
-
-/// The Windows CRT has neither `localtime_r` nor `tm_gmtoff` — its `struct tm`
-/// stops at `tm_isdst`. The offset comes out of a round trip instead: break
-/// epoch 0 down in LOCAL time, then reassemble those same fields as if they
-/// were UTC. The difference from 0 is exactly the offset, and `_mkgmtime64`
-/// returns it directly.
-#[cfg(windows)]
-fn local_offset_seconds() -> i64 {
-    #[repr(C)]
-    struct TmW {
-        tm_sec: i32,
-        tm_min: i32,
-        tm_hour: i32,
-        tm_mday: i32,
-        tm_mon: i32,
-        tm_year: i32,
-        tm_wday: i32,
-        tm_yday: i32,
-        tm_isdst: i32,
-    }
-    // The explicitly-64-bit names, not `localtime`/`mkgmtime`: those are macros
-    // whose time_t width depends on how the CRT headers were configured, and
-    // this passes an i64. `_localtime64` rather than `_localtime64_s` because
-    // the secure variant is not in every msvcrt.dll, while the plain one is in
-    // both msvcrt (x86_64-pc-windows-gnu) and UCRT (the gnullvm targets).
-    extern "C" {
-        fn _localtime64(t: *const i64) -> *mut TmW;
-        fn _mkgmtime64(tm: *mut TmW) -> i64;
-    }
-    // SAFETY: time 0 is always valid; the returned pointer is CRT-owned static
-    // storage, read and passed straight back before anything else can call into
-    // the CRT's time functions.
-    unsafe {
-        let t: i64 = 0;
-        let tm = _localtime64(&t);
-        // Null means no usable zone. UTC is the honest fallback, and it is what
-        // the Unix path yields for a zone with no offset.
-        match tm.is_null() {
-            true => 0,
-            false => _mkgmtime64(tm),
-        }
-    }
-}
 
 // ── Passwords ───────────────────────────────────────────────────────────────
 
@@ -3600,7 +3399,7 @@ fn parse_local_time(s: &str) -> Option<i64> {
         return None;
     }
     let days = days_from_civil(year, month, day);
-    Some(days * 86_400 + hour * 3_600 + min * 60 + sec - local_offset_seconds())
+    Some(days * 86_400 + hour * 3_600 + min * 60 + sec - darc_arc::timefmt::local_offset_seconds())
 }
 
 /// The inverse of [`civil_from_days`] — Howard Hinnant's `days_from_civil`.
@@ -4023,7 +3822,7 @@ mod tests {
     fn strftime_covers_what_a_filename_can_use() {
         // Compared against UTC by cancelling the local offset out, so the test
         // does not depend on the machine the suite runs on.
-        let t = 1_785_826_664 - local_offset_seconds();
+        let t = 1_785_826_664 - darc_arc::timefmt::local_offset_seconds();
         assert_eq!(strftime_local("%Y%m%d%H%M%S", t), "20260804065744");
         assert_eq!(strftime_local("%Y-%m-%d", t), "2026-08-04");
         assert_eq!(strftime_local("%y", t), "26");

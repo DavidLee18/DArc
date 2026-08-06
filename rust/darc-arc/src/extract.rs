@@ -515,3 +515,112 @@ pub fn run_blocks(
         2
     }
 }
+
+/// `l` / `lb` / `lt` / `v` — the listing, shared with `unarc`.
+///
+/// Here for the same reason as [`run_blocks`]: `unarc` lists archives too,
+/// and a second copy of the column layout would be a second answer to what
+/// the archive contains.
+pub fn list(command: &str, info: &crate::archive::ArchiveInfo, entries: &[Entry]) -> i32 {
+    if command == "lb" {
+        // `myPutStr$ joinWith "\n"$ map filename directory` -- names, joined.
+        // Two things measured rather than read off: `lb` prints NO banner, the
+        // only listing command that does not, and the output DOES end with a
+        // newline even though myPutStr writes none.
+        let names: Vec<&str> =
+            entries.iter().map(|e| e.stored_name.as_str()).collect();
+        println!("{}", names.join("\n"));
+        return 0;
+    }
+    if command == "lt" {
+        println!("              Pos            Size      Compressed   Files Method");
+        println!(
+            "-----------------------------------------------------------------------------"
+        );
+        for b in &info.data_blocks {
+            // The leading column is the encryption marker.
+            println!(
+                "{} {:>15} {:>15} {:>15} {:>7} {}",
+                if b.is_encrypted() { "*" } else { " " },
+                crate::extract::show3(b.pos),
+                crate::extract::show3(b.orig_size),
+                crate::extract::show3(b.comp_size),
+                crate::extract::show3(b.files.unwrap_or(0) as u64),
+                b.compressor.join("+")
+            );
+        }
+        println!(
+            "-----------------------------------------------------------------------------"
+        );
+        let total: u64 = entries.iter().map(|e| e.size).sum();
+        // `lt` sums the block table directly, unlike `l` and `v`.
+        let packed: u64 = info.data_blocks.iter().map(|b| b.comp_size).sum();
+        println!(
+            "{} files, {} bytes, {} compressed",
+            crate::extract::show3(entries.len() as u64),
+            crate::extract::show3(total),
+            crate::extract::show3(packed)
+        );
+        println!("All OK\n");
+        return 0;
+    }
+    let verbose = command == "v";
+    if verbose {
+        println!(
+            "Date/time              Attr            Size          Packed      CRC Filename"
+        );
+        println!(
+            "-----------------------------------------------------------------------------"
+        );
+    } else {
+        println!("Date/time                  Size Filename");
+        println!("----------------------------------------");
+    }
+    let mut total = 0u64;
+    // myMapM (ArcExtract.hs:231): a block's packed size is charged to the first
+    // file of each contiguous run sharing it.
+    let mut compressed = 0u64;
+    let mut prev: Option<u64> = None;
+    for e in entries {
+        let (pos, csize) = match info.data_blocks.get(e.block) {
+            Some(b) => (b.pos, b.comp_size),
+            None => (0, 0),
+        };
+        // myMapM charges the block to the FIRST file of each contiguous run,
+        // and `v` prints that per-file figure in its Packed column.
+        let charged = if prev != Some(pos) { csize } else { 0 };
+        compressed += charged;
+        prev = Some(pos);
+
+        if verbose {
+            println!(
+                "{} {} {:>15} {:>15} {:0>8x} {}",
+                crate::timefmt::format_time(e.time),
+                if e.is_dir { ".D....." } else { "......." },
+                e.size,
+                charged,
+                e.crc,
+                e.stored_name
+            );
+        } else {
+            let size = if e.is_dir { "-dir-".to_string() } else { crate::extract::show3(e.size) };
+            println!("{} {:>11} {}", crate::timefmt::format_time(e.time), size, e.stored_name);
+        }
+        total += e.size;
+    }
+    if verbose {
+        println!(
+            "-----------------------------------------------------------------------------"
+        );
+    } else {
+        println!("----------------------------------------");
+    }
+    println!(
+        "{} files, {} bytes, {} compressed",
+        crate::extract::show3(entries.len() as u64),
+        crate::extract::show3(total),
+        crate::extract::show3(compressed)
+    );
+    println!("All OK\n");
+    0
+}
