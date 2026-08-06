@@ -1031,7 +1031,7 @@ jobs:
           # golden needs no reference and runs in its own job. cli-check takes
           # TWO binaries, so it is invoked separately below.
           #
-          # arc-sfx-check needs Unarc/arc-tiny.linux.sfx, which is gitignored
+          # arc-sfx-check needs Unarc/arc.linux.sfx, which is gitignored
           # (a build output) and takes `./compile-c` then `make -C Unarc linux`
           # to produce. It runs in the `unarc-sfx` job instead, which already
           # builds exactly those artifacts -- excluded HERE, gated THERE.
@@ -1419,14 +1419,31 @@ jobs:
         ./compile-c > /tmp/build-c.log 2>&1 || { tail -30 /tmp/build-c.log; exit 1; }
         test -f common.mak || { echo "::error::compile-c produced no common.mak"; exit 1; }
 
-    - name: Build unarc and the SFX modules
+    # `linux` installs the Rust extractor as both `unarc` and `arc.linux.sfx`;
+    # `oracle` builds the C++ one under `-c` names, unshipped, purely so the
+    # migration gate below still has a second implementation to differ against.
+    - name: Build the Rust extractor and the C oracle
       run: |
         mkdir -p /tmp/out/FreeArc-unarc
-        make -C Unarc linux > /tmp/build-unarc.log 2>&1 || { tail -40 /tmp/build-unarc.log; exit 1; }
-        for f in Unarc/unarc Unarc/arc.linux.sfx Unarc/arc-mini.linux.sfx Unarc/arc-tiny.linux.sfx; do
+        make -C Unarc linux  > /tmp/build-unarc.log 2>&1 || { tail -40 /tmp/build-unarc.log; exit 1; }
+        make -C Unarc oracle > /tmp/build-oracle.log 2>&1 || { tail -40 /tmp/build-oracle.log; exit 1; }
+        for f in Unarc/unarc Unarc/arc.linux.sfx Unarc/unarc-c Unarc/arc-c.linux.sfx; do
           test -x "$f" || { echo "::error::Unarc build produced no $f"; exit 1; }
         done
+        # The two must not be the same file. `linux` copies the Rust binary over
+        # names the C build used to write, so a makefile edit that left a stale
+        # C `unarc` in place -- or that pointed `oracle` at the copy -- would
+        # give unarc-check.sh the SAME binary on both sides and it would pass
+        # 9/9 having compared nothing.
+        cmp -s Unarc/unarc Unarc/unarc-c && {
+          echo "::error::Unarc/unarc and Unarc/unarc-c are identical; the C oracle was not built"
+          exit 1; }
         # A DARC_RUST build must actually contain the Rust codecs.
+        #
+        # This is asked of the ORACLE, which is the only one it says anything
+        # about: the C links libdarc_codecs.a for its decoders, and the question
+        # is whether that link happened. Against the Rust binary the same check
+        # passes for free and proves nothing at all.
         #
         # Checked through `strings`, not `nm`: the Unix link flags pass -s, so
         # these binaries are stripped and nm reports "no symbols" for a
@@ -1437,18 +1454,18 @@ jobs:
         # roughly 45 of them from darc-codecs alone -- which survive stripping
         # because they are data, not symbols. Requiring several means one
         # incidental match cannot carry it.
-        rust_paths=$(strings -a Unarc/unarc | grep -c 'darc-codecs/src/' || true)
+        rust_paths=$(strings -a Unarc/unarc-c | grep -c 'darc-codecs/src/' || true)
         [ "${rust_paths:-0}" -ge 5 ] || {
-          echo "::error::unarc contains $rust_paths darc-codecs source markers; the Rust staticlib was not linked in"
+          echo "::error::unarc-c contains $rust_paths darc-codecs source markers; the Rust staticlib was not linked in"
           exit 1; }
-        echo "Rust codecs linked in: $rust_paths darc-codecs source markers"
-        ls -la Unarc/unarc Unarc/*.sfx
+        echo "Rust codecs linked into the oracle: $rust_paths darc-codecs source markers"
+        ls -la Unarc/unarc Unarc/unarc-c Unarc/*.sfx
 
-    - name: Round-trip through unarc and a self-extracting archive
-      run: Tests/sfx-roundtrip.sh rust/target/release/darc Unarc/unarc Unarc/arc.linux.sfx
+    - name: Round-trip through the C oracle and its SFX module
+      run: Tests/sfx-roundtrip.sh rust/target/release/darc Unarc/unarc-c Unarc/arc-c.linux.sfx
 
     # The 18th CLI harness, and the only one the `arc-harnesses` job cannot run:
-    # it needs Unarc/arc-tiny.linux.sfx, which is gitignored and built by the
+    # it needs Unarc/arc.linux.sfx, which is gitignored and built by the
     # steps above. It lives here rather than there so that it is gated at all --
     # it was the last arc-*-check.sh still running nowhere.
     - name: Fetch the Haskell oracle
@@ -1460,10 +1477,12 @@ jobs:
       run: rust/difftest/arc-sfx-check.sh "$PWD/Tests/arc-ghc"
 
     # The migration gate for replacing Unarc/'s C++ with the Rust `unarc`. It
-    # needs the C binary the steps above build, so it lives here for the same
-    # reason arc-sfx-check does.
+    # needs the C ORACLE the steps above build -- `make -C Unarc oracle`, under
+    # the `-c` names -- because `linux` now installs the Rust binary as
+    # `unarc`. Passing Unarc/unarc here would compare the Rust extractor with
+    # itself and pass 9/9 having tested nothing.
     - name: The Rust unarc against the C one it replaces
-      run: rust/difftest/unarc-check.sh "$PWD/Unarc/unarc"
+      run: rust/difftest/unarc-check.sh "$PWD/Unarc/unarc-c"
 
     # The same round-trip the C stack runs above, with the Rust extractor AND
     # the Rust binary used as the SFX module. That second role is the one to
@@ -1514,15 +1533,19 @@ jobs:
       run: |
         sudo apt-get update
         sudo apt-get install -y libncurses-dev
-    # ASan now covers UNARC, not the archiver, and that is where it belongs.
+    # ASan covers the C++ EXTRACTOR ORACLE, which is the only C left on Linux
+    # that runs a whole archive end to end.
     #
     # It used to build the whole tree and drive the C codecs through the Haskell
     # archiver. The archiver is Rust and reaches the codecs as a crate, so it no
     # longer executes a line of the C -- pointing ASan at it would sanitize a
-    # binary with nothing to sanitize. Unarc and the SFX modules are the only
-    # things left that run the C, and they are also the ones that parse
-    # untrusted archive bytes, which is the interesting half.
-    - name: Build unarc with AddressSanitizer
+    # binary with nothing to sanitize. The same is now true of the shipped
+    # `unarc`, which is Rust: the sanitizer's remaining target is the C++
+    # extractor `make -C Unarc oracle` builds, and it is still worth having,
+    # because it is C parsing untrusted archive bytes with no surrounding
+    # process to contain a fault. When the Windows GUI SFX is ported and
+    # unarc.cpp goes for good, this job goes with it.
+    - name: Build the C extractor oracle with AddressSanitizer
       run: |
         chmod +x compile-c Compression/compile Tests/*.sh
         cargo build --release --manifest-path rust/Cargo.toml -p darc-arc --bin darc
@@ -1531,16 +1554,21 @@ jobs:
         # STRIP_FLAG= keeps the symbols an ASan report needs; EXTRA_LINK_FLAGS
         # puts -fsanitize=address on the link line, where DEBUG_FLAGS does not
         # reach.
-        make -C Unarc linux \
+        # `oracle`, not `linux`. `linux` installs the Rust extractor now, and a
+        # Rust binary has no C++ for -fsanitize=address to instrument -- the
+        # make flags would be accepted, nothing would be sanitized, and the job
+        # would go green having checked nothing. The C++ extractor is still
+        # built under the `-c` names precisely so this job keeps a target.
+        make -C Unarc oracle \
           DEBUG_FLAGS="-fsanitize=address -fno-omit-frame-pointer -g" \
           EXTRA_LINK_FLAGS="-fsanitize=address" \
           STRIP_FLAG= > /tmp/build-unarc-asan.log 2>&1 \
           || { tail -40 /tmp/build-unarc-asan.log; exit 1; }
-        test -x Unarc/unarc || { echo "::error::no Unarc/unarc"; exit 1; }
+        test -x Unarc/unarc-c || { echo "::error::no Unarc/unarc-c"; exit 1; }
         # A build that quietly dropped the sanitizer would pass every step
         # below without ever instrumenting anything.
-        nm -C Unarc/unarc 2>/dev/null | grep -q '__asan' || {
-          echo "::error::Unarc/unarc has no __asan symbols -- it was not instrumented"; exit 1; }
+        nm -C Unarc/unarc-c 2>/dev/null | grep -q '__asan' || {
+          echo "::error::Unarc/unarc-c has no __asan symbols -- it was not instrumented"; exit 1; }
     # detect_leaks=0: this is a hunt for heap corruption, and LeakSanitizer
     # would otherwise bury the report under leaks inherited from a codebase that
     # has never been leak-clean.
@@ -1550,7 +1578,7 @@ jobs:
       env:
         ASAN_OPTIONS: detect_leaks=0:abort_on_error=1:print_stacktrace=1
       run: |
-        Tests/sfx-roundtrip.sh rust/target/release/darc Unarc/unarc Unarc/arc.linux.sfx
+        Tests/sfx-roundtrip.sh rust/target/release/darc Unarc/unarc-c Unarc/arc-c.linux.sfx
     # The suite hides per-case output on success, so surface any ASan report
     # that landed in a per-configuration log even when the case was recorded
     # as a failure rather than a crash.

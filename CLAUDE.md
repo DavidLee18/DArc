@@ -20,9 +20,11 @@ the commit, never made silently. See `docs/architecture.md`.
 
 **The port is finished: the archiver is Rust, end to end.** Rust ~78,000 lines
 (every codec, the crypto, the `.7z` reader, SREP, and the whole application
-layer); C/C++ ~19,100, none of which the archiver runs — it is `Unarc/` and the
-SFX modules, the codec sources they compile, and `rust/difftest`'s C oracles.
-No Haskell remains.
+layer); C/C++ ~19,100, none of which the archiver runs — and, since the Linux
+extractor was ported, none of which `unarc` runs either. What is left is the
+**Windows** SFX modules and the FAR plugin, the codec sources they compile,
+`rust/difftest`'s C oracles, and the C++ extractor kept as one of them
+(`make -C Unarc oracle`). No Haskell remains.
 
 **The reference the port was gated against is not in the tree.** Every
 `rust/difftest/arc-*-check.sh` compares two binaries and needs a Haskell build
@@ -191,9 +193,28 @@ before adding or changing a corpus.
   `match` must name its arms (`wildcard_enum_match_arm`), workspace-wide,
   tests included. `if let` and `let _` are allowed. See
   `docs/rust-workspace.md`.
-- **The C is no longer on the archiver's path at all.** It is reached only by
-  `Unarc/`, the SFX modules and the difftest oracles, which is why the ASan job
-  now builds `unarc` rather than the archiver.
+- **The C is no longer on the archiver's path, or on `unarc`'s.**
+  `make -C Unarc linux` compiles no C++: it builds `rust/darc-unarc` and
+  installs that one binary as both `unarc` and `arc.linux.sfx`. What is left of
+  the C++ extractor is reached three ways only — `make windows` (the console
+  and GUI SFX modules and the FAR plugin, none of which any CI job builds), the
+  difftest oracles, and `make -C Unarc oracle`.
+- **`make -C Unarc oracle` is not a build of the product.** It builds the C++
+  extractor as `unarc-c` / `arc-c.linux.sfx`, deliberately under names nothing
+  ships, the way `Tests/arc-ghc` is kept as the Haskell reference. Two things
+  need it and will silently pass without it: `unarc-check.sh`, whose default
+  first argument is `Unarc/unarc-c` — hand it `Unarc/unarc` and it compares the
+  Rust extractor with itself and reports 9 archives, 0 differing — and the
+  `asan-x86_64` job, since `-fsanitize=address` finds nothing to instrument in
+  a Rust binary. CI guards the first with a `cmp -s Unarc/unarc Unarc/unarc-c`
+  that must *fail*, and the second with an `nm | grep __asan`.
+- **DIVERGENCE: the three Linux SFX tiers are one.** `arc-mini.linux.sfx` and
+  `arc-tiny.linux.sfx` existed because each linked a smaller subset of the C
+  decoders; the Rust extractor is a single binary holding every codec, so the
+  tiers could only be byte-identical copies under three names, claiming a size
+  saving that no longer exists. `arc.linux.sfx` is the only Linux module now,
+  and `arc-sfx-check.sh` prepends it instead of `arc-tiny`. `make oracle` still
+  builds the tiered C++ ones. The Windows tiers are untouched.
 
 ## Conventions
 

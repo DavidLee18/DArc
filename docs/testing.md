@@ -13,7 +13,15 @@ It now has:
   archive-format gate that runs unaided.
 * all 20 `arc-*-check.sh` in CI, against the published oracle: the
   `arc-harnesses` job runs 17, `unarc-sfx` runs `arc-sfx-check` (it needs the
-  SFX modules that job builds), and `arc-golden-check` has its own.
+  SFX module that job builds), and `arc-golden-check` has its own.
+* `unarc-check.sh` — the Rust `unarc` against the C++ extractor it replaced, over
+  9 archives: same exit code, same extracted tree, and the tree really is the
+  input back. Its C side is `Unarc/unarc-c`, from `make -C Unarc oracle` — **not**
+  `Unarc/unarc`, which `make -C Unarc linux` now fills with a copy of the Rust
+  binary. Pointed at that, the harness compares the Rust extractor with itself
+  and reports `9 archives, 0 differing`; the `unarc-sfx` job guards it with a
+  `cmp -s` of the two that has to fail. The listing is held against `darc l`
+  rather than the C, because the C's listing is the thing being retired.
 * `arc-cli-check.sh` — 24 cases comparing behaviour, plus per-binary checks that
   each build's own summaries are true.
 

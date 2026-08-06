@@ -45,7 +45,12 @@ set -uo pipefail
 ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 REF="${1:-$ROOT/Tests/arc-ghc}"
 PORT="$ROOT/rust/target/release/darc"
-MODULE="$ROOT/Unarc/arc-tiny.linux.sfx"
+# Any file will do: this harness only ever PREPENDS the module and measures the
+# result, so what is inside it is irrelevant here -- `arc-tiny` was chosen
+# originally because it was the smallest. The Linux tiers are gone (one Rust
+# binary carries every codec, so mini/tiny could only be identical copies), so
+# this is now the one module `make -C Unarc linux` builds.
+MODULE="$ROOT/Unarc/arc.linux.sfx"
 
 [ -x "$REF" ] || {
   echo "no reference binary at $REF.

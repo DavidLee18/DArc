@@ -53,8 +53,15 @@ make -C Unarc linux    # or `make -C Unarc windows`
 `common.mak` is generated rather than committed, and every makefile under
 `Compression/` and `Unarc/` begins by including it.
 
-This produces `unarc` and the SFX modules (`arc.linux.sfx`, `arc-mini.linux.sfx`,
-`arc-tiny.linux.sfx`). Requires `clang` and `make`; ncurses is *not* needed.
+This produces `unarc` and the SFX module `arc.linux.sfx` — both copies of the
+Rust extractor, which `make` builds with `cargo`. No C++ is compiled by the
+`linux` target; `make -C Unarc oracle` still builds the C++ extractor, as
+`unarc-c`, for the differential harness and the sanitizer job only.
+
+There used to be three Linux SFX tiers. `arc-mini` and `arc-tiny` linked
+progressively fewer C decoders, so a smaller stub was worth shipping; the Rust
+extractor is one binary carrying every codec, so the tiers could only have been
+identical copies under three names.
 
 ### Troubleshooting
 
