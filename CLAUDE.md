@@ -18,26 +18,31 @@ broken and weakened the key (archives written without it are still read); and
 does. Both are *marked* — a deliberate break is documented at the site and in
 the commit, never made silently. See `docs/architecture.md`.
 
-**The port is finished: the archiver is Rust, end to end.** Rust ~68,000 lines
+**The port is finished: the archiver is Rust, end to end.** Rust ~78,000 lines
 (every codec, the crypto, the `.7z` reader, SREP, and the whole application
-layer); C/C++ ~23,800, none of which the archiver runs — it is `Unarc/` and the
+layer); C/C++ ~19,100, none of which the archiver runs — it is `Unarc/` and the
 SFX modules, the codec sources they compile, and `rust/difftest`'s C oracles.
 No Haskell remains.
 
-**The reference the port was gated against no longer exists.** Every
+**The reference the port was gated against is not in the tree.** Every
 `rust/difftest/arc-*-check.sh` compares two binaries and needs a Haskell build
-passed in; `9a127e6` is the last commit that can produce one. What runs without
-it is `arc-golden-check.sh`, which replays 65 recorded cases against the bytes
-that reference actually wrote. **Read `docs/testing.md` before changing anything
-that touches archive bytes.**
+passed in; `9a127e6` is the last commit that can produce one. It is **published
+per platform and fetched by `rust/difftest/haskell-reference.sh`**, which is
+what lets CI run all of them (`arc-harnesses`, plus `arc-sfx-check` in
+`unarc-sfx`). The one that needs no reference is `arc-golden-check.sh`, which
+replays **118 recorded cases** — 105 the reference's bytes, 1 a deliberate
+divergence, 12 refusals. **Read `docs/testing.md` before changing anything that
+touches archive bytes.**
 
 **Every method the reference can write, this can write** -- `Tests/run-tests.sh`
 scores 24/0/0, the same as the reference. `mm`, `tta`, `bsc`, `lz4`, `zstd` and
 `lzma2` had no `Method` variant until recently, which made archives using them
 unreadable as well as unwritable; the `-m` VALUE grammar (`-mt`, `-ms`, `-md`,
 `-ma`, `-mc`, `-mm`) was read as method NAMES. Both are fixed and gated, and
-every `-m` knob now does what the reference does. `-lc-`/`-ld-` are still not
-accepted at all.
+every `-m` knob now does what the reference does. `-lc-`/`-ld-` are accepted
+too, and mean "no limit" — this file claimed otherwise until the docs were
+audited; `-lc2m` and `-lc-` on `-mgrzip` over 300 KB give 300535 and 300241
+bytes, so the dash form is honoured rather than tolerated.
 
 **`-mt` is archive-visible through LZMA2 and nothing else.** Above one block
 thread the encoder abandons the solid block and splits the input, so

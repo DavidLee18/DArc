@@ -1,18 +1,29 @@
-# Rust port — progress and open work
+# Rust port — how it was done, and the traps
 
-Working notes for the ongoing port of DArc to Rust. Written to survive across
-sessions: it records what is done, what is *not* done, and the traps that have
-already cost time. Update it as things land.
+**THE PORT IS FINISHED.** The archiver is Rust end to end and there are zero
+`.hs` files in the tree. This is no longer a plan; it is the record of how each
+piece was ported and gated, and of the traps that cost time getting there.
+Sections still headed "open work" are kept for their reasoning — almost every
+item under them is marked DONE, and the few that are not were decided against
+rather than deferred.
 
-**Goal:** port DArc to Rust — codecs first, then the Haskell application layer —
-and delete the C and Haskell that the Rust replaces.
+For what is *currently* outstanding, `CLAUDE.md` is the live document; this file
+is history. Update it when something lands that a future reader would otherwise
+have to rediscover.
 
-**Standing constraints**
+**Original goal, met:** port DArc to Rust — codecs first, then the Haskell
+application layer — and delete the C and Haskell that the Rust replaces.
+
+**Standing constraints, as they were during the port**
 
 - `cargo` as a hard build requirement is acceptable.
 - "Format-valid" is acceptable for *standard* formats (LZ4, zstd, …), which
   loosens the **encoder** only. **Decoders must still read every archive ever
   written.** That is why the port is decode-first everywhere.
+  - *Superseded in scope:* `CLAUDE.md` now states that compatibility is not a
+    requirement at all, so this is the bar the port was BUILT to rather than a
+    constraint on new work. Reading old archives is still the default; where it
+    conflicts with being correct, the better behaviour wins and is marked.
 - DArc's own formats (REP, Dict, Tornado, GRZip, BSC, …) require **byte-exact**
   round-trips, proven by differential tests against the C.
 - `cargo-nextest` for tests.
@@ -228,13 +239,19 @@ external tool's glue, `4x4` (deliberately unported, and not dead), `mmdet.cpp`
 (Haskell FFI-bound), and the thin entry-point layer that can only go when the
 Haskell side does.
 
-**The honest summary: the codecs are done, the application layer has not been
-started.** 20,265 lines of Haskell are within 3 lines of where they were. By any
-line-count measure that is the majority of the remaining work, and it is at
-roughly zero percent. Outside `Compression/` the C/C++ is `HsLua` 16,338
-(vendored Lua, kept), `srep` 12,907 (vendored tool), `Unarc` 5,389 (the second,
-independent archive reader), `rust/` 3,887 (difftest drivers, deliberately C) and
-2,677 at the root (`Environment.cpp` and friends).
+**The honest summary AT THE TIME: the codecs are done, the application layer has
+not been started.** 20,265 lines of Haskell are within 3 lines of where they
+were. By any line-count measure that is the majority of the remaining work, and
+it is at roughly zero percent. Outside `Compression/` the C/C++ is `HsLua`
+16,338 (vendored Lua, kept), `srep` 12,907 (vendored tool), `Unarc` 5,389 (the
+second, independent archive reader), `rust/` 3,887 (difftest drivers,
+deliberately C) and 2,677 at the root (`Environment.cpp` and friends).
+
+> **All of that is now history.** The application layer was ported, and the
+> Haskell and the vendored Lua and SREP are deleted. Today: Rust ~78,000 lines,
+> C/C++ ~19,100 — `Unarc/` and the SFX modules, the codec sources they compile,
+> and `rust/difftest`'s C oracles. Zero `.hs`. The paragraph above is left in
+> place because the rest of this section reasons from it.
 
 **`_Encryption` was pruned in #114, and getting there took three wrong answers.**
 Worth reading as a method failure, because each wrong answer was plausible:
@@ -291,9 +308,11 @@ The Rust port has also nearly drawn level with the Haskell layer (20,100 vs
 
 ---
 
-## 2. Open work
+## 2. The work items, and how each was settled
 
-Ordered roughly by what unblocks what.
+Ordered roughly by what unblocked what. **Nearly every one is marked DONE**; the
+handful that are not were decided against (4x4) rather than left pending. Kept
+for the reasoning, not as a queue — see `CLAUDE.md` for anything live.
 
 ### 1. Windows Rust cross-build — DONE
 
@@ -970,22 +989,28 @@ plumbing.
 
 ## 3. How to work on this
 
+> The `./compile-O2` and `./compile-mhs-win64` commands this section used to
+> give are **gone with the Haskell**. Current equivalents:
+
 ```bash
 # Build
-./compile-O2                     # stock C build      -> Tests/arc
-DARC_RUST=1 ./compile-O2         # against Rust       -> Tests/arc
-DARC_RUST=1 ./compile-mhs-win64  # Windows x86-64
-DARC_RUST=1 DARC_WIN_ARCH=aarch64 ./compile-mhs-win64
+cargo build --release --manifest-path rust/Cargo.toml -p darc-arc --bin darc
+./compile-c                      # the C side: common.mak + the codec objects
+make -C Unarc linux              # unarc + the SFX modules (needs compile-c first)
+cargo build --release --manifest-path rust/Cargo.toml \
+  --target x86_64-pc-windows-gnu -p darc-arc --bin darc     # Windows x86-64
 
 # Test
-cd rust && cargo nextest run     # 150 tests
-Tests/run-tests.sh "$PWD/Tests/arc"   # 24 round-trips + archive fingerprints
-rust/difftest/<codec>-check.sh        # C vs Rust, byte for byte
+cd rust && cargo nextest run --profile ci        # 696 tests
+Tests/run-tests.sh "$PWD/rust/target/release/darc"   # 24 round-trips
+rust/difftest/<codec>-check.sh                   # C vs Rust, byte for byte
+rust/difftest/arc-golden-check.sh                # 118 archive cases, no reference needed
 ```
 
-**Always `rm -rf /tmp/out` between stock and `DARC_RUST` builds.** Objects are
-shared across build paths and the makefile does not rebuild on a define change,
-so you will otherwise link a stale object against the wrong libraries.
+**Always `rm -rf /tmp/out` between C build paths.** Objects are shared across
+them and the makefile does not rebuild on a define change, so you will otherwise
+link a stale object against the wrong libraries. This still applies to
+`compile-c` and `Unarc`; the archiver no longer touches `/tmp/out` at all.
 
 ### The recipe for porting a codec
 

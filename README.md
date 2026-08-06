@@ -6,7 +6,7 @@ Distended Arc - Based on FreeArc
 DArc is a command-line archiver based on [FreeArc](http://freearc.org). It supports solid compression, strong encryption, recovery records, SFX archives, and a wide variety of compression algorithms.
 
 The console binary is named `darc` (`darc.exe` on Windows).  
-Archives produced by DArc are format-compatible with [DArc86](https://github.com/YadeWira/DArc86).
+Archives produced by DArc are largely format-compatible with [DArc86](https://github.com/YadeWira/DArc86) — but **compatibility is not a design requirement**, and where it conflicts with being correct or corruption-resilient, DArc takes the better behaviour and marks the divergence. Encrypted archives are already not compatible: they carry `:h1`, because the old key/IV hex decoding was broken and weakened the key.
 ---
 
 ## Building
@@ -80,11 +80,15 @@ command line tools beyond `cargo`. Handled automatically by the C build:
 Every compression method is supported for both reading and writing, and
 `Tests/run-tests.sh` scores the same 24/24 as the pre-port reference.
 
-Three `-m` sub-options are refused rather than implemented, because each one
-changes the compression chain and quietly ignoring it would write an archive
-that is not what was asked for: `-mm` (multimedia mode), `-ma` (file-type
-autodetection level) and `-mc` (disable an algorithm). The memory limits
-`-lc`/`-ld` are not accepted either.
+`-mm` (multimedia mode), `-ma` (file-type autodetection level) and `-mc`
+(disable an algorithm) are implemented and gated by
+`rust/difftest/arc-multimedia-check.sh`; so are the memory limits `-lc`/`-ld`,
+including their `-lc-`/`-ld-` "no limit" forms. An earlier version of this
+section said all five were refused, which stopped being true in #129/#130.
+
+A limit that cannot physically be met is now reported rather than quietly
+missed — `-ld1m` on LZMA warns, because LZMA needs its dictionary *plus* a fixed
+~2 MB and no dictionary satisfies 1 MB.
 
 ---
 ## CLI Usage
@@ -183,8 +187,8 @@ Options that take a parameter use `-<opt><value>` or `--<option>=<value>`.
 |-------|-------------------|-------------|
 | `-y`  | `--yes`           | Answer Yes to all queries |
 | `--`  |                   | Stop processing options |
-| `-cfg FILE` | `--config=FILE` | Use config FILE (default: `arc.ini`) |
-| `-env VAR`  |                 | Read default options from environment variable VAR (default: `FREEARC`) |
+| `-cfg FILE` | `--config=FILE` | Use config FILE (default: `darc.toml`) |
+| `-env VAR`  |                 | Read default options from environment variable VAR (default: `DARC`) |
 
 ### File Selection
 
@@ -335,21 +339,24 @@ Options that take a parameter use `-<opt><value>` or `--<option>=<value>`.
 
 ---
 
-## Configuration File (`arc.ini`)
+## Configuration File (`darc.toml`)
 
-By default, DArc reads options from `arc.ini` in standard search paths. You can override the config file with `-cfg <file>` or disable it with `-cfg-`.
+By default, DArc reads options from `darc.toml` beside the executable. You can override the config file with `-cfg <file>` or disable it with `-cfg-`.
 
-**Default options** can be set per-command in the `[Default options]` section:
+**Default options** are set per-command under `[defaults]`. A key may name several commands, and `all` applies to every one:
 
-```ini
-[Default options]
-a = --display
-ch = -m4x -ms
+```toml
+[defaults]
+all = "-mx"
+a   = "--display"
+ch  = "-m4x -ms"
 ```
 
-**Compression methods** can be defined in the `[Compression methods]` section.
+**Compression methods** are defined under `[methods]`, and external compressors under `[external.NAME]` — that is how `-msrep` is wired up.
 
-The `FREEARC` environment variable is also read for default options (override with `-env <VAR>` or disable with `-env-`).
+The `DARC` environment variable is also read for default options (override with `-env <VAR>` or disable with `-env-`).
+
+> **`arc.ini` and `$FREEARC` are gone, and a leftover one is refused rather than ignored.** They were FreeArc's names; DArc uses `darc.toml` and `$DARC`. If an `arc.ini` is found beside the executable the run stops and names the replacement, because a config that is silently skipped changes the archive you get — `-cfg-`/`-env-` silence it deliberately. The old `[Default options]` / `[Compression methods]` INI sections have no equivalent spelling; use the TOML above.
 
 ---
 

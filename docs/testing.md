@@ -1,24 +1,39 @@
 # Testing DArc
 
-Load this before changing a codec or writing a harness. The short version: the Rust layer has a real gate, the Haskell layer has none.
+Load this before changing a codec or writing a harness. The short version: everything is gated now, and the archive format is gated twice.
 
 ## What is and is not covered
 
-**The Haskell/archiver layer has no automated test suite. The Rust layer has a
-thorough one, and it is the gate.** Do not confuse the two — a change to
-`Arc*.hs` is covered by nothing but your own round-trip.
+**Both layers have a gate.** That was not true for most of the port's life —
+this file used to open "the Rust layer has a real gate, the Haskell layer has
+none", and the archiver layer was covered by nothing but your own round-trip.
+It now has:
 
-## `rust/difftest` — 55 differential harnesses
+* `arc-golden-check.sh` — **118 recorded cases**, needs no reference, the only
+  archive-format gate that runs unaided.
+* all 20 `arc-*-check.sh` in CI, against the published oracle: the
+  `arc-harnesses` job runs 17, `unarc-sfx` runs `arc-sfx-check` (it needs the
+  SFX modules that job builds), and `arc-golden-check` has its own.
+* `arc-cli-check.sh` — 24 cases comparing behaviour, plus per-binary checks that
+  each build's own summaries are true.
+
+Until 2026-08-05, CI ran **`arc-golden-check` alone**. The other 18 existed and
+nothing executed them, which is how `arc-cli-check` came to be failing 18 of 18
+unnoticed. Wiring them in found two more harness bugs on the first two runs, both
+portability rather than port defects.
+
+## `rust/difftest` — 55 harnesses
 
 35 are codec-level and 20 are the CLI-level `arc-*-check.sh` described further
-down. Each `<codec>-check.sh` builds the C original **from a pinned revision**
+down. All but one are DIFFERENTIAL, comparing two binaries; `arc-golden-check.sh`
+is the exception and is described below. Each `<codec>-check.sh` builds the C original **from a pinned revision**
 (`DARC_C_REF_SHA` in `c-reference.sh`, currently `5c2c6ce`) alongside the Rust port
 and requires identical bytes. The C is taken from git history rather than the
 working tree so the oracle survives the C being deleted and cannot drift.
 
 ```bash
 rust/difftest/lzma-decode-check.sh     # exit 0 or the port diverged
-cd rust && cargo nextest run --profile ci   # 687 unit tests
+cd rust && cargo nextest run --profile ci   # 696 unit tests
 ```
 
 Two properties every harness here is expected to have, learned the hard way:
@@ -45,14 +60,23 @@ records the bug already paid for: `n_symbols` typed `u8` overflowed on a
 full-alphabet block. Testing the casts empirically is cheaper and safer than
 converting thousands of them.
 
-### The boundary audit, and why it found nothing
+**Its failure signal is stderr, never the exit status**, and this is not a
+stylistic choice. Every codec entry point goes through `ffi::guard`, whose
+`catch_unwind` turns a panic into `FREEARC_ERRCODE_GENERAL` — indistinguishable
+from a codec declining an input. A deliberate `assert!(false)` in
+`bsc::qlfc_enc::transform` exits **0**. A harness written as `if ! cmd; then
+fail; fi` would report a clean sweep while every block panicked. With the stderr
+grep, that same sabotage produces 630 named panics and exit 1.
+
+### The boundary audit, which found three defects on its second pass
 
 The other half of the cast problem is the casts the harness cannot reach by
 running code: those on the **data path**, where no encoder/decoder symmetry
 argument applies — archive-header fields, allocation sizes, FFI lengths. Clippy
 flags 77 possibly-truncating casts in `darc-arc`, and every one was checked.
 
-**No defects.** Each is one of:
+The first pass concluded "no defects" and was wrong about three of them. Each
+site is one of:
 
 * **Lossless by construction.** `u64 as usize` on the only supported targets
   (all 64-bit); `(hi * 16 + lo) as u8` where both are `to_digit(16)` nibbles;
@@ -86,14 +110,6 @@ The lasting lesson is not "the reference is always right" but the opposite: the
 reference settles *what the code does*, never *what it should do*. Measuring is
 still mandatory — three sites that looked obvious were not what I assumed — but
 the measurement is an input to the decision, not the decision.
-
-**Its failure signal is stderr, never the exit status**, and this is not a
-stylistic choice. Every codec entry point goes through `ffi::guard`, whose
-`catch_unwind` turns a panic into `FREEARC_ERRCODE_GENERAL` — indistinguishable
-from a codec declining an input. A deliberate `assert!(false)` in
-`bsc::qlfc_enc::transform` exits **0**. A harness written as `if ! cmd; then
-fail; fi` would report a clean sweep while every block panicked. With the stderr
-grep, that same sabotage produces 630 named panics and exit 1.
 
 ### Corpora and helpers are Rust; orchestration is shell
 
@@ -130,7 +146,7 @@ ARM64/ARMT filters switched off.
 ## The Haskell layer: `arc-cli-check.sh` and the GHC probe
 
 `rust/difftest/arc-cli-check.sh <reference-arc> <port-arc>` is the acceptance
-gate for the application layer. It runs 18 argv cases through two `arc`
+gate for the application layer. It runs 24 cases through two `arc`
 binaries and compares five observables — archive bytes, exit code, stdout,
 stderr, and the whole extracted tree. Only three things are normalised (timing
 lines, progress redraws, the sandbox path); everything else, including the file

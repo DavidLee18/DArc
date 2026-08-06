@@ -9,9 +9,10 @@ taste:
 
 | crate | lines | linked by |
 |---|---|---|
-| `darc-codecs` | 33,700 | `arc` **and** `Unarc`/every SFX module |
+| `darc-codecs` | 40,700 | `arc` **and** `Unarc`/every SFX module |
+| `darc-arc` | 19,900 | the `darc` binary — the whole application layer |
 | `darc-lzma` | 13,200 | via `darc-codecs` |
-| `darc-crypto` | 1,350 | `arc` |
+| `darc-crypto` | 1,000 | `arc` |
 | `darc-sevenz` | 570 | `arc` only |
 
 **Why `darc-sevenz` is not a module inside `darc-codecs`:** Unarc and every SFX
