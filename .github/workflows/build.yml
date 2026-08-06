@@ -3,8 +3,27 @@ name: Build CI
 on:
   push:
     branches: [ "main" ]
+    # A commit touching ONLY these cannot change a byte of any archive, and the
+    # full matrix is ~25 minutes. GitHub skips the run only when EVERY changed
+    # path matches, so a commit mixing prose and code still builds.
+    #
+    # Deliberately narrow: `.github/**` is NOT here, because a workflow edit is
+    # exactly the thing that needs proving, and neither are the shell harnesses
+    # under `rust/difftest/`.
+    #
+    # Spelled out twice rather than shared through a YAML anchor: the Actions
+    # workflow parser does not support anchors, and one would make the file fail
+    # to load rather than fail a job. Keep the two lists identical.
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - 'LICENSE'
   pull_request:
     branches: [ "main" ]
+    paths-ignore:
+      - '**.md'
+      - 'docs/**'
+      - 'LICENSE'
   # Allows running the full matrix against any branch on demand, e.g. for a
   # stacked PR whose base is not main (which the triggers above would skip).
   workflow_dispatch:
