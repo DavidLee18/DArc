@@ -22,6 +22,8 @@
 //! and writing them in any other order would mean holding more of it.
 
 use crate::directory::Entry;
+use rayon::prelude::*;
+use std::io::Write;
 
 /// How stored names become disk names — the `-ep` and basedir options.
 #[derive(Clone, Debug)]
@@ -265,5 +267,251 @@ mod tests {
         assert!(is_safe("sub/dir/a.txt"));
         assert!(is_safe("..hidden"), "a leading .. in a NAME is not a traversal");
         assert!(is_safe("a..b/c"));
+    }
+}
+
+// ── Shared with the `unarc` front-end ───────────────────────────────────────
+//
+// `run_blocks` and the two formatters below used to live in `bin/darc.rs`.
+// They are here because `unarc` and every SFX module need exactly this work --
+// walk the data blocks, decrypt, decompress, verify each file's CRC, and either
+// report or write it -- and a second copy is how `Unarc/ArcStructure.h` came to
+// read the per-file time field as 4 bytes while the writer wrote 8, so that
+// directories extracted as empty files and every CRC failed.
+//
+// One implementation, two callers. That is the whole reason the C++ reader is
+// being retired rather than ported alongside this one.
+
+/// `showMem3`-style digit grouping: `438744` -> `438.744`.
+pub fn show3(n: u64) -> String {
+    let s = n.to_string();
+    let mut out = String::with_capacity(s.len() + s.len() / 3);
+    let b = s.as_bytes();
+    for (i, c) in b.iter().enumerate() {
+        if i > 0 && (b.len() - i) % 3 == 0 {
+            out.push('.');
+        }
+        out.push(*c as char);
+    }
+    out
+}
+
+/// `ratio3` (`UIBase.hs:159`) — integer arithmetic, which truncates where a
+/// rounding formatter would not.
+pub fn ratio3(count: u64, total: u64) -> String {
+    if total == 0 {
+        return "0.0".to_string();
+    }
+    let scaled = (count.saturating_mul(1000) / total).to_string();
+    match scaled.len() {
+        1 => format!("0.{scaled}"),
+        n => format!("{}.{}", &scaled[..n - 1], &scaled[n - 1..]),
+    }
+}
+pub fn run_blocks(
+    info: &crate::archive::ArchiveInfo,
+    data: &[u8],
+    layout: &Layout,
+    extracting: bool,
+    pw: &crate::passwords::Passwords,
+    entries: &[Entry],
+    skip: &std::collections::HashSet<String>,
+    keep_broken: bool,
+) -> i32 {
+    // The safety check runs on the archive's contribution alone: the
+    // destination is the user's own and may be absolute.
+    let relative = Layout { disk_basedir: String::new(), ..layout.clone() };
+
+    if extracting && layout.creates_directories() {
+        for e in entries.iter().filter(|e| e.is_dir) {
+            if !crate::extract::is_safe(&relative.disk_name(e)) {
+                eprintln!("ERROR: refusing unsafe path {:?}", e.stored_name);
+                return 2;
+            }
+            match std::fs::create_dir_all(layout.disk_name(e)) {
+                Ok(()) => {}
+                Err(err) => {
+                    eprintln!("ERROR: {}: {err}", e.stored_name);
+                    return 2;
+                }
+            }
+        }
+    }
+
+    let total_bytes: u64 = entries.iter().map(|e| e.size).sum();
+    if !extracting {
+        println!(
+            "Testing {} files, {} bytes.",
+            show3(entries.len() as u64),
+            show3(total_bytes)
+        );
+    }
+
+    let mut per_block: Vec<Vec<&Entry>> = vec![Vec::new(); info.data_blocks.len()];
+    for e in entries {
+        match per_block.get_mut(e.block) {
+            Some(v) => v.push(e),
+            None => {}
+        }
+    }
+
+    // Counted where the write happens, not from `entries`, and atomics rather
+    // than a per-block return so the early exits above stay as they are.
+    use std::sync::atomic;
+    let written_files = atomic::AtomicU64::new(0);
+    let written_bytes = atomic::AtomicU64::new(0);
+
+    let results: Vec<Vec<String>> = per_block
+        .par_iter()
+        .enumerate()
+        .map(|(bi, entries)| {
+            let mut bad = Vec::new();
+            let b = match info.data_blocks.get(bi) {
+                Some(b) => b,
+                None => return bad,
+            };
+            if entries.iter().all(|e| e.is_dir) {
+                return bad;
+            }
+            let start = b.pos as usize;
+            let end = start.saturating_add(b.comp_size as usize);
+            let packed = match data.get(start..end) {
+                Some(s) => s,
+                None => {
+                    bad.push(format!("{} is truncated", b.name()));
+                    return bad;
+                }
+            };
+            // The block's chain may name an encryption method, which carries a
+            // salt but no key until a password has been verified against it.
+            let compressor = match crate::archive::keyed(&b.compressor, b, pw) {
+                Ok(c) => c,
+                Err(e) => {
+                    bad.push(format!("{e}"));
+                    return bad;
+                }
+            };
+            let unpacked =
+                match crate::decompress::decompress_chain(&compressor, packed, b.orig_size as usize) {
+                    Ok(u) => u,
+                    Err(e) => {
+                        bad.push(format!("{}: {e}", b.name()));
+                        return bad;
+                    }
+                };
+            for e in entries {
+                if e.is_dir {
+                    continue;
+                }
+                let from = e.pos_in_block as usize;
+                let to = from.saturating_add(e.size as usize);
+                let bytes = match unpacked.get(from..to) {
+                    Some(x) => x,
+                    None => {
+                        bad.push(format!("{}: runs past the end of its block", e.stored_name));
+                        continue;
+                    }
+                };
+                // `-kb`/`--keepbroken` (ArcExtract.hs:99): a file that failed
+                // its CRC is normally not left on disk. With -kb it is kept,
+                // and the failure is still reported -- keeping the bytes is not
+                // the same as calling them good.
+                let crc_ok = crate::crc::calc(bytes) == e.crc;
+                if !crc_ok {
+                    bad.push(format!("{}: CRC failed", e.stored_name));
+                    if !keep_broken {
+                        continue;
+                    }
+                }
+                if !extracting {
+                    continue;
+                }
+                if !crate::extract::is_safe(&relative.disk_name(e)) {
+                    bad.push(format!("refusing unsafe path {:?}", e.stored_name));
+                    continue;
+                }
+                // `-o-`, or an existing file the user declined to overwrite.
+                // Decided serially before this loop; see resolve_overwrites.
+                if skip.contains(&e.stored_name) {
+                    continue;
+                }
+                let name = layout.disk_name(e);
+                match std::path::Path::new(&name).parent() {
+                    Some(dir) => match std::fs::create_dir_all(dir) {
+                        Ok(()) => {}
+                        Err(err) => {
+                            bad.push(format!("{}: {err}", dir.display()));
+                            continue;
+                        }
+                    },
+                    None => {}
+                }
+                match std::fs::File::create(&name).and_then(|mut f| f.write_all(bytes)) {
+                    // Counted HERE, at the only place a file is actually
+                    // written, rather than from the selected-entry list. See
+                    // the summary below for why that distinction matters.
+                    Ok(()) => {
+                        written_files.fetch_add(1, atomic::Ordering::Relaxed);
+                        written_bytes.fetch_add(bytes.len() as u64, atomic::Ordering::Relaxed);
+                    }
+                    Err(err) => bad.push(format!("{name}: {err}")),
+                }
+            }
+            bad
+        })
+        .collect();
+
+    let mut failures = 0usize;
+    for block in &results {
+        for msg in block {
+            eprintln!("ERROR: {msg}");
+            failures += 1;
+        }
+    }
+
+    if !extracting {
+        // Blocks whose unpacked size is zero are never decompressed, so they
+        // contribute nothing to the packed total.
+        let packed: u64 =
+            info.data_blocks.iter().filter(|b| b.orig_size > 0).map(|b| b.comp_size).sum();
+        println!(
+            "Tested {} files, {} => {} bytes. Ratio {}%",
+            show3(entries.len() as u64),
+            show3(packed),
+            show3(total_bytes),
+            ratio3(packed, total_bytes)
+        );
+    } else {
+        // What was WRITTEN, not what was selected. `entries.len()` counted every
+        // entry the filters picked -- including directories, and including
+        // files that were then refused for an unsafe path, failed their CRC, or
+        // were skipped at an overwrite prompt. So a run that refused its only
+        // entry still printed "Extracted 1 files", directly under the ERROR
+        // saying it had not been.
+        //
+        // **A DELIBERATE DIVERGENCE, and #140 recorded the wrong reason for it.**
+        // That commit claimed the reference prints no summary here, so there was
+        // nothing to match; it does print one, and I had missed it by tailing
+        // output whose progress is drawn with carriage returns. It reads
+        //
+        //     Extracted 226 files, 33.111 => 438.744 bytes. Ratio 7.5%
+        //
+        // on a tree of 218 files and 8 directories -- the same entries-not-files
+        // count this used to have. So the port is right and the reference is
+        // wrong, which is the trade CLAUDE.md asks for, but it IS a divergence
+        // and is marked as one here rather than left looking like a free fix.
+        // `arc-cli-check.sh` holds both builds against the disk and reports the
+        // reference's miscount without failing on it.
+        println!(
+            "Extracted {} files, {} bytes.",
+            show3(written_files.load(atomic::Ordering::Relaxed)),
+            show3(written_bytes.load(atomic::Ordering::Relaxed))
+        );
+    }
+    if failures == 0 {
+        println!("All OK");
+        0
+    } else {
+        2
     }
 }
