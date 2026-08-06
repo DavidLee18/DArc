@@ -73,5 +73,6 @@ pub mod options;
 pub mod passwords;
 pub mod recovery;
 pub mod sort;
+pub mod timefmt;
 pub mod toml_table;
 pub mod writer;

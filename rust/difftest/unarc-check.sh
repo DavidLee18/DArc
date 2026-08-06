@@ -69,10 +69,33 @@ one() {
   # proves only that they failed the same way.
   diff -r "$W/src" "$W/r" > "$W/orig.diff" 2>&1 || bad="$bad not-the-original"
 
+  # The LISTING is held against `darc`, not against the C.
+  #
+  # Not an oversight -- the C's listing disagrees with the archiver's, and the
+  # Rust one agrees with it. On the same archive the C prints
+  #
+  #     1970-01-01 09:00:00       -dir- ./sub
+  #     1970-01-01 09:00:00       20000 ./c.bin
+  #
+  # where `darc l` prints `sub` and `20.000`: the C keeps the `./` that `arc a
+  # … .` stores and never groups the digits. That is the drift retiring the C++
+  # is meant to end, so requiring the Rust to reproduce it would gate the bug in.
+  # `unarc l` must equal `darc l` exactly, which is the one-implementation
+  # property stated as a test.
+  "$DARC"   l "$W/t.arc" >| "$W/l.darc"  2>/dev/null
+  "$RUNARC" l "$W/t.arc" >| "$W/l.unarc" 2>/dev/null
+  if ! cmp -s "$W/l.darc" "$W/l.unarc"; then
+    bad="$bad listing"
+    diff "$W/l.darc" "$W/l.unarc" >| "$W/l.diff" 2>&1
+  else
+    : >| "$W/l.diff"
+  fi
+
   if [ -n "$bad" ]; then
     echo "  DIFF [$label]:$bad"
     head -4 "$W/tree.diff" 2>/dev/null | sed 's/^/      /'
     head -4 "$W/orig.diff" 2>/dev/null | sed 's/^/      orig: /'
+    head -4 "$W/l.diff"    2>/dev/null | sed 's/^/      list: /'
     fail=$((fail + 1))
   fi
 }
