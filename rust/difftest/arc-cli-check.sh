@@ -23,8 +23,11 @@
 #   * on create, the reference prints `Compressing 226 files...`, a progress
 #     redraw, `Compressed ... Ratio 100.0%` and a timing line; the port prints
 #     only `All OK` -- while writing a BYTE-IDENTICAL archive
-#   * on extract the port prints an `Extracted N files` summary the reference
-#     does not print at all
+#   * both print an `Extracted N files` summary, in different shapes -- and the
+#     reference's count is of ENTRIES, so it says 226 on a tree of 218 files and
+#     8 directories. The port said the same until #140. (That commit claimed the
+#     reference printed no such line; it does, and the line was missed by
+#     tailing output whose progress is drawn with carriage returns.)
 #   * diagnostics go to stdout on the reference and to stderr on the port, and
 #     the sentences differ
 #
@@ -237,6 +240,99 @@ compare_with_arc "extract -e"  e -y in.arc
 compare_with_arc "missing archive"  t no-such.arc
 compare_with_arc "unknown command"  zzz in.arc
 compare_with_arc "bad method"       a --nodates -y -mNOPE out2.arc in.arc
+
+# ── the summaries must be TRUE ──────────────────────────────────────────────
+#
+# Everything above compares the two builds. That deliberately says nothing about
+# the summary lines, because they differ by design -- the reference prints a
+# create summary the port does not, the port prints an `Extracted` line the
+# reference does not, and `data_only` filters both.
+#
+# Which left a hole exactly the size of the bug fixed in #140: `Extracted 1
+# files, 6 bytes` printed directly under `ERROR: refusing unsafe path`, because
+# the count came from the entries the FILTERS selected rather than the files
+# written. Nothing compared it against anything, so nothing objected.
+#
+# These are not differential checks and could not be. They hold ONE binary's
+# output against ground truth: what is on the disk, and what its own listing
+# says. Each is applied to whichever binary prints the line, so the reference
+# exercises them too rather than the port grading itself.
+digits() { tr -d '.,' ; }   # `438.744` is 438744; the separator is cosmetic
+
+# truthful <binary> <label> <strict>
+#
+# Every summary this binary prints must be true. `strict=0` reports a mismatch
+# without failing the run, which is how the REFERENCE is checked: it prints
+#
+#     Extracted 226 files, 33.111 => 438.744 bytes. Ratio 7.5%
+#
+# on a tree of 218 files and 8 directories -- entries, not files written, the
+# same miscount the port carried until #140. That is a real finding and worth
+# printing, but this harness gates the PORT; failing it because the reference is
+# untruthful would be red for something no change here can fix.
+#
+# (#140 justified its fix by claiming the reference printed no such line. It
+# does. The line was missed by tailing output whose progress is drawn with
+# carriage returns, and the fix is a deliberate divergence rather than a free
+# one -- see the site in darc.rs.)
+truthful() {
+  local bin="$1" label="$2" strict="${3:-1}"
+  local d="$W/truth.$label"
+  rm -rf "$d"; mkdir -p "$d/out"
+  cp "$W/shared.arc" "$d/in.arc"
+
+  # 1. `Extracted N files, M bytes` against what actually landed.
+  ( cd "$d/out" && "$bin" x -y ../in.arc ) >"$d/x.out" 2>"$d/x.err"
+  local line
+  line=$(tr '\r' '\n' < "$d/x.out" | tr -d '\010' | grep -E '^Extracted ' | head -1)
+  if [ -n "$line" ]; then
+    local said_n said_b real_n real_b
+    said_n=$(echo "$line" | sed -E 's/^Extracted ([0-9.,]+) files.*/\1/' | digits)
+    said_b=$(echo "$line" | sed -E 's/.* ([0-9.,]+) bytes.*/\1/' | digits)
+    real_n=$(find "$d/out" -type f | wc -l | tr -d '[:space:]')
+    real_b=$(find "$d/out" -type f -exec wc -c {} + | tail -1 | awk '{print $1}')
+    if [ "$said_n" != "$real_n" ] || [ "$said_b" != "$real_b" ]; then
+      echo "  $([ "$strict" = 1 ] && echo UNTRUE || echo "NOTE (not gated)") [$label extract]: said \"$line\" but wrote $real_n files, $real_b bytes"
+      [ "$strict" = 1 ] && fail=$((fail + 1))
+    fi
+    checked=$((checked + 1))
+  fi
+
+  # 2. The listing's own totals against its own rows.
+  "$bin" l "$d/in.arc" >"$d/l.out" 2>/dev/null
+  local rows tot_n
+  rows=$(tr '\r' '\n' < "$d/l.out" | grep -cE '^[0-9]{4}-[0-9]{2}-[0-9]{2} ')
+  tot_n=$(tr '\r' '\n' < "$d/l.out" | grep -oE '^[0-9][0-9.,]* files,' | head -1 | sed -E 's/ files,//' | digits)
+  if [ -z "$tot_n" ] || [ "$rows" -eq 0 ]; then
+    # A parse that matches nothing must not read as agreement -- that is the
+    # vacuous pass this whole file keeps rediscovering.
+    echo "  UNPARSED [$label list]: $rows rows, totals '$tot_n' -- the check found nothing to compare"
+    fail=$((fail + 1))
+  elif [ "$tot_n" != "$rows" ]; then
+    echo "  UNTRUE [$label list]: totals say $tot_n files, the table has $rows rows"
+    fail=$((fail + 1))
+  fi
+  checked=$((checked + 1))
+
+  # 3. `Tested N files, A => B bytes` against that same listing.
+  "$bin" t "$d/in.arc" >"$d/t.out" 2>/dev/null
+  line=$(tr '\r' '\n' < "$d/t.out" | tr -d '\010' | grep -E '^Tested ' | head -1)
+  if [ -n "$line" ]; then
+    local t_n t_b l_b
+    t_n=$(echo "$line" | sed -E 's/^Tested ([0-9.,]+) files.*/\1/' | digits)
+    t_b=$(echo "$line" | sed -E 's/.*=> ([0-9.,]+) bytes.*/\1/' | digits)
+    l_b=$(tr '\r' '\n' < "$d/l.out" | grep -oE 'files, [0-9][0-9.,]* bytes' | head -1 \
+          | sed -E 's/files, //; s/ bytes//' | digits)
+    if [ "$t_n" != "$rows" ] || { [ -n "$l_b" ] && [ "$t_b" != "$l_b" ]; }; then
+      echo "  UNTRUE [$label test]: said \"$line\" against a listing of $rows files, $l_b bytes"
+      fail=$((fail + 1))
+    fi
+    checked=$((checked + 1))
+  fi
+}
+
+truthful "$PORT" port 1   # the port is gated
+truthful "$REF"  ref  0   # the reference is reported, not gated -- see above
 
 echo "arc CLI: $checked cases, $fail differing"
 [ "$fail" -eq 0 ] || exit 1
