@@ -1,3 +1,15 @@
+# Historical benchmarks (2005)
+
+Carried over verbatim from `Documentation/tests`. These are the measurements
+that drove the diff/merge engine's memory representation — the custom hash
+table, the pooled allocation, the packed strings — on a drive holding 252,000
+files. `docs/architecture.md` cites them where it says to treat that
+representation as deliberate.
+
+They predate the Rust port by two decades and are a record of intent, not a
+claim about current performance.
+
+```text
 Test results for the version dated 14.12.2005 on drive C, holding 252 thousand files.
 Time and memory required by the various archivers to find all the files
 and get ready for compression (en/gen - sort type; -c == +RTS -c - memory compaction algorithm)
@@ -67,3 +79,4 @@ arc          58 mb 18.5 sec  (15.5+3gc) (of which 8.5 sec - in the OS, 2 sec - r
 arc  en      81 mb   24 sec  (19+5gc)
 arc gen      74 mb   25 sec  (20+5gc)
 
+```

@@ -5,8 +5,8 @@
 # ## What this checks, and why it is not the usual shape
 #
 # Every other harness compares a C codec against a Rust PORT of that codec. 4x4
-# has no Rust port and is not getting one (RUST_PORT_PROGRESS.md section 10): it
-# compresses nothing itself, it splits input into blocks and calls the library
+# has no Rust port and is not getting one, by decision: it compresses nothing
+# itself, it splits input into blocks and calls the library
 # dispatcher with an INNER method named in its own parameter string. Porting it
 # would be Rust calling C calling Rust, and a decode-first port would drop the
 # parallelism that is the whole point.

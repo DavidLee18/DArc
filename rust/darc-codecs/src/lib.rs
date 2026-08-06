@@ -16,9 +16,12 @@
 //!   absorbs variants added later. This is the compile-time half of the lesson
 //!   from the Tornado presets 7-11 bug, where a silent fallback (a trait default
 //!   whose body was `debug_assert!`, dead in release) changed the encoder's
-//!   output with nothing failing. As the codecs' bare mode integers become enums
-//!   (RUST_PORT_PROGRESS.md section 10b, item 4), this lint is what converts each
-//!   one into enforced exhaustiveness.
+//!   output with nothing failing. The codecs' mode integers are enums now --
+//!   GRZip's `RecMode`, MM's `WordBytes`, TTA's `SampleBytes`, DisPack's `Mode`
+//!   -- and this lint is what turns each of them into enforced exhaustiveness.
+//!   (Tornado's `encoding_method`/`caching_finder` stay `c_int`: they are fields
+//!   of a `#[repr(C)]` struct the C fills in, so an enum there would be unsound.
+//!   They are classified into `Shape` on entry instead.)
 //! * `clippy::todo`, `clippy::unimplemented` -- placeholders that panic at run
 //!   time in a library whose failures corrupt archives.
 //! * `clippy::mem_forget` -- leaking a codec buffer is never intended here.

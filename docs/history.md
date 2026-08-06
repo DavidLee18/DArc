@@ -1,3 +1,12 @@
+# FreeArc version history
+
+The upstream changelog DArc inherited, carried over verbatim from
+`Documentation/History.txt`. It documents FreeArc up to 0.67 — the release this
+fork descends from — and is kept because it is the only record of *why* several
+format decisions were made. Nothing here describes DArc's own changes; for those
+read the git history.
+
+```text
 Version 0.20 was rewritten from scratch in order to achieve the following goals:
 - reliable error handling
 - splitting complex tasks into separate interacting threads
@@ -972,3 +981,4 @@ minor unfinished items:
     separate the data types used in the program from the encoding used in Directory
     pos::Addr#, CPS style for readUnchecked (10.43->8.98 (String w/o reverse))
 
+```

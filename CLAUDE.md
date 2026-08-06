@@ -75,7 +75,6 @@ Control blocks are exempt: `writeControlBlock` passes its chain twice.
 | `docs/architecture.md` | command dispatch, the archive format, UI, and the Haskell layer this was ported from |
 | `docs/rust-workspace.md` | crates, the FFI boundary, lint gates, link order |
 | `docs/testing.md` | `rust/difftest` and what a harness here has to prove |
-| `RUST_PORT_PROGRESS.md` | what has been ported, and how each was gated |
 | `THIRD-PARTY.md` | licences, and why the project is GPLv3 |
 
 ## Building

@@ -308,3 +308,79 @@ $D x /tmp/test.arc -dp /tmp/extracted
 ```
 
 Exercise the specific codec you touched via `-m` (e.g. `-m4x`, `-m9`), and test solid grouping (`-s`), encryption (`-p`), and recovery records (`rr`) when relevant — these are the paths most easily broken by changes to the compression pipeline. Format-compatibility regressions are the highest-risk failure mode in this repo: a change that compresses fine but produces archives older builds can't read will pass every build check.
+
+## Traps that have already cost time
+
+Carried over from `RUST_PORT_PROGRESS.md` when that file was removed: the port
+it tracked is finished, but these were paid for and every one is about testing.
+
+**A green differential run may be testing nothing.** Hit at least four times
+(Tornado tables, SREP block size, DisPack `detect()`, BSC coder segmentation).
+For any codec with a flush/window/block/detection granularity, the corpus
+**must straddle it** — otherwise the interesting path never runs. Prove it with
+a sabotage that breaks *only* the inputs past the boundary.
+
+**Look at the corrupt artefact before theorising about the cause.** Four rounds
+went into memory-error hypotheses for the #78 bug -- overflow, uninitialised
+heap, use-after-free, data race -- because the *previous* SREP bug was a heap
+overflow that ASan found on run one. That precedent was anchoring: each round
+reached for a sharper version of the same tool. Diffing a captured bad archive
+against a good one took ten minutes and identified the mechanism outright. The
+artefact constrains the explanation far more tightly than another sanitiser can.
+
+**To localise an intermittent failure, isolate each half before theorising.**
+The "flaky SREP test" was a real heap overflow. What found it: the compressor
+alone was byte-identical over 120 runs; a *fixed* archive decompressed 400 times
+without one failure; yet the interleaved loop failed ~1-6%. The failing archive
+had the **same size but different bytes** and failed *deterministically* on
+retry — which rules out the decompressor and points at heap corruption during
+compression. Then let a sanitizer name the line instead of guessing: the compile
+scripts honour `OPT`, so `OPT="-O1 -g -fsanitize=address -fno-omit-frame-pointer"
+./srep/compile` found it on the first run. (A sanitizer build drops a `.dSYM`
+bundle beside the binary; `Tests/srep` in `.gitignore` does not match it, and
+`git add -A` will happily commit 964 KB of DWARF.)
+
+**An uncaught sabotage is a claim about the test, not the port.** Tornado's
+data-table sabotage first reported 0 differences because the corpus topped out
+under 900 KB while the flush granularity is 8 MB.
+
+**Read the constant; do not infer it.** Every constant, signature or index
+packing inferred from surrounding shape has been wrong — `IMPOSSIBLE_LEN` is
+`INT_MAX/2` not `1<<30`; GRZip's strong BWT is a different transform, not a
+reinterpretation; BSC's `model_run_state` takes four arguments with two clamped,
+not two. For bulk data (opcode tables, tuning constants) **generate** it: parse
+the header or compile a program that prints every value.
+
+**Round-tripping is not proof the codec works.** LZ4's encoder produced *no
+compression at all* — `lz4_flex` wants ~110% of input as output buffer while
+`LZ4_compressBound` gives ~100.4%, so every block was rejected as
+`OutputTooSmall` before compressing and `C_LZ4.cpp` dutifully stored it raw. A
+real archive went 70,996 → 485,324 bytes (~7×) while round-tripping perfectly.
+**Compare the archive size against the stock build**, and assert output size in
+tests.
+
+**Verify the build succeeded before trusting any test.** A failed codec build
+left the previous *stock* binary in place, and a test script then reported six
+green "Rust decodes it" lines that were really the C reading its own archives.
+
+**An absent log line is a diagnostic.** Twice a fix "didn't work" because the
+message it should have printed never appeared — the code path had not run at
+all. Do not read silence as success.
+
+**Link order matters on GNU ld.** A staticlib placed before the objects that
+reference it links on macOS and fails on Linux.
+
+**A glob is not a survey — enumerate every consumer.** When the C reference
+moved to the pinned tree, the harnesses were converted by globbing `*-check.sh`,
+which silently skipped `rust/difftest/run.sh` (CI's Delta/Dict/LZP "Codec
+differential test" + sabotage steps, named differently). Deleting `Delta.cpp`
+then failed only that job: `no such file: Compression/Delta/Delta.cpp`. The same
+shape cost three CI rounds in one session (`compile` vs `compile-mhs-win64`,
+toolchain vs `LIBCLANG_PATH`, `*-check.sh` vs `run.sh`). When a file moves or is
+deleted, list *every* consumer, not the ones matching the obvious pattern.
+
+**`long` is 4 bytes on Windows and 8 on LP64.** This family has produced a dozen
+bugs here. It is also why bindgen must be given an explicit `--target` when
+cross-compiling: host-generated bindings would be quietly wrong about every
+`long` in the ABI.
+

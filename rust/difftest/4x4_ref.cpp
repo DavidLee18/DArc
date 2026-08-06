@@ -6,8 +6,8 @@
  * # Why this driver is shaped differently from the others
  *
  * Every other *_ref.cpp compares a C codec against a RUST port of that codec.
- * 4x4 has no Rust port and, per RUST_PORT_PROGRESS.md section 10, is not getting
- * one: it compresses nothing itself. It splits the input into blocks and calls
+ * 4x4 has no Rust port and is not getting one, by decision: it compresses
+ * nothing itself. It splits the input into blocks and calls
  * the library dispatcher, `Decompress(method, ...)`, with an INNER method named
  * in its own parameter string -- so a Rust 4x4 would be Rust calling C calling
  * Rust, for no gain, and a decode-first port would drop the parallelism that is
