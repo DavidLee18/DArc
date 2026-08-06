@@ -14,14 +14,24 @@ It now has:
 * all 20 `arc-*-check.sh` in CI, against the published oracle: the
   `arc-harnesses` job runs 17, `unarc-sfx` runs `arc-sfx-check` (it needs the
   SFX module that job builds), and `arc-golden-check` has its own.
-* `unarc-check.sh` — the Rust `unarc` against the C++ extractor it replaced, over
-  9 archives: same exit code, same extracted tree, and the tree really is the
-  input back. Its C side is `Unarc/unarc-c`, from `make -C Unarc oracle` — **not**
-  `Unarc/unarc`, which `make -C Unarc linux` now fills with a copy of the Rust
-  binary. Pointed at that, the harness compares the Rust extractor with itself
-  and reports `9 archives, 0 differing`; the `unarc-sfx` job guards it with a
-  `cmp -s` of the two that has to fail. The listing is held against `darc l`
-  rather than the C, because the C's listing is the thing being retired.
+* `unarc-check.sh` — `unarc` against `darc`, over 9 archives: same exit code,
+  same extracted tree, same listing, and the tree really is the input back, plus
+  `-e` and `-d<path>`.
+
+  It used to compare the Rust extractor against the C++ one in `Unarc/`. That
+  gated the migration, passed 9/9, and then the C++ was deleted, so it cannot be
+  run again — this is a **different property**, not a weakened version of the
+  old one. `unarc` owns no format knowledge; it reads argv and calls `darc-arc`.
+  So the only layer it can independently get wrong is option parsing and
+  `Layout`, and that is what is now gated — including the `-e`/`-d` cases the
+  C++ comparison never covered.
+
+  It refuses to run if handed the same binary twice. Both live in
+  `target/release` and the SFX story copies `unarc` around under other names, so
+  without that guard every comparison in it is trivially true. That is not
+  hypothetical: the previous revision, pointed at `Unarc/unarc` after `make
+  linux` started writing the Rust binary there, would have compared the
+  extractor with itself and reported `9 archives, 0 differing`.
 * `arc-cli-check.sh` — 24 cases comparing behaviour, plus per-binary checks that
   each build's own summaries are true.
 

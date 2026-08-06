@@ -9,17 +9,19 @@ taste:
 
 | crate | lines | linked by |
 |---|---|---|
-| `darc-codecs` | 40,700 | `arc` **and** `Unarc`/every SFX module |
+| `darc-codecs` | 40,700 | `darc` and `unarc` (which is also every SFX module) |
 | `darc-arc` | 19,900 | the `darc` binary — the whole application layer |
 | `darc-lzma` | 13,200 | via `darc-codecs` |
-| `darc-crypto` | 1,000 | `arc` |
-| `darc-sevenz` | 570 | `arc` only |
+| `darc-crypto` | 1,000 | `darc` |
+| `darc-sevenz` | 570 | `darc` only |
 
-**Why `darc-sevenz` is not a module inside `darc-codecs`:** Unarc and every SFX
-module link `libdarc_codecs.a`, and none of them can open a `.7z`. Putting it
-there would grow every self-extracting archive; feature-gating it instead would
-make `compile` and `Unarc/makefile` disagree about features through the shared
-`rust/target` and thrash rebuilds. Weigh that before adding a member.
+**Why `darc-sevenz` is not a module inside `darc-codecs`:** `unarc` links
+`darc-codecs` and is prepended to every self-extracting archive, and it cannot
+open a `.7z`. Putting it there would grow every SFX archive by code that can
+never run in one. (The original reason also mentioned `Unarc/makefile` and
+`compile` disagreeing about cargo features through the shared `rust/target`;
+that makefile is gone, but the size argument stands on its own.) Weigh this
+before adding a member.
 
 **Link order is load-bearing, and it has bitten twice.** GNU ld resolves a static
 archive only against undefined symbols it has *already* seen; macOS ld rescans. So
@@ -45,6 +47,7 @@ Both instances are worth recognising:
   *traps* rather than wrapping.
 * Every `c_int`-returning `extern "C"` export is wrapped in a `catch_unwind`
   firewall (`ffi::guard`) — unwinding across the C ABI is UB, and these frames are
-  reached from `unarc` and the SFX modules on archive input an attacker wrote.
+  reached from `unarc` -- which is also every SFX module -- on archive input an
+  attacker wrote.
 * Allocations sized from archive data go through `ffi::archive_sized_buffer`,
   which caps against the method's block size and uses `try_reserve`.

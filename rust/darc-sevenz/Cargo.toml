@@ -20,12 +20,14 @@ publish.workspace = true
 # least as well as a hand port, and hand-porting a 1,786-line foreign container
 # parser would buy a second chance to get it wrong and nothing else.
 #
-# WHY A SEPARATE CRATE rather than a module in darc-codecs: Unarc and every SFX
-# module link the same libdarc_codecs.a (see Unarc/makefile). Putting the reader
-# there would either grow every self-extracting archive by a .7z parser they can
-# never use, or -- if feature-gated -- make `compile` and Unarc's makefile
-# disagree about darc-codecs' feature set and thrash cargo rebuilds through the
-# shared rust/target. A separate staticlib is linked only by the archiver.
+# WHY A SEPARATE CRATE rather than a module in darc-codecs: `unarc` links
+# darc-codecs and IS every SFX module -- it gets prepended to self-extracting
+# archives -- and it cannot open a .7z. Putting the reader there would grow
+# every SFX archive by a parser that can never run in one. (The original note
+# also cited Unarc/makefile and `compile` disagreeing about darc-codecs' feature
+# set through the shared rust/target; that makefile is gone, but the size
+# argument stands on its own.) A separate staticlib is linked only by the
+# archiver.
 [lib]
 name = "darc_sevenz"
 # staticlib so the archiver links the three exported symbols; rlib so the

@@ -114,9 +114,11 @@ jobs:
       if: runner.os == 'Linux'
       run: |
         # The archiver is Rust now. compile-c is what is left of ./compile:
-        # it generates common.mak (which every Compression/*/makefile and
-        # Unarc/makefile include and which is NOT committed) and compiles the
-        # codecs, so a C-side break still fails this job.
+        # it generates common.mak (which every Compression/*/makefile includes
+        # and which is NOT committed) and compiles the codecs, so a C-side break
+        # still fails this job. NOTE: since Unarc/ was deleted nothing LINKS
+        # those objects -- this compiles the difftest oracles' sources and no
+        # more, and goes when Compression/*.cpp does.
         cargo build --release --manifest-path rust/Cargo.toml -p darc-arc --bin darc
         chmod +x compile-c
         ./compile-c
@@ -258,20 +260,31 @@ jobs:
     # compile-mhs-win64 built the Haskell against mingw. With the archiver in
     # Rust the cross-build is just a target flag, and the FREEARC_WIN C path it
     # used to fight is no longer in the archiver at all.
+    # darc-unarc is built here too, and that is not a convenience. It is the
+    # Windows SFX MODULE: `unarc.cpp` used to supply arc.sfx via `make windows`,
+    # and with the C++ deleted this cross-build is the only thing that produces
+    # a Windows stub at all. Unbuilt, `darc a -sfx` would have nothing to
+    # prepend on Windows and nobody would find out here.
     - name: Build (Windows cross)
       run: |
         cargo build --release --manifest-path rust/Cargo.toml \
           --target x86_64-pc-windows-gnu -p darc-arc --bin darc
+        cargo build --release --manifest-path rust/Cargo.toml \
+          --target x86_64-pc-windows-gnu -p darc-unarc
         mkdir -p Tests
-        cp rust/target/x86_64-pc-windows-gnu/release/darc.exe Tests/darc-win64.exe
+        cp rust/target/x86_64-pc-windows-gnu/release/darc.exe  Tests/darc-win64.exe
+        cp rust/target/x86_64-pc-windows-gnu/release/unarc.exe Tests/unarc-win64.exe
     - name: Verify binary
       run: |
         test -s Tests/darc-win64.exe || { echo "::error::no Tests/darc-win64.exe"; exit 1; }
+        test -s Tests/unarc-win64.exe || { echo "::error::no Tests/unarc-win64.exe"; exit 1; }
         # The MZ signature used to be checked inside compile-mhs-win64; with
         # that script gone it has to be checked here or not at all.
-        head -c 2 Tests/darc-win64.exe | grep -q '^MZ' || {
-          echo "::error::Tests/darc-win64.exe is not a PE image"; exit 1; }
-        echo "binary verified: $(wc -c < Tests/darc-win64.exe) bytes"
+        for f in Tests/darc-win64.exe Tests/unarc-win64.exe; do
+          head -c 2 "$f" | grep -q '^MZ' || {
+            echo "::error::$f is not a PE image"; exit 1; }
+          echo "binary verified: $f, $(wc -c < "$f") bytes"
+        done
     # A PE header only proves the toolchain was wired up. The first working
     # cross-build produced a valid image that printed its help and then failed
     # every archive operation, so run the thing.
@@ -1031,10 +1044,9 @@ jobs:
           # golden needs no reference and runs in its own job. cli-check takes
           # TWO binaries, so it is invoked separately below.
           #
-          # arc-sfx-check needs Unarc/arc.linux.sfx, which is gitignored
-          # (a build output) and takes `./compile-c` then `make -C Unarc linux`
-          # to produce. It runs in the `unarc-sfx` job instead, which already
-          # builds exactly those artifacts -- excluded HERE, gated THERE.
+          # arc-sfx-check prepends an SFX module, which is the darc-unarc binary.
+          # It runs in the `unarc-sfx` job instead, which builds it -- excluded
+          # HERE, gated THERE.
           case "$n" in arc-golden-check|arc-cli-check|arc-sfx-check) continue ;; esac
           echo "::group::$n"
           if bash "$h" "$R"; then pass=$((pass+1)); echo "PASS $n"
@@ -1406,194 +1418,44 @@ jobs:
       run: |
         sudo apt-get update
         sudo apt-get install -y libncurses-dev
-    # The archiver, because the round-trip needs something to write archives
-    # with -- and compile-c, which is what still produces common.mak. That file
-    # is generated rather than committed, and Unarc/makefile begins by including
-    # it, so without this step `make -C Unarc` fails before it compiles a line.
-    - name: Build the archiver and the C side
+    # No `./compile-c` and no `make` any more. Unarc/ is deleted: the extractor
+    # and every SFX module are one cargo binary, so this job builds the archiver
+    # (to write archives with) and darc-unarc (to read them back) and nothing
+    # else. `common.mak` had no consumer left once Unarc/makefile went.
+    - name: Build the archiver and the extractor
       run: |
-        chmod +x compile-c Tests/*.sh
+        chmod +x Tests/*.sh rust/difftest/*.sh
         cargo build --release --manifest-path rust/Cargo.toml -p darc-arc --bin darc
-        test -x rust/target/release/darc || {
-          echo "::error::cargo produced no rust/target/release/darc"; exit 1; }
-        ./compile-c > /tmp/build-c.log 2>&1 || { tail -30 /tmp/build-c.log; exit 1; }
-        test -f common.mak || { echo "::error::compile-c produced no common.mak"; exit 1; }
-
-    # `linux` installs the Rust extractor as both `unarc` and `arc.linux.sfx`;
-    # `oracle` builds the C++ one under `-c` names, unshipped, purely so the
-    # migration gate below still has a second implementation to differ against.
-    - name: Build the Rust extractor and the C oracle
-      run: |
-        mkdir -p /tmp/out/FreeArc-unarc
-        make -C Unarc linux  > /tmp/build-unarc.log 2>&1 || { tail -40 /tmp/build-unarc.log; exit 1; }
-        make -C Unarc oracle > /tmp/build-oracle.log 2>&1 || { tail -40 /tmp/build-oracle.log; exit 1; }
-        for f in Unarc/unarc Unarc/arc.linux.sfx Unarc/unarc-c Unarc/arc-c.linux.sfx; do
-          test -x "$f" || { echo "::error::Unarc build produced no $f"; exit 1; }
+        cargo build --release --manifest-path rust/Cargo.toml -p darc-unarc
+        for f in rust/target/release/darc rust/target/release/unarc; do
+          test -x "$f" || { echo "::error::cargo produced no $f"; exit 1; }
         done
-        # The two must not be the same file. `linux` copies the Rust binary over
-        # names the C build used to write, so a makefile edit that left a stale
-        # C `unarc` in place -- or that pointed `oracle` at the copy -- would
-        # give unarc-check.sh the SAME binary on both sides and it would pass
-        # 9/9 having compared nothing.
-        cmp -s Unarc/unarc Unarc/unarc-c && {
-          echo "::error::Unarc/unarc and Unarc/unarc-c are identical; the C oracle was not built"
-          exit 1; }
-        # A DARC_RUST build must actually contain the Rust codecs.
-        #
-        # This is asked of the ORACLE, which is the only one it says anything
-        # about: the C links libdarc_codecs.a for its decoders, and the question
-        # is whether that link happened. Against the Rust binary the same check
-        # passes for free and proves nothing at all.
-        #
-        # Checked through `strings`, not `nm`: the Unix link flags pass -s, so
-        # these binaries are stripped and nm reports "no symbols" for a
-        # perfectly good build. The first version of this check used nm and
-        # failed the job while the build was fine.
-        #
-        # The marker is the source paths Rust embeds for panic locations --
-        # roughly 45 of them from darc-codecs alone -- which survive stripping
-        # because they are data, not symbols. Requiring several means one
-        # incidental match cannot carry it.
-        rust_paths=$(strings -a Unarc/unarc-c | grep -c 'darc-codecs/src/' || true)
-        [ "${rust_paths:-0}" -ge 5 ] || {
-          echo "::error::unarc-c contains $rust_paths darc-codecs source markers; the Rust staticlib was not linked in"
-          exit 1; }
-        echo "Rust codecs linked into the oracle: $rust_paths darc-codecs source markers"
-        ls -la Unarc/unarc Unarc/unarc-c Unarc/*.sfx
+        ls -la rust/target/release/darc rust/target/release/unarc
 
-    - name: Round-trip through the C oracle and its SFX module
-      run: Tests/sfx-roundtrip.sh rust/target/release/darc Unarc/unarc-c Unarc/arc-c.linux.sfx
-
-    # The 18th CLI harness, and the only one the `arc-harnesses` job cannot run:
-    # it needs Unarc/arc.linux.sfx, which is gitignored and built by the
-    # steps above. It lives here rather than there so that it is gated at all --
-    # it was the last arc-*-check.sh still running nowhere.
-    - name: Fetch the Haskell oracle
-      run: |
-        chmod +x rust/difftest/*.sh
-        rust/difftest/haskell-reference.sh
-        test -x Tests/arc-ghc
-    - name: arc-sfx-check against the reference
-      run: rust/difftest/arc-sfx-check.sh "$PWD/Tests/arc-ghc"
-
-    # The migration gate for replacing Unarc/'s C++ with the Rust `unarc`. It
-    # needs the C ORACLE the steps above build -- `make -C Unarc oracle`, under
-    # the `-c` names -- because `linux` now installs the Rust binary as
-    # `unarc`. Passing Unarc/unarc here would compare the Rust extractor with
-    # itself and pass 9/9 having tested nothing.
-    - name: The Rust unarc against the C one it replaces
-      run: rust/difftest/unarc-check.sh "$PWD/Unarc/unarc-c"
-
-    # The same round-trip the C stack runs above, with the Rust extractor AND
-    # the Rust binary used as the SFX module. That second role is the one to
-    # gate: `darc a -sfx<module>` prepends the module to the archive, so the
-    # module has to notice at runtime that it is now `[stub][archive]` and
-    # extract itself. Nothing else exercises that path.
+    # The SFX module IS the extractor -- one binary, detected at runtime through
+    # current_exe(). This is the role that used to need arc.linux.sfx from
+    # `make`, and it is the one worth gating: `darc a -sfx<module>` prepends the
+    # module, so the module must notice it is now [stub][archive] and extract
+    # itself. Nothing else exercises that path.
     - name: SFX round-trip on the Rust extractor and stub
       run: |
-        cargo build --release -q --manifest-path rust/Cargo.toml -p darc-unarc
         Tests/sfx-roundtrip.sh \
           "$PWD/rust/target/release/darc" \
           "$PWD/rust/target/release/unarc" \
           "$PWD/rust/target/release/unarc"
 
-  # ── AddressSanitizer on x86-64 ──────────────────────────────────────────────
-  # Added to diagnose a double free that only appeared on this runner. It found
-  # that one and an out-of-bounds read in Dict/phase1 on its first two runs, and
-  # now passes, so it is kept as a real check rather than deleted.
-  #
-  # It is deliberately NOT continue-on-error. That flag was right while the job
-  # was expected to fail, but on a green job it would swallow exactly the
-  # regressions this exists to catch.
-  #
-  # Cost: roughly doubles the Linux CI time. The memory bugs in this codebase
-  # have consistently been invisible at every warning level, produced different
-  # symptoms per platform, and in two cases corrupted the heap silently on
-  # x86-64 while crashing elsewhere -- so the trade is worth it. If the time
-  # becomes a problem, narrow the case list before dropping the job.
-  asan-x86_64:
-    runs-on: ubuntu-latest
-    steps:
-    - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-      with:
-        lfs: false
-    - name: Cache LLVM
-      id: cache-llvm
-      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
-      with:
-        path: ./llvm
-        key: llvm-21.1.8-${{ runner.os }}-${{ runner.arch }}
-    - name: Install LLVM and Clang
-      uses: KyleMayes/install-llvm-action@ebc0426251bc40c7cd31162802432c68818ab8f0 # v2
-      with:
-        version: "21.1.8"
-        # Skip the download when the cache above already restored ./llvm.
-        cached: ${{ steps.cache-llvm.outputs.cache-hit }}
-    - name: Install packages
+    # unarc must agree with `darc` -- same tree, same listing, same exit code.
+    # This replaced a C-vs-Rust comparison that could not survive deleting the
+    # C++; what it gates now is the CLI layer that the C comparison never
+    # reached, `-e` and `-d<path>` included.
+    - name: unarc agrees with darc
+      run: rust/difftest/unarc-check.sh
+
+    # The 18th CLI harness, and the only one the `arc-harnesses` job cannot run:
+    # it prepends an SFX module, which is rust/target/release/unarc, built above.
+    - name: Fetch the Haskell oracle
       run: |
-        sudo apt-get update
-        sudo apt-get install -y libncurses-dev
-    # ASan covers the C++ EXTRACTOR ORACLE, which is the only C left on Linux
-    # that runs a whole archive end to end.
-    #
-    # It used to build the whole tree and drive the C codecs through the Haskell
-    # archiver. The archiver is Rust and reaches the codecs as a crate, so it no
-    # longer executes a line of the C -- pointing ASan at it would sanitize a
-    # binary with nothing to sanitize. The same is now true of the shipped
-    # `unarc`, which is Rust: the sanitizer's remaining target is the C++
-    # extractor `make -C Unarc oracle` builds, and it is still worth having,
-    # because it is C parsing untrusted archive bytes with no surrounding
-    # process to contain a fault. When the Windows GUI SFX is ported and
-    # unarc.cpp goes for good, this job goes with it.
-    - name: Build the C extractor oracle with AddressSanitizer
-      run: |
-        chmod +x compile-c Compression/compile Tests/*.sh
-        cargo build --release --manifest-path rust/Cargo.toml -p darc-arc --bin darc
-        ./compile-c > /tmp/build-c.log 2>&1 || { tail -30 /tmp/build-c.log; exit 1; }
-        mkdir -p /tmp/out/FreeArc-unarc
-        # STRIP_FLAG= keeps the symbols an ASan report needs; EXTRA_LINK_FLAGS
-        # puts -fsanitize=address on the link line, where DEBUG_FLAGS does not
-        # reach.
-        # `oracle`, not `linux`. `linux` installs the Rust extractor now, and a
-        # Rust binary has no C++ for -fsanitize=address to instrument -- the
-        # make flags would be accepted, nothing would be sanitized, and the job
-        # would go green having checked nothing. The C++ extractor is still
-        # built under the `-c` names precisely so this job keeps a target.
-        make -C Unarc oracle \
-          DEBUG_FLAGS="-fsanitize=address -fno-omit-frame-pointer -g" \
-          EXTRA_LINK_FLAGS="-fsanitize=address" \
-          STRIP_FLAG= > /tmp/build-unarc-asan.log 2>&1 \
-          || { tail -40 /tmp/build-unarc-asan.log; exit 1; }
-        test -x Unarc/unarc-c || { echo "::error::no Unarc/unarc-c"; exit 1; }
-        # A build that quietly dropped the sanitizer would pass every step
-        # below without ever instrumenting anything.
-        nm -C Unarc/unarc-c 2>/dev/null | grep -q '__asan' || {
-          echo "::error::Unarc/unarc-c has no __asan symbols -- it was not instrumented"; exit 1; }
-    # detect_leaks=0: this is a hunt for heap corruption, and LeakSanitizer
-    # would otherwise bury the report under leaks inherited from a codebase that
-    # has never been leak-clean.
-    # abort_on_error=1 makes the first report terminate rather than letting a
-    # corrupted process wander on and produce a confusing second failure.
-    - name: Extract every archive under ASan
-      env:
-        ASAN_OPTIONS: detect_leaks=0:abort_on_error=1:print_stacktrace=1
-      run: |
-        Tests/sfx-roundtrip.sh rust/target/release/darc Unarc/unarc-c Unarc/arc-c.linux.sfx
-    # The suite hides per-case output on success, so surface any ASan report
-    # that landed in a per-configuration log even when the case was recorded
-    # as a failure rather than a crash.
-    - name: Surface ASan reports
-      if: always()
-      run: |
-        work="${TMPDIR:-/tmp}/darc-tests-work"
-        found=0
-        for f in "$work"/*.log; do
-          [ -f "$f" ] || continue
-          if grep -q "AddressSanitizer" "$f"; then
-            found=1
-            echo "::group::$(basename "$f")"
-            cat "$f"
-            echo "::endgroup::"
-          fi
-        done
-        [ "$found" = 1 ] || echo "no AddressSanitizer reports found in $work"
+        rust/difftest/haskell-reference.sh
+        test -x Tests/arc-ghc
+    - name: arc-sfx-check against the reference
+      run: rust/difftest/arc-sfx-check.sh "$PWD/Tests/arc-ghc"
