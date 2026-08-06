@@ -6,9 +6,14 @@
 # nothing here produces it.
 #
 # The reason this script still has to exist is `common.mak`. It is GENERATED,
-# not committed -- every makefile under Compression/ and Unarc/makefile begin
-# with `include common.mak`, and until something copies the platform variant
-# into place, `make` in a clean tree fails with no useful message.
+# not committed -- every makefile under Compression/ begins with `include
+# common.mak`, and until something copies the platform variant into place,
+# `make` in a clean tree fails with no useful message.
+#
+# NOTE: since Unarc/ was deleted, NOTHING LINKS what this builds. The archiver
+# and unarc are cargo binaries, and rust/difftest compiles its C oracles from a
+# pinned SHA in git history rather than from this tree. This script survives
+# only so a C-side syntax break is still noticed; it is a deletion candidate.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "$0")" && pwd)"
@@ -21,11 +26,11 @@ esac
 cp "$src" common.mak
 echo "== common.mak <- $src"
 
-# The staticlibs Unarc links, with the drop-in aliases: most C codecs are now
-# thin forwarders into rust/darc-codecs, so the extractor and the archiver get
-# their decoders from the same library. Unarc/makefile has its own `rustlib`
-# target that does this too -- it is repeated here so `./compile-c && make -C
-# Unarc linux` works from a clean tree in either order.
+# The staticlibs with the drop-in aliases. These existed so Unarc/ could link
+# the Rust codecs through the C forwarders; Unarc/ is gone and no linker
+# consumes them now. Kept because rust/check-dropin.sh still asserts the
+# aliases are exported, and because a C forwarder that stopped compiling should
+# fail here rather than silently.
 echo "== Rust staticlibs"
 ( cd rust && cargo build --release -p darc-codecs -p darc-crypto -p darc-sevenz \
     --features darc-codecs/dropin )

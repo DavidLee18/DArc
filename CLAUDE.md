@@ -20,11 +20,19 @@ the commit, never made silently. See `docs/architecture.md`.
 
 **The port is finished: the archiver is Rust, end to end.** Rust ~78,000 lines
 (every codec, the crypto, the `.7z` reader, SREP, and the whole application
-layer); C/C++ ~19,100, none of which the archiver runs — and, since the Linux
-extractor was ported, none of which `unarc` runs either. What is left is the
-**Windows** SFX modules and the FAR plugin, the codec sources they compile,
-`rust/difftest`'s C oracles, and the C++ extractor kept as one of them
-(`make -C Unarc oracle`). No Haskell remains.
+layer). **No C++ is on any shipped path any more**, and none is compiled into
+any shipped binary: `Unarc/` — the extractor, the SFX modules, the GUI and the
+FAR plugin, 8,008 lines — was deleted once `rust/darc-unarc` replaced it. The
+extractor and every SFX module are now one cargo binary, which decides at
+runtime whether an archive is appended to it.
+
+18,445 lines of C/C++ remain and **nothing links them**: `Compression/` 11,935,
+`rust/difftest`'s oracles 4,076, `rust/cryptref` 2,434. Only two of those files
+are load-bearing — `Compression/Compression.h` and `Common.h`, which
+`darc-codecs`/`darc-crypto` `build.rs` read through bindgen. The `.cpp` are
+compiled by `./compile-c` (which now links into nothing) and, separately, by
+the difftest harnesses out of a **pinned SHA in git history**
+(`c-reference.sh`, `5c2c6ce`) rather than the working tree. No Haskell remains.
 
 **The reference the port was gated against is not in the tree.** Every
 `rust/difftest/arc-*-check.sh` compares two binaries and needs a Haskell build
@@ -37,7 +45,17 @@ divergence, 12 refusals. **Read `docs/testing.md` before changing anything that
 touches archive bytes.**
 
 **Every method the reference can write, this can write** -- `Tests/run-tests.sh`
-scores 24/0/0, the same as the reference. `mm`, `tta`, `bsc`, `lz4`, `zstd` and
+round-trips all 24. Its FORMAT column is a different matter: it reports **21
+DRIFT for the port and 0 for the reference**, and that is a harness defect, not
+a port one. `arc.groups` was renamed to `darc.groups` in #129, `Tests/` holds
+only the new name, so `darc` reads a grouping table there and `arc-ghc` does
+not — the two are compared under different configurations, and
+`Tests/fingerprints.txt` was blessed before the rename. Measured: the same
+`darc` writes the baseline's bytes from a directory without `darc.groups` and
+the "drift" bytes from one with it. The three cases that still agree —
+`store`, `nonsolid`, `dict-nonsolid` — are exactly the ones where solid-block
+grouping cannot matter. **Do not `--bless` this away.** `mm`, `tta`, `bsc`,
+`lz4`, `zstd` and
 `lzma2` had no `Method` variant until recently, which made archives using them
 unreadable as well as unwritable; the `-m` VALUE grammar (`-mt`, `-ms`, `-md`,
 `-ma`, `-mc`, `-mm`) was read as method NAMES. Both are fixed and gated, and
@@ -83,9 +101,13 @@ Control blocks are exempt: `writeControlBlock` passes its chain twice.
 
 ```bash
 cargo build --release --manifest-path rust/Cargo.toml -p darc-arc --bin darc
-./compile-c           # the C side: common.mak + the codec objects
-make -C Unarc linux   # unarc and the SFX modules (needs compile-c first)
+cargo build --release --manifest-path rust/Cargo.toml -p darc-unarc
 ```
+
+That is the whole build. `unarc` doubles as the SFX module — `darc a -sfx<path>`
+prepends it and it notices at runtime. `./compile-c` still compiles
+`Compression/`, but nothing links the result; it is not needed to build or test
+the archiver.
 
 Windows is a target flag, not a script:
 `cargo build --release --target x86_64-pc-windows-gnu …`, or
@@ -107,9 +129,11 @@ before adding or changing a corpus.
 
 ### Build gotchas
 
-- **`common.mak` is generated, not committed.** `make -C Unarc` in a clean tree
-  fails until `./compile-c` has run once. That is now the only reason
-  `compile-c` exists.
+- **`compile-c` has no consumer left.** It generated `common.mak` for
+  `Unarc/makefile`, and `Unarc/` is gone. It still compiles `Compression/` into
+  `/tmp/out/`, and nothing links those objects; CI runs it only so that a
+  C-side syntax break is still noticed. Deleting it and `Compression/**/*.cpp`
+  is a real option — keep `Compression.h` and `Common.h`, which bindgen needs.
 - **Object files are shared through `/tmp/out/`, and the makefiles do not
   rebuild when a `-D` changes.** `Compression/compile` is a hand-rolled loop,
   not a dependency graph, so it also misses header changes across directories.
@@ -193,28 +217,32 @@ before adding or changing a corpus.
   `match` must name its arms (`wildcard_enum_match_arm`), workspace-wide,
   tests included. `if let` and `let _` are allowed. See
   `docs/rust-workspace.md`.
-- **The C is no longer on the archiver's path, or on `unarc`'s.**
-  `make -C Unarc linux` compiles no C++: it builds `rust/darc-unarc` and
-  installs that one binary as both `unarc` and `arc.linux.sfx`. What is left of
-  the C++ extractor is reached three ways only — `make windows` (the console
-  and GUI SFX modules and the FAR plugin, none of which any CI job builds), the
-  difftest oracles, and `make -C Unarc oracle`.
-- **`make -C Unarc oracle` is not a build of the product.** It builds the C++
-  extractor as `unarc-c` / `arc-c.linux.sfx`, deliberately under names nothing
-  ships, the way `Tests/arc-ghc` is kept as the Haskell reference. Two things
-  need it and will silently pass without it: `unarc-check.sh`, whose default
-  first argument is `Unarc/unarc-c` — hand it `Unarc/unarc` and it compares the
-  Rust extractor with itself and reports 9 archives, 0 differing — and the
-  `asan-x86_64` job, since `-fsanitize=address` finds nothing to instrument in
-  a Rust binary. CI guards the first with a `cmp -s Unarc/unarc Unarc/unarc-c`
-  that must *fail*, and the second with an `nm | grep __asan`.
-- **DIVERGENCE: the three Linux SFX tiers are one.** `arc-mini.linux.sfx` and
-  `arc-tiny.linux.sfx` existed because each linked a smaller subset of the C
-  decoders; the Rust extractor is a single binary holding every codec, so the
-  tiers could only be byte-identical copies under three names, claiming a size
-  saving that no longer exists. `arc.linux.sfx` is the only Linux module now,
-  and `arc-sfx-check.sh` prepends it instead of `arc-tiny`. `make oracle` still
-  builds the tiered C++ ones. The Windows tiers are untouched.
+- **`Unarc/` is deleted, and with it the only second reader.** `unarc.cpp` +
+  `ArcStructure.h` + `CUI.h` were an independent implementation of the archive
+  format, and it disagreed with the writer: the per-file time field was read as
+  **4 bytes** where `ByteStream` writes a 64-bit `CTime`, so directory flags and
+  CRCs came out of the wrong offset — directories became zero-byte *files* and
+  every CRC failed, while a listing looked perfect because names and sizes are
+  stored *before* the time. `rust/darc-unarc` owns no format knowledge: it reads
+  argv and calls `darc-arc`. The Windows GUI SFX, the installer stub and the FAR
+  plugin went with it; `make windows` had never been run by any CI job.
+- **`unarc` IS the SFX module, on every platform.** No tiers, no separate stub,
+  no `-DFREEARC_SFX` build: it calls `current_exe()` and extracts itself if an
+  archive is appended. `arc-sfx-check.sh` prepends
+  `rust/target/release/unarc`. Windows gets its module from the `windows-cross`
+  job, which builds `-p darc-unarc` — **if that step is ever dropped, `darc
+  a -sfx` has nothing to prepend on Windows and no other job will notice.**
+- **`unarc-check.sh` no longer has a C side to differ against**, so it gates
+  `unarc` against `darc`: same tree, same listing, same exit code, plus `-e` and
+  `-d<path>`, which the C comparison never covered. Since both binaries live in
+  `target/release` and the SFX story copies one of them around, it refuses to
+  run when handed the same file twice — otherwise every comparison in it is
+  trivially true.
+- **There is no AddressSanitizer job any more.** It sanitized the C++ extractor,
+  which was the last C binary on Linux; `-fsanitize=address` finds nothing to
+  instrument in a Rust binary, so keeping it pointed anywhere would have been a
+  green check proving nothing. If C ever returns to a shipped path, it comes
+  back with it.
 
 ## Conventions
 

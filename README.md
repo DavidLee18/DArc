@@ -12,11 +12,11 @@ Archives produced by DArc are largely format-compatible with [DArc86](https://gi
 ## Building
 
 > **Build System Overview:**
-> DArc's archiver is a single Rust binary, `darc`, built with `cargo`. Clang
-> still builds the C/C++ under `Compression/` (C++17), but only `unarc` and the
-> SFX modules link it — the archiver reaches every codec as a Rust crate.
-> There is no Haskell in the build any more; `mhs`, `cpphs` and GHC are all
-> unnecessary.
+> DArc is two Rust binaries built with `cargo`: the archiver `darc` and the
+> extractor `unarc`, which doubles as the SFX module. **Nothing else is
+> required** — no Haskell (`mhs`, `cpphs` and GHC are all unnecessary), and no
+> C++. Clang can still compile `Compression/` for the differential harnesses,
+> but no shipped binary links it.
 
 ### Every platform
 
@@ -42,32 +42,41 @@ cargo build --release --manifest-path rust/Cargo.toml \
 Both targets are listed in `rust-toolchain.toml`, so rustup installs them on
 demand.
 
-### The C side: `unarc` and the SFX modules (optional)
+### `unarc`, the extractor and SFX module
+
+```bash
+cargo build --release --manifest-path rust/Cargo.toml -p darc-unarc
+```
+
+One binary does both jobs. Run as `unarc` it extracts an archive you name; used
+as an SFX module (`darc a -sfx<path-to-unarc> out.arc files…`) it is prepended
+to the archive, and on startup it asks whether an archive is appended to *its
+own executable* and extracts that instead. There is no separate stub and no
+compile-time SFX flag.
+
+`Unarc/` — the C++ extractor, the Windows GUI SFX, the installer stub and the
+FAR Manager plugin — was deleted once this replaced it. Its `ArcStructure.h` was
+a second implementation of the archive format that disagreed with the writer
+about the width of one field, which is the kind of drift a single reader cannot
+have. There is also no longer a tiered `arc-mini` / `arc-tiny`: those linked
+progressively fewer C decoders, and one Rust binary carries every codec, so the
+tiers could only have been identical copies under three names.
+
+### Optional: compiling the C for the harnesses
 
 ```bash
 ./compile-c            # generates common.mak, then builds the codec objects
-make -C Unarc linux    # or `make -C Unarc windows`
 ```
 
-`./compile-c` must run first even on a clean checkout that only wants `unarc`:
-`common.mak` is generated rather than committed, and every makefile under
-`Compression/` and `Unarc/` begins by including it.
-
-This produces `unarc` and the SFX module `arc.linux.sfx` — both copies of the
-Rust extractor, which `make` builds with `cargo`. No C++ is compiled by the
-`linux` target; `make -C Unarc oracle` still builds the C++ extractor, as
-`unarc-c`, for the differential harness and the sanitizer job only.
-
-There used to be three Linux SFX tiers. `arc-mini` and `arc-tiny` linked
-progressively fewer C decoders, so a smaller stub was worth shipping; the Rust
-extractor is one binary carrying every codec, so the tiers could only have been
-identical copies under three names.
+Nothing links these objects. `rust/difftest`'s codec oracles compile their C
+from a pinned commit in git history rather than from the working tree, so this
+is only useful to check that `Compression/` still compiles.
 
 ### Troubleshooting
 
-- **`make` fails immediately with "common.mak: No such file or directory"**:
-  run `./compile-c` once. It is generated from `unix-common.mak` /
-  `win32-common.mak` and is deliberately not committed.
+- **`compile-c` fails with "common.mak: No such file or directory"**: it is
+  generated from `unix-common.mak` / `win32-common.mak` and deliberately not
+  committed.
 - **Stale object files after switching build paths**: the makefiles do not
   rebuild when a `-D` changes, so remove `/tmp/out/` when switching defines.
 - **`cargo` cannot reach crates.io**: the archiver has real dependencies now

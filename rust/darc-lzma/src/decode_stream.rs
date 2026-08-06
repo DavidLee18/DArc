@@ -6,9 +6,9 @@
 //! that module is a **test oracle**. It takes a known output length, keeps the
 //! whole output in one `Vec`, invents zero bytes past the end of its input, and
 //! validates neither the props byte nor match distances. None of that is
-//! survivable here, because every `unarc` and SFX target links the decoder
-//! (`Unarc/makefile:19-20`) and parses attacker-supplied archives standalone with
-//! `-D_NO_EXCEPTIONS`. A panic in this file is a vulnerability, not a bug.
+//! survivable here, because `unarc` links this decoder and IS every SFX module
+//! -- it is prepended to self-extracting archives and parses attacker-supplied
+//! input standalone. A panic in this file is a vulnerability, not a bug.
 //!
 //! # What this module guarantees
 //!

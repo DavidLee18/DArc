@@ -46,11 +46,12 @@ ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 REF="${1:-$ROOT/Tests/arc-ghc}"
 PORT="$ROOT/rust/target/release/darc"
 # Any file will do: this harness only ever PREPENDS the module and measures the
-# result, so what is inside it is irrelevant here -- `arc-tiny` was chosen
-# originally because it was the smallest. The Linux tiers are gone (one Rust
-# binary carries every codec, so mini/tiny could only be identical copies), so
-# this is now the one module `make -C Unarc linux` builds.
-MODULE="$ROOT/Unarc/arc.linux.sfx"
+# result, so what is inside it is irrelevant here -- `arc-tiny.linux.sfx` was
+# chosen originally because it was the smallest of the three C++ tiers. Those
+# are gone with Unarc/; the SFX module is now the darc-unarc binary, which is
+# also what `unarc` is, because it detects at runtime whether it has an archive
+# appended to it.
+MODULE="$ROOT/rust/target/release/unarc"
 
 [ -x "$REF" ] || {
   echo "no reference binary at $REF.
@@ -61,12 +62,14 @@ then pass /tmp/darc-ref/Tests/arc-ghc as $1. For a gate that needs no
 reference at all, use arc-golden-check.sh" >&2
   exit 2
 }
+( cd "$ROOT/rust" && cargo build --release -q -p darc-arc --bin darc -p darc-unarc ) || {
+  echo "cargo build failed" >&2; exit 1; }
+# After the build, not before: the module is a cargo artifact now, so a missing
+# one means the build did not produce it rather than "run make first".
 [ -f "$MODULE" ] || {
-  echo "no SFX module at $MODULE" >&2
+  echo "no SFX module at $MODULE -- cargo built no darc-unarc binary" >&2
   exit 2
 }
-( cd "$ROOT/rust" && cargo build --release -q -p darc-arc --bin darc ) || {
-  echo "cargo build failed" >&2; exit 1; }
 
 W="${TMPDIR:-/tmp}/arc-sfx-check.$$"; mkdir -p "$W"
 trap 'rm -rf "$W"' EXIT

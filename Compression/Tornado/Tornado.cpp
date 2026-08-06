@@ -102,8 +102,9 @@ uint tornado_compressor_outbuf_size (uint buffer, int bytes_to_compress = -1)
 // built (rust/difftest/tornado-encode-check.sh, which compares against a
 // pinned revision of this file rather than the working tree).
 //
-// Unarc never compiled any of it -- Unarc/makefile builds with
-// -DFREEARC_DECOMPRESS_ONLY -- so nothing there changes.
+// Unarc never compiled any of it -- Unarc/makefile built with
+// -DFREEARC_DECOMPRESS_ONLY -- and Unarc/ has since been deleted outright, so
+// there is nothing left for a change here to affect.
 
 
 // The LZ77 decompressor lived here. It is gone too: with the C encoder

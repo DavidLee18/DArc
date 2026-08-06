@@ -13,11 +13,12 @@
 //! `lzma2` is registered as a DArc method but no preset selects it: it is reachable
 //! only if a user types `-mlzma2`. That makes the *encoder* optional and the
 //! decoder mandatory — DArc's standing rule is that a decoder must read every
-//! archive that was ever written, and `Unarc/makefile:32` links `C_LZMA2.o` and
-//! `Lzma2Dec.o` into every full target. Those targets parse hostile archives
-//! standalone, compiled `-D_NO_EXCEPTIONS`, so the same discipline as
-//! `decode_stream.rs` applies here: **a panic in this file is a vulnerability, not
-//! a bug.**
+//! archive that was ever written. That rule used to be enforced by
+//! `Unarc/makefile`, which linked `C_LZMA2.o` into every SFX target; Unarc/ is
+//! gone and `rust/darc-unarc` links this crate directly instead. The exposure
+//! is unchanged and so is the discipline: `unarc` IS every SFX module, it is
+//! prepended to archives and parses hostile input standalone, so **a panic in
+//! this file is a vulnerability, not a bug.**
 //!
 //! Every length, control byte and property byte in an LZMA2 stream comes from the
 //! archive. Accordingly:

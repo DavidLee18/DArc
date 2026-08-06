@@ -48,9 +48,10 @@
 //
 // Two comments kept that code alive and both had stopped being true. The
 // decoder's said Unarc "does not link the Rust crate", so the standalone
-// extractor still needed a C one: Unarc/makefile builds libdarc_codecs.a with
-// the `dropin` feature and links it, and `dropin` is precisely what exports
-// grzip_decompress. The worker pool's said it stayed "for the encoder, which
+// extractor still needed a C one. It did not: Unarc/makefile built
+// libdarc_codecs.a with the `dropin` feature and linked it, and `dropin` is
+// precisely what exports grzip_decompress. (Unarc/ has since been deleted
+// outright -- the extractor is rust/darc-unarc and calls the crate directly.) The worker pool's said it stayed "for the encoder, which
 // still uses them", written in the same edit that deleted that encoder.
 //
 // Byte-identity in both directions is established by
