@@ -145,6 +145,46 @@ for m in -m0 -m1 -m4 -m9; do
   done
 done
 
+# Plain `a` onto an EXISTING archive. The loop above covers -u, -f and --sync
+# there; `a` was only ever run against a fresh name, and that gap hid a real
+# defect for as long as it existed: the port skipped reading the input archive
+# whenever the update type was Add, so `darc a x.arc b.txt` wrote an archive
+# holding b.txt alone and destroyed everything x.arc already had -- the files,
+# the comment, the lock and any SFX stub.
+#
+# Two shapes, because they exercise different arms of `merge`: a name the
+# archive does NOT have (it must be kept alongside), and one it does (the disk
+# copy must win, which is what distinguishes `a` from `f`).
+for m in -m0 -m1 -m4; do
+  for shape in add-new replace-existing; do
+    checked=$((checked + 1))
+    build_tree "$W/src"
+    rm -f "$W/ref.arc" "$W/port.arc"
+    ( cd "$W/src" && "$REF" a --nodates -y "$m" "$W/ref.arc" older.txt same.txt ) >/dev/null 2>&1
+    cp "$W/ref.arc" "$W/port.arc"
+    case "$shape" in
+      add-new)          second=newer.txt ;;
+      # Rewritten first, so the disk copy genuinely differs from the archived
+      # one; otherwise "the disk won" and "nothing happened" look the same.
+      replace-existing) second=same.txt; printf 'rewritten on disk\n' > "$W/src/same.txt" ;;
+    esac
+    ( cd "$W/src" && "$REF"  a --nodates -y "$m" "$W/ref.arc"  "$second" ) >/dev/null 2>&1
+    ( cd "$W/src" && "$PORT" a --nodates -y "$m" "$W/port.arc" "$second" ) >/dev/null 2>&1
+
+    if ! cmp -s "$W/ref.arc" "$W/port.arc"; then
+      echo "  DIFF [$m a $shape]: $(wc -c <"$W/ref.arc") vs $(wc -c <"$W/port.arc") bytes"
+      fail=$((fail + 1))
+    fi
+    # Byte equality would also hold if both sides destroyed the archive the
+    # same way, and the reference does not -- but this harness gates the port,
+    # so say what the archive must CONTAIN rather than only that the two agree.
+    if ! saw 'older.txt' "$PORT" l "$W/port.arc"; then
+      echo "  DIFF [$m a $shape]: the port dropped a file the archive already had"
+      fail=$((fail + 1))
+    fi
+  done
+done
+
 # The delete command. Filespecs match on the BASE NAME by default, so "a.txt"
 # deletes every a.txt at any depth and "*" takes the directories too -- which
 # empties the archive, and an emptied archive is REMOVED rather than written.
