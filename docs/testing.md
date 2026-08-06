@@ -49,6 +49,25 @@ is the exception and is described below. Each `<codec>-check.sh` builds the C or
 and requires identical bytes. The C is taken from git history rather than the
 working tree so the oracle survives the C being deleted and cannot drift.
 
+**Only the REFERENCE side comes from the pin. The substituted side is compiled
+from the WORKING TREE**, and that is what keeps `Compression/` alive after every
+makefile in the repo was deleted. `4x4-check.sh` builds eight wrappers
+(`C_4x4`, `C_Tornado`, `C_REP`, `C_LZP`, `C_Dict`, `C_Delta`,
+`CompressionLibrary`, `Common`) from `$ROOT` with `-DDARC_RUST` over
+`libdarc_codecs.a`, and several shims reach into the tree by relative path —
+`crypto_ccodec.cpp` has `#include "../../Compression/_Encryption/C_Encryption.cpp"`,
+and the BSC, MM, LZ4, PPMD, DisPack, GRZip and LZMA shims do the same.
+
+Two traps follow, and both have produced a wrong "this is dead code" conclusion:
+
+* **Those includes are inside `.cpp` files, not the shell scripts.** Grepping
+  `rust/difftest/*.sh` for `$ROOT/Compression` finds `Common.cpp` and nothing
+  else, which understates the live set by an order of magnitude. Grep the
+  `.cpp` shims for `../../Compression/` too.
+* **`Compression/BSC/libbsc/` is gitignored vendored source** and is not in the
+  tree at all, so `clang -MM` over the BSC shims fails silently and their
+  dependencies never appear in a computed reachability set.
+
 ```bash
 rust/difftest/lzma-decode-check.sh     # exit 0 or the port diverged
 cd rust && cargo nextest run --profile ci   # 696 unit tests

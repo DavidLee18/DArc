@@ -25,6 +25,10 @@ HERE="$(cd "$(dirname "$0")" && pwd)"
 ARC="${1:-$HERE/darc}"
 BLESS="${2:-}"
 CORPUS="$HERE/corpus"
+# Passed explicitly to every fingerprinted create -- see the long note at the
+# create step. Never rely on the beside-the-executable lookup here: the two
+# binaries spell that filename differently.
+GROUPS_FILE="$HERE/darc.groups"
 # Archives are created from inside "$CORPUS" (see the create step), so a
 # relative "$ARC" such as ./arc would resolve against the wrong directory once
 # we cd. Absolutise it here, before the executable check below reports on it.
@@ -56,6 +60,7 @@ WORK="${DARC_TEST_WORK:-${TMPDIR:-/tmp}/darc-tests-work}"
 FP="$HERE/fingerprints.txt"
 
 [ -x "$ARC" ] || { echo "error: archiver not found or not executable: $ARC" >&2; exit 2; }
+[ -f "$GROUPS_FILE" ] || { echo "error: no groups file at $GROUPS_FILE" >&2; exit 2; }
 
 command -v sha256sum >/dev/null && SHA=sha256sum || SHA="shasum -a 256"
 hash_of () { $SHA "$1" | cut -d' ' -f1; }
@@ -336,7 +341,21 @@ while IFS= read -r line; do
   # baseline while leaving the actual defect in place and untested, and it
   # stored no directory entries, so the directory half of the layout was never
   # fingerprinted at all.
-  ( cd "$CORPUS" && "$ARC" a --nodates -r -y $opts "$arc" . ) >"$WORK/$label.create.log" 2>&1
+  #
+  #   --groups=     the THIRD thing that makes these bytes reproducible, and the
+  #                 one that was missing.
+  #
+  # The groups file decides file ORDER inside a solid block, so it changes the
+  # archive. Both binaries look for it beside their own executable, under
+  # DIFFERENT NAMES -- the reference wants `arc.groups`, the port wants
+  # `darc.groups` (renamed in #129). Both live in Tests/, which holds only the
+  # new name, so the port read a grouping table here and the reference did not,
+  # and this suite reported 21 of 24 cases as FORMAT DRIFT while comparing two
+  # configurations rather than two implementations. Naming the file explicitly
+  # removes the question: measured, both binaries then write byte-identical
+  # archives. The three cases that never drifted -- store, nonsolid,
+  # dict-nonsolid -- are exactly those where solid grouping cannot matter.
+  ( cd "$CORPUS" && "$ARC" a --nodates -r -y "--groups=$GROUPS_FILE" $opts "$arc" . ) >"$WORK/$label.create.log" 2>&1
   st=$?
   if [ $st -ne 0 ]; then
     if gap_message "$WORK/$label.create.log"; then
@@ -421,6 +440,30 @@ while IFS= read -r line; do
     pass=$((pass+1))
   fi
 done <<< "$CASES"
+
+# ── --groups= must actually reach the archiver ───────────────────────────────
+#
+# Every fingerprint above is taken with an explicit --groups=. If that option
+# were ignored -- silently dropped by an option-table edit, say -- the suite
+# would go back to depending on whichever grouping file happens to sit beside
+# the binary, which is precisely the ambiguity this replaced, and every case
+# would still "pass" against a baseline recorded the same broken way.
+#
+# So prove the option changes the bytes: grouping vs no grouping must differ on
+# a solid archive. -m1 -s is solid, which is where file order can matter.
+gsrc="$WORK/groupprobe"; rm -rf "$gsrc"; mkdir -p "$gsrc"
+( cd "$CORPUS" && "$ARC" a --nodates -r -y -m1 -s "--groups=$GROUPS_FILE" "$gsrc/on.arc"  . ) >/dev/null 2>&1
+( cd "$CORPUS" && "$ARC" a --nodates -r -y -m1 -s --groups-        "$gsrc/off.arc" . ) >/dev/null 2>&1
+if [ ! -s "$gsrc/on.arc" ] || [ ! -s "$gsrc/off.arc" ]; then
+  echo "SELF-TEST FAILED: could not build the --groups probe archives" >&2
+  exit 1
+fi
+if cmp -s "$gsrc/on.arc" "$gsrc/off.arc"; then
+  echo "SELF-TEST FAILED: --groups=$GROUPS_FILE and --groups- produced identical" >&2
+  echo "archives, so the option is not reaching the archiver and every" >&2
+  echo "fingerprint above was taken under an unknown grouping." >&2
+  exit 1
+fi
 
 if [ -n "$BLESS" ]; then
   printf '%s\n' "${NEWFP[@]}" > "$FP"

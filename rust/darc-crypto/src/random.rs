@@ -13,8 +13,9 @@
 //! That makes the requirement "cryptographically secure", not "bit-identical to
 //! LibTomCrypt's Fortuna" -- unlike every other primitive in this crate, where
 //! matching the C exactly is the whole job. Fortuna in DArc is itself seeded
-//! from OS entropy via `systemRandomData` in Environment.cpp, so this goes to
-//! the same source with one fewer layer in between.
+//! from OS entropy via `systemRandomData`, which lived in the now-deleted
+//! `Environment.cpp` (read it at `c267621`), so this goes to the same source
+//! with one fewer layer in between.
 
 /// Fill `out` with cryptographically secure random bytes from the OS.
 ///

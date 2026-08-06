@@ -26,13 +26,19 @@ FAR plugin, 8,008 lines — was deleted once `rust/darc-unarc` replaced it. The
 extractor and every SFX module are now one cargo binary, which decides at
 runtime whether an archive is appended to it.
 
-18,445 lines of C/C++ remain and **nothing links them**: `Compression/` 11,935,
-`rust/difftest`'s oracles 4,076, `rust/cryptref` 2,434. Only two of those files
-are load-bearing — `Compression/Compression.h` and `Common.h`, which
-`darc-codecs`/`darc-crypto` `build.rs` read through bindgen. The `.cpp` are
-compiled by `./compile-c` (which now links into nothing) and, separately, by
-the difftest harnesses out of a **pinned SHA in git history**
-(`c-reference.sh`, `5c2c6ce`) rather than the working tree. No Haskell remains.
+**`Compression/` is not dead code, and it is easy to conclude that it is.** No
+binary links it and there is no makefile left, so it looks orphaned. It is not:
+`rust/difftest`'s shims `#include` the working-tree sources **directly** — e.g.
+`crypto_ccodec.cpp` has `#include "../../Compression/_Encryption/C_Encryption.cpp"`
+— and `4x4-check.sh` compiles eight wrappers (`C_4x4`, `C_Tornado`, `C_REP`,
+`C_LZP`, `C_Dict`, `C_Delta`, `CompressionLibrary`, `Common`) from `$ROOT` as
+its **`DARC_RUST` side**, the thing under test. Those includes live inside
+`.cpp` files, so grepping the harness shell scripts finds only `Common.cpp` and
+badly understates it. Separately, the *reference* side of each harness comes
+from a pinned SHA in git history (`c-reference.sh`, `5c2c6ce`), and
+`Compression/BSC/libbsc/` is **gitignored vendored source**, not in the tree at
+all. `Compression.h` and `Common.h` are additionally read by
+`darc-codecs`/`darc-crypto` `build.rs` through bindgen. No Haskell remains.
 
 **The reference the port was gated against is not in the tree.** Every
 `rust/difftest/arc-*-check.sh` compares two binaries and needs a Haskell build
@@ -45,17 +51,21 @@ divergence, 12 refusals. **Read `docs/testing.md` before changing anything that
 touches archive bytes.**
 
 **Every method the reference can write, this can write** -- `Tests/run-tests.sh`
-round-trips all 24. Its FORMAT column is a different matter: it reports **21
-DRIFT for the port and 0 for the reference**, and that is a harness defect, not
-a port one. `arc.groups` was renamed to `darc.groups` in #129, `Tests/` holds
-only the new name, so `darc` reads a grouping table there and `arc-ghc` does
-not — the two are compared under different configurations, and
-`Tests/fingerprints.txt` was blessed before the rename. Measured: the same
-`darc` writes the baseline's bytes from a directory without `darc.groups` and
-the "drift" bytes from one with it. The three cases that still agree —
-`store`, `nonsolid`, `dict-nonsolid` — are exactly the ones where solid-block
-grouping cannot matter. **Do not `--bless` this away.** `mm`, `tta`, `bsc`,
-`lz4`, `zstd` and
+scores **24/0/0 with no format drift**, byte-identical to the reference.
+
+That was not true until the groups file was passed explicitly, and the way it
+failed is worth keeping: both binaries look for a grouping table beside their
+own executable under **different names** — the reference wants `arc.groups`,
+the port `darc.groups` (renamed in #129) — and `Tests/` holds only the new one.
+So the port read a grouping table there and the reference did not, the suite
+reported **21 of 24 as FORMAT DRIFT**, and `fingerprints.txt` had been blessed
+before the rename. It was comparing two configurations, not two
+implementations. `run-tests.sh` now passes `--groups=` to every fingerprinted
+create and self-tests that the option reaches the archiver at all (grouping vs
+`--groups-` must produce different bytes). The baseline is re-blessed **from
+`Tests/arc-ghc`**, so it still records oracle bytes and the port is checked
+against them, rather than the port being allowed to define its own answer.
+`mm`, `tta`, `bsc`, `lz4`, `zstd` and
 `lzma2` had no `Method` variant until recently, which made archives using them
 unreadable as well as unwritable; the `-m` VALUE grammar (`-mt`, `-ms`, `-md`,
 `-ma`, `-mc`, `-mm`) was read as method NAMES. Both are fixed and gated, and
@@ -104,10 +114,10 @@ cargo build --release --manifest-path rust/Cargo.toml -p darc-arc --bin darc
 cargo build --release --manifest-path rust/Cargo.toml -p darc-unarc
 ```
 
-That is the whole build. `unarc` doubles as the SFX module — `darc a -sfx<path>`
-prepends it and it notices at runtime. `./compile-c` still compiles
-`Compression/`, but nothing links the result; it is not needed to build or test
-the archiver.
+That is the whole build — there is no second step and no `make`. `unarc` doubles
+as the SFX module: `darc a -sfx<path>` prepends it and it notices at runtime.
+The C under `Compression/` is compiled only by `rust/difftest`, with the
+harnesses' own flags.
 
 Windows is a target flag, not a script:
 `cargo build --release --target x86_64-pc-windows-gnu …`, or
@@ -129,18 +139,16 @@ before adding or changing a corpus.
 
 ### Build gotchas
 
-- **`compile-c` has no consumer left.** It generated `common.mak` for
-  `Unarc/makefile`, and `Unarc/` is gone. It still compiles `Compression/` into
-  `/tmp/out/`, and nothing links those objects; CI runs it only so that a
-  C-side syntax break is still noticed. Deleting it and `Compression/**/*.cpp`
-  is a real option — keep `Compression.h` and `Common.h`, which bindgen needs.
-- **Object files are shared through `/tmp/out/`, and the makefiles do not
-  rebuild when a `-D` changes.** `Compression/compile` is a hand-rolled loop,
-  not a dependency graph, so it also misses header changes across directories.
-  After editing `Compression/*.h` or switching defines, `rm -rf /tmp/out`. Stale
-  objects here have produced phantom regressions more than once.
+- **There is no `make` in this project any more.** `compile-c`, `compile-win64-c`,
+  `unix-common.mak`, `win32-common.mak`, `Compression/compile` and all 22
+  `Compression/*/makefile` are deleted, along with the `/tmp/out/` shared object
+  directory and the stale-object hazard that came with it. Nothing linked what
+  they produced once `Unarc/` went. The C that still matters is compiled by the
+  difftest harnesses, with their own flags, from their own shims.
 - An OS define and a byte-order define are both mandatory in the C —
-  `Compression/Common.h` raises `#error` without them.
+  `Compression/Common.h` raises `#error` without them. The harnesses pass them;
+  an editor or clangd will show `"You must define OS!"` on any `Compression/`
+  file opened bare, and that is expected, not a break.
 
 ## What will bite you
 

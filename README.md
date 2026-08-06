@@ -62,23 +62,19 @@ have. There is also no longer a tiered `arc-mini` / `arc-tiny`: those linked
 progressively fewer C decoders, and one Rust binary carries every codec, so the
 tiers could only have been identical copies under three names.
 
-### Optional: compiling the C for the harnesses
+### The C under `Compression/`
 
-```bash
-./compile-c            # generates common.mak, then builds the codec objects
-```
-
-Nothing links these objects. `rust/difftest`'s codec oracles compile their C
-from a pinned commit in git history rather than from the working tree, so this
-is only useful to check that `Compression/` still compiles.
+There is nothing to run. No binary links it and the makefiles are gone; it is
+compiled only by the differential harnesses under `rust/difftest`, each with
+its own flags. Those compile the *reference* side from a pinned commit in git
+history and the *substituted* side from this working tree, which is what makes
+them a test of the current C wrappers rather than of a snapshot.
 
 ### Troubleshooting
 
-- **`compile-c` fails with "common.mak: No such file or directory"**: it is
-  generated from `unix-common.mak` / `win32-common.mak` and deliberately not
-  committed.
-- **Stale object files after switching build paths**: the makefiles do not
-  rebuild when a `-D` changes, so remove `/tmp/out/` when switching defines.
+- **An editor reports `"You must define OS!"` in `Compression/`**: expected.
+  `Common.h` requires an OS and a byte-order define; the harnesses pass them,
+  a bare clangd invocation does not.
 - **`cargo` cannot reach crates.io**: the archiver has real dependencies now
   (rayon, and ureq/rustls for `--original`). `--no-default-features` drops the
   HTTP half but not the rest.

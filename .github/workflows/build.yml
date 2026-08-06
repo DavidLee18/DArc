@@ -113,15 +113,13 @@ jobs:
     - name: Build (Linux)
       if: runner.os == 'Linux'
       run: |
-        # The archiver is Rust now. compile-c is what is left of ./compile:
-        # it generates common.mak (which every Compression/*/makefile includes
-        # and which is NOT committed) and compiles the codecs, so a C-side break
-        # still fails this job. NOTE: since Unarc/ was deleted nothing LINKS
-        # those objects -- this compiles the difftest oracles' sources and no
-        # more, and goes when Compression/*.cpp does.
+        # No C step here any more. compile-c and every makefile were deleted
+        # with the C they built: nothing links Compression/ now. The eight
+        # wrappers still under test -- C_4x4, C_Tornado, C_REP, C_LZP, C_Dict,
+        # C_Delta, CompressionLibrary, Common -- are compiled from the WORKING
+        # TREE by 4x4-check.sh and crypto-check.sh, so a syntax break in them
+        # fails the rust-codecs jobs rather than this one.
         cargo build --release --manifest-path rust/Cargo.toml -p darc-arc --bin darc
-        chmod +x compile-c
-        ./compile-c
 
     # A build step that cannot fail is not a check. Assert the artifact exists
     # and actually runs before anything downstream is allowed to claim success.
@@ -187,8 +185,6 @@ jobs:
       if: runner.os == 'macOS'
       run: |
         cargo build --release --manifest-path rust/Cargo.toml -p darc-arc --bin darc
-        chmod +x compile-c
-        ./compile-c
 
     - name: Verify binary (macOS)
       if: runner.os == 'macOS'
