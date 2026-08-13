@@ -74,33 +74,10 @@ jobs:
     # that ships in every binary. The version and the cross targets come from
     # rust-toolchain.toml so there is a single place to change them.
     - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
-    - name: Cache cargo and the pinned toolchain
-      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
-      with:
-        path: |
-          ~/.cargo/registry/index
-          ~/.cargo/registry/cache
-          ~/.cargo/git/db
-          ~/.rustup/toolchains
-          rust/target
-        key: cargo-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust-toolchain.toml', 'rust/Cargo.lock') }}
-        restore-keys: |
-          cargo-${{ runner.os }}-${{ runner.arch }}-
+    - uses: ./.github/actions/cargo-cache
     # ── Linux steps ────────────────────────────────────────────────────────────
-    - name: Cache LLVM
+    - uses: ./.github/actions/llvm
       if: runner.os == 'Linux'
-      id: cache-llvm
-      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
-      with:
-        path: ./llvm
-        key: llvm-21.1.8-${{ runner.os }}-${{ runner.arch }}
-    - name: Install LLVM and Clang
-      if: runner.os == 'Linux'
-      uses: KyleMayes/install-llvm-action@ebc0426251bc40c7cd31162802432c68818ab8f0 # v2
-      with:
-        version: "21.1.8"
-        # Skip the download when the cache above already restored ./llvm.
-        cached: ${{ steps.cache-llvm.outputs.cache-hit }}
     - name: Install packages (Linux)
       if: runner.os == 'Linux'
       run: |
@@ -241,18 +218,7 @@ jobs:
     # The Rust codecs are built by default now, so this must precede the first
     # build, not follow it. Targets come from rust-toolchain.toml.
     - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
-    - name: Cache cargo and the pinned toolchain
-      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
-      with:
-        path: |
-          ~/.cargo/registry/index
-          ~/.cargo/registry/cache
-          ~/.cargo/git/db
-          ~/.rustup/toolchains
-          rust/target
-        key: cargo-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust-toolchain.toml', 'rust/Cargo.lock') }}
-        restore-keys: |
-          cargo-${{ runner.os }}-${{ runner.arch }}-
+    - uses: ./.github/actions/cargo-cache
     # compile-mhs-win64 built the Haskell against mingw. With the archiver in
     # Rust the cross-build is just a target flag, and the FREEARC_WIN C path it
     # used to fight is no longer in the archiver at all.
@@ -326,75 +292,26 @@ jobs:
     - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
       with:
         lfs: false
-    - name: Install llvm-mingw
-      run: |
-        set -euo pipefail
-        # Pinned with a checksum for the same reason MicroHs is: the compiler is
-        # part of what produces the shipped binary, so it should not drift
-        # underneath us between runs.
-        ver="20260616"
-        tarball="llvm-mingw-$ver-ucrt-ubuntu-22.04-x86_64.tar.xz"
-        sha256="534b92e067b22a6b4441f48ae9240a3341b17825d04d577eab0cf85c44b4deda"
-        curl -fsSL "https://github.com/mstorsjo/llvm-mingw/releases/download/$ver/$tarball" -o /tmp/"$tarball"
-        echo "$sha256  /tmp/$tarball" | sha256sum -c -
-        tar -xJf /tmp/"$tarball" -C /opt
-        echo "/opt/llvm-mingw-$ver-ucrt-ubuntu-22.04-x86_64/bin" >> "$GITHUB_PATH"
-    # bindgen parses DArc's headers as C++, so it reads llvm-mingw's libc++ --
-    # whose headers use __builtin_clzg (Clang 19+). llvm-mingw ships the clang
-    # driver but no libclang.so, so bindgen otherwise falls back to whatever
-    # older libclang is on the box and dies on that builtin. Same pinned LLVM
-    # the Linux build job uses.
-    - name: Cache LLVM
-      id: cache-llvm
-      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+    - uses: ./.github/actions/llvm-mingw
+    # libclang: bindgen parses DArc's headers as C++, so it reads llvm-mingw's
+    # libc++, whose headers use a Clang 19+ builtin. The action's own comment
+    # carries the full reasoning.
+    - uses: ./.github/actions/llvm
       with:
-        path: ./llvm
-        key: llvm-21.1.8-${{ runner.os }}-${{ runner.arch }}
-    - name: Install LLVM and Clang (for bindgen)
-      uses: KyleMayes/install-llvm-action@ebc0426251bc40c7cd31162802432c68818ab8f0 # v2
-      with:
-        version: "21.1.8"
-        # Skip the download when the cache above already restored ./llvm.
-        cached: ${{ steps.cache-llvm.outputs.cache-hit }}
-    # Exported for EVERY later step, not just one: each cargo build in this job
-    # runs bindgen, and attaching this to a single step is exactly how the first
-    # build ended up on a stale libclang.
-    - name: Point bindgen at the pinned libclang
-      run: |
-        test -d "$LLVM_PATH/lib" || { echo "::error::no $LLVM_PATH/lib"; exit 1; }
-        echo "LIBCLANG_PATH=$LLVM_PATH/lib" >> "$GITHUB_ENV"
+        libclang: 'true'
     # The Rust codecs are built by default now, so this must precede the first
     # build, not follow it. Targets come from rust-toolchain.toml.
     - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
-    - name: Cache cargo and the pinned toolchain
-      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
-      with:
-        path: |
-          ~/.cargo/registry/index
-          ~/.cargo/registry/cache
-          ~/.cargo/git/db
-          ~/.rustup/toolchains
-          rust/target
-        key: cargo-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust-toolchain.toml', 'rust/Cargo.lock') }}
-        restore-keys: |
-          cargo-${{ runner.os }}-${{ runner.arch }}-
-    # crt-static AND -static: the first run used -static alone, which removed
-    # the libc++ and libwinpthread imports but left libunwind.dll, because
-    # rustc adds its own -lunwind for the gnullvm targets and that resolved to
-    # the import library. crt-static is what tells rustc itself to link the
-    # runtime statically rather than merely asking the driver to.
-    #
-    # -static, because llvm-mingw links libc++, libunwind and libwinpthread as
-    # DLLs by default and only the .exe is uploaded below. Without it the
-    # binary reaches the ARM64 runner and dies before main with "cannot open
-    # shared object file" -- which is what it did the first time this job got
-    # far enough to run at all. The x86_64 mingw target does not need this:
-    # Rust already passes -static-libgcc there and that toolchain has no
-    # libc++ dependency.
+    - uses: ./.github/actions/cargo-cache
+    # The static-link flags this job used to set inline now live in
+    # /.cargo/config.toml, scoped to the aarch64-pc-windows-gnullvm target, with
+    # the reasoning. They were a RUSTFLAGS line here and a missing RUSTFLAGS
+    # line in release.yml, which is how v3.0.0 shipped a binary that died in the
+    # loader. A config entry cannot be present in one workflow and absent from
+    # another. Do not set RUSTFLAGS here: it overrides that config wholesale.
     - name: Build (Windows ARM64 cross)
       run: |
-        RUSTFLAGS="-C target-feature=+crt-static -C link-arg=-static" \
-          cargo build --release --manifest-path rust/Cargo.toml \
+        cargo build --release --manifest-path rust/Cargo.toml \
           --target aarch64-pc-windows-gnullvm -p darc-arc --bin darc
         mkdir -p Tests
         cp rust/target/aarch64-pc-windows-gnullvm/release/darc.exe Tests/darc-win-arm64.exe
@@ -503,17 +420,7 @@ jobs:
     - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
       with:
         lfs: false
-    - name: Cache LLVM
-      id: cache-llvm
-      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
-      with:
-        path: ./llvm
-        key: llvm-21.1.8-${{ runner.os }}-${{ runner.arch }}
-    - uses: KyleMayes/install-llvm-action@ebc0426251bc40c7cd31162802432c68818ab8f0 # v2
-      with:
-        version: "21.1.8"
-        # Skip the download when the cache above already restored ./llvm.
-        cached: ${{ steps.cache-llvm.outputs.cache-hit }}
+    - uses: ./.github/actions/llvm
     - name: Install packages
       run: |
         sudo apt-get update
@@ -786,18 +693,7 @@ jobs:
       with:
         lfs: false
     - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
-    - name: Cache LLVM
-      id: cache-llvm
-      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
-      with:
-        path: ./llvm
-        key: llvm-21.1.8-${{ runner.os }}-${{ runner.arch }}
-    - name: Install LLVM and Clang
-      uses: KyleMayes/install-llvm-action@ebc0426251bc40c7cd31162802432c68818ab8f0 # v2
-      with:
-        version: "21.1.8"
-        # Skip the download when the cache above already restored ./llvm.
-        cached: ${{ steps.cache-llvm.outputs.cache-hit }}
+    - uses: ./.github/actions/llvm
     - name: Install packages
       run: |
         sudo apt-get update
@@ -817,18 +713,7 @@ jobs:
       with:
         lfs: false
     - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
-    - name: Cache LLVM
-      id: cache-llvm
-      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
-      with:
-        path: ./llvm
-        key: llvm-21.1.8-${{ runner.os }}-${{ runner.arch }}
-    - name: Install LLVM and Clang
-      uses: KyleMayes/install-llvm-action@ebc0426251bc40c7cd31162802432c68818ab8f0 # v2
-      with:
-        version: "21.1.8"
-        # Skip the download when the cache above already restored ./llvm.
-        cached: ${{ steps.cache-llvm.outputs.cache-hit }}
+    - uses: ./.github/actions/llvm
     - name: Install packages
       run: |
         sudo apt-get update
@@ -862,18 +747,7 @@ jobs:
       with:
         lfs: false
     - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
-    - name: Cache LLVM
-      id: cache-llvm
-      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
-      with:
-        path: ./llvm
-        key: llvm-21.1.8-${{ runner.os }}-${{ runner.arch }}
-    - name: Install LLVM and Clang
-      uses: KyleMayes/install-llvm-action@ebc0426251bc40c7cd31162802432c68818ab8f0 # v2
-      with:
-        version: "21.1.8"
-        # Skip the download when the cache above already restored ./llvm.
-        cached: ${{ steps.cache-llvm.outputs.cache-hit }}
+    - uses: ./.github/actions/llvm
     - name: Install packages
       run: |
         sudo apt-get update
@@ -987,17 +861,7 @@ jobs:
       with:
         lfs: false
     - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
-    - name: Cache LLVM
-      id: cache-llvm
-      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
-      with:
-        path: ./llvm
-        key: llvm-21.1.8-${{ runner.os }}-${{ runner.arch }}
-    - name: Install LLVM and Clang
-      uses: KyleMayes/install-llvm-action@ebc0426251bc40c7cd31162802432c68818ab8f0 # v2
-      with:
-        version: "21.1.8"
-        cached: ${{ steps.cache-llvm.outputs.cache-hit }}
+    - uses: ./.github/actions/llvm
     - name: Install packages
       run: |
         sudo apt-get update
@@ -1075,18 +939,7 @@ jobs:
       with:
         lfs: false
     - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
-    - name: Cache LLVM
-      id: cache-llvm
-      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
-      with:
-        path: ./llvm
-        key: llvm-21.1.8-${{ runner.os }}-${{ runner.arch }}
-    - name: Install LLVM and Clang
-      uses: KyleMayes/install-llvm-action@ebc0426251bc40c7cd31162802432c68818ab8f0 # v2
-      with:
-        version: "21.1.8"
-        # Skip the download when the cache above already restored ./llvm.
-        cached: ${{ steps.cache-llvm.outputs.cache-hit }}
+    - uses: ./.github/actions/llvm
     - name: Install packages
       run: |
         sudo apt-get update
@@ -1131,18 +984,7 @@ jobs:
       with:
         lfs: false
     - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
-    - name: Cache LLVM
-      id: cache-llvm
-      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
-      with:
-        path: ./llvm
-        key: llvm-21.1.8-${{ runner.os }}-${{ runner.arch }}
-    - name: Install LLVM and Clang
-      uses: KyleMayes/install-llvm-action@ebc0426251bc40c7cd31162802432c68818ab8f0 # v2
-      with:
-        version: "21.1.8"
-        # Skip the download when the cache above already restored ./llvm.
-        cached: ${{ steps.cache-llvm.outputs.cache-hit }}
+    - uses: ./.github/actions/llvm
     - name: Install packages
       run: |
         sudo apt-get update
@@ -1200,18 +1042,7 @@ jobs:
       with:
         lfs: false
     - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
-    - name: Cache LLVM
-      id: cache-llvm
-      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
-      with:
-        path: ./llvm
-        key: llvm-21.1.8-${{ runner.os }}-${{ runner.arch }}
-    - name: Install LLVM and Clang
-      uses: KyleMayes/install-llvm-action@ebc0426251bc40c7cd31162802432c68818ab8f0 # v2
-      with:
-        version: "21.1.8"
-        # Skip the download when the cache above already restored ./llvm.
-        cached: ${{ steps.cache-llvm.outputs.cache-hit }}
+    - uses: ./.github/actions/llvm
     - name: Install packages
       run: |
         sudo apt-get update
@@ -1255,18 +1086,7 @@ jobs:
       with:
         lfs: false
     - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
-    - name: Cache LLVM
-      id: cache-llvm
-      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
-      with:
-        path: ./llvm
-        key: llvm-21.1.8-${{ runner.os }}-${{ runner.arch }}
-    - name: Install LLVM and Clang
-      uses: KyleMayes/install-llvm-action@ebc0426251bc40c7cd31162802432c68818ab8f0 # v2
-      with:
-        version: "21.1.8"
-        # Skip the download when the cache above already restored ./llvm.
-        cached: ${{ steps.cache-llvm.outputs.cache-hit }}
+    - uses: ./.github/actions/llvm
     - name: Install packages
       run: |
         sudo apt-get update
@@ -1319,18 +1139,7 @@ jobs:
       with:
         lfs: false
     - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
-    - name: Cache LLVM
-      id: cache-llvm
-      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
-      with:
-        path: ./llvm
-        key: llvm-21.1.8-${{ runner.os }}-${{ runner.arch }}
-    - name: Install LLVM and Clang
-      uses: KyleMayes/install-llvm-action@ebc0426251bc40c7cd31162802432c68818ab8f0 # v2
-      with:
-        version: "21.1.8"
-        # Skip the download when the cache above already restored ./llvm.
-        cached: ${{ steps.cache-llvm.outputs.cache-hit }}
+    - uses: ./.github/actions/llvm
     - name: Install packages
       run: |
         sudo apt-get update
@@ -1360,18 +1169,7 @@ jobs:
       with:
         lfs: false
     - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
-    - name: Cache LLVM
-      id: cache-llvm
-      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
-      with:
-        path: ./llvm
-        key: llvm-21.1.8-${{ runner.os }}-${{ runner.arch }}
-    - name: Install LLVM and Clang
-      uses: KyleMayes/install-llvm-action@ebc0426251bc40c7cd31162802432c68818ab8f0 # v2
-      with:
-        version: "21.1.8"
-        # Skip the download when the cache above already restored ./llvm.
-        cached: ${{ steps.cache-llvm.outputs.cache-hit }}
+    - uses: ./.github/actions/llvm
     - name: Install packages
       run: |
         sudo apt-get update
@@ -1394,30 +1192,8 @@ jobs:
       with:
         lfs: false
     - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
-    - name: Cache cargo and the pinned toolchain
-      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
-      with:
-        path: |
-          ~/.cargo/registry/index
-          ~/.cargo/registry/cache
-          ~/.cargo/git/db
-          ~/.rustup/toolchains
-          rust/target
-        key: cargo-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust-toolchain.toml', 'rust/Cargo.lock') }}
-        restore-keys: |
-          cargo-${{ runner.os }}-${{ runner.arch }}-
-    - name: Cache LLVM
-      id: cache-llvm
-      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
-      with:
-        path: ./llvm
-        key: llvm-21.1.8-${{ runner.os }}-${{ runner.arch }}
-    - name: Install LLVM and Clang
-      uses: KyleMayes/install-llvm-action@ebc0426251bc40c7cd31162802432c68818ab8f0 # v2
-      with:
-        version: "21.1.8"
-        # Skip the download when the cache above already restored ./llvm.
-        cached: ${{ steps.cache-llvm.outputs.cache-hit }}
+    - uses: ./.github/actions/cargo-cache
+    - uses: ./.github/actions/llvm
     - name: Install packages
       run: |
         sudo apt-get update

@@ -4,11 +4,17 @@ name: Release
 # pushed tag. Deliberately separate from Build CI: that runs on every push and
 # should stay fast, while this only runs when a version is cut.
 #
-# The install steps below are copied from build.yml rather than shared, and the
-# toolchain pin must be kept identical to it. A release built against a
-# different compiler revision than CI validates would be a silent difference
-# between what is tested and what is shipped. That pin is rust-toolchain.toml
-# now; the MicroHs one went with the Haskell layer.
+# The toolchain setup is SHARED with build.yml, through the composite actions in
+# .github/actions/. It used to be copied, and the copy drifted: three faults
+# stopped v3.0.0 being cut, each hidden behind the last, and every one of them
+# was a step build.yml had and this file did not. Nothing could catch that,
+# because this workflow only runs on a tag push while build.yml runs on every
+# commit -- so the copies were compared roughly once a year.
+#
+# Do not reintroduce an inline copy of a setup step. If a step is needed here
+# and in build.yml, it belongs in .github/actions/, where build.yml exercises it
+# on every push. The Rust pin is rust-toolchain.toml; the ARM64 link flags are
+# /.cargo/config.toml.
 #
 # The two Windows targets use different toolchains -- Debian's mingw-w64 (GCC)
 # for amd64, llvm-mingw (Clang) for arm64, because Debian packages x86_64 and
@@ -54,11 +60,34 @@ jobs:
         lfs: false
         ref: ${{ github.event.inputs.tag || github.ref }}
 
-    - name: Install LLVM and Clang
+    # Fail in seconds rather than after a 25-minute matrix: the tag being built
+    # must be the version the tree declares. Through v1, v2 and the whole port
+    # the crates said 0.1.0 while the tags said otherwise, and nothing noticed
+    # because nothing compared them -- CARGO_PKG_VERSION is user-visible (it is
+    # the HTTP User-Agent for `--original=<url>`), so every release so far
+    # identified itself to remote servers as a pre-release.
+    - name: Tag must match the crate version
+      run: |
+        set -euo pipefail
+        if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+          ver="${{ github.event.inputs.tag }}"
+        else
+          ver="$GITHUB_REF_NAME"
+        fi
+        ver="${ver#v}"
+        # The one place the version is written; every member inherits it.
+        crate=$(sed -n 's/^version = "\(.*\)"$/\1/p' rust/Cargo.toml | head -1)
+        [ -n "$crate" ] || { echo "::error::no version in rust/Cargo.toml"; exit 1; }
+        echo "tag=$ver  crate=$crate"
+        [ "$ver" = "$crate" ] || {
+          echo "::error::tag $ver does not match rust/Cargo.toml version $crate"
+          exit 1; }
+
+    # This one had no Cache LLVM step beside it, unlike build.yml's -- a fourth
+    # drift between the two copies, costing only time rather than correctness.
+    # The action carries the cache, so it is fixed by using it.
+    - uses: ./.github/actions/llvm
       if: runner.os == 'Linux'
-      uses: KyleMayes/install-llvm-action@ebc0426251bc40c7cd31162802432c68818ab8f0 # v2
-      with:
-        version: "21.1.8"
 
     - name: Install packages (Linux)
       if: runner.os == 'Linux'
@@ -74,18 +103,7 @@ jobs:
     # that ships in every binary. The version and the cross targets come from
     # rust-toolchain.toml so there is a single place to change them.
     - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
-    - name: Cache cargo and the pinned toolchain
-      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
-      with:
-        path: |
-          ~/.cargo/registry/index
-          ~/.cargo/registry/cache
-          ~/.cargo/git/db
-          ~/.rustup/toolchains
-          rust/target
-        key: cargo-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust-toolchain.toml', 'rust/Cargo.lock') }}
-        restore-keys: |
-          cargo-${{ runner.os }}-${{ runner.arch }}-
+    - uses: ./.github/actions/cargo-cache
     # unarc is built here for the same reason darc.groups is copied below: it is
     # not an optional extra. It is the SFX module, so a release without it
     # cannot answer `darc a -sfx<module>` with anything -- there is nothing on
@@ -173,90 +191,32 @@ jobs:
         sudo apt-get update
         sudo apt-get install -y --no-install-recommends mingw-w64 mingw-w64-tools wine64 wine
 
-    - name: Install llvm-mingw
+    # These two were the drift that stopped v3.0.0: build.yml's ARM64 job has
+    # had them since c7a12c2 and this workflow never did, so the first release
+    # run built four platforms and failed the fifth on a commit whose Build CI
+    # was green. They are now the same definition, not a copy of it, and
+    # build.yml exercises that definition on every push -- which is the only
+    # thing that can test a workflow that itself runs only on a tag.
+    - uses: ./.github/actions/llvm-mingw
       if: matrix.arch == 'aarch64'
-      run: |
-        set -euo pipefail
-        sudo apt-get update
-        # Pinned with a checksum for the same reason the Rust toolchain is: the compiler is
-        # part of what produces the shipped binary.
-        ver="20260616"
-        tarball="llvm-mingw-$ver-ucrt-ubuntu-22.04-x86_64.tar.xz"
-        sha256="534b92e067b22a6b4441f48ae9240a3341b17825d04d577eab0cf85c44b4deda"
-        curl -fsSL "https://github.com/mstorsjo/llvm-mingw/releases/download/$ver/$tarball" -o /tmp/"$tarball"
-        echo "$sha256  /tmp/$tarball" | sha256sum -c -
-        tar -xJf /tmp/"$tarball" -C /opt
-        echo "/opt/llvm-mingw-$ver-ucrt-ubuntu-22.04-x86_64/bin" >> "$GITHUB_PATH"
-
-    # bindgen parses DArc's headers as C++, so it reads llvm-mingw's libc++ --
-    # whose headers use __builtin_clzg (Clang 19+). llvm-mingw ships the clang
-    # driver but no libclang.so, so bindgen otherwise falls back to whatever
-    # older libclang is on the box and dies on that builtin. Same pinned LLVM
-    # build.yml uses -- these four steps are copied from its windows-arm64 job,
-    # which HAS had them since c7a12c2 while this workflow never did. That is
-    # why v3.0.0's first run built four platforms and failed the fifth on a
-    # commit whose Build CI was green: the two workflows are copies, and the
-    # header at the top of this file says the pin must be kept identical.
-    - name: Cache LLVM
+    - uses: ./.github/actions/llvm
       if: matrix.arch == 'aarch64'
-      id: cache-llvm
-      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
       with:
-        path: ./llvm
-        key: llvm-21.1.8-${{ runner.os }}-${{ runner.arch }}
-    - name: Install LLVM and Clang (for bindgen)
-      if: matrix.arch == 'aarch64'
-      uses: KyleMayes/install-llvm-action@ebc0426251bc40c7cd31162802432c68818ab8f0 # v2
-      with:
-        version: "21.1.8"
-        # Skip the download when the cache above already restored ./llvm.
-        cached: ${{ steps.cache-llvm.outputs.cache-hit }}
-    # Exported for EVERY later step, not just one: each cargo build in this job
-    # runs bindgen, and attaching this to a single step is exactly how the first
-    # build ended up on a stale libclang.
-    - name: Point bindgen at the pinned libclang
-      if: matrix.arch == 'aarch64'
-      run: |
-        test -d "$LLVM_PATH/lib" || { echo "::error::no $LLVM_PATH/lib"; exit 1; }
-        echo "LIBCLANG_PATH=$LLVM_PATH/lib" >> "$GITHUB_ENV"
+        libclang: 'true'
 
     # Rust is no longer optional once DARC_RUST is the default: it compiles code
     # that ships in every binary. The version and the cross targets come from
     # rust-toolchain.toml so there is a single place to change them.
     - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
-    - name: Cache cargo and the pinned toolchain
-      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
-      with:
-        path: |
-          ~/.cargo/registry/index
-          ~/.cargo/registry/cache
-          ~/.cargo/git/db
-          ~/.rustup/toolchains
-          rust/target
-        key: cargo-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust-toolchain.toml', 'rust/Cargo.lock') }}
-        restore-keys: |
-          cargo-${{ runner.os }}-${{ runner.arch }}-
+    - uses: ./.github/actions/cargo-cache
     - name: Build (Windows cross)
       run: |
         set -euo pipefail
-        # -static, because llvm-mingw links libc++, libunwind and libwinpthread
-        # as DLLs by default and only the .exe files are packaged. Without it
-        # the binary reaches the ARM64 runner and dies before main with "cannot
-        # open shared object file" -- which is exactly what v3.0.0's second
-        # release run did, once the libclang fix let it build at all.
-        # crt-static tells rustc itself to link the runtime statically rather
-        # than merely asking the driver to. Copied from build.yml's
-        # windows-arm64-cross job, which has had it since the first time that
-        # job got far enough to run.
-        #
-        # x86_64 does not need it and must not get it: that target uses
-        # Debian's mingw-w64, where Rust already passes -static-libgcc and
-        # there is no libc++ dependency. Set only when non-empty, so the
-        # x86_64 leg is not handed an empty RUSTFLAGS that would override a
-        # config the workspace might grow later.
-        if [ "${{ matrix.arch }}" = aarch64 ]; then
-          export RUSTFLAGS="-C target-feature=+crt-static -C link-arg=-static"
-        fi
+        # The ARM64 static-link flags are NOT here any more: they are a
+        # target-scoped entry in /.cargo/config.toml, so both workflows and a
+        # local cross-build get them from one place and no RUSTFLAGS line can go
+        # missing from one copy again. Do not reintroduce a RUSTFLAGS env var
+        # here -- it would override that config wholesale.
         cargo build --release --manifest-path rust/Cargo.toml \
           --target ${{ matrix.rust-target }} -p darc-arc --bin darc
         cargo build --release --manifest-path rust/Cargo.toml \

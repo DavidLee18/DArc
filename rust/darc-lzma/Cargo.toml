@@ -3,7 +3,7 @@
 # list and why a dependency could not express it.
 [package]
 name = "darc-lzma"
-version = "0.1.0"
+version.workspace = true
 # The upstream is edition 2024; kept as-is so upstream diffs stay readable.
 edition = "2024"
 rust-version = "1.85"

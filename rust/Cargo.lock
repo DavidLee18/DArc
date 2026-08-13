@@ -242,7 +242,7 @@ dependencies = [
 
 [[package]]
 name = "darc-arc"
-version = "0.1.0"
+version = "3.0.0"
 dependencies = [
  "darc-codecs",
  "darc-crypto",
@@ -255,7 +255,7 @@ dependencies = [
 
 [[package]]
 name = "darc-codecs"
-version = "0.1.0"
+version = "3.0.0"
 dependencies = [
  "bindgen",
  "darc-lzma",
@@ -268,7 +268,7 @@ dependencies = [
 
 [[package]]
 name = "darc-crypto"
-version = "0.1.0"
+version = "3.0.0"
 dependencies = [
  "aes",
  "bindgen",
@@ -284,18 +284,18 @@ dependencies = [
 
 [[package]]
 name = "darc-lzma"
-version = "0.1.0"
+version = "3.0.0"
 
 [[package]]
 name = "darc-sevenz"
-version = "0.1.0"
+version = "3.0.0"
 dependencies = [
  "sevenz-rust2",
 ]
 
 [[package]]
 name = "darc-unarc"
-version = "0.1.0"
+version = "3.0.0"
 dependencies = [
  "darc-arc",
 ]
