@@ -13,6 +13,15 @@ members = ["darc-arc", "darc-codecs", "darc-crypto", "darc-lzma", "darc-sevenz",
 edition = "2021"
 license = "GPL-3.0-or-later"
 publish = false
+# The released version, in ONE place -- every member inherits it with
+# `version.workspace = true`.
+#
+# This is not decoration. `CARGO_PKG_VERSION` is user-visible: fetch.rs sends it
+# as the HTTP User-Agent for `--original=<url>`. It read 0.1.0 through v1, v2 and
+# the whole port, so every release so far has identified itself to remote servers
+# as a pre-release of something. release.yml checks this against the tag it is
+# building, so the two cannot drift apart again.
+version = "3.0.0"
 
 # Vendored C is replaced by a dependency here ONLY where a crate exists that can
 # actually stand in. That is a much shorter list than it looks, so the versions
