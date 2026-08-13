@@ -168,6 +168,18 @@ before adding or changing a corpus.
   `rust/include/Common.h` raises `#error` without them. The harnesses and both
   `build.rs` pass them; an editor or clangd opening that header bare will show
   `"You must define OS!"`, which is expected, not a break.
+- **`/.cargo/config.toml` is at the repo ROOT deliberately, not beside
+  `rust/Cargo.toml`.** Cargo discovers its config by walking up from the
+  **current working directory**, not from `--manifest-path`, and every workflow
+  builds from the root — so `rust/.cargo/config.toml` would be silently ignored
+  there while appearing to work when run from inside `rust/`. It carries the
+  static-link flags for `aarch64-pc-windows-gnullvm`; **setting `RUSTFLAGS` in a
+  workflow overrides it wholesale**, which is why neither workflow does any more.
+- **The version lives once, in `[workspace.package]`**; every crate takes
+  `version.workspace = true`. It is user-visible — `fetch.rs` sends it as the
+  HTTP `User-Agent` — and it read `0.1.0` through v1, v2 and the whole port
+  because nothing compared it to the tag. `release.yml` now refuses to build a
+  tag that disagrees with it, before the matrix starts.
 
 ## What will bite you
 

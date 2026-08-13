@@ -1,0 +1,28 @@
+name: Install llvm-mingw
+description: >
+  Install the pinned llvm-mingw cross toolchain and put it on PATH. This is the
+  only way to build the aarch64-pc-windows-gnullvm target: Debian packages
+  x86_64 and i686 mingw-w64 only.
+
+# Pinned with a checksum for the same reason the Rust toolchain is: the compiler
+# is part of what produces the shipped binary, so it must not drift underneath
+# us between runs.
+#
+# One definition, used by build.yml's windows-arm64-cross and release.yml's
+# windows-cross. They were separate copies; see .github/actions/llvm for what
+# that cost.
+
+runs:
+  using: composite
+  steps:
+    - name: Install llvm-mingw
+      shell: bash
+      run: |
+        set -euo pipefail
+        ver="20260616"
+        tarball="llvm-mingw-$ver-ucrt-ubuntu-22.04-x86_64.tar.xz"
+        sha256="534b92e067b22a6b4441f48ae9240a3341b17825d04d577eab0cf85c44b4deda"
+        curl -fsSL "https://github.com/mstorsjo/llvm-mingw/releases/download/$ver/$tarball" -o /tmp/"$tarball"
+        echo "$sha256  /tmp/$tarball" | sha256sum -c -
+        tar -xJf /tmp/"$tarball" -C /opt
+        echo "/opt/llvm-mingw-$ver-ucrt-ubuntu-22.04-x86_64/bin" >> "$GITHUB_PATH"

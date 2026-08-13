@@ -1,0 +1,55 @@
+name: Install the pinned LLVM
+description: >
+  Install the LLVM/Clang revision the whole project builds against, from a
+  cache, and optionally point bindgen at its libclang.
+
+# Why this is an action and not sixteen copies:
+#
+# This block appeared 14 times in build.yml and twice in release.yml. Two of
+# the three faults that stopped v3.0.0 being cut were this block being present
+# in build.yml and absent from release.yml -- the workflows are copies of each
+# other, release.yml only runs on a tag push, so nothing could tell them apart
+# until a release was attempted. One definition removes the possibility.
+#
+# The version is an input with a default rather than a literal in two places:
+# it was written both as `version:` and inside the cache `key:`, and those two
+# drifting would silently serve a cached LLVM of a different revision than the
+# one requested.
+
+inputs:
+  version:
+    description: The LLVM release to install. Feeds both the install and the cache key.
+    default: "21.1.8"
+  libclang:
+    description: >
+      "true" exports LIBCLANG_PATH for every later step in the job. Needed
+      wherever bindgen parses DArc's headers as C++ against llvm-mingw's libc++,
+      whose headers use __builtin_clzg (Clang 19+): llvm-mingw ships the clang
+      driver but no libclang.so, so bindgen otherwise falls back to whatever
+      older libclang is on the runner and dies on that builtin.
+    default: "false"
+
+runs:
+  using: composite
+  steps:
+    - name: Cache LLVM
+      id: cache-llvm
+      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+      with:
+        path: ./llvm
+        key: llvm-${{ inputs.version }}-${{ runner.os }}-${{ runner.arch }}
+    - name: Install LLVM and Clang
+      uses: KyleMayes/install-llvm-action@ebc0426251bc40c7cd31162802432c68818ab8f0 # v2
+      with:
+        version: ${{ inputs.version }}
+        # Skip the download when the cache above already restored ./llvm.
+        cached: ${{ steps.cache-llvm.outputs.cache-hit }}
+    # Exported for EVERY later step, not just one: each cargo build in these
+    # jobs runs bindgen, and attaching this to a single step is exactly how the
+    # first ARM64 build ended up on a stale libclang.
+    - name: Point bindgen at the pinned libclang
+      if: inputs.libclang == 'true'
+      shell: bash
+      run: |
+        test -d "$LLVM_PATH/lib" || { echo "::error::no $LLVM_PATH/lib"; exit 1; }
+        echo "LIBCLANG_PATH=$LLVM_PATH/lib" >> "$GITHUB_ENV"

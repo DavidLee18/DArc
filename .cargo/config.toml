@@ -1,0 +1,32 @@
+# Cargo configuration for the whole repository.
+#
+# This file is at the REPO ROOT, not next to rust/Cargo.toml, because cargo
+# discovers its config by walking up from the CURRENT WORKING DIRECTORY -- not
+# from the manifest directory. Every workflow invokes
+# `cargo build --manifest-path rust/Cargo.toml` from the root, so a
+# rust/.cargo/config.toml would be silently ignored there while working when
+# run from inside rust/. The root placement is read in both cases.
+
+# Windows on ARM64 must be linked statically.
+#
+# llvm-mingw links libc++, libunwind and libwinpthread as DLLs by default, and
+# only the .exe files are packaged into a release. Without this the binary
+# reaches the machine it was built for and dies in the loader, before main,
+# with "error while loading shared libraries" -- which is exactly what v3.0.0's
+# second release attempt did on a real windows-11-arm runner.
+#
+# BOTH flags are required, and -static alone is not enough: it removes the
+# libc++ and libwinpthread imports but leaves libunwind.dll, because rustc adds
+# its own -lunwind for the gnullvm targets and that resolves to the import
+# library. crt-static is what tells rustc itself to link the runtime statically
+# rather than merely asking the driver to.
+#
+# It lives here rather than in a RUSTFLAGS line in each workflow because that
+# is what it was, and the copy in release.yml was missing. A target-scoped
+# config entry cannot be present in one workflow and absent from another, and
+# it applies to a local cross-build too, which a CI env var never did.
+#
+# The x86_64 target deliberately has no such entry: it uses Debian's mingw-w64,
+# where rustc already passes -static-libgcc and there is no libc++ dependency.
+[target.aarch64-pc-windows-gnullvm]
+rustflags = ["-C", "target-feature=+crt-static", "-C", "link-arg=-static"]

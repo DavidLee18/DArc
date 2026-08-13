@@ -1,0 +1,23 @@
+name: Cache cargo and the pinned toolchain
+description: >
+  Cache the cargo registry, the rustup toolchains and rust/target, keyed on the
+  toolchain pin and the lockfile.
+
+# Six identical copies before this existed (four in build.yml, two in
+# release.yml). The key must stay identical everywhere or jobs quietly stop
+# sharing a cache, which shows up only as time.
+
+runs:
+  using: composite
+  steps:
+    - uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+      with:
+        path: |
+          ~/.cargo/registry/index
+          ~/.cargo/registry/cache
+          ~/.cargo/git/db
+          ~/.rustup/toolchains
+          rust/target
+        key: cargo-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('rust-toolchain.toml', 'rust/Cargo.lock') }}
+        restore-keys: |
+          cargo-${{ runner.os }}-${{ runner.arch }}-
