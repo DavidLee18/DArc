@@ -238,6 +238,25 @@ jobs:
           cargo-${{ runner.os }}-${{ runner.arch }}-
     - name: Build (Windows cross)
       run: |
+        set -euo pipefail
+        # -static, because llvm-mingw links libc++, libunwind and libwinpthread
+        # as DLLs by default and only the .exe files are packaged. Without it
+        # the binary reaches the ARM64 runner and dies before main with "cannot
+        # open shared object file" -- which is exactly what v3.0.0's second
+        # release run did, once the libclang fix let it build at all.
+        # crt-static tells rustc itself to link the runtime statically rather
+        # than merely asking the driver to. Copied from build.yml's
+        # windows-arm64-cross job, which has had it since the first time that
+        # job got far enough to run.
+        #
+        # x86_64 does not need it and must not get it: that target uses
+        # Debian's mingw-w64, where Rust already passes -static-libgcc and
+        # there is no libc++ dependency. Set only when non-empty, so the
+        # x86_64 leg is not handed an empty RUSTFLAGS that would override a
+        # config the workspace might grow later.
+        if [ "${{ matrix.arch }}" = aarch64 ]; then
+          export RUSTFLAGS="-C target-feature=+crt-static -C link-arg=-static"
+        fi
         cargo build --release --manifest-path rust/Cargo.toml \
           --target ${{ matrix.rust-target }} -p darc-arc --bin darc
         cargo build --release --manifest-path rust/Cargo.toml \
@@ -337,6 +356,24 @@ jobs:
         # Invoked through bash rather than directly: a Windows checkout does not
         # preserve the executable bit.
         bash Tests/win-test.sh "$exe"
+
+        # unarc too, and on this runner only: build.yml builds unarc for
+        # x86_64 Windows but NOT for ARM64, so unarc-win-arm64.exe is produced
+        # by this workflow alone and no CI job has ever executed it. It shipped
+        # in whatever state it was built in.
+        #
+        # No args makes it print its usage to stderr and exit non-zero, which
+        # is the point: reaching its own usage text proves the image loaded and
+        # ran to argument parsing. A binary missing its DLLs dies in the loader
+        # before main and prints nothing of its own -- the failure this job just
+        # caught in darc.exe, which unarc.exe would have shared in silence.
+        unarc="$(dirname "$exe")/unarc.exe"
+        out=$("$unarc" 2>&1 || true)
+        echo "$out"
+        case "$out" in
+          *"Usage:"*) echo "unarc.exe runs" ;;
+          *) echo "::error::unarc.exe did not reach its usage text"; exit 1 ;;
+        esac
 
   # ── Attach everything to the release ────────────────────────────────────────
   publish:
