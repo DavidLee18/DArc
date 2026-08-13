@@ -188,6 +188,38 @@ jobs:
         tar -xJf /tmp/"$tarball" -C /opt
         echo "/opt/llvm-mingw-$ver-ucrt-ubuntu-22.04-x86_64/bin" >> "$GITHUB_PATH"
 
+    # bindgen parses DArc's headers as C++, so it reads llvm-mingw's libc++ --
+    # whose headers use __builtin_clzg (Clang 19+). llvm-mingw ships the clang
+    # driver but no libclang.so, so bindgen otherwise falls back to whatever
+    # older libclang is on the box and dies on that builtin. Same pinned LLVM
+    # build.yml uses -- these four steps are copied from its windows-arm64 job,
+    # which HAS had them since c7a12c2 while this workflow never did. That is
+    # why v3.0.0's first run built four platforms and failed the fifth on a
+    # commit whose Build CI was green: the two workflows are copies, and the
+    # header at the top of this file says the pin must be kept identical.
+    - name: Cache LLVM
+      if: matrix.arch == 'aarch64'
+      id: cache-llvm
+      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+      with:
+        path: ./llvm
+        key: llvm-21.1.8-${{ runner.os }}-${{ runner.arch }}
+    - name: Install LLVM and Clang (for bindgen)
+      if: matrix.arch == 'aarch64'
+      uses: KyleMayes/install-llvm-action@ebc0426251bc40c7cd31162802432c68818ab8f0 # v2
+      with:
+        version: "21.1.8"
+        # Skip the download when the cache above already restored ./llvm.
+        cached: ${{ steps.cache-llvm.outputs.cache-hit }}
+    # Exported for EVERY later step, not just one: each cargo build in this job
+    # runs bindgen, and attaching this to a single step is exactly how the first
+    # build ended up on a stale libclang.
+    - name: Point bindgen at the pinned libclang
+      if: matrix.arch == 'aarch64'
+      run: |
+        test -d "$LLVM_PATH/lib" || { echo "::error::no $LLVM_PATH/lib"; exit 1; }
+        echo "LIBCLANG_PATH=$LLVM_PATH/lib" >> "$GITHUB_ENV"
+
     # Rust is no longer optional once DARC_RUST is the default: it compiles code
     # that ships in every binary. The version and the cross targets come from
     # rust-toolchain.toml so there is a single place to change them.
