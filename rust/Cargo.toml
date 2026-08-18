@@ -21,7 +21,7 @@ publish = false
 # the whole port, so every release so far has identified itself to remote servers
 # as a pre-release of something. release.yml checks this against the tag it is
 # building, so the two cannot drift apart again.
-version = "3.0.0"
+version = "3.0.1"
 
 # Vendored C is replaced by a dependency here ONLY where a crate exists that can
 # actually stand in. That is a much shorter list than it looks, so the versions
