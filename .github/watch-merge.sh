@@ -22,6 +22,25 @@
 # This version never asks "are there failures". It asks "what did the run FOR
 # THIS EXACT COMMIT conclude", and refuses to answer until such a run exists and
 # has finished.
+#
+# ── ...and then it reintroduced the same class in its own wait ──────────────
+#
+# `while runs_for "$HEAD" | grep -qE '^(queued|in_progress|…)'` stops when grep
+# finds no pending line -- which is true when nothing is pending AND when
+# `gh run list` answered with nothing at all. The API does transiently return an
+# empty list, and the loop read that non-answer as "done".
+#
+# Live on PR #161: `run(s) registered`, then straight to
+# `verdict: in_progress Build CI` and `NOT MERGING`. A re-run merged on the
+# first attempt, so the PR was green throughout and the watcher was not.
+#
+# It failed SAFE, and by design rather than by luck: step 3 re-queries, and the
+# `Build CI`-exists check refuses an empty answer outright, so a transient can
+# never produce a merge. But it stops WAITING, which is the whole job.
+#
+# So the rule the header already states has to hold for the waiting too: a
+# question whose answer can be "I don't know" must not have "no" as its default.
+# `pending`/`ppending` below treat an empty or failed query as KEEP WAITING.
 set -uo pipefail
 
 PR="${1:?usage: watch-merge.sh <pr-number> <branch>}"
@@ -68,7 +87,20 @@ done
 echo "run(s) registered for ${HEAD:0:7}"
 
 # 2. Every run for this commit must finish.
-while runs_for "$HEAD" | grep -qE '^(queued|in_progress|waiting|requested|pending)'; do
+# 0 while a run is still going -- OR while the answer is unusable. An empty
+# reply is NOT "nothing pending": `gh run list` can transiently return nothing,
+# and `runs_for | grep -q` reads that as done and drops out of the wait. That is
+# what happened on PR #161: the loop exited with Build CI still in_progress.
+# Failing safe, because step 3 re-queries and the Build-CI-exists check refuses
+# an empty answer -- but it stops WAITING, which is the whole job.
+pending() {
+  local out
+  out="$(runs_for "$1")" || return 0
+  [ -n "$out" ] || return 0
+  printf '%s\n' "$out" | grep -qE '^(queued|in_progress|waiting|requested|pending)'
+}
+
+while pending "$HEAD"; do
   if [ "$(date +%s)" -gt "$DEADLINE" ]; then
     echo "STALLED. Outstanding for ${HEAD:0:7}:"; runs_for "$HEAD" | grep -vE '^completed' | sed 's/^/  /'
     exit 2
@@ -110,7 +142,16 @@ until [ -n "$(pruns)" ]; do
   [ "$(date +%s)" -gt "$DEADLINE" ] && { echo "no post-merge run appeared for ${SHA:0:7}"; exit 2; }
   sleep 20
 done
-while pruns | grep -qE '^(queued|in_progress|waiting|requested|pending)'; do
+# The post-merge wait has the same flaw and the same fix. It matters slightly
+# less -- nothing is merged past this point -- but a watcher that stops watching
+# still reports on a run it did not see finish.
+ppending() {
+  local out
+  out="$(pruns)" || return 0
+  [ -n "$out" ] || return 0
+  printf '%s\n' "$out" | grep -qE '^(queued|in_progress|waiting|requested|pending)'
+}
+while ppending; do
   if [ "$(date +%s)" -gt "$DEADLINE" ]; then
     echo "post-merge STALLED for ${SHA:0:7}:"; pruns | grep -vE '^completed' | sed 's/^/  /'; exit 2
   fi
