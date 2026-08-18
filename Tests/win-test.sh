@@ -151,6 +151,70 @@ for m in -m0 -m1 -m4; do
 done
 
 echo
+echo "--- a list file written on Windows (issue #160) ---"
+# The reported case, on a real Windows kernel. `\` is a path separator here and
+# is what both the shell and a locally-authored list file produce, so a filespec
+# spelled with it has to resolve -- it did not, and the run wrote no archive
+# while printing "All OK".
+#
+# This belongs HERE rather than in rust/difftest: the fix is Windows-only by
+# design (`\` is a legal character in a POSIX file name, so the translation is
+# the identity there), which means no harness on Linux or macOS can execute the
+# branch that matters. Only a Windows binary can, and this script is the one
+# thing that runs one -- under Wine on Linux and natively on ARM64 Windows both.
+#
+# The backslash is passed through `%s`, where printf does no escape processing.
+# Written as `'0007\\0.paz'` it reads as an octal escape waiting to happen, and
+# the point of the test is lost the moment the byte is not the byte.
+BS='\'
+mkdir -p lst/0007 lst/bin64
+printf 'paz payload\n' > lst/0007/0.paz
+printf 'exe payload\n' > lst/bin64/prog.exe
+# CRLF, because a list file written on Windows has them.
+printf '0007%s0.paz\r\nbin64%sprog.exe\r\n' "$BS" "$BS" > win.lst
+printf '0007/0.paz\nbin64/prog.exe\n'                   > posix.lst
+
+rm -f wsep.arc psep.arc
+if ! run_arc a --nodates -y --diskpath=lst wsep.arc @win.lst > w.log 2>&1; then
+  note_fail "backslash list file: create failed"; tail -3 w.log | sed 's/^/     /'
+elif [ ! -f wsep.arc ]; then
+  # The reported symptom exactly: exit 0, "All OK", and no archive.
+  note_fail "backslash list file: no archive written (issue #160)"
+  tail -3 w.log | sed 's/^/     /'
+else
+  # Both spellings must name the same files. Compared as ARCHIVES rather than
+  # as listings, so a difference in what was stored cannot hide behind a
+  # difference in how it is printed.
+  run_arc a --nodates -y --diskpath=lst psep.arc @posix.lst > p.log 2>&1
+  if cmp -s wsep.arc psep.arc; then
+    echo "  a Windows-spelled list file archives the same bytes as a POSIX-spelled one"
+  else
+    note_fail "backslash and forward-slash list files produced different archives"
+  fi
+  # ...and the files really came back, with the relative names preserved.
+  rm -rf outlst; mkdir -p outlst
+  if run_arc x -y -dpoutlst wsep.arc > xl.log 2>&1 &&
+     [ -f outlst/0007/0.paz ] && [ -f outlst/bin64/prog.exe ]; then
+    echo "  0007/0.paz and bin64/prog.exe extracted under their stored names"
+  else
+    note_fail "backslash list file: extracted tree is wrong"
+    find outlst -type f | head -5 | sed 's/^/     /'
+  fi
+fi
+
+# The other half of #160: matching nothing must be REPORTED. An empty archive is
+# erased either way, so the only observable is the exit code and the warning --
+# which is precisely why this went unnoticed as `All OK`.
+rm -f none.arc
+if run_arc a --nodates -y none.arc nosuchfile.txt > n.log 2>&1; then
+  note_fail "a filespec matching nothing exited 0 (issue #160)"
+elif [ -f none.arc ]; then
+  note_fail "a filespec matching nothing left an archive behind"
+else
+  echo "  a filespec matching nothing is reported, and leaves no archive"
+fi
+echo
+
 if [ "$fail" -eq 0 ]; then
   echo "windows smoke test: all checks passed"
   cd /; rm -rf "$WORK"
