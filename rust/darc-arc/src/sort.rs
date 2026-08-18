@@ -112,6 +112,44 @@ fn match_fp(pattern: &str, stored_name: &str) -> bool {
     glob(&pattern.to_lowercase(), &target.to_lowercase())
 }
 
+/// Whether `\` is a path separator, which is a property of the platform.
+///
+/// Windows accepts both and its shells produce `\`; POSIX accepts only `/` and
+/// allows `\` inside a file name. That difference is the whole reason this is
+/// not a constant `true`.
+pub const BACKSLASH_IS_SEPARATOR: bool = cfg!(windows);
+
+/// A filespec with the platform's path separators rewritten to `/`.
+///
+/// Everything downstream is `/`-separated and looks for `/` alone: the stored
+/// name, [`match_filespecs`], and the grouping of `darc a`'s filespecs by
+/// their directory. A filespec that arrives spelled with `\` therefore has to
+/// be translated once, at the boundary, or its every separator is read as an
+/// ordinary character and the whole path becomes one file name to look for in
+/// the current directory.
+///
+/// That is not hypothetical: on Windows, `\` is what the shell hands over and
+/// what a `@listfile` written on that platform contains, so
+/// `a --diskpath=D:\Games\X out.arc @list` over a list of `0007\0.paz` matched
+/// NOTHING -- and, every filespec having selected no file, erased the empty
+/// archive and reported success.
+///
+/// The flag is a parameter rather than a `#[cfg]` inside the body so that both
+/// behaviours are reachable from a test on any platform. A Windows-only path
+/// that no CI job here runs is a path nothing checks.
+///
+/// `false` leaves the string alone, deliberately. `\` is a legal character in a
+/// POSIX file name, so translating it there would trade a file that can really
+/// exist -- `a\b.txt` -- for a spelling no POSIX shell produces. The reference
+/// does not translate it on POSIX either (measured), so this changes no archive
+/// on the platforms the difftests run on.
+pub fn normalize_separators(spec: &str, backslash_is_separator: bool) -> String {
+    match backslash_is_separator {
+        true => spec.replace('\\', "/"),
+        false => spec.to_string(),
+    }
+}
+
 /// `match_filespecs` (`FileInfo.hs:149`) — does the name match ANY of them?
 ///
 /// `opt_match_with` decides what is matched: `fpBasename` by default and
@@ -707,5 +745,51 @@ $text
         assert_eq!(real.default_type("a.wav", &names()), "$wav");
         // And with no groups file at all, which is `--groups-`.
         assert_eq!(Groups::single().default_type("a.wav", &names()), "$binary");
+    }
+}
+
+#[cfg(test)]
+mod separator_tests {
+    use super::*;
+
+    /// Both branches, from any platform. The Windows behaviour is otherwise
+    /// unreachable from the difftests, which run on Linux and macOS.
+    #[test]
+    fn backslashes_become_separators_only_where_they_are_separators() {
+        // The reported case: a list file written on Windows.
+        assert_eq!(normalize_separators(r"0007\0.paz", true), "0007/0.paz");
+        assert_eq!(normalize_separators(r"bin64\Crimson.exe", true), "bin64/Crimson.exe");
+        // Mixed spellings are legal on Windows and must land on one form.
+        assert_eq!(normalize_separators(r"a\b/c\d.txt", true), "a/b/c/d.txt");
+        // A drive-qualified spec keeps its colon; only separators move.
+        assert_eq!(normalize_separators(r"D:\Games\x.exe", true), "D:/Games/x.exe");
+
+        // ...and on POSIX every one of those is left alone, because `\` is a
+        // legal character in a file name there. This is the arm that keeps the
+        // change from moving a single archive byte on the difftest platforms.
+        for spec in [r"0007\0.paz", r"a\b/c\d.txt", r"D:\Games\x.exe"] {
+            assert_eq!(normalize_separators(spec, false), spec);
+        }
+    }
+
+    /// The translation must not disturb a spec that has nothing to translate,
+    /// on either platform -- wildcards and `@`-stripped names included.
+    #[test]
+    fn a_spec_without_backslashes_is_untouched_either_way() {
+        for spec in ["*.txt", "sub/d.txt", ".", "", "a.txt"] {
+            assert_eq!(normalize_separators(spec, true), spec);
+            assert_eq!(normalize_separators(spec, false), spec);
+        }
+    }
+
+    /// The point of the whole change: after translation the spec splits into a
+    /// directory and a mask the way `darc a`'s grouping needs, where before it
+    /// was one name with no directory at all and matched nothing.
+    #[test]
+    fn a_translated_spec_splits_into_a_directory_and_a_mask() {
+        let win = normalize_separators(r"0007\0.paz", true);
+        assert_eq!(win.rfind('/').map(|i| (&win[..i], &win[i + 1..])), Some(("0007", "0.paz")));
+        // Untranslated, there is no separator to find -- the failure being fixed.
+        assert_eq!(r"0007\0.paz".rfind('/'), None);
     }
 }

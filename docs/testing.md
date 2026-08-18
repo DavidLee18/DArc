@@ -248,6 +248,27 @@ bash rust/difftest/arc-filter-check.sh /tmp/darc-ref/Tests/arc-ghc
 Note that `compile-ghc-probe` writes objects into the shared `/tmp/out/`, so run
 `rm -rf /tmp/out` afterwards before building the current tree.
 
+The argument may be relative — `bash rust/difftest/arc-test-check.sh
+Tests/arc-ghc` works. It did not until `rust/difftest/arc-reference.sh` was
+split out: nearly every harness runs its comparisons from inside the work
+directory, so a relative `$1` passed the executable check and then resolved to
+nothing after the first `cd`, and every case degraded to a SKIP. The
+`checked -gt 0` guard caught it — `nothing was compared` — so no run was ever
+silently green, but the message named the reference rather than the path.
+
+`arc-reference.sh` is **sourced, not executed**, the way `c-reference.sh` is. It
+holds the executable check, the "build one from `9a127e6`" message and the
+resolution to an absolute path, and it replaced sixteen copies of that block —
+fifteen of which wrote `as $1` unescaped inside a double-quoted string, so the
+message that tells you how to pass the reference had an empty gap where `$1`
+should be. Add it to a new harness with:
+
+```bash
+ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
+REF="${1:-$ROOT/Tests/arc-ghc}"
+. "$ROOT/rust/difftest/arc-reference.sh"
+```
+
 ### What runs without a reference: `arc-golden-check.sh`
 
 118 cases. It is the only archive-format gate CI runs, and the only one that

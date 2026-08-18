@@ -53,15 +53,7 @@ PORT="$ROOT/rust/target/release/darc"
 # appended to it.
 MODULE="$ROOT/rust/target/release/unarc"
 
-[ -x "$REF" ] || {
-  echo "no reference binary at $REF.
-
-The Haskell reference was deleted; build one from a commit that still has it:
-  git worktree add /tmp/darc-ref 9a127e6 && (cd /tmp/darc-ref && ./compile-ghc-probe)
-then pass /tmp/darc-ref/Tests/arc-ghc as $1. For a gate that needs no
-reference at all, use arc-golden-check.sh" >&2
-  exit 2
-}
+. "$ROOT/rust/difftest/arc-reference.sh"
 ( cd "$ROOT/rust" && cargo build --release -q -p darc-arc --bin darc -p darc-unarc ) || {
   echo "cargo build failed" >&2; exit 1; }
 # After the build, not before: the module is a cargo artifact now, so a missing

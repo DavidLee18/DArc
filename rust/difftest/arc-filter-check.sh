@@ -42,15 +42,7 @@ ROOT="$(cd "$(dirname "$0")/../.." && pwd)"
 REF="${1:-$ROOT/Tests/arc-ghc}"
 PORT="$ROOT/rust/target/release/darc"
 
-[ -x "$REF" ] || {
-  echo "no reference binary at $REF.
-
-The Haskell reference was deleted; build one from a commit that still has it:
-  git worktree add /tmp/darc-ref 9a127e6 && (cd /tmp/darc-ref && ./compile-ghc-probe)
-then pass /tmp/darc-ref/Tests/arc-ghc as $1. For a gate that needs no
-reference at all, use arc-golden-check.sh" >&2
-  exit 2
-}
+. "$ROOT/rust/difftest/arc-reference.sh"
 ( cd "$ROOT/rust" && cargo build --release -q -p darc-arc --bin darc ) || {
   echo "cargo build failed" >&2; exit 1; }
 
