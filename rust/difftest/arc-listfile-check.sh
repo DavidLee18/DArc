@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
-# Differential-test `@listfile` expansion, filespec shapes, and `-sc`/`--charset`
-# against the Haskell reference, BYTE FOR BYTE.
+# Differential-test `@listfile` expansion, filespec shapes, `-dp`/`--diskpath`
+# and `-sc`/`--charset` against the Haskell reference, BYTE FOR BYTE -- and by
+# exit code, which it did not compare until a command that archived nothing was
+# found reporting success.
 #
 #   usage: arc-listfile-check.sh [reference-arc]
 #
@@ -83,13 +85,24 @@ try() {
   checked=$((checked + 1))
   rm -f "$W/r.arc" "$W/p.arc"
   ( cd "$W/src" && "$REF"  a --nodates -y -m0 "$W/r.arc" "$@" ) </dev/null >/dev/null 2>&1
+  local rrc=$?
   ( cd "$W/src" && "$PORT" a --nodates -y -m0 "$W/p.arc" "$@" ) </dev/null >/dev/null 2>&1
+  local prc=$?
   local r=present p=present
   [ -f "$W/r.arc" ] || r=absent
   [ -f "$W/p.arc" ] || p=absent
   local label; label="$(printf '%s ' "$@" | sed "s|$W/||g")"
   if [ "$r" != "$p" ]; then
     echo "  DIFF [$label]: reference $r, port $p"
+    fail=$((fail + 1))
+  # The EXIT CODE, which this compared for a long time by not comparing it at
+  # all. Present/absent cannot see the difference between "wrote nothing and
+  # said so" and "wrote nothing and said All OK", and that gap is exactly what
+  # let `a` over a filespec matching nothing report success: every row here
+  # whose filespecs select no file agreed on `absent` while the reference
+  # exited 1 and the port exited 0.
+  elif [ "$rrc" != "$prc" ]; then
+    echo "  DIFF [$label]: exit code -- reference $rrc, port $prc"
     fail=$((fail + 1))
   elif [ "$r" = present ] && ! cmp -s "$W/r.arc" "$W/p.arc"; then
     echo "  DIFF [$label]: archives differ"
@@ -124,6 +137,20 @@ try . "-n@$W/plain.lst"
 try . "-n@$W/empty.lst"
 try "@$W/plain.lst" "-x@$W/excl.lst"
 try -r "@$W/crlf.lst"
+
+# ── -dp/--diskpath, which relocates where files are READ ────────────────────
+# Untested here at all until a list file and -dp used together were reported to
+# archive nothing. -dp leaves the STORED name alone, so `--diskpath=sub d.txt`
+# must store `d.txt` and not `sub/d.txt` -- and with a list file it must still
+# do so, which is the combination that was reported.
+printf 'd.txt\ne.dat\n' > "$W/sub.lst"
+try --diskpath=sub d.txt
+try --diskpath=sub '*.txt'
+try --diskpath=sub "@$W/sub.lst"
+try -dpsub "@$W/sub.lst"
+try --diskpath=sub/ "@$W/sub.lst"
+try --diskpath=. "@$W/plain.lst"
+try -r --diskpath=. "@$W/crlf.lst"
 
 # ── -sc, in both spellings ──────────────────────────────────────────────────
 try -sc0    "@$W/plain.lst"
@@ -173,7 +200,47 @@ if ( cd "$W/src" && "$PORT" a --nodates -y -m0 "$W/gone.arc" "@$W/nosuch.lst" ) 
   exit 1
 fi
 
-# 4. A -sc domain this port does not apply must be refused, not ignored.
+# 4. -dp must actually RELOCATE, and must not leak into the stored name.
+#    Both `try --diskpath=sub …` rows above compare present/absent and bytes,
+#    so they would agree perfectly if -dp were ignored on both sides and each
+#    wrote nothing. Pin the effect itself: the file lives only in sub/, so
+#    finding it at all proves -dp was applied, and the name proves it was
+#    applied to the READ and not to the name.
+rm -f "$W/dp.arc"
+( cd "$W/src" && "$PORT" a --nodates -y -m0 --diskpath=sub "$W/dp.arc" d.txt ) >/dev/null 2>&1
+got=$("$PORT" l "$W/dp.arc" 2>/dev/null | grep -E '^[0-9]{4}' | awk '{print $NF}')
+if [ "$got" != "d.txt" ]; then
+  echo "SELF-TEST FAILED: --diskpath=sub d.txt stored [$got], not [d.txt]" >&2
+  exit 1
+fi
+
+# 5. A filespec that matches NOTHING must be reported, not called success.
+#    The archive is erased either way -- that part was always right -- so
+#    present/absent cannot see this, and `All OK` with exit 0 over a file that
+#    does not exist is what made the report read as "it prints All OK but the
+#    archive is not created". Falsified in both directions: the same command
+#    over a filespec that DOES match must succeed and say so.
+out=$( cd "$W/src" && "$PORT" a --nodates -y -m0 "$W/none2.arc" nosuch.txt 2>&1 )
+rc=$?
+if [ "$rc" = 0 ] || [ -f "$W/none2.arc" ]; then
+  echo "SELF-TEST FAILED: a filespec matching nothing exited $rc and left" >&2
+  echo "$([ -f "$W/none2.arc" ] && echo 'an archive' || echo 'no archive')" >&2
+  exit 1
+fi
+case "$out" in
+  *WARNING*) ;;
+  *) echo "SELF-TEST FAILED: nothing matched and no warning was printed: [$out]" >&2
+     exit 1 ;;
+esac
+rm -f "$W/some.arc"
+out=$( cd "$W/src" && "$PORT" a --nodates -y -m0 "$W/some.arc" a.txt 2>&1 )
+rc=$?
+if [ "$rc" != 0 ] || [ ! -f "$W/some.arc" ]; then
+  echo "SELF-TEST FAILED: a filespec that DOES match exited $rc: [$out]" >&2
+  exit 1
+fi
+
+# 6. A -sc domain this port does not apply must be refused, not ignored.
 if ( cd "$W/src" && "$PORT" a --nodates -y -m0 -scf0 "$W/f.arc" . ) >/dev/null 2>&1; then
   echo "SELF-TEST FAILED: -scf0 was accepted, but this port does not apply the" >&2
   echo "filesystem charset" >&2

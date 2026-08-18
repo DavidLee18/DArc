@@ -472,10 +472,23 @@ fn main() {
     //
     // Done here, before anything looks at a filespec, because the expansion
     // feeds the disk scan, the archive filter and the read commands alike.
+    // The separators are translated HERE, on the way out, for the same reason
+    // the expansion happens here: this is the one point every filespec passes
+    // through, whether it was typed, came out of a `@listfile`, or is a `-n`/
+    // `-x` value. See `sort::normalize_separators` -- on POSIX it is the
+    // identity, so no archive this project's difftests can build moves a byte.
     let list_charset = charsets.of('l');
     let expand = |specs: &[String], what: &str| -> Vec<String> {
         match darc_arc::charset::expand_list_files(specs, list_charset, |p| std::fs::read(p)) {
-            Ok(v) => v,
+            Ok(v) => v
+                .iter()
+                .map(|s| {
+                    darc_arc::sort::normalize_separators(
+                        s,
+                        darc_arc::sort::BACKSLASH_IS_SEPARATOR,
+                    )
+                })
+                .collect(),
             Err(e) => {
                 eprintln!("ERROR: {what}: {e}");
                 bail(2);
@@ -1397,7 +1410,17 @@ fn add(
     // APPENDED to any -dp rather than replacing it. Measured on the reference:
     // `a -ad backup.arc .` is byte-identically `a -dpbackup backup.arc .`.
     let disk_base = {
-        let dp = parsed.arg("diskpath", "").trim_end_matches('/').to_string();
+        // Only the TRAILING separator is trimmed, and the interior ones are
+        // left exactly as given -- unlike a filespec, which is normalised at
+        // the boundary above. A -dp value is handed to the OS as a path and
+        // never matched against a stored name, so rewriting it buys nothing,
+        // and on Windows it would break the one prefix that cannot survive it:
+        // a `\\?\` verbatim path is defined to use backslashes only.
+        let dp = match darc_arc::sort::BACKSLASH_IS_SEPARATOR {
+            true => parsed.arg("diskpath", "").trim_end_matches(['/', '\\']),
+            false => parsed.arg("diskpath", "").trim_end_matches('/'),
+        }
+        .to_string();
         match parsed.flag("adddir") {
             false => dp,
             true => {
@@ -2469,8 +2492,21 @@ fn add(
                 return 2;
             }
         }
-        println!("All OK");
-        return 0;
+        // ...and it is REPORTED, which it was not. `All OK` and exit 0 over an
+        // erased archive is the same class of untruth as the `Extracted 1
+        // files` printed under an ERROR that #140 removed: every observable
+        // said the command had succeeded, while what the user asked for -- an
+        // archive -- did not exist. A filespec that matches nothing is the
+        // common way to arrive here, and it is silent on the command line,
+        // so this was the only signal available.
+        //
+        // Matches the reference, measured: `WARNING: no files, erasing empty
+        // archive` on stderr and a non-zero exit, for `a` over an unmatched
+        // filespec and for `d '*'` alike. The reference's exit code is its
+        // warning COUNT; this port keeps no such counter and returns 1, which
+        // carries the part that matters -- not a success.
+        eprintln!("WARNING: no files, erasing empty archive");
+        return 1;
     }
 
     // `getArcComment` (ArcCreate.hs:299). --archive-comment wins outright;

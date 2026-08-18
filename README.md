@@ -402,6 +402,26 @@ You can pass a file containing a list of filenames (one per line) to any command
 darc a archive.arc @myfiles.txt
 ```
 
+Blank lines are ignored, the file may use LF, CRLF or CR endings, and the names
+are read in the `l` charset (`-sc`). A name is a filespec like any other, so it
+may hold wildcards, and it is resolved relative to `--diskpath` when that is
+given:
+
+```sh
+# test.lst holds  0007/0.paz  and  bin64/prog.exe
+darc a --diskpath="/games/Crimson Desert" ExternalData.arc @test.lst
+```
+
+On Windows the names may be spelled with either separator — `0007\0.paz` and
+`0007/0.paz` both work, and produce the same archive. On Unix only `/` is a
+separator, because `\` is a legal character in a file name there.
+
+`@` also applies to the values of `-n` and `-x`, as `-n@list.txt`.
+
+**If no filespec matches anything**, no archive is written and `darc` reports
+`WARNING: no files, erasing empty archive` and exits non-zero. An empty archive
+is never left behind.
+
 ---
 
 ## Examples
