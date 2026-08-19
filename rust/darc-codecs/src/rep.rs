@@ -14,9 +14,14 @@
 //!
 //! Every length and offset read from the stream is untrusted -- the decoder is
 //! fed raw archive bytes and runs on `arc t` -- so each is validated against
-//! the remaining input and output before use, mirroring the bounds the C added
-//! during the v2.0.0 hardening. A single flipped byte in a `-mrep` archive
-//! reaches these checks.
+//! the remaining input and output before use. A single flipped byte in a
+//! `-mrep` archive reaches these checks.
+//!
+//! Those bounds came from the v2.0.0 hardening and one of them was WRONG: it
+//! assumed a match source always lies behind the write position, which is
+//! false the moment the buffer wraps. See the match arm in `run` -- and note
+//! that the C at `DARC_C_REF_SHA` still has it, so this decoder deliberately
+//! reads streams the reference calls corrupt.
 
 use crate::ffi::{Io, FREEARC_ERRCODE_BAD_COMPRESSED_DATA, FREEARC_ERRCODE_IO,
                  FREEARC_ERRCODE_NOT_ENOUGH_MEMORY, OK};
@@ -129,23 +134,47 @@ fn run(io: &Io, declared_block_size: u32) -> Result<(), c_int> {
             bp += dl;
             pos += dl;
 
-            // match: offset relative to the current position, wrapping the buffer
-            let raw_off = offsets(i);
-            let offset = if raw_off as i64 <= pos as i64 {
-                raw_off as i64
-            } else {
-                raw_off as i64 - block_size as i64
-            };
+            // Match. The source is normally BEHIND `pos`, but it need not be:
+            // `data` is a circular buffer, so a match reaching back past the
+            // start of the current cycle lands in the tail the previous cycle
+            // wrote -- AHEAD of `pos`. The encoder emits `offset` in
+            // `[1, block_size)` measured cyclically, and the decoder wraps such
+            // an offset by subtracting `block_size`, which makes it NEGATIVE.
+            //
+            // The v2.0.0 hardening bounded the source with `offset <= 0`, which
+            // is precisely the wrapped case, so every match across a buffer
+            // wrap was rejected as corrupt: issue #165, "rep failed: codec
+            // returned -7" on any stream longer than the rep block size (the
+            // default `-m4` is `rep:96m`, and 113 MB of input crosses it). The
+            // sweep that justified "transparent to valid archives" never built
+            // an archive big enough to wrap. See `tests/rep.rs`,
+            // `a_match_across_a_buffer_wrap_round_trips`.
+            //
+            // The bound the source actually needs is that it stay inside the
+            // buffer in BOTH directions, which is what the encoder's own
+            // `high_bound` guarantees for a valid stream.
+            let raw_off = offsets(i) as i64;
             let ln = lens(i);
-            if offset <= 0 || offset > pos as i64 || ln < 0 || ln as usize > block_size - pos {
+            if raw_off <= 0 || raw_off >= block_size as i64 || ln < 0 {
                 return Err(BAD);
             }
-            let src = pos - offset as usize;
+            let offset = match raw_off <= pos as i64 {
+                true => raw_off,
+                false => raw_off - block_size as i64,
+            };
+            // 0 <= src < block_size follows from 0 < raw_off < block_size.
+            let src = (pos as i64 - offset) as usize;
+            let ln = ln as usize;
+            if ln > block_size - pos || ln > block_size - src {
+                return Err(BAD);
+            }
             // Overlapping LZ copy, byte at a time exactly as memcpy_lz_match.
-            for k in 0..ln as usize {
+            // Safe in both directions: each read index `src + k` is strictly
+            // greater than every write index up to and including `pos + k`.
+            for k in 0..ln {
                 data[pos + k] = data[src + k];
             }
-            pos += ln as usize;
+            pos += ln;
         }
 
         // One trailing literal run (possibly empty).

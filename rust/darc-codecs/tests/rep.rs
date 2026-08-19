@@ -152,3 +152,70 @@ fn an_absurd_compressed_block_size_is_refused() {
     s.extend_from_slice(&le(1 << 30));  // ...then a 1 GiB "compressed block"
     assert!(decompress(&s) < 0, "a compressed block far past the dictionary must be refused");
 }
+
+/// Issue #165. `data` is a CIRCULAR buffer of the rep block size, so once the
+/// input is longer than that block, a match can reach back past the start of
+/// the current cycle and its source lands *ahead* of the write position, in the
+/// tail the previous cycle wrote. The stream spells such an offset cyclically
+/// and the decoder unwraps it by subtracting the block size -- which makes the
+/// offset negative, and made the v2.0.0 bounds check (`offset <= 0`) reject the
+/// block as corrupt.
+///
+/// Every existing round-trip here passes a 64 MiB block and at most 100 KB of
+/// input, so the buffer never wrapped and nothing noticed. The reported case
+/// was two files, 113 MB, under the default `-m4` -- whose chain is `rep:96m`.
+///
+/// This test is deliberately expressed in the same terms: an input several
+/// times the block size, with repeats long enough (>= 512 bytes) and near
+/// enough (< block size) for rep to match across the wrap. Reverting the fix
+/// turns it red with `-7` on the first wrapped block.
+#[test]
+fn a_match_across_a_buffer_wrap_round_trips() {
+    fn prng(seed: u32, n: usize) -> Vec<u8> {
+        let mut s = seed;
+        (0..n).map(|_| { s = s.wrapping_mul(1103515245).wrapping_add(12345); (s >> 16) as u8 }).collect()
+    }
+    const BLOCK: u32 = 1 << 16;
+
+    // ~5 cycles of the buffer, with a 4 KB chunk recurring every 8 KB: every
+    // match is well under the block size, and most of them straddle a wrap.
+    let chunk = prng(7, 4000);
+    let mut input = Vec::new();
+    for i in 0..40u32 {
+        input.extend_from_slice(&chunk);
+        input.extend_from_slice(&prng(1000 + i, 4000));
+    }
+    assert!(input.len() > 4 * BLOCK as usize, "the buffer has to wrap for this to test anything");
+
+    let mut mem = Mem { input: input.clone(), pos: 0, out: Vec::new() };
+    let io = unsafe { Io::new(Some(cb), &mut mem as *mut Mem as *mut c_void) }.unwrap();
+    let rc = rep::compress(&io, BLOCK, 100, 512, i32::MAX, 512, 0, 1);
+    assert!(rc >= 0, "compress returned {rc}");
+    let packed = mem.out;
+    // ...and it has to have found matches, or the wrapped offset never occurs
+    // and the round-trip below proves nothing.
+    assert!(packed.len() < input.len() * 3 / 4, "rep found no matches: {} => {}", input.len(), packed.len());
+
+    let mut mem = Mem { input: packed, pos: 0, out: Vec::new() };
+    let io = unsafe { Io::new(Some(cb), &mut mem as *mut Mem as *mut c_void) }.unwrap();
+    let rc = rep::decompress(&io, BLOCK);
+    assert!(rc >= 0, "decompress returned {rc} on a stream whose matches wrap the buffer");
+    assert_eq!(mem.out, input, "round-trip mismatch across a buffer wrap");
+}
+
+/// The bound the wrap fix replaced the broken one with: an offset is spelled
+/// cyclically, so it must land in `[1, block_size)`. Outside that the source is
+/// not a position in the buffer at all, and the block is corrupt.
+#[test]
+fn an_offset_outside_the_cyclic_range_is_still_rejected() {
+    // BlockSize=1<<16; one block with num=1, an empty leading literal run, a
+    // match whose offset is >= the block size, then an empty trailing run.
+    for offset in [0u32, 1 << 16, 1 << 30, 0xffff_ffff] {
+        let block = [le(1), le(16), le(offset), le(0), le(0)].concat();
+        let mut s = le(1 << 16).to_vec();
+        s.extend_from_slice(&le(block.len() as u32));
+        s.extend_from_slice(&block);
+        s.extend_from_slice(&le(0));
+        assert!(decompress(&s) < 0, "offset {offset} must be refused");
+    }
+}
