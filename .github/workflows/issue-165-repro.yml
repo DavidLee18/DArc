@@ -111,6 +111,12 @@ jobs:
     - name: v3.0.1 must FAIL, exactly as reported
       shell: bash
       run: |
+        # GitHub runs every bash step as `bash -e`, so `set -uo pipefail` alone
+        # does NOT make a failing command survivable -- and this step exists
+        # precisely to run one that must fail. The first attempt died at
+        # `darc t` with exit 2, which was the reproduction, reported as a
+        # harness error before it could be read.
+        set +e
         set -uo pipefail
         cd in
         ../before/darc.exe a -y ../before.arc game.exe data.file > ../before-a.log 2>&1
