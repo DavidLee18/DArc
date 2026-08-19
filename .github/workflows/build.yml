@@ -157,8 +157,13 @@ jobs:
         set -euo pipefail
         needed=$(objdump -p rust/target/release/darc | awk '/NEEDED/ {print $2}' | sort -u)
         echo "$needed" | sed 's/^/  /'
+        # The dynamic loader is itself a NEEDED entry on glibc, named per
+        # architecture: ld-linux-x86-64.so.2 on amd64, ld-linux-aarch64.so.1
+        # on arm64. It is not a dependency in the sense this check is about --
+        # it is the thing that resolves the others -- and leaving it out is
+        # what made this step fail on its first run.
         extra=$(printf '%s\n' "$needed" \
-          | grep -vE '^(libc\.so\.6|libgcc_s\.so\.1|libm\.so\.6)$' || true)
+          | grep -vE '^(libc\.so\.6|libgcc_s\.so\.1|libm\.so\.6|ld-linux-[a-z0-9_-]+\.so\.[0-9]+)$' || true)
         [ -z "$extra" ] || {
           echo "::error::darc grew a system dependency: $(echo $extra)"
           echo "  README.md:28 says there are none. Either the dependency is a"
