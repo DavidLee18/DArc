@@ -269,7 +269,7 @@ jobs:
       # Narrowed from the `mingw-w64` metapackage, which pulls i686 AND x86-64
       # in both threading models. This job builds ONE target,
       # `x86_64-pc-windows-gnu`; nothing here has ever produced a 32-bit image,
-      # so the two i686 compilers were ~70 MB downloaded to be never invoked.
+      # so the two i686 compilers and their dev headers were pure waste.
       # On 2026-08-19 that was not merely wasteful -- apt fetched them FIRST,
       # so a degraded mirror spent the whole cap on packages nothing links:
       #
@@ -282,6 +282,10 @@ jobs:
       # 25 did not stop it recurring five times in one day. Fetching half as
       # much is the fix a bigger number was standing in for.
       #
+      # MEASURED on the run that made this change (PR #173): apt goes from
+      # "Need to get 386 MB" to 223 MB, and the step from a 25-minute timeout
+      # to 1m46s. The remaining 223 MB is almost entirely Wine.
+      #
       # BOTH threading variants of x86-64 are kept deliberately. Debian selects
       # `x86_64-w64-mingw32-gcc` through update-alternatives, and installing
       # only one model leaves the alternative able to point at a compiler that
@@ -290,9 +294,9 @@ jobs:
       # `mingw-w64-tools` goes with them: it supplies widl/genidl/genpeimg, and
       # nothing in this tree references any of the three.
       #
-      # Wine stays for now -- the smoke test below still needs it. Its i386
-      # package set is the other half of this download, and a native Windows
-      # runner is the queued change that removes it.
+      # Wine stays for now -- the smoke test below still needs it. After this
+      # narrowing its i386 package set is nearly the ENTIRE download, and a
+      # native Windows runner is the queued change that removes it.
       timeout-minutes: 25
       run: |
         sudo apt-get update
