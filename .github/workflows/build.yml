@@ -312,11 +312,22 @@ jobs:
       #   Fetched 115 MB in 2s (57.5 MB/s)
       #   Install cross toolchain    19s
       #
-      # 115 MB inside 10 minutes tolerates a mirror down to ~192 kB/s. The
-      # slowest one seen on 2026-08-19 managed 239 kB/s, so even that mirror
-      # finishes here with room to spare -- which is exactly what 25 was
-      # standing in for while the download was three times the size. There is
-      # now no reason for this step to be the one exception to the policy.
+      # 115 MB inside 10 minutes needs a mirror above ~192 kB/s. That is the
+      # arithmetic; do NOT read it as a safety margin. The very first run of
+      # this change was served by azure.archive.ubuntu.com at 19 kB/s:
+      #
+      #   14:45:14  Get:2 binutils-mingw-w64-x86-64   6053 kB
+      #   14:50:37  Get:3 mingw-w64-common            5580 kB   (18.7 kB/s)
+      #   14:54:33  Get:4 mingw-w64-x86-64-dev        3786 kB   (23.6 kB/s)
+      #   14:55:18  ##[error] timed out after 10 minutes
+      #
+      # Three packages and ~15 MB of 115 in ten minutes. At that rate the whole
+      # fetch takes 100 MINUTES, so 25 would have failed here too, and so would
+      # any cap worth having. The size of this number is NOT the lever on a
+      # mirror that degraded -- retries, an explicit Acquire::http::Timeout and
+      # a package cache are, and they are the queued change. 10 is kept because
+      # it matches the policy every other install follows and it names the
+      # culprit sooner, not because it makes this step reliable.
       timeout-minutes: 10
       run: |
         sudo apt-get update

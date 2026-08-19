@@ -190,10 +190,9 @@ jobs:
       # amd64 is smoke-tested on a real Windows runner in windows-amd64-verify,
       # the same way arm64 always has been.
       #
-      # 10, matching build.yml, and for the same measured reason: this fetches
-      # 115 MB, which fits inside 10 minutes at any mirror rate above
-      # ~192 kB/s. Keeping a different number here is how release.yml drifted
-      # from build.yml before.
+      # 10, matching build.yml. Not because 10 is enough -- a mirror serving
+      # 19 kB/s defeats any cap, see the note there -- but because a cap that
+      # differs between the two files is the drift that stopped v3.0.0.
       timeout-minutes: 10
       if: matrix.arch == 'x86_64'
       run: |
