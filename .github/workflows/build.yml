@@ -135,6 +135,40 @@ jobs:
           head -20 /tmp/arc-help.txt; exit 1; }
         echo "binary verified: $(wc -c < rust/target/release/darc) bytes"
 
+
+    # README.md:28 claims this build needs nothing outside the Rust toolchain --
+    # "no ncurses, no libcurl, no system TLS" -- and until now that was prose
+    # rather than a check. It has to be a check here specifically, because CI
+    # cannot otherwise tell:
+    #
+    # `libncurses-dev` was installed by 13 jobs and the apt output was always
+    # `already the newest version ... 0 newly installed`. GitHub's Ubuntu image
+    # ships it. So a green run looks IDENTICAL whether or not the build needs
+    # ncurses, and deleting the install proves nothing on its own. The same
+    # goes for libcurl and OpenSSL, which the image also carries.
+    #
+    # The dynamic dependency list does tell, and it is what the claim actually
+    # means. An allowlist rather than a search for specific offenders: a system
+    # dependency nobody predicted is exactly the one worth catching, and this
+    # fails on it. Widening the list is a deliberate act.
+    - name: The binary must link nothing beyond libc (Linux)
+      if: runner.os == 'Linux'
+      run: |
+        set -euo pipefail
+        needed=$(objdump -p rust/target/release/darc | awk '/NEEDED/ {print $2}' | sort -u)
+        echo "$needed" | sed 's/^/  /'
+        extra=$(printf '%s\n' "$needed" \
+          | grep -vE '^(libc\.so\.6|libgcc_s\.so\.1|libm\.so\.6)$' || true)
+        [ -z "$extra" ] || {
+          echo "::error::darc grew a system dependency: $(echo $extra)"
+          echo "  README.md:28 says there are none. Either the dependency is a"
+          echo "  mistake, or the README and this allowlist need updating together."
+          exit 1; }
+        # ...and the check must be capable of failing: objdump has to have
+        # actually read an ELF. An empty list would satisfy the grep above.
+        [ -n "$needed" ] || {
+          echo "::error::objdump reported no NEEDED entries at all -- this check did not run"
+          exit 1; }
     # Round-trip every compression method and solid mode over a deterministic
     # corpus, then compare each archive against a recorded fingerprint.
     # The round-trip half catches data loss; the fingerprint half catches
