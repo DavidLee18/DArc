@@ -39,6 +39,19 @@ Three more were added with `--autorun` (#154), all in that spirit:
   inert on an SFX file**, and so is `unarc` given any explicit command. Only the
   stub, run as itself, with no command named, after a `y`, runs anything.
 
+A sixth was forced by issue #165: **REP decodes a match whose source wraps the
+circular buffer; the reference rejects it.** `rep`'s output buffer is cyclic, so
+once the input passes the rep block size a match can reach back past the start
+of the current cycle and its source lands *ahead* of the write position. The
+v2.0.0 bounds check (`offset <= 0`) treated exactly that as corruption, so
+**`darc t`/`darc x` failed with `rep failed: codec returned -7` on any archive
+larger than its own rep block** — the default `-m4` is `rep:96m`, so two files
+totalling 113 MB were enough. The archives were always *written* correctly;
+v2.0.0 through v3.0.1 could not read them back. The C at `DARC_C_REF_SHA` and
+the Haskell reference both still carry the broken bound, which is why
+`rep-check.sh` must NOT be extended with a wrapping case — the oracle is wrong
+there. Gated in `rust/darc-codecs/tests/rep.rs`.
+
 **The port is finished: the archiver is Rust, end to end.** Rust ~78,000 lines
 (every codec, the crypto, the `.7z` reader, SREP, and the whole application
 layer). **No C++ is on any shipped path any more**, and none is compiled into

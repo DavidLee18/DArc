@@ -37,6 +37,25 @@ cc() { # cc <output> [args appended after the sources]
 cc "$W/c"                    || exit 1
 cc "$W/rs" -DUSE_RUST "$LIB" || exit 1
 
+
+# WHAT THIS HARNESS CANNOT REACH, and where it is gated instead.
+#
+# `data` in rep_decompress is a CIRCULAR buffer of the rep block size, so a
+# match found after the input passes that size can reach back past the start of
+# the current cycle: its source then lies AHEAD of the write position, and the
+# stream spells the offset cyclically. rep_ref.cpp hardcodes the method default
+# BlockSize = 64 MiB, so no corpus small enough to run here can wrap it -- and
+# the case went untested for exactly that reason until issue #165.
+#
+# It is gated in rust/darc-codecs/tests/rep.rs
+# (`a_match_across_a_buffer_wrap_round_trips`), which drives the ported encoder
+# and decoder directly and can therefore pick a 64 KiB block.
+#
+# MARKED DIVERGENCE: the C at DARC_C_REF_SHA -- and every DArc from v2.0.0 to
+# v3.0.1, and the Haskell reference, all of which carry the same bounds check --
+# REJECTS a wrapped stream with FREEARC_ERRCODE_BAD_COMPRESSED_DATA. The port
+# decodes it. So this comparison must not be extended with a wrapping case: the
+# oracle is wrong there, and a red run would be recording the reference's bug.
 # Inputs: REP matches only >=512-byte repeats, so cover long repeats, block
 # edges, incompressible data and the empty case.
 ( cd "$ROOT/rust" && cargo build --release -q -p darc-codecs --bin corpusgen ) || exit 1
