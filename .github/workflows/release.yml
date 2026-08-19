@@ -39,11 +39,17 @@ concurrency:
   group: release-${{ github.event.inputs.tag || github.ref }}
   cancel-in-progress: false
 
+# Timeouts, on the same policy as build.yml -- 30 minutes a job, 10 on the
+# package installs -- and applied here for the reason this file exists to be
+# careful about: it is a near-copy of build.yml that ONLY a tag push can run,
+# so a divergence between the two cannot be discovered until a release is
+# being cut. A hang here holds a release rather than a PR.
 jobs:
   # ── Native builds: Linux amd64/arm64 and macOS arm64 ─────────────────────────
   build:
     name: ${{ matrix.label }}
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -90,12 +96,17 @@ jobs:
       if: runner.os == 'Linux'
 
     - name: Install packages (Linux)
+      timeout-minutes: 10
       if: runner.os == 'Linux'
       run: |
         sudo apt-get update
         sudo apt-get install -y libncurses-dev
 
     - name: Install packages (macOS)
+      # Best-effort, as in build.yml: bounded, but a timeout must not fail
+      # the job where a failing brew does not.
+      timeout-minutes: 10
+      continue-on-error: true
       if: runner.os == 'macOS'
       run: brew install ncurses || true
 
@@ -165,6 +176,7 @@ jobs:
   windows-cross:
     name: ${{ matrix.label }}
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -186,6 +198,7 @@ jobs:
         ref: ${{ github.event.inputs.tag || github.ref }}
 
     - name: Install cross toolchain and Wine
+      timeout-minutes: 10
       if: matrix.arch == 'x86_64'
       run: |
         sudo apt-get update
@@ -289,6 +302,7 @@ jobs:
   windows-arm64-verify:
     needs: windows-cross
     runs-on: windows-11-arm
+    timeout-minutes: 30
     steps:
     - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
       with:
@@ -339,6 +353,7 @@ jobs:
   publish:
     needs: [ build, windows-cross, windows-arm64-verify ]
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
     - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
       with:
