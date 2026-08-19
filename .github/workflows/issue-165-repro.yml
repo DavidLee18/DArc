@@ -1,0 +1,164 @@
+# TEMPORARY. Reproduce issue #165 on native Windows x64 with the reporter's own
+# files, and prove the fix on them.
+#
+# DELETE THIS FILE BEFORE MERGING #166. It exists to answer one question on the
+# one platform and data set that raised it; the permanent gate for the same
+# defect is `a_match_across_a_buffer_wrap_round_trips` in
+# rust/darc-codecs/tests/rep.rs, which needs no download and no Windows.
+#
+# Why native Windows x64 at all: build.yml has no such runner. The x64 Windows
+# binary is cross-built on Linux and exercised under Wine, and the only real
+# Windows kernel in CI is windows-11-arm. The report is x64, so this runs there.
+#
+# The "before" binary is not a rebuild of anything -- it is the published
+# darc-3.0.1-windows-amd64.zip, byte for byte what the reporter ran.
+name: issue-165 repro (temporary)
+
+on:
+  push:
+    branches: [ fix-165-rep-wrap ]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  # The fix, cross-built exactly the way windows-cross builds the shipped x64
+  # binary, so the comparison below is between two artifacts of the same shape.
+  build-fixed:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      with:
+        lfs: false
+    - name: Install cross toolchain
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y --no-install-recommends mingw-w64 mingw-w64-tools
+    - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
+    - uses: ./.github/actions/cargo-cache
+    - name: Build (Windows cross)
+      run: |
+        set -euo pipefail
+        cargo build --release --manifest-path rust/Cargo.toml \
+          --target x86_64-pc-windows-gnu -p darc-arc --bin darc
+        mkdir -p out
+        cp rust/target/x86_64-pc-windows-gnu/release/darc.exe out/darc.exe
+        head -c 2 out/darc.exe | grep -q '^MZ' || { echo "::error::not a PE image"; exit 1; }
+    - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+      with:
+        name: darc-fixed-win64
+        path: out/darc.exe
+        if-no-files-found: error
+
+  repro:
+    needs: build-fixed
+    runs-on: windows-latest
+    env:
+      # The reporter's upload. Pinned by digest, because a link is not a
+      # contract: if the file behind it ever changes, this must stop rather
+      # than quietly test something else.
+      DATA_URL: https://pixeldrain.com/api/file/BNccVA9u?download
+      DATA_SHA: caa0cb091aa559265f15c0adb894431cad36331f62fc52c21db4d501c04ac3c5
+      GH_TOKEN: ${{ github.token }}
+    steps:
+    - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+      with:
+        name: darc-fixed-win64
+        path: fixed
+
+    # ── The two binaries, each with the SAME darc.groups beside it ───────────
+    # Not a detail: both builds look for a grouping table next to their own
+    # executable, and one that finds one while the other does not is a
+    # different CONFIGURATION, not a different implementation. That is exactly
+    # how run-tests.sh once reported 21 of 24 as format drift. The archives are
+    # compared byte for byte below, so this has to be right or that comparison
+    # means nothing.
+    - name: Fetch the published v3.0.1 Windows x64 build (the "before")
+      shell: bash
+      run: |
+        set -euo pipefail
+        gh release download v3.0.1 --repo "$GITHUB_REPOSITORY" \
+          -p 'darc-3.0.1-windows-amd64.zip' -D .
+        7z x -obefore darc-3.0.1-windows-amd64.zip >/dev/null
+        mv before/darc-3.0.1-windows-amd64/* before/
+        cp before/darc.groups fixed/darc.groups
+        ls -l before fixed
+        ./before/darc.exe 2>&1 | head -3 || true
+        ./fixed/darc.exe  2>&1 | head -3 || true
+
+    - name: Fetch the reported data
+      shell: bash
+      run: |
+        set -euo pipefail
+        curl -sSL --retry 3 --max-time 900 -o data.7z "$DATA_URL"
+        got="$(sha256sum data.7z | cut -d' ' -f1)"
+        [ "$got" = "$DATA_SHA" ] || {
+          echo "::error::data.7z is $got, expected $DATA_SHA -- the upload changed"; exit 1; }
+        7z x -oin data.7z >/dev/null
+        ls -l in
+        # The two files and their sizes, as reported: 62.304.768 + 51.195.176
+        # = 113.499.944, which is the figure in the issue.
+        ( cd in && sha256sum game.exe data.file ) | tee original.sha
+        total=$(( $(stat -c%s in/game.exe) + $(stat -c%s in/data.file) ))
+        [ "$total" -eq 113499944 ] || {
+          echo "::error::inputs total $total, not the reported 113499944"; exit 1; }
+
+    # ── The report, verbatim ────────────────────────────────────────────────
+    #     darc.exe a test.arc game.exe data.file
+    #     darc.exe t test.arc
+    # -y only so the run is non-interactive; it changes nothing else.
+    - name: v3.0.1 must FAIL, exactly as reported
+      shell: bash
+      run: |
+        set -uo pipefail
+        cd in
+        ../before/darc.exe a -y ../before.arc game.exe data.file > ../before-a.log 2>&1
+        arc=$?; tail -2 ../before-a.log
+        [ "$arc" -eq 0 ] || { echo "::error::v3.0.1 could not even create the archive (exit $arc)"; exit 1; }
+        ../before/darc.exe t -y ../before.arc > ../before-t.log 2>&1
+        rc=$?
+        cat ../before-t.log
+        # A pass here is not good news: it means this job is not testing the
+        # reported defect, and everything below would be vacuous.
+        if [ "$rc" -eq 0 ]; then
+          echo "::error::v3.0.1 tested this archive successfully -- the reported failure did NOT reproduce, so this job proves nothing"
+          exit 1
+        fi
+        grep -q 'rep failed: codec returned -7' ../before-t.log || {
+          echo "::error::v3.0.1 failed, but not with the reported message"; exit 1; }
+        echo "reproduced: exit $rc, 'rep failed: codec returned -7'"
+
+    - name: The fix must PASS on the same files
+      shell: bash
+      run: |
+        set -euo pipefail
+        cd in
+        ../fixed/darc.exe a -y ../after.arc game.exe data.file > ../after-a.log 2>&1
+        tail -2 ../after-a.log
+        ../fixed/darc.exe t -y ../after.arc
+        echo "tested clean"
+
+    # A decoder-only change must move no archive byte. Same machine, same
+    # thread count, same grouping table, same source data -- so this is an
+    # equality, not a likelihood. It is also what says the v3.0.1 archives
+    # people already have were written correctly and are readable, not
+    # merely that new ones are.
+    - name: The two archives must be byte-identical
+      shell: bash
+      run: |
+        set -euo pipefail
+        ls -l before.arc after.arc
+        cmp before.arc after.arc && echo "identical: the encoder is untouched"
+
+    - name: The fix must read the archive v3.0.1 WROTE, and return the bytes
+      shell: bash
+      run: |
+        set -euo pipefail
+        ./fixed/darc.exe t -y before.arc
+        mkdir -p out
+        ./fixed/darc.exe x -y -dpout before.arc > x.log 2>&1 || { cat x.log; exit 1; }
+        cd out
+        sha256sum -c ../original.sha --strict --status || {
+          echo "::error::extracted bytes differ from the originals"; sha256sum game.exe data.file; exit 1; }
+        echo "extracted bytes match the originals"
