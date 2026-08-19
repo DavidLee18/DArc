@@ -242,13 +242,35 @@ jobs:
   # job that has never once succeeded.
   windows-cross:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
     - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
       with:
         lfs: false
     - name: Install cross toolchain and Wine
-      timeout-minutes: 10
+      # 25, not the 10 the other installs get, and the difference is measured
+      # rather than defensive. This step pulls the whole `mingw-w64`
+      # metapackage -- i686 AND x86-64, win32 AND posix threading, ~150 MB --
+      # plus `wine`'s several-hundred-package i386 set. On 2026-08-19 at 03:47
+      # a degraded (working, but ~500 KB/s) mirror got through TEN packages in
+      # the 10 minutes before the cap fired, with steady progress the whole
+      # way and no stall:
+      #
+      #   03:50:38  Get:7  gcc-mingw-w64-i686-posix        35.2 MB
+      #   03:53:14  Get:10 gcc-mingw-w64-i686-win32        35.2 MB
+      #   03:54:21  ##[error] timed out after 10 minutes
+      #
+      # That is NOT the failure the caps were added for. The earlier ones that
+      # day were nine minutes of total silence from a mirror answering `Ign` to
+      # every index, where no cap short of six hours changes the outcome. This
+      # one would have finished. A cap that fires on a slow-but-progressing
+      # download is the false red the policy note above says to avoid, so this
+      # step gets a bound sized to what it actually downloads.
+      #
+      # The real fix is to stop downloading 150 MB to build one target: only
+      # `x86_64-pc-windows-gnu` is used here, and Wine is only for the smoke
+      # test, which a native Windows runner does better. Both are queued.
+      timeout-minutes: 25
       run: |
         sudo apt-get update
         # mingw-w64 is still needed: the x86_64-pc-windows-gnu Rust target links
@@ -494,13 +516,15 @@ jobs:
   interop-windows-amd64:
     needs: [ interop-produce, windows-cross ]
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     steps:
     - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
       with:
         lfs: false
     - name: Install Wine
-      timeout-minutes: 10
+      # Wine's i386 dependency set, on the same measurement as
+      # windows-cross above.
+      timeout-minutes: 25
       run: |
         sudo apt-get update
         sudo apt-get install -y --no-install-recommends wine64 wine

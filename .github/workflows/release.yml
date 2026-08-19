@@ -176,7 +176,7 @@ jobs:
   windows-cross:
     name: ${{ matrix.label }}
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       matrix:
@@ -198,7 +198,8 @@ jobs:
         ref: ${{ github.event.inputs.tag || github.ref }}
 
     - name: Install cross toolchain and Wine
-      timeout-minutes: 10
+      # Same measurement as build.yml: this one downloads ~150 MB.
+      timeout-minutes: 25
       if: matrix.arch == 'x86_64'
       run: |
         sudo apt-get update
