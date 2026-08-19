@@ -55,9 +55,40 @@ concurrency:
   group: build-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || format('run-{0}', github.run_id) }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
+
+# ── Timeouts ────────────────────────────────────────────────────────────────
+#
+# GitHub's default job timeout is 360 MINUTES. Nothing here comes near that,
+# so in practice it is not a timeout at all: it is how long a hung job holds a
+# runner and keeps the whole run "in progress".
+#
+# That is not hypothetical. On 2026-08-19 `interop-windows-amd64` sat in
+# `Install Wine` -- an `apt-get install wine64 wine` that had taken 20s, 27s
+# and 30s on the three preceding runs of the same job, and 73s in
+# `windows-cross` in the SAME run -- for 38 minutes and was still going, with
+# the other 20 jobs long since green. It would have held the run for six hours.
+#
+# So, two layers, and the numbers come from measurement rather than taste:
+#
+#   job   30 minutes. The slowest job here measured 11 minutes over five green
+#         runs on main (rust-codecs-debug-assert; then -b at 10 and -ppmd at
+#         9), so 30 is roughly 3x the worst warm case and about 2x a plausible
+#         cold-cache one. Tightening it further buys nothing -- the point is to
+#         bound a HANG, not to police normal variance -- and risks red runs
+#         that mean only "the runner was slow today".
+#
+#   step  10 minutes on the package installs and the oracle fetch. These are
+#         the steps that reach the network for something this repo does not
+#         control, they take well under a minute when they work, and a step cap
+#         names the culprit in the UI instead of killing the job at the 30
+#         mark with nothing to point at.
+#
+# rust-codecs-ppmd keeps its own 60: it is a deliberate wide grid, sized from a
+# measurement at its own site, and it predates this policy.
 jobs:
   build:
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -79,6 +110,7 @@ jobs:
     - uses: ./.github/actions/llvm
       if: runner.os == 'Linux'
     - name: Install packages (Linux)
+      timeout-minutes: 10
       if: runner.os == 'Linux'
       run: |
         sudo apt-get update
@@ -154,6 +186,12 @@ jobs:
     # has claimed macOS support for a long time while the build did not
     # actually work there; without a runner it would simply rot again.
     - name: Install packages (macOS)
+      # `brew install ... || true` says this step is best-effort, and a bare
+      # cap would quietly promote it to a gating one: a slow-but-succeeding
+      # brew would fail the job where a FAILING brew does not. Bounded and
+      # still non-fatal.
+      timeout-minutes: 10
+      continue-on-error: true
       if: runner.os == 'macOS'
       run: |
         brew install ncurses || true
@@ -204,11 +242,13 @@ jobs:
   # job that has never once succeeded.
   windows-cross:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
     - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
       with:
         lfs: false
     - name: Install cross toolchain and Wine
+      timeout-minutes: 10
       run: |
         sudo apt-get update
         # mingw-w64 is still needed: the x86_64-pc-windows-gnu Rust target links
@@ -288,6 +328,7 @@ jobs:
   # hardware rather than on Wine, which is the stronger of the two checks.
   windows-arm64-cross:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
     - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
       with:
@@ -354,6 +395,7 @@ jobs:
   windows-arm64-test:
     needs: [ windows-arm64-cross, interop-produce ]
     runs-on: windows-11-arm
+    timeout-minutes: 30
     steps:
     - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
       with:
@@ -416,12 +458,14 @@ jobs:
   # cheaper than serialising the whole Windows chain behind it.
   interop-produce:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
     - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
       with:
         lfs: false
     - uses: ./.github/actions/llvm
     - name: Install packages
+      timeout-minutes: 10
       run: |
         sudo apt-get update
         sudo apt-get install -y libncurses-dev
@@ -450,11 +494,13 @@ jobs:
   interop-windows-amd64:
     needs: [ interop-produce, windows-cross ]
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
     - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
       with:
         lfs: false
     - name: Install Wine
+      timeout-minutes: 10
       run: |
         sudo apt-get update
         sudo apt-get install -y --no-install-recommends wine64 wine
@@ -503,6 +549,7 @@ jobs:
   interop-verify:
     needs: [ interop-produce, interop-windows-amd64, windows-arm64-test ]
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
     - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
       with:
@@ -607,6 +654,7 @@ jobs:
   # to leave state that makes an unrelated test pass.
   rust-tests:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
     - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
       with:
@@ -688,6 +736,7 @@ jobs:
   # the linker never pulled the Rust one.
   rust-codecs:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
     - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
       with:
@@ -695,6 +744,7 @@ jobs:
     - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
     - uses: ./.github/actions/llvm
     - name: Install packages
+      timeout-minutes: 10
       run: |
         sudo apt-get update
         sudo apt-get install -y libncurses-dev
@@ -708,6 +758,7 @@ jobs:
   # do with the harnesses above -- a test-of-the-tests, not a test.
   rust-codecs-sabotage:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
     - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
       with:
@@ -715,6 +766,7 @@ jobs:
     - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
     - uses: ./.github/actions/llvm
     - name: Install packages
+      timeout-minutes: 10
       run: |
         sudo apt-get update
         sudo apt-get install -y libncurses-dev
@@ -742,6 +794,7 @@ jobs:
   # Tornado's two and BSC's LZ4-HC dominate the set.
   rust-codecs-a:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
     - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
       with:
@@ -749,6 +802,7 @@ jobs:
     - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
     - uses: ./.github/actions/llvm
     - name: Install packages
+      timeout-minutes: 10
       run: |
         sudo apt-get update
         # p7zip-full supplies `7z`, which sevenz-check.sh uses to AUTHOR its
@@ -856,6 +910,7 @@ jobs:
   # tornado/matchfinder (201) and lz4hc (130). ~2850 Rust invocations, ~13 min.
   rust-codecs-debug-assert:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
     - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
       with:
@@ -863,6 +918,7 @@ jobs:
     - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
     - uses: ./.github/actions/llvm
     - name: Install packages
+      timeout-minutes: 10
       run: |
         sudo apt-get update
         sudo apt-get install -y libncurses-dev
@@ -888,16 +944,19 @@ jobs:
   # is invoked separately from the loop.
   arc-harnesses:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
     - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
       with:
         lfs: false
     - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
     - name: Install packages
+      timeout-minutes: 10
       run: |
         sudo apt-get update
         sudo apt-get install -y libncurses-dev
     - name: Fetch the Haskell oracle
+      timeout-minutes: 10
       run: |
         chmod +x rust/difftest/*.sh
         rust/difftest/haskell-reference.sh
@@ -934,6 +993,7 @@ jobs:
 
   rust-codecs-b:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
     - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
       with:
@@ -941,6 +1001,7 @@ jobs:
     - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
     - uses: ./.github/actions/llvm
     - name: Install packages
+      timeout-minutes: 10
       run: |
         sudo apt-get update
         sudo apt-get install -y libncurses-dev
@@ -979,6 +1040,7 @@ jobs:
   # with the rest it dominated the job.
   rust-codecs-bsc:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
     - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
       with:
@@ -986,6 +1048,7 @@ jobs:
     - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
     - uses: ./.github/actions/llvm
     - name: Install packages
+      timeout-minutes: 10
       run: |
         sudo apt-get update
         sudo apt-get install -y libncurses-dev
@@ -1037,6 +1100,7 @@ jobs:
   # does not apply to this x86-64 runner regardless.
   rust-codecs-srep:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
     - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
       with:
@@ -1044,6 +1108,7 @@ jobs:
     - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
     - uses: ./.github/actions/llvm
     - name: Install packages
+      timeout-minutes: 10
       run: |
         sudo apt-get update
         sudo apt-get install -y libncurses-dev
@@ -1081,6 +1146,7 @@ jobs:
   # No MicroHs: it drives docrypt and Pbkdf2Hmac directly, not through arc.
   crypto-difftest:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
     - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
       with:
@@ -1088,6 +1154,7 @@ jobs:
     - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
     - uses: ./.github/actions/llvm
     - name: Install packages
+      timeout-minutes: 10
       run: |
         sudo apt-get update
         sudo apt-get install -y libncurses-dev
@@ -1141,6 +1208,7 @@ jobs:
     - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
     - uses: ./.github/actions/llvm
     - name: Install packages
+      timeout-minutes: 10
       run: |
         sudo apt-get update
         sudo apt-get install -y libncurses-dev
@@ -1164,6 +1232,7 @@ jobs:
   # half -- encrypted archives must still be created and read back correctly.
   encryption-roundtrip:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
     - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
       with:
@@ -1171,6 +1240,7 @@ jobs:
     - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
     - uses: ./.github/actions/llvm
     - name: Install packages
+      timeout-minutes: 10
       run: |
         sudo apt-get update
         sudo apt-get install -y libncurses-dev
@@ -1187,6 +1257,7 @@ jobs:
 
   unarc-sfx:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
     - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
       with:
@@ -1195,6 +1266,7 @@ jobs:
     - uses: ./.github/actions/cargo-cache
     - uses: ./.github/actions/llvm
     - name: Install packages
+      timeout-minutes: 10
       run: |
         sudo apt-get update
         sudo apt-get install -y libncurses-dev
@@ -1242,6 +1314,7 @@ jobs:
     # The 18th CLI harness, and the only one the `arc-harnesses` job cannot run:
     # it prepends an SFX module, which is rust/target/release/unarc, built above.
     - name: Fetch the Haskell oracle
+      timeout-minutes: 10
       run: |
         rust/difftest/haskell-reference.sh
         test -x Tests/arc-ghc
