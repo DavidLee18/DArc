@@ -266,35 +266,42 @@ jobs:
       with:
         lfs: false
     - name: Install cross toolchain and Wine
-      # 25, not the 10 the other installs get, and the difference is measured
-      # rather than defensive. This step pulls the whole `mingw-w64`
-      # metapackage -- i686 AND x86-64, win32 AND posix threading, ~150 MB --
-      # plus `wine`'s several-hundred-package i386 set. On 2026-08-19 at 03:47
-      # a degraded (working, but ~500 KB/s) mirror got through TEN packages in
-      # the 10 minutes before the cap fired, with steady progress the whole
-      # way and no stall:
+      # Narrowed from the `mingw-w64` metapackage, which pulls i686 AND x86-64
+      # in both threading models. This job builds ONE target,
+      # `x86_64-pc-windows-gnu`; nothing here has ever produced a 32-bit image,
+      # so the two i686 compilers were ~70 MB downloaded to be never invoked.
+      # On 2026-08-19 that was not merely wasteful -- apt fetched them FIRST,
+      # so a degraded mirror spent the whole cap on packages nothing links:
       #
       #   03:50:38  Get:7  gcc-mingw-w64-i686-posix        35.2 MB
       #   03:53:14  Get:10 gcc-mingw-w64-i686-win32        35.2 MB
       #   03:54:21  ##[error] timed out after 10 minutes
       #
-      # That is NOT the failure the caps were added for. The earlier ones that
-      # day were nine minutes of total silence from a mirror answering `Ign` to
-      # every index, where no cap short of six hours changes the outcome. This
-      # one would have finished. A cap that fires on a slow-but-progressing
-      # download is the false red the policy note above says to avoid, so this
-      # step gets a bound sized to what it actually downloads.
+      # That shape -- steady progress, no stall, cap fires anyway -- is the
+      # false red the policy note above says to avoid, and raising the cap to
+      # 25 did not stop it recurring five times in one day. Fetching half as
+      # much is the fix a bigger number was standing in for.
       #
-      # The real fix is to stop downloading 150 MB to build one target: only
-      # `x86_64-pc-windows-gnu` is used here, and Wine is only for the smoke
-      # test, which a native Windows runner does better. Both are queued.
+      # BOTH threading variants of x86-64 are kept deliberately. Debian selects
+      # `x86_64-w64-mingw32-gcc` through update-alternatives, and installing
+      # only one model leaves the alternative able to point at a compiler that
+      # is not on disk. The saving is the architecture, not the model.
+      #
+      # `mingw-w64-tools` goes with them: it supplies widl/genidl/genpeimg, and
+      # nothing in this tree references any of the three.
+      #
+      # Wine stays for now -- the smoke test below still needs it. Its i386
+      # package set is the other half of this download, and a native Windows
+      # runner is the queued change that removes it.
       timeout-minutes: 25
       run: |
         sudo apt-get update
-        # mingw-w64 is still needed: the x86_64-pc-windows-gnu Rust target links
-        # through it, and `ring` (under rustls, under ureq) compiles C and asm.
-        # cpphs is gone with the Haskell.
-        sudo apt-get install -y --no-install-recommends mingw-w64 mingw-w64-tools wine64 wine
+        # The x86_64-pc-windows-gnu Rust target links through mingw, and `ring`
+        # (under rustls, under ureq) compiles C and asm with it. No C++ is
+        # built here, so g++-mingw-w64 is not installed; if that ever changes,
+        # the build step fails loudly rather than silently mis-linking.
+        sudo apt-get install -y --no-install-recommends \
+          gcc-mingw-w64-x86-64 mingw-w64-x86-64-dev wine64 wine
     # The Rust codecs are built by default now, so this must precede the first
     # build, not follow it. Targets come from rust-toolchain.toml.
     - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable

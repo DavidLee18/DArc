@@ -180,12 +180,15 @@ jobs:
         ref: ${{ github.event.inputs.tag || github.ref }}
 
     - name: Install cross toolchain and Wine
-      # Same measurement as build.yml: this one downloads ~150 MB.
+      # Same narrowing as build.yml, and it has to be the same here or the
+      # release path installs a toolchain no push ever exercised: x86-64 only,
+      # both threading models, no i686, no mingw-w64-tools.
       timeout-minutes: 25
       if: matrix.arch == 'x86_64'
       run: |
         sudo apt-get update
-        sudo apt-get install -y --no-install-recommends mingw-w64 mingw-w64-tools wine64 wine
+        sudo apt-get install -y --no-install-recommends \
+          gcc-mingw-w64-x86-64 mingw-w64-x86-64-dev wine64 wine
 
     # These two were the drift that stopped v3.0.0: build.yml's ARM64 job has
     # had them since c7a12c2 and this workflow never did, so the first release
