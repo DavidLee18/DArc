@@ -62,8 +62,41 @@ ARC="$(abspath "$ARC")"
 CORPUS="$(abspath "$CORPUS")"
 DIR="$(abspath "$DIR")"
 
+# The grouping table, passed EXPLICITLY -- the same fix run-tests.sh got in
+# #152, for the same bug, found here a second time.
+#
+# The archiver looks for `darc.groups` beside its own executable
+# (config.rs:beside_exe). Whether it finds one is a CONFIGURATION, and it
+# changes archive bytes: the table decides file order inside a solid block, so
+# every solid method encodes different input with one than without. Nothing
+# outside a solid block moves, which is the signature -- `-m0` (store) and
+# `-mdict -s-` (solid off) are byte-identical either way and every compressed
+# method differs.
+#
+# That is exactly what this harness was measuring. The Linux producer runs
+# rust/target/release/darc, with no table beside it; both Windows test jobs
+# download their .exe into Tests/, which HOLDS the tracked darc.groups. So one
+# side grouped and the other did not, and the harness reported the gap as a
+# cross-build format difference. It is not one. Measured, one binary, one host:
+#
+#   store      same          <- outside any solid block
+#   tor        47043 / 34771 <- with / without a groups file
+#   m4x        27156 / 26413
+#   lzma       31339 / 31255
+#
+# Note the tor pair. Those two numbers are the ones build.yml recorded as the
+# unexplained arm64 anomaly ("35% LARGER ... 34771 -> 47043"), reproduced here
+# with ONE binary on ONE machine by adding a file next to it. The toolchain
+# never came into it.
+#
+# Passing the option removes the question for every caller, however the binary
+# is laid out.
+HERE="$(abspath "$(dirname "$0")")"
+GROUPS_FILE="${DARC_INTEROP_GROUPS:-$HERE/darc.groups}"
+
 [ -x "$ARC" ]   || { echo "error: archiver not found or not executable: $ARC" >&2; exit 2; }
 [ -d "$CORPUS" ] || { echo "error: corpus not found: $CORPUS" >&2; exit 2; }
+[ -f "$GROUPS_FILE" ] || { echo "error: no groups file at $GROUPS_FILE" >&2; exit 2; }
 
 command -v sha256sum >/dev/null && SHA=sha256sum || SHA="shasum -a 256"
 WORK="${DARC_INTEROP_WORK:-${TMPDIR:-/tmp}/darc-interop-work}"
@@ -186,7 +219,7 @@ make)
     # --nodates so the bytes do not carry mtimes, and created from inside the
     # corpus so entries are stored corpus-relative -- both exactly as
     # run-tests.sh does it, so archives are comparable with its fingerprints.
-    if ( cd "$CORPUS" && "$ARC" a --nodates -r -y $opts "$(winpath "$arc")" . ) >"$WORK/$label.log" 2>&1; then
+    if ( cd "$CORPUS" && "$ARC" a --nodates -r -y "--groups=$(winpath "$GROUPS_FILE")" $opts "$(winpath "$arc")" . ) >"$WORK/$label.log" 2>&1; then
       if is_xfail "$label"; then
         printf '  %-20s XPASS created -- remove it from XFAIL\n' "$label"
         xpass=$((xpass+1))
@@ -215,6 +248,36 @@ make)
   fi
   [ "$made" -eq "$((want - xfail))" ] ||
     { echo "error: $((want - xfail - made)) archive(s) were not created" >&2; exit 1; }
+
+  # ── --groups= must actually REACH the archiver ────────────────────────────
+  # Lifted from run-tests.sh, which needs it for the same reason. Every archive
+  # above is written with an explicit --groups=; if that option were ignored --
+  # misspelled, dropped by the argument splitting, silently unsupported by an
+  # older binary -- these archives would go back to being grouped by whatever
+  # happens to sit beside the executable, and the whole comparison would
+  # quietly return to comparing two configurations. It would still be green.
+  #
+  # Grouping on and grouping off must produce DIFFERENT bytes. -s (solid) so
+  # the grouping has something to reorder, and -m1 so it is quick.
+  probe="$WORK/groups-probe"
+  rm -rf "$probe"; mkdir -p "$probe"
+  ( cd "$CORPUS" && "$ARC" a --nodates -r -y -m1 -s "--groups=$(winpath "$GROUPS_FILE")" \
+      "$(winpath "$probe/on.arc")"  . ) >"$WORK/groups-on.log"  2>&1
+  ( cd "$CORPUS" && "$ARC" a --nodates -r -y -m1 -s --groups- \
+      "$(winpath "$probe/off.arc")" . ) >"$WORK/groups-off.log" 2>&1
+  if [ ! -s "$probe/on.arc" ] || [ ! -s "$probe/off.arc" ]; then
+    echo "SELF-TEST FAILED: could not build the --groups probe archives" >&2
+    why "$WORK/groups-on.log"; why "$WORK/groups-off.log"
+    exit 1
+  fi
+  if cmp -s "$probe/on.arc" "$probe/off.arc"; then
+    echo "SELF-TEST FAILED: --groups=$GROUPS_FILE and --groups- produced identical bytes," >&2
+    echo "so the option is not reaching the archiver and every archive above was" >&2
+    echo "grouped by whatever sits beside the executable instead." >&2
+    exit 1
+  fi
+  echo "self-test: --groups= reaches the archiver ($(wc -c <"$probe/on.arc" | tr -d ' ') vs $(wc -c <"$probe/off.arc" | tr -d ' ') bytes)"
+  rm -rf "$probe"
   ;;
 
 # ---------------------------------------------------------------------------

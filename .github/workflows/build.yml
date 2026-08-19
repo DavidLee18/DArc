@@ -680,43 +680,67 @@ jobs:
     #                            started behaving differently under a different
     #                            compiler, which is worth failing over.
     #
-    #   linux vs windows-arm64   differs on 12 of 14. Archives are valid and
-    #                            read back correctly in both directions; they
-    #                            are just compressed differently, mostly by
-    #                            under 0.5% -- except -mtor, which is 35%
-    #                            LARGER (34771 -> 47043 bytes for the identical
-    #                            method spec, tor:434kb on both sides).
-    #                            Reported, not gated, until it is understood;
-    #                            gating it now would only pin it in place.
+    #   linux vs windows-arm64   REPORTED, not gated. It differed on 12 of 14
+    #                            for a long time and the cause was misdiagnosed
+    #                            throughout -- see below. Left ungated for one
+    #                            more run rather than flipped on the strength
+    #                            of a prediction; if it now reads `same` on all
+    #                            14, gating it is a one-line follow-up with a
+    #                            measurement behind it.
     #
-    # What that gap is NOT, each established by measurement rather than by
-    # argument. Recorded so the next attempt starts past them:
+    # ── The 12-of-14 gap was the GROUPS FILE, not the toolchain ──────────────
     #
-    #   architecture     It is the toolchain. Building windows-amd64 with
-    #                    llvm-mingw instead of mingw-gcc -- same architecture,
-    #                    same host, same Wine -- reproduces the arm64 sizes
-    #                    EXACTLY, all 14 of them. DARC_WIN_TOOLCHAIN=llvm in
-    #                    compile-win64-c is what that experiment used and is
-    #                    how to repeat it.
+    # Everything below this line used to be a list of things the gap was not,
+    # under the heading "It is the toolchain". That heading was wrong, and the
+    # eliminations were answering a question about llvm-mingw that never
+    # arose. Kept rather than deleted, because a wrong diagnosis that survived
+    # this long is worth being able to recognise again.
+    #
+    # The archiver reads `darc.groups` from beside its own executable
+    # (config.rs:beside_exe), and that file decides file ORDER inside a solid
+    # block. Both Windows test jobs download their .exe into Tests/, which
+    # holds the tracked darc.groups; interop-produce runs
+    # rust/target/release/darc, which has none beside it. One side grouped, the
+    # other did not. That is a configuration difference, and this harness was
+    # reporting it as a cross-build format difference.
+    #
+    # The signature is unmistakable once seen: the ONLY two methods that
+    # matched were `store` and `dict -s-` -- the two that put nothing in a
+    # solid block. Measured with ONE binary on ONE machine, adding the file
+    # beside it and changing nothing else:
+    #
+    #   store   same            m4x   27156 / 26413
+    #   tor     47043 / 34771   lzma  31339 / 31255
+    #
+    # Those tor numbers are the ones this comment used to carry as the
+    # unexplained "-mtor is 35% LARGER (34771 -> 47043)" anomaly, specific to
+    # llvm-mingw and "only observable in CI". They reproduce on a laptop.
+    #
+    # Fixed in Tests/interop-test.sh, which now passes --groups= explicitly and
+    # self-tests that the option arrives -- the same fix run-tests.sh got in
+    # #152, for the same bug, which makes this the second time this file has
+    # bitten. The lesson generalises past the option: when two binaries are
+    # compared, everything they READ has to be pinned, not just what they are.
+    #
+    # What the gap was NOT. These stay because they were measured honestly and
+    # remain true; they simply were not the answer:
+    #
     #   thread count     -mt1 through -mt8 are byte-identical for every codec.
     #   memory limit     -lc1 through -lc128 move -mtor by 24 bytes, against a
     #                    12272-byte gap. Only -m9 responds to -lc at all.
     #   parameters       Both sides store the same spec, tor:434kb, so it is
     #                    not memory-driven parameter selection either.
-    #   strict aliasing  The obvious suspect, and wrong. Adding
-    #                    -fno-strict-aliasing changed the output by nothing at
-    #                    all. It is still the correct flag -- see
+    #   strict aliasing  Adding -fno-strict-aliasing changed the output by
+    #                    nothing at all. It is still the correct flag -- see
     #                    compile-win64-c -- but it is not this.
     #   ARM64 per se     run-tests.sh checks the same committed fingerprints on
     #                    ubuntu-24.04-arm and macos-latest, and both match.
     #
-    # Also not reproducible with Apple clang on macOS: neither -fstrict-aliasing
-    # nor -O2 moves Tornado's output there. It is specific to llvm-mingw, so it
-    # can only be observed in CI.
-    #
-    # Next step, untried: compile only Compression/Tornado with mingw-gcc while
-    # the rest of the build uses llvm-mingw, to confirm the miscompilation is
-    # in that translation unit rather than somewhere shared.
+    # The one claim that must NOT be trusted again without redoing it is the
+    # old "building windows-amd64 with llvm-mingw reproduces the arm64 sizes
+    # EXACTLY, all 14". It cannot be squared with the measurement above, and
+    # the tooling it named (DARC_WIN_TOOLCHAIN in compile-win64-c) has since
+    # been deleted, so it can no longer be repeated as written.
     - name: Compare archive bytes across builds
       run: |
         set -uo pipefail
