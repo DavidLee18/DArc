@@ -18,9 +18,11 @@ name: Release
 #
 # The two Windows targets use different toolchains -- Debian's mingw-w64 (GCC)
 # for amd64, llvm-mingw (Clang) for arm64, because Debian packages x86_64 and
-# i686 only -- and are verified differently: amd64 under Wine on the runner
-# that built it, arm64 on a real windows-11-arm runner, since Wine has no ARM64
-# emulation. publish waits on both.
+# i686 only -- but they are now verified the SAME way: each on a real Windows
+# runner of its own architecture, from the packaged zip. amd64 used to be
+# verified under Wine on the Linux runner that cross-built it, which was a
+# weaker claim about the artifact and needed an apt install to make at all.
+# publish waits on both.
 
 on:
   push:
@@ -152,9 +154,11 @@ jobs:
   # amd64 uses Debian's mingw-w64 (GCC); arm64 uses llvm-mingw (Clang), because
   # Debian packages x86_64 and i686 only. See compile-win64-c.
   #
-  # amd64 is smoke-tested here under Wine. arm64 cannot be -- Wine has no ARM64
-  # emulation -- so it is verified on a real ARM64 Windows runner in the
-  # windows-arm64-verify job below, which publish waits for.
+  # Neither is smoke-tested here. arm64 never could be -- Wine has no ARM64
+  # emulation -- and amd64 stopped being, because "Wine ran it" is a weaker
+  # claim about a SHIPPED artifact than "Windows ran it". Both are verified on
+  # real hardware, from the packaged zip, in the windows-amd64-verify and
+  # windows-arm64-verify jobs below, which publish waits for.
   windows-cross:
     name: ${{ matrix.label }}
     runs-on: ubuntu-latest
@@ -179,16 +183,18 @@ jobs:
         lfs: false
         ref: ${{ github.event.inputs.tag || github.ref }}
 
-    - name: Install cross toolchain and Wine
+    - name: Install cross toolchain
       # Same narrowing as build.yml, and it has to be the same here or the
       # release path installs a toolchain no push ever exercised: x86-64 only,
-      # both threading models, no i686, no mingw-w64-tools.
+      # both threading models, no i686, no mingw-w64-tools. Wine is gone too --
+      # amd64 is smoke-tested on a real Windows runner in windows-amd64-verify,
+      # the same way arm64 always has been.
       timeout-minutes: 25
       if: matrix.arch == 'x86_64'
       run: |
         sudo apt-get update
         sudo apt-get install -y --no-install-recommends \
-          gcc-mingw-w64-x86-64 mingw-w64-x86-64-dev wine64 wine
+          gcc-mingw-w64-x86-64 mingw-w64-x86-64-dev
 
     # These two were the drift that stopped v3.0.0: build.yml's ARM64 job has
     # had them since c7a12c2 and this workflow never did, so the first release
@@ -246,14 +252,10 @@ jobs:
           echo "binary: $(wc -c < "$f") bytes"
         done
 
-    # Only amd64 can be exercised on this runner. arm64 is exercised on real
-    # hardware in windows-arm64-verify below.
-    - name: Smoke-test under Wine
-      if: matrix.arch == 'x86_64'
-      run: |
-        chmod +x Tests/win-test.sh
-        Tests/win-test.sh "Tests/${{ matrix.exe }}"
-
+    # Neither architecture is exercised on this runner any more. Both are
+    # verified on real Windows hardware, from the PACKAGED zip rather than from
+    # the build tree, in windows-amd64-verify and windows-arm64-verify below --
+    # which publish waits for.
     - name: Package
       run: |
         set -euo pipefail
@@ -280,6 +282,65 @@ jobs:
         name: ${{ matrix.label }}
         path: dist/*
         if-no-files-found: error
+
+  # ── Exercise the amd64 Windows artifact on real amd64 Windows ──────────────
+  # The twin of windows-arm64-verify below, and new in the same change that
+  # took Wine out of this workflow. Until then amd64 was smoke-tested on the
+  # Linux runner that cross-built it, from the BUILD TREE, under an emulator.
+  # This tests the zip that is about to be uploaded, on the kernel it is for.
+  #
+  # publish waits on it, so an amd64 binary that builds but cannot create an
+  # archive never reaches the release.
+  windows-amd64-verify:
+    needs: windows-cross
+    runs-on: windows-latest
+    timeout-minutes: 30
+    steps:
+    - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      with:
+        lfs: false
+        ref: ${{ github.event.inputs.tag || github.ref }}
+
+    - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+      with:
+        name: windows-amd64
+        path: dist
+
+    - name: Unpack and smoke-test
+      shell: bash
+      run: |
+        set -euo pipefail
+        zip=$(ls dist/*.zip)
+        # unzip, or 7z if this image has no unzip. NOT defensive padding: the
+        # arm64 job's `unzip` is MEASURED -- it is in the v3.0.2 release log --
+        # while on windows-latest it is only inferred, because unzip ships
+        # inside Git for Windows rather than as a listed image tool. This job
+        # cannot be exercised before a tag push, so an unknown here is
+        # discovered while cutting a release. Both tools are on the image; the
+        # one that runs says so.
+        if command -v unzip >/dev/null 2>&1; then
+          echo "unpacking with unzip"; unzip -q "$zip" -d unpacked
+        else
+          echo "unpacking with 7z"; 7z x -y -ounpacked "$zip" >/dev/null
+        fi
+        exe=$(ls unpacked/*/darc.exe)
+        test -s "$(dirname "$exe")/unarc.exe" || { echo "::error::no unarc.exe in the amd64 package"; exit 1; }
+        echo "testing $exe from $zip"
+        # Invoked through bash rather than directly: a Windows checkout does not
+        # preserve the executable bit.
+        bash Tests/win-test.sh "$exe"
+
+        # unarc from the PACKAGED zip. build.yml's windows-amd64-test runs the
+        # one it built, which proves the binary; this proves that packaging did
+        # not lose or corrupt it, which is a different claim and the one that
+        # matters to whoever downloads the zip.
+        unarc="$(dirname "$exe")/unarc.exe"
+        out=$("$unarc" 2>&1 || true)
+        echo "$out"
+        case "$out" in
+          *"Usage:"*) echo "unarc.exe runs" ;;
+          *) echo "::error::unarc.exe did not reach its usage text"; exit 1 ;;
+        esac
 
   # ── Exercise the ARM64 Windows artifact on real ARM64 Windows ───────────────
   # publish waits on this, so an arm64 binary that builds but cannot create an
@@ -317,10 +378,12 @@ jobs:
         # preserve the executable bit.
         bash Tests/win-test.sh "$exe"
 
-        # unarc too, and on this runner only: build.yml builds unarc for
-        # x86_64 Windows but NOT for ARM64, so unarc-win-arm64.exe is produced
-        # by this workflow alone and no CI job has ever executed it. It shipped
-        # in whatever state it was built in.
+        # unarc too. build.yml does not build unarc for ARM64 at all, so
+        # unarc-win-arm64.exe is produced by this workflow alone and this job
+        # is the only thing that has ever executed it; it shipped in whatever
+        # state it was built in. (The amd64 half of that hole is now closed in
+        # two places: build.yml's windows-amd64-test runs the built binary and
+        # windows-amd64-verify above runs the packaged one.)
         #
         # No args makes it print its usage to stderr and exit non-zero, which
         # is the point: reaching its own usage text proves the image loaded and
@@ -337,7 +400,7 @@ jobs:
 
   # ── Attach everything to the release ────────────────────────────────────────
   publish:
-    needs: [ build, windows-cross, windows-arm64-verify ]
+    needs: [ build, windows-cross, windows-amd64-verify, windows-arm64-verify ]
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:

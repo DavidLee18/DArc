@@ -68,6 +68,11 @@ concurrency:
 # `windows-cross` in the SAME run -- for 38 minutes and was still going, with
 # the other 20 jobs long since green. It would have held the run for six hours.
 #
+# Neither that job nor that step exists any more: the work moved to
+# `windows-amd64-test` on a windows-latest runner, which installs nothing. The
+# incident is kept here because it is what these caps were sized against, and
+# because the caps still guard every install that remains.
+#
 # So, two layers, and the numbers come from measurement rather than taste:
 #
 #   job   30 minutes. The slowest job here measured 11 minutes over five green
@@ -249,15 +254,19 @@ jobs:
   # windows.h reached via LZMA/Windows/Thread.h. They never produced a binary.
   #
   # compile-mhs-win64 builds the FREEARC_WIN path with the mingw-w64 cross
-  # toolchain, which works, and Wine lets the result actually be exercised
-  # instead of merely inspected.
+  # toolchain, which works.
   #
-  # Trade-off worth knowing: this checks the Windows *binary*, not a Windows
-  # *host*. Wine is not Windows, and nothing here covers the ARM64 Windows
-  # target the old matrix nominally had (it installed x86-64 MSYS2 packages
-  # anyway). Reinstating a native job is worthwhile once the FREEARC_WIN path
-  # is known-good; that is easier to do from a working baseline than from a
-  # job that has never once succeeded.
+  # This job BUILDS only. It used to exercise the result under Wine too, and
+  # the comment here used to record that as a known weakness: "this checks the
+  # Windows *binary*, not a Windows *host*. Wine is not Windows." That is no
+  # longer a trade-off being accepted -- `windows-amd64-test` runs the same
+  # binary on a real Windows kernel, exactly as `windows-arm64-test` has always
+  # done for the other target. Build here, test there, on both architectures.
+  #
+  # Splitting it also removed the last `wine64 wine` install from this
+  # workflow, which was the single worst-behaved apt call in it: 20s, 27s and
+  # 30s on three consecutive runs, then 38 minutes and still climbing on the
+  # fourth. A dependency that is not installed cannot hang.
   windows-cross:
     runs-on: ubuntu-latest
     timeout-minutes: 45
@@ -265,7 +274,7 @@ jobs:
     - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
       with:
         lfs: false
-    - name: Install cross toolchain and Wine
+    - name: Install cross toolchain
       # Narrowed from the `mingw-w64` metapackage, which pulls i686 AND x86-64
       # in both threading models. This job builds ONE target,
       # `x86_64-pc-windows-gnu`; nothing here has ever produced a 32-bit image,
@@ -282,9 +291,10 @@ jobs:
       # 25 did not stop it recurring five times in one day. Fetching half as
       # much is the fix a bigger number was standing in for.
       #
-      # MEASURED on the run that made this change (PR #173): apt goes from
-      # "Need to get 386 MB" to 223 MB, and the step from a 25-minute timeout
-      # to 1m46s. The remaining 223 MB is almost entirely Wine.
+      # MEASURED in #173: apt went from "Need to get 386 MB" to 223 MB, and
+      # this step from a 25-minute timeout to 1m46s. Wine was nearly all of
+      # what remained, and it is gone here too -- amd64 is smoke-tested on a
+      # real Windows kernel in `windows-amd64-test`, the way arm64 always was.
       #
       # BOTH threading variants of x86-64 are kept deliberately. Debian selects
       # `x86_64-w64-mingw32-gcc` through update-alternatives, and installing
@@ -294,9 +304,10 @@ jobs:
       # `mingw-w64-tools` goes with them: it supplies widl/genidl/genpeimg, and
       # nothing in this tree references any of the three.
       #
-      # Wine stays for now -- the smoke test below still needs it. After this
-      # narrowing its i386 package set is nearly the ENTIRE download, and a
-      # native Windows runner is the queued change that removes it.
+      # The cap stays at 25 rather than being shrunk to fit: what this now
+      # downloads has not been measured, and sizing a timeout to an ESTIMATE is
+      # how the last two were got wrong. 25 bounds strictly more than this
+      # fetches; re-measure from a run before touching it.
       timeout-minutes: 25
       run: |
         sudo apt-get update
@@ -305,7 +316,7 @@ jobs:
         # built here, so g++-mingw-w64 is not installed; if that ever changes,
         # the build step fails loudly rather than silently mis-linking.
         sudo apt-get install -y --no-install-recommends \
-          gcc-mingw-w64-x86-64 mingw-w64-x86-64-dev wine64 wine
+          gcc-mingw-w64-x86-64 mingw-w64-x86-64-dev
     # The Rust codecs are built by default now, so this must precede the first
     # build, not follow it. Targets come from rust-toolchain.toml.
     - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
@@ -340,18 +351,23 @@ jobs:
         done
     # A PE header only proves the toolchain was wired up. The first working
     # cross-build produced a valid image that printed its help and then failed
-    # every archive operation, so run the thing.
-    - name: Smoke-test under Wine
-      run: |
-        chmod +x Tests/win-test.sh
-        Tests/win-test.sh
-    # Uploaded so the interop jobs can exercise this exact binary without
-    # rebuilding it, which also means they test what this job produced rather
-    # than a second build of the same source.
+    # every archive operation, so the thing has to be RUN -- which now happens
+    # in `windows-amd64-test`, on a real kernel rather than under Wine.
+    #
+    # Both binaries are uploaded, and unarc.exe is not a courtesy: it is built
+    # here, MZ-checked above, and until now executed by NOTHING on any
+    # platform. It is the Windows SFX module, so it shipped in whatever state
+    # it was built in -- the same hole release.yml's arm64 job found and closed
+    # for the other architecture. `windows-amd64-test` closes it for this one.
+    #
+    # Uploading also means the test job exercises what THIS job produced,
+    # rather than a second build of the same source.
     - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
       with:
         name: arc-win-amd64
-        path: Tests/darc-win64.exe
+        path: |
+          Tests/darc-win64.exe
+          Tests/unarc-win64.exe
         if-no-files-found: error
 
     # The "are the Rust codecs actually linked?" symbol check that used to close
@@ -372,11 +388,14 @@ jobs:
   #           needs llvm-mingw (Clang). Cross-compiling from Linux is the only
   #           option -- MicroHs would otherwise have to be bootstrapped on the
   #           Windows runner.
-  #   test    Wine has no ARM64 emulation, so unlike windows-cross above there
-  #           is no way to exercise the result on the machine that built it.
+  #   test    Wine has no ARM64 emulation, so there is no way to exercise the
+  #           result on the machine that built it.
   #
-  # The upside of that constraint is that this target gets tested on real
-  # hardware rather than on Wine, which is the stronger of the two checks.
+  # That constraint forced this target onto real hardware, which turned out to
+  # be the stronger check -- and is now what BOTH Windows targets do. amd64
+  # could have gone on running under Wine and for a long time did; it moved
+  # because "the emulator agrees" is a weaker claim than "the kernel agrees",
+  # not because anything made it impossible. See `windows-amd64-test`.
   windows-arm64-cross:
     runs-on: ubuntu-latest
     timeout-minutes: 30
@@ -455,8 +474,10 @@ jobs:
       with:
         name: arc-win-arm64
         path: Tests
-    # Git Bash, so the same script that runs under Wine on Linux runs here with
-    # the Wine prefix dropped.
+    # Git Bash, so win-test.sh runs here unchanged -- it picks its invocation
+    # from $OSTYPE. Its Wine branch is no longer used by any CI job (both
+    # architectures test natively now) and is kept for running the script by
+    # hand on a Linux workstation.
     # Invoked through bash rather than directly: a Windows checkout does not
     # preserve the executable bit.
     - name: Smoke-test on native ARM64 Windows
@@ -536,56 +557,82 @@ jobs:
 
   # amd64 is a separate job rather than more steps on windows-cross so that the
   # two do not serialise: windows-cross and interop-produce run in parallel and
-  # this picks up both artifacts afterwards.
-  interop-windows-amd64:
+  # this picks up both artifacts afterwards. It is also on a different OS from
+  # the job that builds it, which is the point.
+  #
+  # This ran on ubuntu-latest under Wine until 2026-08-19. Two things were
+  # wrong with that, and only one of them was the apt hang:
+  #
+  #   1. Wine is not Windows. Every Windows-specific claim this job made was
+  #      really a claim about Wine's reimplementation of the thing. The one
+  #      bug in this area that reached a user -- issue #160, a list file with
+  #      `\` separators -- is precisely the kind that a compatibility layer
+  #      can get right while the real kernel does not, or the reverse.
+  #   2. It needed `wine64 wine` from apt, several hundred i386 packages, on
+  #      a runner that already had nothing else to install. That step took
+  #      20-30s on three consecutive runs and then 38 minutes on the fourth.
+  #
+  # A windows-latest runner has both problems cured by construction: nothing
+  # to install, and a real kernel. `windows-arm64-test` was already built this
+  # way and is the template this follows step for step -- smoke test, own
+  # archives, then Linux-written archives.
+  windows-amd64-test:
     needs: [ interop-produce, windows-cross ]
-    runs-on: ubuntu-latest
-    timeout-minutes: 45
+    runs-on: windows-latest
+    timeout-minutes: 30
     steps:
     - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
       with:
         lfs: false
-    - name: Install Wine
-      # Wine's i386 dependency set, on the same measurement as
-      # windows-cross above.
-      timeout-minutes: 25
+    - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+      with:
+        name: arc-win-amd64
+        path: Tests
+    # Git Bash, so win-test.sh runs here unchanged -- it picks its invocation
+    # from $OSTYPE, so the file that used to be driven through a Wine shim is
+    # driven directly, with no argument saying which.
+    # Invoked through bash rather than directly: a Windows checkout does not
+    # preserve the executable bit.
+    - name: Smoke-test on native amd64 Windows
+      shell: bash
+      run: bash Tests/win-test.sh Tests/darc-win64.exe
+    # unarc.exe is the Windows SFX module and no job on any platform had ever
+    # executed the amd64 build of it. release.yml asks this same question of
+    # the arm64 one, and asking it there is what proved a binary that died in
+    # the loader before main -- a failure that looks like a broken build and
+    # is really a missing DLL.
+    #
+    # No args makes it print its usage to stderr and exit non-zero, which is
+    # the point: reaching its own usage text proves the image loaded and ran as
+    # far as argument parsing.
+    - name: unarc.exe must load and reach its usage text
+      shell: bash
       run: |
-        sudo apt-get update
-        sudo apt-get install -y --no-install-recommends wine64 wine
+        set -uo pipefail
+        out=$(Tests/unarc-win64.exe 2>&1 || true)
+        echo "$out"
+        case "$out" in
+          *"Usage:"*) echo "unarc.exe runs" ;;
+          *) echo "::error::unarc.exe did not reach its usage text"; exit 1 ;;
+        esac
     - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
       with:
         name: interop-linux
         path: interop
-    - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
-      with:
-        name: arc-win-amd64
-        path: winbin
-    - name: Set up Wine and a shim
-      run: |
-        set -euo pipefail
-        tar -xf interop/corpus.tar -C interop
-        chmod +x Tests/interop-test.sh
-        # A .exe is not executable after an artifact round-trip, and the script
-        # refuses to run a non-executable archiver.
-        chmod +x winbin/darc-win64.exe
-        export WINEDEBUG=-all WINEPREFIX="$HOME/.darc-wineprefix"
-        wineboot -i >/dev/null 2>&1 || true
-        # interop-test.sh runs one archiver binary; give it a Wine-invoking
-        # shim so the script needs no notion of which platform it is driving.
-        { echo '#!/bin/sh'
-          echo 'export WINEDEBUG=-all WINEPREFIX="$HOME/.darc-wineprefix"'
-          echo 'exec wine "$(dirname "$0")/darc-win64.exe" "$@"'
-        } > winbin/arc
-        chmod +x winbin/arc
     # Own archives first, for the same reason as the arm64 job: a build that
     # cannot read back what it just wrote has a codec bug, not an interop one.
     - name: Round-trip this build's own archives
+      shell: bash
       run: |
         set -euo pipefail
-        Tests/interop-test.sh make  winbin/arc interop/corpus out-amd64
-        Tests/interop-test.sh check winbin/arc interop/corpus out-amd64
+        tar -xf interop/corpus.tar -C interop
+        bash Tests/interop-test.sh make  Tests/darc-win64.exe interop/corpus out-amd64
+        bash Tests/interop-test.sh check Tests/darc-win64.exe interop/corpus out-amd64
     - name: Read Linux-written archives
-      run: Tests/interop-test.sh check winbin/arc interop/corpus interop/archives
+      shell: bash
+      run: |
+        set -euo pipefail
+        bash Tests/interop-test.sh check Tests/darc-win64.exe interop/corpus interop/archives
     - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
       with:
         name: interop-win-amd64
@@ -595,7 +642,7 @@ jobs:
   # The other direction: archives written by each Windows build, read back by
   # the Linux build that wrote the reference set.
   interop-verify:
-    needs: [ interop-produce, interop-windows-amd64, windows-arm64-test ]
+    needs: [ interop-produce, windows-amd64-test, windows-arm64-test ]
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
