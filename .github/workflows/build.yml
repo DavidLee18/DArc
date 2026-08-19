@@ -109,16 +109,6 @@ jobs:
     # ── Linux steps ────────────────────────────────────────────────────────────
     - uses: ./.github/actions/llvm
       if: runner.os == 'Linux'
-    - name: Install packages (Linux)
-      timeout-minutes: 10
-      if: runner.os == 'Linux'
-      run: |
-        sudo apt-get update
-        # No cpphs and no libcurl any more. cpphs preprocessed the Haskell's
-        # {-# LANGUAGE CPP #-} modules; libcurl backed URL.cpp, which served
-        # `--original` and is now ureq inside darc-arc. Nothing in the C or the
-        # Rust links either.
-        sudo apt-get install -y libncurses-dev
     - name: Build (Linux)
       if: runner.os == 'Linux'
       run: |
@@ -185,17 +175,6 @@ jobs:
     # macOS is in the matrix so the portability work stays honest. The README
     # has claimed macOS support for a long time while the build did not
     # actually work there; without a runner it would simply rot again.
-    - name: Install packages (macOS)
-      # `brew install ... || true` says this step is best-effort, and a bare
-      # cap would quietly promote it to a gating one: a slow-but-succeeding
-      # brew would fail the job where a FAILING brew does not. Bounded and
-      # still non-fatal.
-      timeout-minutes: 10
-      continue-on-error: true
-      if: runner.os == 'macOS'
-      run: |
-        brew install ncurses || true
-
     - name: Build (macOS)
       if: runner.os == 'macOS'
       run: |
@@ -486,11 +465,6 @@ jobs:
       with:
         lfs: false
     - uses: ./.github/actions/llvm
-    - name: Install packages
-      timeout-minutes: 10
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y libncurses-dev
     - name: Build
       run: |
         cargo build --release --manifest-path rust/Cargo.toml -p darc-arc --bin darc
@@ -767,11 +741,6 @@ jobs:
         lfs: false
     - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
     - uses: ./.github/actions/llvm
-    - name: Install packages
-      timeout-minutes: 10
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y libncurses-dev
     - name: Codec differential test (Rust vs C)
       run: |
         chmod +x rust/difftest/run.sh
@@ -789,15 +758,6 @@ jobs:
         lfs: false
     - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
     - uses: ./.github/actions/llvm
-    - name: Install packages
-      timeout-minutes: 10
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y libncurses-dev
-    # A differential test that has never failed proves nothing. This mutates the
-    # port and asserts every mutation is caught by at least one input; it also
-    # aborts if a mutation pattern no longer matches, because a mutation that
-    # silently fails to apply reports as "0 detected" and reads like coverage.
     - name: Prove the differential test can fail
       run: |
         chmod +x rust/difftest/run.sh
@@ -834,7 +794,7 @@ jobs:
         # implementation, not from either reader being compared. The harness
         # fails rather than passing if no 7z binary is found, so this is a hard
         # dependency and not a nice-to-have.
-        sudo apt-get install -y libncurses-dev p7zip-full
+        sudo apt-get install -y p7zip-full
     - name: Per-codec differential tests (REP, TTA, MM, LZP, Dict, LZ4-HC)
       run: |
         chmod +x rust/difftest/*.sh
@@ -941,11 +901,6 @@ jobs:
         lfs: false
     - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
     - uses: ./.github/actions/llvm
-    - name: Install packages
-      timeout-minutes: 10
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y libncurses-dev
     - name: Codecs under overflow checks
       run: |
         chmod +x rust/difftest/*.sh
@@ -974,11 +929,6 @@ jobs:
       with:
         lfs: false
     - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
-    - name: Install packages
-      timeout-minutes: 10
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y libncurses-dev
     - name: Fetch the Haskell oracle
       timeout-minutes: 10
       run: |
@@ -1024,11 +974,6 @@ jobs:
         lfs: false
     - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
     - uses: ./.github/actions/llvm
-    - name: Install packages
-      timeout-minutes: 10
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y libncurses-dev
     - name: Per-codec differential tests (Tornado, GRZip, DisPack)
       run: |
         chmod +x rust/difftest/*.sh
@@ -1071,11 +1016,6 @@ jobs:
         lfs: false
     - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
     - uses: ./.github/actions/llvm
-    - name: Install packages
-      timeout-minutes: 10
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y libncurses-dev
     - name: BSC decoder differential tests
       run: |
         chmod +x rust/difftest/*.sh
@@ -1131,15 +1071,6 @@ jobs:
         lfs: false
     - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
     - uses: ./.github/actions/llvm
-    - name: Install packages
-      timeout-minutes: 10
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y libncurses-dev
-    # Both SREP harnesses build their own oracle from the PINNED revision now --
-    # Compression/SREP and srep/ are deleted from the working tree, so there is
-    # no C here to build. c-reference.sh extracts both and runs srep/compile
-    # inside that tree.
     - name: SREP decoder differential test
       run: |
         chmod +x rust/difftest/*.sh
@@ -1177,11 +1108,6 @@ jobs:
         lfs: false
     - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
     - uses: ./.github/actions/llvm
-    - name: Install packages
-      timeout-minutes: 10
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y libncurses-dev
     - name: Encryption differential test (Rust vs C)
       run: |
         chmod +x rust/difftest/*.sh
@@ -1231,11 +1157,6 @@ jobs:
         lfs: false
     - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
     - uses: ./.github/actions/llvm
-    - name: Install packages
-      timeout-minutes: 10
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y libncurses-dev
     - name: PPMd differential test, wide grid (Rust vs the C as shipped)
       run: |
         chmod +x rust/difftest/*.sh
@@ -1263,14 +1184,6 @@ jobs:
         lfs: false
     - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
     - uses: ./.github/actions/llvm
-    - name: Install packages
-      timeout-minutes: 10
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y libncurses-dev
-    # Builds the archiver itself. The deleted "archives identical with and
-    # without the Rust codecs" step used to leave the binary behind as a side
-    # effect, and an earlier version of this silently depended on that.
     - name: Encrypted archives round-trip
       run: |
         chmod +x Tests/*.sh
@@ -1289,15 +1202,6 @@ jobs:
     - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
     - uses: ./.github/actions/cargo-cache
     - uses: ./.github/actions/llvm
-    - name: Install packages
-      timeout-minutes: 10
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y libncurses-dev
-    # No `./compile-c` and no `make` any more. Unarc/ is deleted: the extractor
-    # and every SFX module are one cargo binary, so this job builds the archiver
-    # (to write archives with) and darc-unarc (to read them back) and nothing
-    # else. `common.mak` had no consumer left once Unarc/makefile went.
     - name: Build the archiver and the extractor
       run: |
         chmod +x Tests/*.sh rust/difftest/*.sh

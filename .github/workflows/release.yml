@@ -95,24 +95,6 @@ jobs:
     - uses: ./.github/actions/llvm
       if: runner.os == 'Linux'
 
-    - name: Install packages (Linux)
-      timeout-minutes: 10
-      if: runner.os == 'Linux'
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y libncurses-dev
-
-    - name: Install packages (macOS)
-      # Best-effort, as in build.yml: bounded, but a timeout must not fail
-      # the job where a failing brew does not.
-      timeout-minutes: 10
-      continue-on-error: true
-      if: runner.os == 'macOS'
-      run: brew install ncurses || true
-
-    # Rust is no longer optional once DARC_RUST is the default: it compiles code
-    # that ships in every binary. The version and the cross targets come from
-    # rust-toolchain.toml so there is a single place to change them.
     - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
     - uses: ./.github/actions/cargo-cache
     # unarc is built here for the same reason darc.groups is copied below: it is
