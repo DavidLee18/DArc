@@ -672,21 +672,18 @@ jobs:
         done
     # Byte identity is a far stronger guarantee than "reads back correctly": it
     # says two independently built compressors made the same decisions, not
-    # merely compatible ones. It is enforced where it currently holds and
-    # reported where it does not, because the two Windows targets differ:
+    # merely compatible ones. BOTH pairs are now gated:
     #
     #   linux vs windows-amd64   byte-identical on all 14 methods, measured.
-    #                            GATED -- a regression here means a codec
-    #                            started behaving differently under a different
-    #                            compiler, which is worth failing over.
+    #   linux vs windows-arm64   byte-identical on all 14 methods, measured --
+    #                            in run 32245041168, the first run after the
+    #                            harness stopped comparing configurations.
     #
-    #   linux vs windows-arm64   REPORTED, not gated. It differed on 12 of 14
-    #                            for a long time and the cause was misdiagnosed
-    #                            throughout -- see below. Left ungated for one
-    #                            more run rather than flipped on the strength
-    #                            of a prediction; if it now reads `same` on all
-    #                            14, gating it is a one-line follow-up with a
-    #                            measurement behind it.
+    # arm64 was reported-not-gated for as long as it differed on 12 of 14, on
+    # the reasoning that gating an ununderstood gap only pins it in place. That
+    # was right. The gap is now understood -- it was never in the arm64 build
+    # at all -- so the reason to hold off is gone, and it was flipped on a
+    # measurement rather than on the prediction that preceded it by one run.
     #
     # ── The 12-of-14 gap was the GROUPS FILE, not the toolchain ──────────────
     #
@@ -749,17 +746,31 @@ jobs:
         for a in interop/archives/*.arc; do
           m=$(basename "$a" .arc)
           if cmp -s "$a" "from-amd64/$m.arc"; then x=same; else x=DIFFERS; drift=$((drift+1)); fi
-          y=$(cmp -s "$a" "from-arm64/$m.arc" && echo same || echo DIFFERS)
+          if cmp -s "$a" "from-arm64/$m.arc"; then y=same; else y=DIFFERS; drift=$((drift+1)); fi
           printf '%-20s %-16s %s\n' "$m" "$x" "$y"
         done
         echo
+        n=$(ls interop/archives/*.arc | wc -l | tr -d " ")
+        # Both columns are gated. arm64 joined the moment it was MEASURED
+        # identical rather than predicted to be -- see the groups-file note
+        # above, which is what had been holding it apart.
         if [ "$drift" -ne 0 ]; then
-          echo "::error::windows-amd64 no longer produces byte-identical archives to linux ($drift method(s))"
-          echo "That pair has been byte-identical on every method; a change here means a codec"
-          echo "started making different decisions under mingw-gcc. Investigate before blessing."
+          echo "::error::a Windows build no longer produces byte-identical archives to linux ($drift of $((n * 2)) comparisons)"
+          echo "Both pairs have been byte-identical on every method since the harness stopped"
+          echo "comparing configurations. A move here means a codec started making different"
+          echo "decisions under a different compiler. Investigate before blessing."
+          echo "First: check that nothing changed what either side READS -- a groups file"
+          echo "beside one executable and not the other is what this gate mistook for a"
+          echo "toolchain bug for months."
           exit 1
         fi
-        echo "windows-amd64 is byte-identical to linux on all $(ls interop/archives/*.arc | wc -l | tr -d " ") methods"
+        # A gate that compared nothing would also report no drift. The count is
+        # asserted so an empty or half-downloaded artifact fails loudly instead
+        # of passing silently.
+        [ "$n" -ge 14 ] || {
+          echo "::error::only $n reference archives -- this gate did not compare what it claims"
+          exit 1; }
+        echo "linux, windows-amd64 and windows-arm64 are byte-identical on all $n methods"
 
   # ── Rust workspace: unit and edge-case tests ────────────────────────────────
   # Distinct from rust-codecs below, which builds the archiver against the port
