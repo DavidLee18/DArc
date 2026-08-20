@@ -1,0 +1,200 @@
+name: Install apt packages, resiliently
+description: >
+  Install Debian packages with retries, a bounded stall timeout, and a cache of
+  the downloaded .debs, so a degraded Ubuntu mirror costs a slow step rather
+  than a red run.
+
+# WHY THIS EXISTS
+#
+# On 2026-08-19 five runs in one day died in `Install cross toolchain`, and one
+# `Install Wine` sat for 38 minutes and was still going. Two separate faults
+# wear the same red X:
+#
+#   HUNG   -- nine minutes of no output at all. A step cap is the only thing
+#             that ends it, and it ends it as a failure.
+#   SLOW   -- steady `Get:` lines at 19 kB/s. The cap fires anyway, and that
+#             red run means only "the mirror was bad today".
+#
+# Three rounds of narrowing what we download took the fetch from 386 MB to
+# 115 MB (#170, #173, #172) and the step from a 25-minute timeout to 19s. That
+# was worth doing and it did NOT fix this: at the 19 kB/s that PR #174's first
+# run was served, 115 MB still needs 100 minutes. The size of the cap was never
+# the lever. These three things are:
+#
+#   1. RETRIES.   apt re-requests a failed URI instead of aborting the step.
+#   2. A TIMEOUT. apt's own default is 120s of inactivity per connection, which
+#                 is longer than it is worth waiting for a mirror that has
+#                 stopped talking. 30 abandons it sooner. NOTE this is a
+#                 TIGHTENING of an existing default, not a new guard -- the
+#                 first run of this action prints what the defaults actually
+#                 were (see "Record the defaults" below) so the claim is
+#                 checkable rather than asserted.
+#   3. A CACHE.   The only one of the three that helps at 19 kB/s, because on a
+#                 hit it fetches NOTHING. apt keeps its .debs (they are deleted
+#                 by default on the runner images) and they are restored into
+#                 its archive directory on the next run.
+#
+# Retries and timeout are set in an apt.conf.d fragment rather than on the
+# command line so that `apt-get update` -- also a network fetch, also able to
+# hang -- is covered by the same numbers.
+#
+# One definition, not four call sites: this block would otherwise be copied
+# into build.yml twice, release.yml once and reference-oracle.yml once -- and
+# the last two run only on a tag push and a manual dispatch, so a divergence in
+# them cannot be discovered by pushing. Two of the three faults that stopped
+# v3.0.0 being cut were exactly that kind of drift. See
+# .github/actions/llvm/action.yml.
+
+inputs:
+  packages:
+    description: Space-separated package names. Also feeds the cache key.
+    required: true
+  timeout-seconds:
+    description: >
+      Hard budget for the whole install, enforced with `timeout(1)` inside this
+      action rather than with `timeout-minutes:` on the caller. 600 matches the
+      10-minute policy in build.yml.
+    default: "600"
+  recommends:
+    description: >
+      "true" installs recommended packages too. The default omits them, which
+      is what every call site here wants -- it is most of the 386 MB that the
+      narrowing removed.
+    default: "false"
+
+runs:
+  using: composite
+  steps:
+    - name: Configure apt for a mirror that may be slow or silent
+      shell: bash
+      run: |
+        set -euo pipefail
+        # zz- and not 99-: apt reads apt.conf.d in lexical order and the LAST
+        # setting wins, and digits sort BEFORE letters. A file named 99darc
+        # would be read before anything the runner image ships under a
+        # letter, and silently lose to it.
+        sudo tee /etc/apt/apt.conf.d/zz-darc-resilience >/dev/null <<'EOF'
+        // Retry a failed or timed-out URI rather than failing the step. apt
+        // reconnects per retry, and archive.ubuntu.com is round-robin DNS, so
+        // a retry MAY land on a different backend -- that is a hope, not a
+        // guarantee, and not the reason the number is 5.
+        Acquire::Retries "5";
+
+        // Inactivity timeout per connection, in seconds. A trickling mirror
+        // resets this on every byte, so it bounds a SILENT connection, not a
+        // slow one -- the "hung" fault above, not the "slow" one. Only the
+        // cache addresses the slow one.
+        Acquire::http::Timeout "30";
+        Acquire::https::Timeout "30";
+        Acquire::ftp::Timeout "30";
+
+        // The runner images set this false, which deletes every .deb the
+        // moment it is unpacked and leaves the cache step below with nothing
+        // to save. Without this line the cache silently never populates.
+        Binary::apt::APT::Keep-Downloaded-Packages "true";
+        APT::Keep-Downloaded-Packages "true";
+        EOF
+
+    - name: Record the defaults this is overriding
+      shell: bash
+      # Printed, not asserted. The comment above states apt's retry and timeout
+      # defaults from the documentation; this makes every run carry the answer
+      # from the runner itself, so a wrong claim is visible in the log instead
+      # of living in a comment forever. It is three lines of output and cannot
+      # fail the job.
+      run: |
+        apt-config dump 2>/dev/null | grep -Ei 'Acquire::(Retries|http::Timeout)|Keep-Downloaded' || true
+
+    - name: Key the package cache
+      id: key
+      shell: bash
+      run: |
+        set -euo pipefail
+        # Normalised so that reordering the package list is not a cache miss.
+        pkgs="$(printf '%s\n' ${{ inputs.packages }} | LC_ALL=C sort | tr '\n' ' ')"
+        echo "hash=$(printf '%s|%s' "$pkgs" '${{ inputs.recommends }}' | sha256sum | cut -c1-16)" >> "$GITHUB_OUTPUT"
+        # Rotated weekly. Without this the key never changes, so actions/cache
+        # never re-saves, and the entry ages until every .deb in it is a version
+        # the mirror no longer offers -- a cache that restores fast and then
+        # downloads everything anyway. The restore-keys below still fall back to
+        # last week's entry, so the rotation costs a partial fetch, not a full
+        # one.
+        echo "week=$(date -u +%Y-%W)" >> "$GITHUB_OUTPUT"
+
+    - name: Restore the .deb cache
+      uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+      with:
+        # Not /var/cache/apt/archives directly: that is root-owned, and the
+        # cache action's post-step runs unprivileged.
+        path: ~/.cache/darc-apt
+        key: apt-${{ runner.os }}-${{ runner.arch }}-${{ steps.key.outputs.hash }}-${{ steps.key.outputs.week }}
+        restore-keys: |
+          apt-${{ runner.os }}-${{ runner.arch }}-${{ steps.key.outputs.hash }}-
+
+    - name: Install
+      shell: bash
+      run: |
+        set -euo pipefail
+        mkdir -p ~/.cache/darc-apt
+        sudo mkdir -p /var/cache/apt/archives/partial
+
+        # The step cap lives HERE, not in `timeout-minutes:` on the caller.
+        # GitHub documents timeout-minutes as unsupported on the steps INSIDE a
+        # composite action, and its behaviour on the step that `uses:` one is
+        # reported inconsistent. A cap that might be silently ignored is worse
+        # than no cap, because the note in build.yml would still claim it. The
+        # callers keep theirs as an outer bound; this deadline is the one that
+        # is certain to fire, and it fires as exit 124 with a named culprit.
+        BUDGET=${{ inputs.timeout-seconds }}
+        DEADLINE=$(( $(date +%s) + BUDGET ))
+        # RETURNS non-zero when the budget is gone; it does NOT exit. `exit`
+        # here would run inside the command substitution that calls it and
+        # kill only that subshell, leaving the caller to run `timeout ""
+        # apt-get ...` -- a confusing failure instead of a named one. Callers
+        # assign it, so `set -e` and the `||` see the real status.
+        remaining() {
+          r=$(( DEADLINE - $(date +%s) ))
+          [ "$r" -gt 0 ] || return 1
+          echo "$r"
+        }
+        budget_gone() {
+          echo "::error::apt budget of ${BUDGET}s exhausted installing ${{ inputs.packages }}"
+          exit 124
+        }
+
+        # Seed apt's archive directory from the cache. apt matches a .deb by
+        # its exact versioned filename, so anything stale here is ignored and
+        # re-downloaded -- a stale cache wastes disk, it cannot install a wrong
+        # version.
+        restored=$(find ~/.cache/darc-apt -name '*.deb' | wc -l | tr -d ' ')
+        if [ "$restored" -gt 0 ]; then
+          sudo cp ~/.cache/darc-apt/*.deb /var/cache/apt/archives/
+        fi
+        echo "restored $restored cached .deb(s)"
+
+        REC=--no-install-recommends
+        if [ '${{ inputs.recommends }}' = 'true' ]; then REC=; fi
+
+        # Try WITHOUT `apt-get update` first. On a full cache hit every .deb is
+        # already on disk and this touches the network zero times -- which is
+        # the entire point on a mirror serving 19 kB/s. It fails when the
+        # image's package lists name versions the mirror has dropped; that
+        # failure is expected and cheap, and the fallback is the normal path.
+        R=$(remaining) || budget_gone
+        if sudo timeout "$R" apt-get install -y $REC ${{ inputs.packages }}; then
+          echo "installed without contacting a mirror index"
+        else
+          echo "::notice::cached debs insufficient; refreshing package lists"
+          R=$(remaining) || budget_gone
+          sudo timeout "$R" apt-get update
+          R=$(remaining) || budget_gone
+          sudo timeout "$R" apt-get install -y $REC ${{ inputs.packages }}
+        fi
+
+        # Hand the .debs back for the post-step to save. Copied rather than
+        # moved: apt owns that directory and a later step in the same job may
+        # install more.
+        find /var/cache/apt/archives -maxdepth 1 -name '*.deb' \
+          -exec sudo cp -n {} ~/.cache/darc-apt/ \; || true
+        sudo chown -R "$(id -u):$(id -g)" ~/.cache/darc-apt
+        echo "cache now holds $(find ~/.cache/darc-apt -name '*.deb' | wc -l | tr -d ' ') .deb(s), $(du -sh ~/.cache/darc-apt | cut -f1)"

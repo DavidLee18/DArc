@@ -88,6 +88,16 @@ concurrency:
 #         names the culprit in the UI instead of killing the job at the 30
 #         mark with nothing to point at.
 #
+# A cap is a BOUND, not a fix, and PR #174's first run proved it: 115 MB served
+# at 19 kB/s needs 100 minutes, so no cap worth having survives that mirror.
+# What survives it is `.github/actions/apt-install` -- retries, a bounded stall
+# timeout, and a cache of the .debs so a warm run fetches nothing at all. Every
+# apt install in this repository goes through it, including release.yml's and
+# reference-oracle.yml's, and it carries the 10 internally with timeout(1)
+# because `timeout-minutes:` on a step that `uses:` a composite action is not
+# dependable. The `timeout-minutes: 10` still on those callers is the outer
+# bound, kept for the UI and for the policy above.
+#
 # rust-codecs-ppmd keeps its own 60: it is a deliberate wide grid, sized from a
 # measurement at its own site, and it predates this policy.
 jobs:
@@ -324,19 +334,22 @@ jobs:
       # Three packages and ~15 MB of 115 in ten minutes. At that rate the whole
       # fetch takes 100 MINUTES, so 25 would have failed here too, and so would
       # any cap worth having. The size of this number is NOT the lever on a
-      # mirror that degraded -- retries, an explicit Acquire::http::Timeout and
-      # a package cache are, and they are the queued change. 10 is kept because
-      # it matches the policy every other install follows and it names the
-      # culprit sooner, not because it makes this step reliable.
+      # mirror that degraded. Retries, a bounded stall timeout and a package
+      # cache are -- and they are now applied, by
+      # `.github/actions/apt-install`, whose header carries that reasoning.
+      # The 10 is kept because it matches the policy every other install
+      # follows, but it is no longer the only bound: the action enforces its
+      # own budget with timeout(1), because `timeout-minutes:` on a step that
+      # `uses:` a composite action is not dependable.
+      #
+      # The x86_64-pc-windows-gnu Rust target links through mingw, and `ring`
+      # (under rustls, under ureq) compiles C and asm with it. No C++ is built
+      # here, so g++-mingw-w64 is not installed; if that ever changes, the
+      # build step fails loudly rather than silently mis-linking.
       timeout-minutes: 10
-      run: |
-        sudo apt-get update
-        # The x86_64-pc-windows-gnu Rust target links through mingw, and `ring`
-        # (under rustls, under ureq) compiles C and asm with it. No C++ is
-        # built here, so g++-mingw-w64 is not installed; if that ever changes,
-        # the build step fails loudly rather than silently mis-linking.
-        sudo apt-get install -y --no-install-recommends \
-          gcc-mingw-w64-x86-64 mingw-w64-x86-64-dev
+      uses: ./.github/actions/apt-install
+      with:
+        packages: gcc-mingw-w64-x86-64 mingw-w64-x86-64-dev
     # The Rust codecs are built by default now, so this must precede the first
     # build, not follow it. Targets come from rust-toolchain.toml.
     - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
@@ -938,15 +951,21 @@ jobs:
     - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
     - uses: ./.github/actions/llvm
     - name: Install packages
+      # p7zip-full supplies `7z`, which sevenz-check.sh uses to AUTHOR its
+      # corpus -- the archives under test must come from the reference
+      # implementation, not from either reader being compared. The harness
+      # fails rather than passing if no 7z binary is found, so this is a hard
+      # dependency and not a nice-to-have.
+      #
+      # recommends stays TRUE, unlike the mingw install. This step has always
+      # run a bare `apt-get install -y p7zip-full`, so recommends were part of
+      # what it installed; dropping them here would be an unmeasured change to
+      # what a harness runs against, smuggled into a resilience change.
       timeout-minutes: 10
-      run: |
-        sudo apt-get update
-        # p7zip-full supplies `7z`, which sevenz-check.sh uses to AUTHOR its
-        # corpus -- the archives under test must come from the reference
-        # implementation, not from either reader being compared. The harness
-        # fails rather than passing if no 7z binary is found, so this is a hard
-        # dependency and not a nice-to-have.
-        sudo apt-get install -y p7zip-full
+      uses: ./.github/actions/apt-install
+      with:
+        packages: p7zip-full
+        recommends: "true"
     - name: Per-codec differential tests (REP, TTA, MM, LZP, Dict, LZ4-HC)
       run: |
         chmod +x rust/difftest/*.sh
