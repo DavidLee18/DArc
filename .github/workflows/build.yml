@@ -961,6 +961,18 @@ jobs:
       # run a bare `apt-get install -y p7zip-full`, so recommends were part of
       # what it installed; dropping them here would be an unmeasured change to
       # what a harness runs against, smuggled into a resilience change.
+      #
+      # MEASURED, run 32366573716: this install is a NO-OP on the runner image.
+      #
+      #   p7zip-full is already the newest version (16.02+transitional.1).
+      #   0 upgraded, 0 newly installed, 0 to remove
+      #
+      # Nothing is fetched and the cache saves an empty entry. It is kept
+      # anyway: `7z` is a HARD dependency of sevenz-check.sh -- the harness
+      # fails rather than passing without it -- and what an image ships is not
+      # ours to rely on. The line to watch is `fetched N new .deb(s)`; if that
+      # ever stops reading 0 here, the image dropped p7zip and this step went
+      # from a formality to the thing keeping the harness alive.
       timeout-minutes: 10
       uses: ./.github/actions/apt-install
       with:

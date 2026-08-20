@@ -97,11 +97,12 @@ runs:
 
     - name: Record the defaults this is overriding
       shell: bash
-      # Printed, not asserted. The comment above states apt's retry and timeout
-      # defaults from the documentation; this makes every run carry the answer
-      # from the runner itself, so a wrong claim is visible in the log instead
-      # of living in a comment forever. It is three lines of output and cannot
-      # fail the job.
+      # This dumps the MERGED config, so what it proves is that the fragment
+      # above is being READ AND WINS -- exactly the zz- vs 99- ordering hazard
+      # noted there, and worth a line of output on every run. It does NOT
+      # reveal what apt used before it: the 120s default quoted above comes
+      # from the documentation, and this cannot check that claim. Three lines,
+      # and it cannot fail the job.
       run: |
         apt-config dump 2>/dev/null | grep -Ei 'Acquire::(Retries|http::Timeout)|Keep-Downloaded' || true
 
@@ -171,6 +172,7 @@ runs:
           sudo cp ~/.cache/darc-apt/*.deb /var/cache/apt/archives/
         fi
         echo "restored $restored cached .deb(s)"
+        before=$(find /var/cache/apt/archives -maxdepth 1 -name "*.deb" | wc -l | tr -d " ")
 
         REC=--no-install-recommends
         if [ '${{ inputs.recommends }}' = 'true' ]; then REC=; fi
@@ -182,7 +184,7 @@ runs:
         # failure is expected and cheap, and the fallback is the normal path.
         R=$(remaining) || budget_gone
         if sudo timeout "$R" apt-get install -y $REC ${{ inputs.packages }}; then
-          echo "installed without contacting a mirror index"
+          echo "installed without refreshing the package index"
         else
           echo "::notice::cached debs insufficient; refreshing package lists"
           R=$(remaining) || budget_gone
@@ -197,4 +199,11 @@ runs:
         find /var/cache/apt/archives -maxdepth 1 -name '*.deb' \
           -exec sudo cp -n {} ~/.cache/darc-apt/ \; || true
         sudo chown -R "$(id -u):$(id -g)" ~/.cache/darc-apt
+        # Reported, not inferred. The first run of this action printed
+        # "installed without contacting a mirror index" while apt was fetching
+        # 115 MB -- true about the INDEX, and read as "fetched nothing", which
+        # is the kind of summary that is not true and that this project gates
+        # against elsewhere. This line states the download.
+        after=$(find /var/cache/apt/archives -maxdepth 1 -name '*.deb' | wc -l | tr -d ' ')
+        echo "fetched $(( after - before )) new .deb(s) from the mirror this run"
         echo "cache now holds $(find ~/.cache/darc-apt -name '*.deb' | wc -l | tr -d ' ') .deb(s), $(du -sh ~/.cache/darc-apt | cut -f1)"
