@@ -189,12 +189,18 @@ jobs:
       # both threading models, no i686, no mingw-w64-tools. Wine is gone too --
       # amd64 is smoke-tested on a real Windows runner in windows-amd64-verify,
       # the same way arm64 always has been.
-      timeout-minutes: 25
+      #
+      # 10, matching build.yml. Not because 10 is enough -- a mirror serving
+      # 19 kB/s defeats any cap, see the note there -- but because a cap that
+      # differs between the two files is the drift that stopped v3.0.0. The
+      # resilience that DOES address that mirror lives in the shared action,
+      # and that is the same reason it IS an action: two copies of retry,
+      # timeout and cache logic would drift exactly the way the caps did.
+      timeout-minutes: 10
       if: matrix.arch == 'x86_64'
-      run: |
-        sudo apt-get update
-        sudo apt-get install -y --no-install-recommends \
-          gcc-mingw-w64-x86-64 mingw-w64-x86-64-dev
+      uses: ./.github/actions/apt-install
+      with:
+        packages: gcc-mingw-w64-x86-64 mingw-w64-x86-64-dev
 
     # These two were the drift that stopped v3.0.0: build.yml's ARM64 job has
     # had them since c7a12c2 and this workflow never did, so the first release

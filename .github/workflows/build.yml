@@ -88,6 +88,16 @@ concurrency:
 #         names the culprit in the UI instead of killing the job at the 30
 #         mark with nothing to point at.
 #
+# A cap is a BOUND, not a fix, and PR #174's first run proved it: 115 MB served
+# at 19 kB/s needs 100 minutes, so no cap worth having survives that mirror.
+# What survives it is `.github/actions/apt-install` -- retries, a bounded stall
+# timeout, and a cache of the .debs so a warm run fetches nothing at all. Every
+# apt install in this repository goes through it, including release.yml's and
+# reference-oracle.yml's, and it carries the 10 internally with timeout(1)
+# because `timeout-minutes:` on a step that `uses:` a composite action is not
+# dependable. The `timeout-minutes: 10` still on those callers is the outer
+# bound, kept for the UI and for the policy above.
+#
 # rust-codecs-ppmd keeps its own 60: it is a deliberate wide grid, sized from a
 # measurement at its own site, and it predates this policy.
 jobs:
@@ -304,19 +314,42 @@ jobs:
       # `mingw-w64-tools` goes with them: it supplies widl/genidl/genpeimg, and
       # nothing in this tree references any of the three.
       #
-      # The cap stays at 25 rather than being shrunk to fit: what this now
-      # downloads has not been measured, and sizing a timeout to an ESTIMATE is
-      # how the last two were got wrong. 25 bounds strictly more than this
-      # fetches; re-measure from a run before touching it.
-      timeout-minutes: 25
-      run: |
-        sudo apt-get update
-        # The x86_64-pc-windows-gnu Rust target links through mingw, and `ring`
-        # (under rustls, under ureq) compiles C and asm with it. No C++ is
-        # built here, so g++-mingw-w64 is not installed; if that ever changes,
-        # the build step fails loudly rather than silently mis-linking.
-        sudo apt-get install -y --no-install-recommends \
-          gcc-mingw-w64-x86-64 mingw-w64-x86-64-dev
+      # The cap is back to the policy's 10, from a MEASUREMENT rather than an
+      # estimate. On the first run after the narrowing (#172, run
+      # 32262514757) this step reported:
+      #
+      #   Need to get 115 MB of archives.
+      #   Fetched 115 MB in 2s (57.5 MB/s)
+      #   Install cross toolchain    19s
+      #
+      # 115 MB inside 10 minutes needs a mirror above ~192 kB/s. That is the
+      # arithmetic; do NOT read it as a safety margin. The very first run of
+      # this change was served by azure.archive.ubuntu.com at 19 kB/s:
+      #
+      #   14:45:14  Get:2 binutils-mingw-w64-x86-64   6053 kB
+      #   14:50:37  Get:3 mingw-w64-common            5580 kB   (18.7 kB/s)
+      #   14:54:33  Get:4 mingw-w64-x86-64-dev        3786 kB   (23.6 kB/s)
+      #   14:55:18  ##[error] timed out after 10 minutes
+      #
+      # Three packages and ~15 MB of 115 in ten minutes. At that rate the whole
+      # fetch takes 100 MINUTES, so 25 would have failed here too, and so would
+      # any cap worth having. The size of this number is NOT the lever on a
+      # mirror that degraded. Retries, a bounded stall timeout and a package
+      # cache are -- and they are now applied, by
+      # `.github/actions/apt-install`, whose header carries that reasoning.
+      # The 10 is kept because it matches the policy every other install
+      # follows, but it is no longer the only bound: the action enforces its
+      # own budget with timeout(1), because `timeout-minutes:` on a step that
+      # `uses:` a composite action is not dependable.
+      #
+      # The x86_64-pc-windows-gnu Rust target links through mingw, and `ring`
+      # (under rustls, under ureq) compiles C and asm with it. No C++ is built
+      # here, so g++-mingw-w64 is not installed; if that ever changes, the
+      # build step fails loudly rather than silently mis-linking.
+      timeout-minutes: 10
+      uses: ./.github/actions/apt-install
+      with:
+        packages: gcc-mingw-w64-x86-64 mingw-w64-x86-64-dev
     # The Rust codecs are built by default now, so this must precede the first
     # build, not follow it. Targets come from rust-toolchain.toml.
     - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
@@ -918,15 +951,33 @@ jobs:
     - uses: dtolnay/rust-toolchain@4cda84d5c5c54efe2404f9d843567869ab1699d4 # stable
     - uses: ./.github/actions/llvm
     - name: Install packages
+      # p7zip-full supplies `7z`, which sevenz-check.sh uses to AUTHOR its
+      # corpus -- the archives under test must come from the reference
+      # implementation, not from either reader being compared. The harness
+      # fails rather than passing if no 7z binary is found, so this is a hard
+      # dependency and not a nice-to-have.
+      #
+      # recommends stays TRUE, unlike the mingw install. This step has always
+      # run a bare `apt-get install -y p7zip-full`, so recommends were part of
+      # what it installed; dropping them here would be an unmeasured change to
+      # what a harness runs against, smuggled into a resilience change.
+      #
+      # MEASURED, run 32366573716: this install is a NO-OP on the runner image.
+      #
+      #   p7zip-full is already the newest version (16.02+transitional.1).
+      #   0 upgraded, 0 newly installed, 0 to remove
+      #
+      # Nothing is fetched and the cache saves an empty entry. It is kept
+      # anyway: `7z` is a HARD dependency of sevenz-check.sh -- the harness
+      # fails rather than passing without it -- and what an image ships is not
+      # ours to rely on. The line to watch is `fetched N new .deb(s)`; if that
+      # ever stops reading 0 here, the image dropped p7zip and this step went
+      # from a formality to the thing keeping the harness alive.
       timeout-minutes: 10
-      run: |
-        sudo apt-get update
-        # p7zip-full supplies `7z`, which sevenz-check.sh uses to AUTHOR its
-        # corpus -- the archives under test must come from the reference
-        # implementation, not from either reader being compared. The harness
-        # fails rather than passing if no 7z binary is found, so this is a hard
-        # dependency and not a nice-to-have.
-        sudo apt-get install -y p7zip-full
+      uses: ./.github/actions/apt-install
+      with:
+        packages: p7zip-full
+        recommends: "true"
     - name: Per-codec differential tests (REP, TTA, MM, LZP, Dict, LZ4-HC)
       run: |
         chmod +x rust/difftest/*.sh

@@ -78,12 +78,15 @@ jobs:
           echo "platform: $got"
 
       - name: System libraries
-        run: |
-          set -euo pipefail
-          sudo apt-get update -qq
+        # recommends stays TRUE: this step has always run a bare
+        # `apt-get install -y -qq`, and this is the oracle's build, where a
+        # narrower package set is the last thing worth changing on a hunch.
+        uses: ./.github/actions/apt-install
+        with:
           # compile-ghc-probe links -lstdc++ -lncurses -lpthread -lgomp, and
           # takes libcurl when pkg-config finds it (else -DFREEARC_NOURL).
-          sudo apt-get install -y -qq libncurses-dev libcurl4-openssl-dev pkg-config
+          packages: libncurses-dev libcurl4-openssl-dev pkg-config
+          recommends: "true"
 
       - uses: dtolnay/rust-toolchain@stable
 
