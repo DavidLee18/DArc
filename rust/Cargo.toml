@@ -81,3 +81,60 @@ lz4_flex = { version = "0.14", default-features = false, features = ["std"] }
 # trap rather than wrap silently.
 [profile.release]
 overflow-checks = true
+
+# Issue #171 asked for debug info to be left out of release binaries. MEASURED
+# first, because the premise was wrong: cargo's release profile already sets
+# `debug = false`, and a release `darc` carries ZERO DWARF --
+#
+#   otool -l darc | grep -c __debug   ->  0
+#   nm darc | wc -l                   ->  10872
+#
+# -- so `strip -S`, which removes debug info, removed 56 BYTES. What mingw's
+# strip.exe was actually deleting, and what the 9.5 MB -> 7 MB in that issue
+# measures, is the SYMBOL TABLE. Hence "symbols" and not "debuginfo": the
+# latter is the option that matches the issue's words and it would have shipped
+# a no-op.
+#
+# Local macOS measurement OF THIS CHANGE (not of the strip(1) probe -- cargo's
+# -Cstrip=symbols beats it, which is why these are the rebuilt numbers):
+#
+#   darc    5,761,376 -> 4,763,712   -17.3%   symbols 10872 -> 161
+#   unarc   1,513,888 -> 1,270,976   -16.0%   symbols  2727 -> 132
+#
+# Both measured with release.yml's OWN build -- two separate cargo invocations,
+# one per binary. Building them in one invocation unifies features differently
+# and gives a 1,320,496 unarc, so a baseline taken that way would have been
+# comparing two build configurations rather than this setting.
+#
+# The Windows figures are the ones the issue quotes; CI prints bytes per build.
+#
+# STATICLIBS ARE UNAFFECTED, and that had to be checked rather than hoped:
+# -Cstrip applies at link time, so libdarc_arc.a still exports its 10,845
+# defined symbols. Had it stripped them, every difftest link would have failed
+# -- and per docs/rust-workspace.md it would have failed on GNU ld only, which
+# is to say in CI and never here.
+#
+# unarc's share is not just download size. unarc IS the SFX module -- `darc a
+# -sfx<module>` PREPENDS it -- so every SFX archive this project produces gets
+# smaller by whatever unarc loses: 242,912 bytes here, off every single one.
+#
+# WHAT THIS COSTS, measured rather than assumed:
+#
+#   KEPT    the panic message and its `file:line`. Those are compiled-in
+#           strings and #[track_caller] payload, not symbol-table entries, so
+#           `panicked at src/main.rs:1:28: index out of bounds` still prints
+#           from a fully stripped binary. That is the diagnostic that names a
+#           codec bug, and it survives.
+#   LOST    `RUST_BACKTRACE=1` entirely. Not degraded to addresses -- it prints
+#           the "some details are omitted" note and NO frames at all. Verified
+#           on a stripped build, because "names become addresses" was my
+#           assumption and it was wrong.
+#
+# Taken anyway: a backtrace needs an env var no user sets, the FFI paths wrap
+# panics in catch_unwind and turn them into error returns before they surface,
+# and a debug build recovers the backtrace when someone is actually debugging.
+#
+# It goes on [profile.release] and NOT on a separate dist profile. A profile
+# only release.yml used would mean the bytes users receive were built by
+# settings no push ever exercised -- the exact drift that stopped v3.0.0.
+strip = "symbols"
