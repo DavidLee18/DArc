@@ -42,7 +42,7 @@ struct Command {
     /// `l` `v` `t` `x` `e`. SFX defaults to `x`.
     cmd: char,
     archive: String,
-    /// `-d<path>`: where to extract.
+    /// `-dp<path>` or `-d<path>`: where to extract.
     outpath: String,
     /// `-s`/`-s0`/`-s1`/`-s2`. Only silence is honoured; the C's levels above
     /// 0 differ in how much progress they draw, and this draws none.
@@ -66,7 +66,8 @@ fn usage(program: &str) -> ! {
          \x20 e   extract, ignoring paths\n\
          \n\
          Options:\n\
-         \x20 -d<path>  extract into <path>\n\
+         \x20 -dp<path> extract into <path>\n\
+         \x20 -d<path>  the same, as the SFX modules spell it\n\
          \x20 -s[0-2]   quieter output\n\
          \x20 -y        confirm running a self-extracting archive's command\n\
          \x20 --        stop parsing options\n\
@@ -76,13 +77,27 @@ fn usage(program: &str) -> ! {
     std::process::exit(2)
 }
 
-/// The C's option loop (`unarc.cpp:117-137`), minus the Windows-only and
-/// installer-only flags.
+/// The C's option loop, minus the Windows-only and installer-only flags.
+///
+/// The C had TWO of these, chosen by `#ifdef FREEARC_SFX` — an SFX module took
+/// `-d<path>` (`unarc.cpp:128`) and a plain `unarc` took `-dp<path>`
+/// (`unarc.cpp:181`), and neither binary knew the other's spelling. This is one
+/// binary in both roles, so it takes BOTH, and `-dp` is matched first.
+///
+/// DELIBERATE DIVERGENCE (issue #177): the SFX role now also accepts `-dp`,
+/// which the C's SFX branch read as `-d` with a path beginning `p`. That is the
+/// one thing this costs, and it is reachable as `-d./pFolder`. The alternative —
+/// honouring `-d` or `-dp` depending on which role we booted into — makes the
+/// same executable answer to different flags depending on how it was started,
+/// and breaks every script that passes `-d` to a plain `unarc`.
 ///
 /// `-n` is accepted and ignored rather than refused: this build never prompts
 /// about overwriting, so it already describes what happens. Refusing it would
 /// break scripts that pass it for the C's benefit. `-y` used to be in the same
-/// position and no longer is — it now confirms an autorun.
+/// position and no longer is — it now confirms an autorun. `--noarcext` joins
+/// them, and matches the C exactly: `unarc.cpp:178` sets the flag and NOTHING
+/// ever reads it, because appending `.arc` was an unimplemented TODO at the top
+/// of that file. The only change here is that it stops being a usage error.
 fn parse(args: &[String], program: &str, sfx: bool) -> Command {
     let mut cmd = if sfx { 'x' } else { '\0' };
     let mut archive = if sfx { program.to_string() } else { String::new() };
@@ -113,12 +128,17 @@ fn parse(args: &[String], program: &str, sfx: bool) -> Command {
                 // benefit -- `Tests/sfx-roundtrip.sh` passes `-o+`, and
                 // rejecting it made every method in that harness report
                 // "unarc failed".
-                "-n" => {}
+                "-n" | "--noarcext" => {}
                 s if s.starts_with("-o") => {}
                 "-s" | "-s1" => silent = 1,
                 "-s0" => silent = 0,
                 "-s2" => silent = 2,
                 "--" => nooptions = true,
+                // `-dp` BEFORE `-d`: `-dpFolder` is the plain-unarc spelling and
+                // means Folder, not pFolder. A match arm order, not a
+                // longest-prefix search -- put these the other way round and
+                // the bug this fixes comes straight back.
+                s if s.starts_with("-dp") => outpath = s[3..].to_string(),
                 s if s.starts_with("-d") => outpath = s[2..].to_string(),
                 _ => usage(program),
             }
@@ -248,4 +268,67 @@ fn main() {
         }
     };
     std::process::exit(code);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse;
+
+    fn args(v: &[&str]) -> Vec<String> {
+        v.iter().map(|s| (*s).to_string()).collect()
+    }
+
+    /// Issue #177. The C's plain-`unarc` branch spells the destination `-dp`,
+    /// and reading it as `-d` put the `p` at the front of the path: `-dpFolder`
+    /// extracted into `pFolder`.
+    #[test]
+    fn dp_is_the_destination_path_not_a_path_starting_with_p() {
+        let c = parse(&args(&["x", "-dpFolder", "t.arc"]), "unarc", false);
+        assert_eq!(c.outpath, "Folder");
+        assert_eq!(c.cmd, 'x');
+        assert_eq!(c.archive, "t.arc");
+    }
+
+    /// `-d` is the SFX branch's spelling and keeps working in both roles --
+    /// dropping it would break every caller written against this build.
+    #[test]
+    fn plain_d_still_sets_the_destination() {
+        let c = parse(&args(&["x", "-d/tmp/out", "t.arc"]), "unarc", false);
+        assert_eq!(c.outpath, "/tmp/out");
+    }
+
+    /// The cost of taking both spellings in one binary, stated as a test so it
+    /// cannot be changed by accident: a destination that really does begin with
+    /// `p` is written `-d./pFolder`, because `-dpFolder` is now `-dp`.
+    #[test]
+    fn a_destination_beginning_with_p_needs_a_qualified_path() {
+        assert_eq!(parse(&args(&["x", "-d./pFolder", "t.arc"]), "unarc", false).outpath, "./pFolder");
+    }
+
+    /// Both spellings reach the SFX role too, where no command word is given
+    /// and the archive is the executable itself.
+    #[test]
+    fn sfx_takes_both_spellings() {
+        let c = parse(&args(&["-dpFolder"]), "self.exe", true);
+        assert_eq!((c.outpath.as_str(), c.cmd, c.explicit_cmd), ("Folder", 'x', false));
+        let c = parse(&args(&["-dFolder"]), "self.exe", true);
+        assert_eq!((c.outpath.as_str(), c.cmd, c.explicit_cmd), ("Folder", 'x', false));
+    }
+
+    /// Accepted and ignored, like `-n` and `-o` -- and like the C, where the
+    /// flag is set at `unarc.cpp:178` and never read. Before #177 it was
+    /// refused, which printed usage and exited 2.
+    #[test]
+    fn noarcext_is_accepted_and_ignored() {
+        let c = parse(&args(&["l", "--noarcext", "t.arc"]), "unarc", false);
+        assert_eq!((c.cmd, c.archive.as_str()), ('l', "t.arc"));
+    }
+
+    /// The last one wins, as in the C -- each match arm assigns rather than
+    /// accumulating.
+    #[test]
+    fn the_last_destination_wins() {
+        let c = parse(&args(&["x", "-dfirst", "-dpsecond", "t.arc"]), "unarc", false);
+        assert_eq!(c.outpath, "second");
+    }
 }

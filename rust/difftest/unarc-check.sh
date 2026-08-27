@@ -15,8 +15,8 @@
 # `unarc x` and `darc x` ever produce different trees from one archive, the
 # difference is in option parsing or in Layout, since below that they are
 # literally the same function. That also lets this cover ground the C
-# comparison never did: `-e` (flatten) and `-d<path>` (extract elsewhere) had no
-# tested C++ counterpart here.
+# comparison never did: `-e` (flatten) and `-dp<path>`/`-d<path>` (extract
+# elsewhere) had no tested C++ counterpart here.
 #
 # What it does NOT compare is console text -- `darc` prints a banner and
 # progress, `unarc` prints one line. `CLAUDE.md` settles that message-identity
@@ -130,6 +130,28 @@ rm -rf "$W/out"
 [ -f "$W/out/sub/deeper/c.txt" ] || {
   echo "SELF-TEST FAILED: -d did not extract into $W/out keeping paths" >&2; exit 1; }
 
+# -dp<path> is the plain-unarc spelling of the same thing (issue #177). Reading
+# it as `-d` put the `p` at the front: `-dpFolder` extracted into `pFolder`.
+# The destination below is RELATIVE and begins with `p` on purpose: under the
+# old parse the argument reads as `-d` + `ppdest`, so the tree lands in
+# `$W/ppdest` and this case fails for the exact reason reported. An absolute
+# path would not work here -- `-dp/abs/pdest` misreads as the relative path
+# `p/abs/pdest`, which is a different directory again and a weaker check.
+rm -rf "$W/pdest" "$W/ppdest"
+( cd "$W" && "$RUNARC" x "-dppdest" "$W/t.arc" ) >/dev/null 2>&1
+[ -f "$W/pdest/sub/deeper/c.txt" ] || {
+  echo "SELF-TEST FAILED: -dp did not extract into $W/pdest keeping paths" >&2; exit 1; }
+if [ -d "$W/ppdest" ]; then
+  echo "SELF-TEST FAILED: -dp was read as -d, so the path grew a leading p" >&2; exit 1
+fi
+
+# --noarcext is accepted and ignored rather than refused, which is what the C did
+# too -- it sets the flag and never reads it. Before #177 this printed usage and
+# exited 2, which a caller passing it for the C's benefit reads as a hard
+# failure.
+"$RUNARC" l --noarcext "$W/t.arc" >/dev/null 2>&1 || {
+  echo "SELF-TEST FAILED: --noarcext was refused" >&2; exit 1; }
+
 # ── the comparison must be able to fail ─────────────────────────────────────
 #
 # Everything above passes if both extractors are broken in the same way, or if
@@ -148,4 +170,4 @@ n=$(find "$W/r" -type f | wc -l | tr -d '[:space:]')
   echo "comparing near-empty trees" >&2
   exit 1; }
 
-echo "unarc agrees with darc over $checked archives, and -e/-d do what they say"
+echo "unarc agrees with darc over $checked archives, and -e/-d/-dp do what they say"
