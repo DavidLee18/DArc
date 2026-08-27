@@ -52,6 +52,22 @@ the Haskell reference both still carry the broken bound, which is why
 `rep-check.sh` must NOT be extended with a wrapping case — the oracle is wrong
 there. Gated in `rust/darc-codecs/tests/rep.rs`.
 
+A seventh came from issue #177: **`unarc` accepts BOTH `-dp<path>` and
+`-d<path>` for the destination, in both of its roles.** The C had two option
+loops behind `#ifdef FREEARC_SFX` — an SFX module read `-d` (`unarc.cpp:128`),
+a plain `unarc` read `-dp` (`unarc.cpp:181`) — and neither binary knew the
+other's spelling. This is **one** binary in both roles, and it had kept only the
+SFX loop, so `unarc x -dpFolder` extracted into **`pFolder`**. `-dp` is now
+matched before `-d`. The cost is the ambiguity the `#ifdef` used to hide: a
+destination whose name really does begin with `p` must be written `-d./pFolder`,
+because `-dpFolder` is now `-dp`. The alternative — picking the spelling from
+the role we booted into — makes one executable answer to different flags
+depending on how it was started, and breaks every caller that passes `-d` to a
+plain `unarc`. `--noarcext` is accepted and ignored in the same commit, which is
+what the C did too — `unarc.cpp:178` sets the flag and nothing reads it, since
+appending `.arc` was an unimplemented TODO. Here it had been a usage error,
+exiting 2. Gated in `rust/difftest/unarc-check.sh` and in `darc-unarc`'s own tests.
+
 **The port is finished: the archiver is Rust, end to end.** Rust ~78,000 lines
 (every codec, the crypto, the `.7z` reader, SREP, and the whole application
 layer). **No C++ is on any shipped path any more**, and none is compiled into
