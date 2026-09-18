@@ -806,17 +806,50 @@ fn physical_memory_raw() -> u64 {
 ///
 /// The default unit is megabytes, `b` means bytes, and `%` or `p` means a
 /// percentage of `memory`. Anything else is an error there, and `None` here.
+///
+/// The unit table is `parseNumber`'s (`Utils.hs:55`), which APPENDS the default
+/// specifier to the string before reading it, so a bare `"512"` is read as
+/// `"512m"`. `Utils.hs:71` states it in one line: `"24" означает 24mb`.
+///
+/// That is NOT `method::parse_mem`'s table, which this used to delegate to.
+/// There a bare figure is a POWER OF TWO, because the `-m` grammar spells a
+/// 4 MB dictionary `-md22`. The two tables agree on `b`/`k`/`m`/`g` and
+/// disagree on exactly the spelling `-lc` documents — README's option table
+/// reads `-lc N` as "N MB" — so routing the memory limits through the method
+/// table produced three wrong answers at once:
+///
+/// * `-lc24` meant 16 MB (`1 << 24`), not 24 MB, and said nothing about it.
+/// * `-lc512` was refused outright with "not a memory size", because
+///   `1 << 512` does not fit and the method table returns `None` at 32.
+/// * `-lc8` became 256 BYTES, which no PPMd model can be built in: it left the
+///   error path entirely and panicked in `ppmd/model.rs` on a slice range of
+///   258 into 256.
+///
+/// `t` and `^` are here because `parseNumber` has them; `^` is the explicit
+/// power-of-two spelling, which is how a caller asks for what the method table
+/// gave by accident. The suffix is lower-cased because `parseNumber` reads
+/// `strLower`.
 pub fn parse_mem_with_percents(memory: u64, s: &str) -> Option<u64> {
     let digits: String = s.chars().take_while(char::is_ascii_digit).collect();
     if digits.is_empty() {
         return None;
     }
     let n: u64 = digits.parse().ok()?;
-    match s[digits.len()..].chars().next() {
+    match s[digits.len()..]
+        .chars()
+        .next()
+        .map(|c| c.to_ascii_lowercase())
+    {
         Some('%') | Some('p') => Some(memory.saturating_mul(n) / 100),
-        // Everything else is a plain size, and parse_mem owns the unit table
-        // so the two spellings cannot drift apart.
-        _ => crate::method::parse_mem(s).map(u64::from),
+        Some('b') => Some(n),
+        Some('k') => Some(n.saturating_mul(KB)),
+        // The default specifier, and the explicit spelling of it.
+        None | Some('m') => Some(n.saturating_mul(MB)),
+        Some('g') => Some(n.saturating_mul(1024 * MB)),
+        Some('t') => Some(n.saturating_mul(1024 * 1024 * MB)),
+        // `2 ^ readI digits`, in bytes. 64 and up cannot be represented.
+        Some('^') => (n < 64).then(|| 1u64 << n),
+        Some(_) => None,
     }
 }
 
@@ -1331,6 +1364,69 @@ mod lzma2_and_lc_tests {
         let mut r = m("rep");
         assert!(set_compression_mem(&mut r, 10 * MB));
         assert_eq!(get_dictionary(&r), 8 * MB as u32);
+    }
+
+    /// `Utils.hs:71`, verbatim: `"24" означает 24mb`. The figure `-lc` and
+    /// `-ld` are documented in is megabytes (README's option table: "Limit
+    /// memory for compression to N MB"), and a bare number is that figure.
+    #[test]
+    fn a_bare_figure_is_megabytes() {
+        assert_eq!(parse_mem_with_percents(0, "24"), Some(24 * MB));
+        assert_eq!(parse_mem_with_percents(0, "512"), Some(512 * MB));
+        assert_eq!(parse_mem_with_percents(0, "8"), Some(8 * MB));
+    }
+
+    /// The method table would have answered `1 << n` to all three above, so
+    /// these are the values that used to come back, pinned to keep the two
+    /// tables from being merged again by someone reading only the call site.
+    #[test]
+    fn a_bare_figure_is_not_a_power_of_two() {
+        assert_ne!(parse_mem_with_percents(0, "24"), Some(1 << 24));
+        assert_ne!(parse_mem_with_percents(0, "8"), Some(1 << 8));
+        // `1 << 512` has no answer at all, which is how `-lc512` came to be
+        // refused as "not a memory size" while being exactly what the option
+        // documents.
+        assert!(parse_mem_with_percents(0, "512").is_some());
+    }
+
+    /// `parseNumber` (`Utils.hs:55`) — the whole table, including the `^`
+    /// spelling a caller needs now that a bare figure no longer gives it.
+    #[test]
+    fn the_unit_table_is_parse_numbers() {
+        assert_eq!(parse_mem_with_percents(0, "512b"), Some(512));
+        assert_eq!(parse_mem_with_percents(0, "32k"), Some(32 * KB));
+        assert_eq!(parse_mem_with_percents(0, "8m"), Some(8 * MB));
+        assert_eq!(parse_mem_with_percents(0, "2g"), Some(2 * 1024 * MB));
+        assert_eq!(parse_mem_with_percents(0, "1t"), Some(1024 * 1024 * MB));
+        assert_eq!(parse_mem_with_percents(0, "8^"), Some(256));
+        // `strLower` runs before the table is consulted.
+        assert_eq!(parse_mem_with_percents(0, "8M"), Some(8 * MB));
+        assert_eq!(parse_mem_with_percents(0, "512B"), Some(512));
+    }
+
+    /// Only the first suffix character is read, as `span isDigit` leaves it.
+    #[test]
+    fn only_the_first_suffix_character_is_read() {
+        assert_eq!(parse_mem_with_percents(0, "16kb"), Some(16 * KB));
+        assert_eq!(parse_mem_with_percents(0, "1mb"), Some(MB));
+    }
+
+    /// Percentages are of the figure passed in, and keep working.
+    #[test]
+    fn percentages_are_of_the_memory_given() {
+        assert_eq!(parse_mem_with_percents(1000, "75%"), Some(750));
+        assert_eq!(parse_mem_with_percents(1000, "75p"), Some(750));
+    }
+
+    /// Anything the table does not name is an error there and `None` here,
+    /// which is what makes the CLI print "not a memory size" for it.
+    #[test]
+    fn an_unknown_suffix_is_still_rejected() {
+        assert_eq!(parse_mem_with_percents(0, "8x"), None);
+        assert_eq!(parse_mem_with_percents(0, "abc"), None);
+        assert_eq!(parse_mem_with_percents(0, ""), None);
+        // 64 and up do not fit in the shift.
+        assert_eq!(parse_mem_with_percents(0, "64^"), None);
     }
 
 }
