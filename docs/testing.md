@@ -356,7 +356,16 @@ so the next unimplemented method gets listed rather than silently failing — an
 a case that fails for any *other* reason is still a failure.
 
 Every `-m` knob is implemented: `-mm`, `-mc`, `-md`, `-ms`, `-mt` and `-ma`.
-`-lc-`/`-ld-` are still not accepted at all.
+`-lc-`/`-ld-` are accepted and mean no limit, which this line denied until it
+was measured; README's "What the archiver cannot do yet" had already been
+corrected in #129/#130 and the two sections disagreed.
+
+The figure they take is `parseMemWithPercents`'s, not the `-m` grammar's: a
+bare number is MEGABYTES (`Utils.hs:71` — `"24" означает 24mb`). Reading it
+with `method::parse_mem` instead made `-lc24` mean 16 MB, refused `-lc512`
+outright and let `-lc8` reach PPMd as 256 bytes, where the model panicked.
+Gated in `memlimit.rs`'s `a_bare_figure_is_megabytes` and
+`a_bare_figure_is_not_a_power_of_two`.
 
 `-ma` is the one worth reading the harness for. It selects between the TWO
 paths of `splitFileTypes`, and the port had implemented neither clause of
